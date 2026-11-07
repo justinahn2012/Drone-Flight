@@ -244,7 +244,7 @@ async function loadProcWorld(def) {
   try {
     const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }), prev = renderer.getRenderTarget();
     renderer.setRenderTarget(rt); const t = performance.now();
-    await renderer.compileAsync(w.scene, fpv.cam);
+    if (renderer.extensions.has('KHR_parallel_shader_compile')) await renderer.compileAsync(w.scene, fpv.cam); else renderer.compile(w.scene, fpv.cam);
     renderer.setRenderTarget(prev); rt.dispose();
     console.info('shader warm-up ms', Math.round(performance.now() - t));
   } catch (e) { console.warn('shader warm-up skipped', e); }
