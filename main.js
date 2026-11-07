@@ -238,6 +238,16 @@ async function loadProcWorld(def) {
   // farmland 0.889/1/1.202 -> overcast_soil_puresky 1.009/1/1.004), so the rendered grey lands where D put it.
   Object.assign(fpv.look, { evMin: -5.5, evMax: 4.0, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: def.sky === 'overcast' ? [0.990, 0.985, 0.941] : [1.063, 0.993, 0.883], evBias: def.sky === 'overcast' ? 0.3 : 0 });
   fpv.cam.near = 0.06; fpv.cam.far = 3000; fpv.cam.updateProjectionMatrix();
+  // [A] shader warm-up behind the loader: compile every world program now (in parallel where
+  // KHR_parallel_shader_compile exists) instead of hitching the first frames. Compiled against a
+  // half-float target so the program keys (linear output, no tone mapping) match the HDR scene pass.
+  try {
+    const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }), prev = renderer.getRenderTarget();
+    renderer.setRenderTarget(rt); const t = performance.now();
+    await renderer.compileAsync(w.scene, fpv.cam);
+    renderer.setRenderTarget(prev); rt.dispose();
+    console.info('shader warm-up ms', Math.round(performance.now() - t));
+  } catch (e) { console.warn('shader warm-up skipped', e); }
 }
 
 async function loadWorld(def) {
