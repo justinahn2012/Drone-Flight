@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="One Take">
+<meta name="theme-color" content="#000000">
+<title>One Take — FPV</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#07080a; --ink:#f2efe9; --mute:#8c8a86; --line:#24262b; --panel:#111316;
+  --rec:#ff3b30; --amber:#ffb020; --oled:#9fe7ff; --vh:100%;
+  --cond:'Barlow Condensed',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);overflow:hidden;overscroll-behavior:none;
+  font-family:var(--cond);-webkit-user-select:none;user-select:none;touch-action:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+#app{position:fixed;inset:0}
+#view{position:absolute;left:0;top:0;right:0;height:100%;overflow:hidden;background:#000}
+#c{display:block;width:100%;height:100%}
+.hidden{display:none!important}
+
+/* ---------- HUD (landscape) ---------- */
+#hud{position:absolute;inset:0;pointer-events:none;font-family:var(--mono);font-size:12px;letter-spacing:.04em;
+  text-shadow:0 1px 2px rgba(0,0,0,.7)}
+#hud .tl{position:absolute;left:calc(14px + env(safe-area-inset-left));top:calc(12px + env(safe-area-inset-top));display:flex;gap:10px;align-items:center}
+#hud .tr{position:absolute;right:calc(14px + env(safe-area-inset-right));top:calc(12px + env(safe-area-inset-top));text-align:right}
+#hud .bl{position:absolute;left:calc(14px + env(safe-area-inset-left));bottom:calc(12px + env(safe-area-inset-bottom))}
+#score{font-family:var(--cond);font-weight:700;font-size:22px;letter-spacing:.02em}
+#streak{color:var(--amber);font-size:11px;min-height:14px}
+#pop{position:absolute;left:50%;bottom:22%;transform:translateX(-50%);font-family:var(--cond);font-weight:800;font-size:26px;
+  letter-spacing:.06em;color:var(--ink);opacity:0;transition:opacity .25s, transform .25s}
+#pop.show{opacity:1;transform:translateX(-50%) translateY(-6px)}
+#recDot{display:none;align-items:center;gap:6px;color:#fff}
+#recDot b{width:9px;height:9px;border-radius:50%;background:var(--rec);animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:.15}}
+body.portrait #hud .tr, body.portrait #hud .bl{display:none}
+body.nohud #hud .tr, body.nohud #hud .bl{display:none}
+#btnMenu{position:absolute;left:calc(8px + env(safe-area-inset-left));top:calc(8px + env(safe-area-inset-top));
+  width:38px;height:38px;border-radius:10px;background:rgba(0,0,0,.28);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  display:grid;place-items:center;pointer-events:auto;opacity:.75}
+#btnMenu span{display:block;width:16px;height:2px;background:#fff;box-shadow:0 5px 0 #fff,0 -5px 0 #fff}
+#hud .tl{left:calc(56px + env(safe-area-inset-left))}
+.float{position:absolute;left:0;top:0;width:0;height:0;opacity:0;pointer-events:none;transition:opacity .2s}
+.float::before{content:"";position:absolute;width:120px;height:120px;left:-60px;top:-60px;border-radius:50%;border:1.5px solid rgba(255,255,255,.22)}
+.float i{position:absolute;width:44px;height:44px;left:-22px;top:-22px;border-radius:50%;background:rgba(255,255,255,.18);border:1.5px solid rgba(255,255,255,.4)}
+body.nosticks .float{display:none}
+#banner{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none}
+#banner h2{margin:0;font-weight:800;font-size:44px;letter-spacing:.08em}
+#banner p{margin:4px 0 0;font-family:var(--mono);font-size:12px;color:#ddd}
+#crashBar{position:absolute;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);display:flex;gap:10px;pointer-events:auto}
+.pill{padding:10px 18px;border-radius:999px;background:rgba(10,10,12,.72);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  border:1px solid rgba(255,255,255,.14);font-weight:700;font-size:16px;letter-spacing:.06em}
+.pill.hot{background:var(--ink);color:#000;border-color:var(--ink)}
+#fade{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;transition:opacity .35s}
+
+/* ---------- Radio (portrait) ---------- */
+#radio{position:absolute;left:0;right:0;bottom:0;display:none;padding:12px 10px calc(16px + env(safe-area-inset-bottom));
+  background:
+    radial-gradient(120% 70% at 50% 0%, #2a2c31 0%, #17181b 55%, #0d0e10 100%);
+  border-top:1px solid #33353b}
+body.portrait #radio{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;justify-items:center;gap:6px}
+#radio::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.35;
+  background-image:repeating-linear-gradient(115deg, rgba(255,255,255,.025) 0 2px, transparent 2px 5px)}
+.well{position:relative;width:min(calc((100vw - 176px) / 2),30vh);aspect-ratio:1;border-radius:24%;
+  background:linear-gradient(160deg,#050506,#1b1c20);box-shadow:inset 0 3px 10px #000, inset 0 -1px 0 #2c2e33, 0 1px 0 #3a3c42}
+.well::before{content:"";position:absolute;inset:18%;border-radius:50%;border:1px solid #2a2c31;
+  background:radial-gradient(circle,#202227 0 30%,#141518 31% 100%)}
+.well::after{content:"";position:absolute;left:50%;top:12%;bottom:12%;width:1px;background:linear-gradient(transparent,#2e3036,transparent)}
+.top{position:absolute;left:50%;top:50%;width:30%;aspect-ratio:1;border-radius:50%;transform:translate(-50%,-50%);
+  background:repeating-conic-gradient(#3a3d44 0 6deg,#26282d 6deg 12deg);
+  box-shadow:0 6px 10px rgba(0,0,0,.6), inset 0 1px 1px rgba(255,255,255,.25)}
+.top::after{content:"";position:absolute;inset:26%;border-radius:50%;background:radial-gradient(circle at 35% 30%,#6a6e77,#2b2d33)}
+.wlabel{position:absolute;bottom:-17px;left:0;right:0;text-align:center;font-family:var(--mono);font-size:9px;color:#6d6b67;letter-spacing:.12em}
+.mid{display:flex;flex-direction:column;align-items:center;gap:10px;z-index:1}
+#oled{width:min(30vw,124px);min-height:74px;padding:7px 8px;border-radius:7px;background:#020304;border:1px solid #2b2d33;
+  box-shadow:inset 0 0 12px rgba(120,220,255,.06);font-family:var(--mono);font-size:10px;line-height:1.35;color:var(--oled);
+  text-shadow:0 0 6px rgba(140,230,255,.45);white-space:pre}
+.rbtn{display:flex;gap:7px}
+.rbtn button{width:38px;height:38px;border-radius:50%;background:linear-gradient(#2d2f35,#18191c);border:1px solid #3a3c43;
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.04em;color:#cfccc6;box-shadow:0 3px 6px rgba(0,0,0,.5)}
+.rbtn button.rec{color:var(--rec)}
+.rbtn button:active{transform:translateY(1px)}
+
+/* ---------- Menu ---------- */
+#menu{position:fixed;inset:0;z-index:10;overflow:auto;touch-action:pan-y;
+  background:linear-gradient(180deg,rgba(7,8,10,.55),rgba(7,8,10,.92) 60%);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+  padding:calc(22px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right)) calc(28px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left))}
+.wrap{max-width:860px;margin:0 auto}
+.brand{display:flex;align-items:baseline;gap:12px}
+.brand h1{margin:0;font-weight:800;font-size:clamp(56px,13vw,104px);line-height:.86;letter-spacing:-.01em}
+.brand .tag{font-family:var(--mono);font-size:11px;padding:3px 7px;border:1px solid var(--rec);color:var(--rec);border-radius:4px;letter-spacing:.14em}
+.lede{margin:10px 0 22px;font-family:var(--mono);font-size:12px;color:var(--mute);max-width:520px;line-height:1.6}
+.sec{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;color:var(--mute);margin:18px 0 8px;text-transform:uppercase}
+#worlds{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px}
+.world{text-align:left;padding:14px 14px 12px;border-radius:12px;background:var(--panel);border:1px solid var(--line);transition:border-color .2s, background .2s}
+.world b{display:block;font-size:21px;font-weight:700;letter-spacing:.01em}
+.world small{display:block;margin-top:4px;font-family:var(--mono);font-size:10.5px;color:var(--mute)}
+.world.on{border-color:var(--ink);background:#181a1e}
+.world.custom{border-style:dashed}
+.seg{display:inline-flex;padding:3px;border-radius:10px;background:var(--panel);border:1px solid var(--line);flex-wrap:wrap}
+.seg button{padding:8px 12px;border-radius:7px;font-size:15px;font-weight:600;letter-spacing:.03em;color:var(--mute)}
+.seg button.on{background:var(--ink);color:#000}
+.hint{font-family:var(--mono);font-size:10.5px;color:var(--mute);margin-top:6px;line-height:1.5}
+.cta{display:flex;gap:10px;align-items:center;margin-top:24px;flex-wrap:wrap}
+#fly{padding:14px 34px;border-radius:999px;background:var(--rec);color:#fff;font-weight:800;font-size:24px;letter-spacing:.12em;
+  box-shadow:0 8px 30px rgba(255,59,48,.35)}
+.ghost{padding:12px 18px;border-radius:999px;border:1px solid var(--line);font-weight:600;font-size:16px;color:var(--ink)}
+.rows{display:grid;grid-template-columns:auto 1fr;gap:10px 16px;align-items:center}
+.rows label{font-family:var(--mono);font-size:11px;color:var(--mute);letter-spacing:.06em}
+input[type=range]{width:min(260px,100%);accent-color:var(--ink)}
+.foot{margin-top:26px;font-family:var(--mono);font-size:10px;color:#5d5b58;line-height:1.6}
+#custom{margin-top:8px;display:none;gap:8px;flex-direction:column}
+#custom.open{display:flex}
+#custom input{font-family:var(--mono);font-size:11px;color:var(--mute)}
+
+/* ---------- Loading / clip ---------- */
+#loading{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:rgba(5,6,8,.94)}
+#loading .box{width:min(340px,80vw)}
+#loading h3{margin:0 0 10px;font-weight:700;font-size:26px;letter-spacing:.04em}
+.bar{height:3px;background:#1f2125;border-radius:2px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--ink);transition:width .2s}
+#ldText{margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--mute);min-height:16px}
+#clip{position:fixed;inset:0;z-index:30;display:grid;place-items:center;background:rgba(0,0,0,.86);padding:20px}
+#clip .box{width:min(560px,92vw);text-align:center}
+#clip video{width:100%;max-height:60vh;border-radius:10px;background:#000}
+#clip .row{display:flex;gap:10px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.4.0/dist/spark.module.min.js",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.1/build/index.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="view">
+    <canvas id="c"></canvas>
+    <div id="hud">
+      <div class="tl"><div id="recDot"><b></b><span>REC</span><span id="recT">00:00</span></div></div>
+      <div class="tr"><div id="score">0</div><div id="streak"></div></div>
+      <div class="bl"><span id="spd">0 km/h</span> · <span id="tmr">00:00</span></div>
+      <div id="pop"></div>
+      <div id="banner" class="hidden"><h2 id="bTitle">CRASHED</h2><p id="bSub"></p></div>
+    </div>
+    <div id="fade"></div>
+    <div class="float" id="fL"><i></i></div>
+    <div class="float" id="fR"><i></i></div>
+    <button id="btnMenu" class="ui" aria-label="Menu"><span></span></button>
+    <div id="crashBar" class="ui hidden">
+      <button class="pill hot" id="cReset">FLY AGAIN</button>
+      <button class="pill" id="cClip">SAVE CLIP</button>
+    </div>
+  </div>
+  <div id="radio">
+    <div class="well" id="wL"><div class="top" id="tL"></div><div class="wlabel" id="lblL">CLIMB · YAW</div></div>
+    <div class="mid">
+      <div id="oled">ONE TAKE</div>
+      <div class="rbtn">
+        <button class="ui" id="rMode">CINE</button>
+        <button class="ui" id="rReset">RESET</button>
+        <button class="ui rec" id="rClip">CLIP</button>
+      </div>
+    </div>
+    <div class="well" id="wR"><div class="top" id="tR"></div><div class="wlabel">PITCH · ROLL</div></div>
+  </div>
+</div>
+
+<div id="menu" class="ui">
+  <div class="wrap">
+    <div class="brand"><h1>ONE TAKE</h1><span class="tag">FPV</span></div>
+    <p class="lede">Real places, captured as millions of Gaussian splats. Seen through a real camera — shutter, lens, exposure, noise. Find the line. Skim close. Don't stop.</p>
+
+    <div class="sec">World</div>
+    <div id="worlds"></div>
+    <div id="custom">
+      <div class="hint">Your own world: a splat (.spz / .ply from Marble, Scaniverse, Postshot…) plus, optionally, a collider .glb. No collider = no collisions.</div>
+      <input type="file" id="fSplat" accept=".spz,.ply,.splat,.ksplat">
+      <input type="file" id="fCol" accept=".glb,.gltf">
+    </div>
+
+    <div class="sec">Flight</div>
+    <div class="seg" data-key="mode">
+      <button data-v="cine">Cine Assist</button><button data-v="angle">Angle</button><button data-v="acro">Acro</button>
+    </div>
+    <div class="hint" id="modeHint"></div>
+
+    <div class="cta">
+      <button id="fly">FLY</button>
+      <button class="ghost" id="resume" style="display:none">Resume</button>
+      <button class="ghost" id="openSet">Camera &amp; settings</button>
+    </div>
+
+    <div id="settings" class="hidden">
+      <div class="sec">Camera</div>
+      <div class="rows">
+        <label>Shutter</label><div class="seg" data-key="shutter"><button data-v="nd16">1/60 (ref)</button><button data-v="nd8">1/120</button><button data-v="none">No ND</button></div>
+        <label>Lens</label><div class="seg" data-key="lens"><button data-v="ref">Fisheye (ref)</button><button data-v="wide">Wide</button><button data-v="linear">Linear</button></div>
+        <label>Stabilize</label><div class="seg" data-key="stab"><button data-v="off">Off</button><button data-v="light">Light</button><button data-v="heavy">Heavy</button></div>
+        <label>Uptilt</label><div><input type="range" id="tilt" min="0" max="45" step="1"> <span id="tiltV" class="hint"></span></div>
+        <label>Frame</label><div class="seg" data-key="frame"><button data-v="full">Full</button><button data-v="cine">2.39:1</button></div>
+      </div>
+      <div class="sec">Craft &amp; performance</div>
+      <div class="rows">
+        <label>Craft</label><div class="seg" data-key="craft"><button data-v="auto">Auto</button><button data-v="freestyle5">5" Freestyle</button><button data-v="cinewhoop">Cinewhoop</button></div>
+        <label>Quality</label><div class="seg" data-key="quality"><button data-v="low">Low</button><button data-v="auto">Auto</button><button data-v="high">High</button></div>
+        <label>Splats</label><div class="seg" data-key="splats"><button data-v="500k">500k</button><button data-v="2m">2M</button></div>
+        <label>Frame rate</label><div class="seg" data-key="fps"><button data-v="60">60</button><button data-v="30">30 cinematic</button></div>
+        <label>Overlay</label><div class="seg" data-key="hud"><button data-v="on">HUD</button><button data-v="off">Clean</button></div>
+        <label>Sound</label><div class="seg" data-key="sound"><button data-v="on">On</button><button data-v="off">Off</button></div>
+      </div>
+      <div class="hint">Landscape: thumbs anywhere — left half climb/yaw (throttle in Angle/Acro), right half pitch/roll. Portrait: use the radio gimbals. Gamepad and keyboard (WASD + arrows, R reset) work too.</div>
+    </div>
+
+    <div class="foot">Example worlds: World Labs Marble example exports (wlt-ai-cdn.art), streamed at load. Renderer: Spark (three.js). Prototype build.</div>
+  </div>
+</div>
+
+<div id="loading" class="hidden"><div class="box"><h3 id="ldTitle">Loading</h3><div class="bar"><i id="ldBar"></i></div><div id="ldText"></div></div></div>
+
+<div id="clip" class="hidden"><div class="box">
+  <video id="clipVid" playsinline controls loop></video>
+  <div class="row"><button class="pill hot" id="clipShare">SHARE</button><a class="pill" id="clipSave" download>SAVE</a><button class="pill" id="clipClose">CLOSE</button></div>
+</div></div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
