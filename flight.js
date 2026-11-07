@@ -1,6 +1,12 @@
-// flight.js — quadcopter flight model + collision against the world's collider mesh.
+// flight.js — quadcopter flight model + collision against the world's collider.
 // Body frame: +x right, +y up (thrust axis), -z forward (camera looks along -z).
+//
+// Determinism contract (native port, PORTING.md): step(dt, inp, mode, world) is a pure function of the Drone state
+// (snapshot()/restore()), the input, the mode and the world. main.js calls it at a fixed 1/240 s tick with quantised
+// inputs (inputlog.js); the only randomness is this.rng (rng.js), re-seeded on reset(). Geometry is reached only through
+// the collider interface (bvhCollider below); world.funnels / world.envelope are plain data.
 import * as THREE from 'three';
+import { Rng } from './rng.js';
 
 const G = 9.81, RHO_HALF = 0.6, DEG = Math.PI / 180;
 
@@ -29,6 +35,18 @@ export const CRAFTS = {
 const CINE_TAU_SPEED = 0.35, CINE_TAU_YAW = 0.12, CINE_KV = 1.4;
 // Un-stick window (s) and the minimum displacement (m) inside it that counts as "moving".
 const STUCK_WIN = 0.4, STUCK_MOVE = 0.15;
+// Cine wall memory: hold (s) after the last contact, refreshed while the wall is still within WALL_RAY (m) along -n.
+const WALL_HOLD = 0.35, WALL_RAY = 1.6;
+// Cine drop assist. Funnels (world.funnels): steer onto the axis at <= FUN_V m/s (gain FUN_K /s), and over the rim hold
+// the descent at FUN_HOLD m/s until within FUN_IN m of the axis. Drop lock (anywhere else): with the right stick centred
+// (< LOCK_DZ) and the dive held (climb < LOCK_CLIMB), hold the spot where the drop began (gain LOCK_K /s, <= LOCK_V
+// m/s), if it began slower than LOCK_ENGAGE m/s (a brake-and-drop from cruise isn't yanked back).
+const FUN_V = 2.0, FUN_K = 1.8, FUN_HOLD = 1.5, FUN_IN = 1.0, FUN_CLIMB = -0.3, FUN_ABOVE = 8;
+const LOCK_K = 3.0, LOCK_V = 4.0, LOCK_DZ = 0.12, LOCK_CLIMB = -0.5, LOCK_ENGAGE = 3.5;
+// proximity probe radius (m): turbulence near surfaces, and main.js's world.lastDist (audio, OLED bars)
+const PROX_R = 2.0;
+// snapshot format version (bump when fields change; committed input logs record it)
+export const SNAP_VERSION = 1;
 
 // Betaflight "Actual" rates (centre sensitivity, max rate, expo) -> rad/s
 export function actualRate(x, [center, max, expo]) {
@@ -37,20 +55,53 @@ export function actualRate(x, [center, max, expo]) {
   return (x * center + Math.max(0, max - center) * expof) * DEG;
 }
 
-function gauss() { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+// ---- collider interface: the only way flight.js touches geometry (a native port implements these two calls on its
+// own BVH). Results are reused objects: copy what you need before the next call.
+//   raycast(o, d, max) -> {t, n} | null   first hit along the unit vector d within max (both faces); n = face normal,
+//                                          either orientation
+//   closest(p, max)    -> {p, d} | null   nearest surface point strictly within max
+export function bvhCollider(bvh) {
+  const ray = new THREE.Ray(), cp = {}, hit = { t: 0, n: new THREE.Vector3() }, near = { p: new THREE.Vector3(), d: 0 };
+  return {
+    bvh,
+    raycast(o, d, max) {
+      ray.origin.copy(o); ray.direction.copy(d);
+      const h = bvh.raycastFirst(ray, THREE.DoubleSide, 0, max);
+      if (!h || !h.face) return null;
+      hit.t = h.distance; hit.n.copy(h.face.normal); return hit;
+    },
+    closest(p, max) {
+      const r = bvh.closestPointToPoint(p, cp, 0, max);
+      // three-mesh-bvh's maxThreshold only culls BVH nodes: it returns the nearest triangle of any leaf whose box is
+      // within max, even when that triangle is metres away. Without this guard the quad got teleported onto it
+      // ("phantom snaps" of up to 3.6 m, and the no-crossing guard then froze it in place).
+      if (!r || r.distance >= max) return null;
+      near.p.copy(r.point); near.d = r.distance; return near;
+    },
+  };
+}
+// world.collider if the world provides one, else an adapter over world.bvh (cached per BVH)
+const _colliders = new WeakMap();
+export function colliderOf(world) {
+  if (!world) return null;
+  if (world.collider) return world.collider;
+  const bvh = world.bvh; if (!bvh) return null;
+  let c = _colliders.get(bvh);
+  if (!c) { c = bvhCollider(bvh); _colliders.set(bvh, c); }
+  return c;
+}
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
 const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
-const _ray = new THREE.Ray();
-const _cp = {};
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
 const clamp1 = (v) => Math.max(-1, Math.min(1, v));
 const AX = new THREE.Vector3(1, 0, 0), AY = new THREE.Vector3(0, 1, 0), AZ = new THREE.Vector3(0, 0, 1);
 
 export class Drone {
-  constructor(craftKey = 'freestyle5') {
-    this.pos = new THREE.Vector3(); this.prev = new THREE.Vector3();
-    this.vel = new THREE.Vector3(); this.q = new THREE.Quaternion();
+  constructor(craftKey = 'freestyle5', seed = 0x5EED) {
+    this.seed = seed >>> 0; this.rng = new Rng(this.seed);   // turbulence + impact kicks; re-seeded by reset()
+    this.pos = new THREE.Vector3(); this.prev = new THREE.Vector3();   // prev / prevQ = pose one tick ago (render lerp)
+    this.vel = new THREE.Vector3(); this.q = new THREE.Quaternion(); this.prevQ = new THREE.Quaternion();
     this.w = new THREE.Vector3();      // body rates (rad/s)
     this.wDes = new THREE.Vector3();
     this.noise = new THREE.Vector3();  // OU turbulence state
@@ -62,17 +113,56 @@ export class Drone {
     this.wallN = new THREE.Vector3(); this.wallT = 0;                 // Cine wall-slide: last two wall normals + hold
     this.wallN2 = new THREE.Vector3(); this.wallT2 = 0;
     this._sP = new THREE.Vector3(); this._sN = new THREE.Vector3(); this._sT = 0; this._sC = 0; this.unsticks = 0;
+    this.prox = Infinity;                                             // gap (m) to the nearest surface within PROX_R
+    this.dropOn = 0; this.dropP = new THREE.Vector3(); this.funI = -1;   // Cine drop lock (0 idle, 1 held, 2 declined) / funnel
+    this.resets = 0;                                                  // bumped by reset(): lets main.js see a respawn
     this.setCraft(craftKey);
   }
   setCraft(key) { this.key = key; this.c = CRAFTS[key]; this.tMax = this.c.twr * this.c.mass * G; }
 
   reset(pos, yaw) {
     this.pos.copy(pos); this.prev.copy(pos); this.vel.set(0, 0, 0); this.w.set(0, 0, 0); this.noise.set(0, 0, 0);
-    this.q.setFromAxisAngle(UP, yaw); this.heading = yaw;
+    this.q.setFromAxisAngle(UP, yaw); this.prevQ.copy(this.q); this.heading = yaw;
     this.thrust = this.c.mass * G; this.crashed = false; this.crashT = 0; this.lastImpact = 0;
-    this.vzI = 0; this.contactT = 0; this.bump = 0;
+    this.vzI = 0; this.contactT = 0; this.bump = 0; this.wash = 0; this.limitHit = 0; this.contactN.set(0, 0, 0);
     this.vfS = 0; this.yawS = 0; this.camP = 0; this.wallT = 0; this.wallT2 = 0;
     this._sP.copy(pos); this._sN.set(0, 0, 0); this._sT = 0; this._sC = 0;
+    this.prox = Infinity; this.dropOn = 0; this.funI = -1;
+    this.rng.seed(this.seed); this.resets++;
+  }
+
+  // Full simulation state as plain JSON (numbers / arrays): restore(snapshot()) continues bit-identically.
+  // Includes the outputs main.js reads (motors, wash, bump, contactN...) so a restored drone also renders and sounds
+  // the same. prox: null = nothing within PROX_R.
+  snapshot() {
+    const v = (a) => [a.x, a.y, a.z], q = (a) => [a.x, a.y, a.z, a.w];
+    return {
+      ver: SNAP_VERSION, key: this.key, seed: this.seed, rng: this.rng.state,
+      pos: v(this.pos), prev: v(this.prev), vel: v(this.vel), q: q(this.q), prevQ: q(this.prevQ), w: v(this.w), wDes: v(this.wDes),
+      noise: v(this.noise), thrust: this.thrust, motors: this.motors.slice(), heading: this.heading, vzI: this.vzI,
+      crashed: this.crashed ? 1 : 0, crashT: this.crashT, lastImpact: this.lastImpact, bump: this.bump, wash: this.wash,
+      contactT: this.contactT, contactN: v(this.contactN), limitHit: this.limitHit,
+      vfS: this.vfS, yawS: this.yawS, camP: this.camP,
+      wallN: v(this.wallN), wallT: this.wallT, wallN2: v(this.wallN2), wallT2: this.wallT2,
+      sP: v(this._sP), sN: v(this._sN), sT: this._sT, sC: this._sC, unsticks: this.unsticks,
+      prox: Number.isFinite(this.prox) ? this.prox : null, dropOn: this.dropOn, dropP: v(this.dropP), funI: this.funI,
+    };
+  }
+  restore(s) {
+    if (s.key !== this.key) this.setCraft(s.key);
+    const v = (a, b) => a.set(b[0], b[1], b[2]);
+    this.seed = s.seed >>> 0; this.rng.state = s.rng;
+    v(this.pos, s.pos); v(this.prev, s.prev); v(this.vel, s.vel); this.q.fromArray(s.q); this.prevQ.fromArray(s.prevQ);
+    v(this.w, s.w); v(this.wDes, s.wDes); v(this.noise, s.noise); this.thrust = s.thrust; this.motors = s.motors.slice();
+    this.heading = s.heading; this.vzI = s.vzI;
+    this.crashed = !!s.crashed; this.crashT = s.crashT; this.lastImpact = s.lastImpact; this.bump = s.bump; this.wash = s.wash;
+    this.contactT = s.contactT; v(this.contactN, s.contactN); this.limitHit = s.limitHit;
+    this.vfS = s.vfS; this.yawS = s.yawS; this.camP = s.camP;
+    v(this.wallN, s.wallN); this.wallT = s.wallT; v(this.wallN2, s.wallN2); this.wallT2 = s.wallT2;
+    v(this._sP, s.sP); v(this._sN, s.sN); this._sT = s.sT; this._sC = s.sC; this.unsticks = s.unsticks;
+    this.prox = s.prox == null ? Infinity : s.prox; this.dropOn = s.dropOn | 0; v(this.dropP, s.dropP); this.funI = s.funI;
+    this.resets++;                                                    // a discontinuity for main.js (new log, no blur spike)
+    return this;
   }
 
   up(out = new THREE.Vector3()) { return out.copy(UP).applyQuaternion(this.q); }
@@ -109,20 +199,51 @@ export class Drone {
   // Floor-safe dive: never command a descent that can't be stopped before the floor (vz >= -2(h - 0.6), i.e. a
   // 0.5 s exponential approach that needs ~2.4 g at 12 m/s; the quad has 5.5 g). h = clearance straight down, or along
   // the flight path when that hits an up-facing surface first (diving onto a lower roof ahead).
-  _diveGuard(vzCmd, world) {
-    if (vzCmd >= -1 || !world?.bvh) return vzCmd;
-    const bvh = world.bvh;
-    let h = 40;
-    _ray.set(this.pos, DOWN);
-    const hd = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, 40);
-    if (hd) h = hd.distance;
+  // A floor that slopes away under the flight path (the gallery's 22 deg tube) also falls away at
+  // vFloor = -(n.x vx + n.z vz) / n.y, so that much descent is free: without it the guard held the quad 1.2 m over the
+  // gallery floor at 1.2 m/s of descent while the floor dropped at 0.44 vH, and it rode the roof.
+  _diveGuard(vzCmd, col) {
+    if (vzCmd >= -1 || !col) return vzCmd;
+    let h = 40, vFloor = 0;
+    const hd = col.raycast(this.pos, DOWN, 40);
+    if (hd) {
+      h = hd.t;
+      const s = hd.n.y < 0 ? -1 : 1, nx = hd.n.x * s, ny = hd.n.y * s, nz = hd.n.z * s;   // face normal, up side
+      if (ny > 0.5) vFloor = Math.min(0, -(nx * this.vel.x + nz * this.vel.z) / ny);
+    }
     const sp = this.vel.length();
     if (sp > 3 && this.vel.y < -1) {
-      _ray.set(this.pos, _v4.copy(this.vel).divideScalar(sp));
-      const hp = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, 40);
-      if (hp && hp.face && Math.abs(hp.face.normal.y) > 0.5) h = Math.min(h, hp.distance * -_ray.direction.y);
+      const dir = _v4.copy(this.vel).divideScalar(sp);
+      const hp = col.raycast(this.pos, dir, 40);
+      if (hp && Math.abs(hp.n.y) > 0.5) h = Math.min(h, hp.t * -dir.y);
     }
-    return Math.max(vzCmd, -Math.max(1, (h - 0.6) * 2.0));
+    return Math.max(vzCmd, vFloor - Math.max(1, (h - 0.6) * 2.0));
+  }
+
+  // Cine drop assist, funnel half (C1 world.funnels [{c:[x,z], top, bottom, r}]). A quad holding the dive stick within r
+  // of a shaft's axis, between the rim (top - 0.5) and FUN_ABOVE m over it, is captured; while the dive stays held it is
+  // steered onto the axis (<= FUN_V m/s) down to `bottom`. Captured only from above, so diving past the outside of a
+  // chimney or a stair tower's openings never pulls you in, and released if a wall comes between the quad and the axis.
+  // Returns the funnel or null; sets this._fdx/_fdz (to the axis) and this._fdh.
+  _funnel(world, col, cz) {
+    const fs = world?.funnels;
+    if (!fs || !(cz < FUN_CLIMB)) { this.funI = -1; return null; }
+    const p = this.pos;
+    if (this.funI >= 0) {                                          // captured: keep it while inside and above the bottom
+      const f = fs[this.funI];
+      if (!f || p.y <= f.bottom || p.y >= f.top + FUN_ABOVE || Math.hypot(f.c[0] - p.x, f.c[1] - p.z) >= f.r) this.funI = -1;
+    }
+    if (this.funI < 0) {
+      for (let i = 0; i < fs.length; i++) {
+        const f = fs[i];
+        if (p.y > f.top - 0.5 && p.y < f.top + FUN_ABOVE && Math.hypot(f.c[0] - p.x, f.c[1] - p.z) < f.r) { this.funI = i; break; }
+      }
+      if (this.funI < 0) return null;
+    }
+    const f = fs[this.funI], dx = f.c[0] - p.x, dz = f.c[1] - p.z, dh = Math.hypot(dx, dz);
+    if (p.y < f.top && dh > 0.05 && col && col.raycast(p, _v4.set(dx / dh, 0, dz / dh), dh)) { this.funI = -1; return null; }
+    this._fdx = dx; this._fdz = dz; this._fdh = dh;
+    return f;
   }
 
   _altitudeHold(vzCmd, up, dt) {
@@ -134,8 +255,8 @@ export class Drone {
   }
 
   step(dt, inp, mode, world) {
-    const c = this.c, m = c.mass;
-    this.prev.copy(this.pos);
+    const c = this.c, m = c.mass, col = colliderOf(world);
+    this.prev.copy(this.pos); this.prevQ.copy(this.q);
     const up = this.up(_v2);
     let tCmd = 0;
     let wDes;
@@ -143,6 +264,7 @@ export class Drone {
     if (mode !== 'cine' || this.crashed) {
       // keep Cine's smoothed commands in step with the real motion, so switching into Cine doesn't jolt
       this.vfS = -this.vel.x * Math.sin(this.heading) - this.vel.z * Math.cos(this.heading); this.yawS = 0;
+      this.dropOn = 0; this.funI = -1;
     }
     if (this.crashed) {
       this.crashT += dt;
@@ -171,14 +293,37 @@ export class Drone {
       const vfCmd = inp.pitch >= 0 ? inp.pitch * c.cineSpeed : inp.pitch * c.cineSpeed * 0.35;
       this.vfS += (vfCmd - this.vfS) * (1 - Math.exp(-dt / CINE_TAU_SPEED));
       let vdx = fx * this.vfS, vdz = fz * this.vfS;
+      // drop assist: a funnel (shaft axis) if one has captured the quad, else the drop lock
+      const cz = clamp1(inp.climb);
+      const fun = this._funnel(world, col, cz);
+      let holdDive = false;
+      if (fun) {
+        const dh = this._fdh, k = Math.min(FUN_V, FUN_K * dh) / Math.max(dh, 1e-3);
+        vdx += this._fdx * k; vdz += this._fdz * k;
+        holdDive = this.pos.y > fun.top - 0.5 && dh > FUN_IN;       // over the rim but off the axis: settle in first
+        this.dropOn = 0;
+      } else if (cz < LOCK_CLIMB && Math.abs(inp.pitch) < LOCK_DZ && Math.abs(inp.roll) < LOCK_DZ) {
+        // decided when the drop begins: from a hover or a slow drift it holds that spot; a brake-and-drop from cruise
+        // speed is left alone for the whole dive (it would otherwise be pulled back to where it slowed down)
+        if (this.dropOn === 0) { this.dropOn = vH < LOCK_ENGAGE ? 1 : 2; this.dropP.copy(this.pos); }
+        if (this.dropOn === 1) {
+          let lx = (this.dropP.x - this.pos.x) * LOCK_K, lz = (this.dropP.z - this.pos.z) * LOCK_K;
+          const ll = Math.hypot(lx, lz); if (ll > LOCK_V) { lx *= LOCK_V / ll; lz *= LOCK_V / ll; }
+          vdx += lx; vdz += lz;
+        }
+      } else this.dropOn = 0;
       // wall-slide: just after touching a wall, drop the into-wall part of the target so pushing into it slides along
       // it (two walls remembered, so a corner holds a calm hover instead of pressing into one of them)
+      let wallHeld = false;
       for (let k = 0; k < 2; k++) {
         const wn = k ? this.wallN2 : this.wallN;
         if ((k ? this.wallT2 : this.wallT) <= 0) continue;
         const into = vdx * wn.x + vdz * wn.z;
-        if (into < 0) { vdx -= into * wn.x; vdz -= into * wn.z; }
+        if (into < 0) { vdx -= into * wn.x; vdz -= into * wn.z; if (fx * wn.x + fz * wn.z < 0) wallHeld = true; }
       }
+      // anti-windup: while a wall eats the forward command, the smoothed speed may not charge up behind it (pull-back
+      // or a carve then answers at once instead of first bleeding up to 18 m/s of stored command)
+      if (wallHeld && this.vfS > 0) this.vfS = Math.min(this.vfS, vH + 3);
       // velocity error + centripetal feed-forward for the turning target (omega_y x v_des)
       let ax = (vdx - this.vel.x) * kv + yawRate * vdz;
       let az = (vdz - this.vel.z) * kv - yawRate * vdx;
@@ -187,9 +332,9 @@ export class Drone {
       const rollDeg = Math.atan((ax * rx + az * rz) / G) / DEG;
       wDes = this._rateForAttitude(pitchDeg, rollDeg, yawRate, dt, 7);
       // vertical: progressive curve, half stick ~ the old 4.5 m/s-linear feel, full stick cineClimb up / cineDive down
-      const cz = clamp1(inp.climb);
-      const vz = cz >= 0 ? c.cineClimb * cz * (0.6 + 0.4 * cz) : c.cineDive * cz * (0.15 - 0.85 * cz);
-      tCmd = this._altitudeHold(this._diveGuard(vz, world), up, dt);
+      let vz = cz >= 0 ? c.cineClimb * cz * (0.6 + 0.4 * cz) : c.cineDive * cz * (0.15 - 0.85 * cz);
+      if (holdDive) vz = Math.max(vz, -FUN_HOLD);
+      tCmd = this._altitudeHold(this._diveGuard(vz, col), up, dt);
     }
     tCmd = Math.min(Math.max(tCmd, 0), this.tMax);
 
@@ -199,13 +344,14 @@ export class Drone {
     const vAx = this.vel.dot(up);
     const tFrac = this.thrust / this.tMax;
     const wash = Math.min(1, Math.max(0, (-vAx - 2.0) / 6)) * Math.min(1, tFrac * 4);
-    const near = world && world.lastDist !== undefined ? Math.max(0, 1 - world.lastDist / 0.6) : 0;
+    const near = Math.max(0, 1 - this.prox / 0.6);
     const assist = mode === 'acro' ? 1 : 0.45;               // assisted modes are steadier
     const sigma = (2.0 + wash * 55 + near * 6) * assist + this.bump * 30;
     const th = 0.06;
-    this.noise.x += (-this.noise.x / th) * dt + sigma * Math.sqrt(dt) * gauss();
-    this.noise.y += (-this.noise.y / th) * dt + sigma * 0.4 * Math.sqrt(dt) * gauss();
-    this.noise.z += (-this.noise.z / th) * dt + sigma * Math.sqrt(dt) * gauss();
+    const rng = this.rng;
+    this.noise.x += (-this.noise.x / th) * dt + sigma * Math.sqrt(dt) * rng.gauss();
+    this.noise.y += (-this.noise.y / th) * dt + sigma * 0.4 * Math.sqrt(dt) * rng.gauss();
+    this.noise.z += (-this.noise.z / th) * dt + sigma * Math.sqrt(dt) * rng.gauss();
     if (!this.crashed) this.w.addScaledVector(this.noise, dt * 6);
     this.bump = Math.max(0, this.bump - dt * 4);
     this.wash = wash;
@@ -235,8 +381,12 @@ export class Drone {
     this.vel.addScaledVector(F, dt / m);
     this.pos.addScaledVector(this.vel, dt);
 
-    if (world?.bvh) this._collide(world, mode, dt);
+    if (col) this._collide(col, mode, dt);
     if (world?.envelope) this._envelope(world.envelope, dt);
+    // proximity, inside the tick (it feeds the next tick's turbulence; main.js mirrors it into world.lastDist)
+    let prox = Infinity;
+    if (col && !this.crashed) { const r = col.closest(this.pos, PROX_R); if (r) prox = r.d - c.radius; }
+    this.prox = prox;
   }
 
   // Keep the quad inside the part of the world that was actually built in 3D.
@@ -249,8 +399,8 @@ export class Drone {
     this.limitHit = hit ? 0.6 : Math.max(0, this.limitHit - dt);
   }
 
-  _collide(world, mode, dt) {
-    const r = this.c.radius, bvh = world.bvh, e = 0.3, mu = 0.25;
+  _collide(col, mode, dt) {
+    const r = this.c.radius, e = 0.3, mu = 0.25;
     let impact = 0, touched = false;
     const n0 = this.contactN.set(0, 0, 0);
     const resolve = (n) => {
@@ -269,51 +419,56 @@ export class Drone {
     const d = _v1.copy(this.pos).sub(this.prev); const len = d.length();
     if (len > 1e-5) {
       d.divideScalar(len);
-      _ray.set(this.prev, d);
-      const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, len + r);
-      if (hit && hit.face) {
-        const n = _v2.copy(hit.face.normal); if (n.dot(d) > 0) n.negate();
-        this.pos.copy(this.prev).addScaledVector(d, Math.max(0, hit.distance - r - 0.002));
+      const hit = col.raycast(this.prev, d, len + r);
+      if (hit) {
+        const n = _v2.copy(hit.n); if (n.dot(d) > 0) n.negate();
+        this.pos.copy(this.prev).addScaledVector(d, Math.max(0, hit.t - r - 0.002));
         resolve(n);
       }
     }
-    // penetration push-out
+    // penetration push-out (the collider's closest() only reports surfaces strictly within r)
     for (let it = 0; it < 3; it++) {
-      const res = bvh.closestPointToPoint(this.pos, _cp, 0, r);
-      // three-mesh-bvh's maxThreshold only culls BVH nodes: it returns the nearest triangle of any leaf whose box is
-      // within r, even when that triangle is metres away. Without this check the quad got teleported onto it
-      // ("phantom snaps" of up to 3.6 m, and the no-crossing guard then froze it in place).
-      if (!res || res.distance >= r) break;
-      const n = _v2.copy(this.pos).sub(res.point); const dist = n.length();
+      const res = col.closest(this.pos, r);
+      if (!res) break;
+      const n = _v2.copy(this.pos).sub(res.p); const dist = n.length();
       if (dist < 1e-6) break;
       n.divideScalar(dist);
-      this.pos.copy(res.point).addScaledVector(n, r + 0.003);
+      this.pos.copy(res.p).addScaledVector(n, r + 0.003);
       resolve(n);
     }
     // final guard: whatever the push-outs did, the step may never cross a surface
     {
       const seg = _v1.copy(this.pos).sub(this.prev), L = seg.length();
       if (L > 1e-5) {
-        seg.divideScalar(L); _ray.set(this.prev, seg);
-        const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, L);
-        if (hit && hit.face) {
-          const n = _v2.copy(hit.face.normal); if (n.dot(seg) > 0) n.negate();
+        seg.divideScalar(L);
+        const hit = col.raycast(this.prev, seg, L);
+        if (hit) {
+          const n = _v2.copy(hit.n); if (n.dot(seg) > 0) n.negate();
           this.pos.copy(this.prev);
           const vn = this.vel.dot(n); if (vn < 0) this.vel.addScaledVector(n, -1.3 * vn);
           touched = true; n0.add(n);
         }
       }
     }
-    // Cine wall-slide memory: horizontal normals of the last two wall-ish contacts (not floors), held for 0.35 s
+    // Cine wall-slide memory: horizontal normals of the last two wall-ish contacts (not floors), held for WALL_HOLD
     this.wallT = Math.max(0, this.wallT - dt); this.wallT2 = Math.max(0, this.wallT2 - dt);
     if (touched) {
       const nl = n0.length(), hl = Math.hypot(n0.x, n0.z);
       if (nl > 1e-6 && hl > 0.5 * nl) {
         const nx = n0.x / hl, nz = n0.z / hl;
         if (this.wallT > 0 && nx * this.wallN.x + nz * this.wallN.z < 0.85) { this.wallN2.copy(this.wallN); this.wallT2 = this.wallT; }
-        this.wallN.set(nx, 0, nz); this.wallT = 0.35;
+        this.wallN.set(nx, 0, nz); this.wallT = WALL_HOLD;
       }
       this._sN.add(n0); this._sC += dt;
+    }
+    // ...and kept alive while that wall is still there, within WALL_RAY along -n (a ray, so a window opening or the end
+    // of the wall releases it). Before, it lapsed WALL_HOLD after the rebound, the target swung back into the wall and
+    // the quad pinballed (a 3-8 m/s tock + camera shake every ~1 s while the stick was held).
+    if (mode === 'cine') for (let k = 0; k < 2; k++) {
+      const wn = k ? this.wallN2 : this.wallN;
+      if ((k ? this.wallT2 : this.wallT) <= 0) continue;
+      const h = col.raycast(this.pos, _v3.copy(wn).negate(), WALL_RAY);
+      if (h && Math.abs(h.n.x * wn.x + h.n.z * wn.z) > 0.85) { if (k) this.wallT2 = WALL_HOLD; else this.wallT = WALL_HOLD; }
     }
     // un-stick, judged on displacement (velocity lies: the no-crossing guard can cancel every step while |v| stays
     // high). Every 0.4 s: in contact for over half the window and moved < 0.15 m -> wedged, pop out along the mean
@@ -334,7 +489,8 @@ export class Drone {
     if (impact > 0.4) {
       this.lastImpact = impact;
       this.bump = Math.min(1, impact / 4);
-      this.w.x += gauss() * impact * 2.0; this.w.z += gauss() * impact * 2.0; this.w.y += gauss() * impact * 0.8;
+      const rng = this.rng;
+      this.w.x += rng.gauss() * impact * 2.0; this.w.z += rng.gauss() * impact * 2.0; this.w.y += rng.gauss() * impact * 0.8;
       if (!this.crashed && impact > crashAt) { this.crashed = true; this.crashT = 0; this.onCrash?.(impact); }
     }
   }
