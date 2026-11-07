@@ -1339,6 +1339,254 @@ float aDirShadow( float live, vec4 sc ) {
   if (A_LIGHTS_BEGIN) sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_begin>', A_LIGHTS_BEGIN);
 }
 
+// ---------------------------------------------------------------- [A1] lightmap UV2: deterministic charts + skyline packer
+// Every lightmapped mesh (the merged structures, the yard terrain, the path ribbons) gets a `uv2` attribute into one
+// atlas. Charts: triangles that share a welded edge, a continuous `uv` (the metric planar / cylinder unwrap every Site
+// part already carries) and normals within 60 deg are one chart, unwrapped by that uv. A chart whose uv is degenerate,
+// flipped or stretched (> 2.2x) is re-charted into near-planar patches (25 deg from a seed) projected on their plane.
+// A chart maps its texel centres onto its edges (neighbouring charts sample the same seam points) inside a 1-texel
+// gutter. Terrain = one top-down chart, packed first; then the rest, tallest first, bottom-left on a skyline. The
+// structure texel starts at LMUV.texel and coarsens 8 % per try until the atlas fits W x maxH. Pure function of the
+// geometry, append-only: vertices shared by two charts are duplicated at the END of a geometry (the bake's
+// collider->render vertex map stays valid). tools/bakelm.mjs gets the chart detail via { detail: true }.
+export const LMUV = { ver: 1, W: 2048, maxH: 2048, texel: 0.2, terrTexel: 0.25 };
+function lmWeld(p, NV) {
+  const wid = new Int32Array(NV), head = new Map(), nxt = new Int32Array(NV), wq = []; let nw = 0;
+  for (let v = 0; v < NV; v++) {
+    const x = Math.round(p[v * 3] * 1000), y = Math.round(p[v * 3 + 1] * 1000), z = Math.round(p[v * 3 + 2] * 1000);
+    const h = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) | 0;
+    let w = head.has(h) ? head.get(h) : -1;
+    while (w >= 0 && !(wq[w * 3] === x && wq[w * 3 + 1] === y && wq[w * 3 + 2] === z)) w = nxt[w];
+    if (w < 0) { w = nw++; wq.push(x, y, z); nxt[w] = head.has(h) ? head.get(h) : -1; head.set(h, w); }
+    wid[v] = w;
+  }
+  return { wid, nw };
+}
+function lmCharts(g) {
+  const idx = g.index.array, p = g.attributes.position.array, uv = g.attributes.uv.array, NT = idx.length / 3, NV = p.length / 3;
+  const { wid, nw } = lmWeld(p, NV);
+  const tn = new Float64Array(NT * 3), ta = new Float64Array(NT), tuv = new Float64Array(NT);
+  for (let t = 0; t < NT; t++) {
+    const a = idx[t * 3], b = idx[t * 3 + 1], c = idx[t * 3 + 2];
+    const ux = p[b * 3] - p[a * 3], uy = p[b * 3 + 1] - p[a * 3 + 1], uz = p[b * 3 + 2] - p[a * 3 + 2];
+    const vx = p[c * 3] - p[a * 3], vy = p[c * 3 + 1] - p[a * 3 + 1], vz = p[c * 3 + 2] - p[a * 3 + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = Math.hypot(nx, ny, nz);
+    ta[t] = l / 2; if (l > 0) { tn[t * 3] = nx / l; tn[t * 3 + 1] = ny / l; tn[t * 3 + 2] = nz / l; }
+    tuv[t] = ((uv[b * 2] - uv[a * 2]) * (uv[c * 2 + 1] - uv[a * 2 + 1]) - (uv[c * 2] - uv[a * 2]) * (uv[b * 2 + 1] - uv[a * 2 + 1])) / 2;
+  }
+  const dotN = (s, t) => tn[s * 3] * tn[t * 3] + tn[s * 3 + 1] * tn[t * 3 + 1] + tn[s * 3 + 2] * tn[t * 3 + 2];
+  // welded edges -> the triangles on them
+  const edges = new Map(), eKey = (a, b) => (a < b ? a * nw + b : b * nw + a);
+  for (let t = 0; t < NT; t++) for (let e = 0; e < 3; e++) {
+    const k = eKey(wid[idx[t * 3 + e]], wid[idx[t * 3 + (e + 1) % 3]]), l = edges.get(k);
+    if (l === undefined) edges.set(k, t * 3 + e); else if (typeof l === 'number') edges.set(k, [l, t * 3 + e]); else l.push(t * 3 + e);
+  }
+  const par = new Int32Array(NT); for (let t = 0; t < NT; t++) par[t] = t;
+  const find = (x) => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+  const uvEq = (i, j) => Math.abs(uv[i * 2] - uv[j * 2]) < 1e-3 && Math.abs(uv[i * 2 + 1] - uv[j * 2 + 1]) < 1e-3;
+  const e1 = (te) => idx[te - (te % 3) + ((te % 3) + 1) % 3];   // second endpoint of edge te (= tri * 3 + e)
+  const sameUV = (te, se) => {   // the uv agrees at both welded endpoints of the shared edge
+    const a0 = idx[te], a1 = e1(te), b0 = idx[se], b1 = e1(se);
+    return wid[a0] === wid[b0] ? uvEq(a0, b0) && uvEq(a1, b1) : uvEq(a0, b1) && uvEq(a1, b0);
+  };
+  for (const l of edges.values()) {
+    if (typeof l === 'number') continue;
+    for (let i = 1; i < l.length; i++) for (let j = 0; j < i; j++) {
+      const s = (l[i] / 3) | 0, t = (l[j] / 3) | 0;
+      if (ta[s] > 0 && ta[t] > 0 && dotN(s, t) > 0.5 && sameUV(l[i], l[j])) { const rs = find(s), rt = find(t); if (rs !== rt) par[Math.max(rs, rt)] = Math.min(rs, rt); }
+    }
+  }
+  // validate each uv chart: one orientation, linear stretch within 1/2.2 .. 2.2, no overlap by area
+  const groups = new Map(); for (let t = 0; t < NT; t++) { const r = find(t); let a = groups.get(r); if (!a) groups.set(r, (a = [])); a.push(t); }
+  const charts = [], triChart = new Int32Array(NT).fill(-1), bad = [];
+  for (const tris of groups.values()) {
+    let pos = 0, neg = 0, ok = true, sA = 0, u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
+    for (const t of tris) {
+      if (!(ta[t] > 1e-7)) continue;
+      const r = Math.abs(tuv[t]) / ta[t]; if (r < 0.2 || r > 4.84) { ok = false; break; }
+      if (tuv[t] > 0) pos += ta[t]; else neg += ta[t];
+      sA += Math.abs(tuv[t]);
+      for (let k = 0; k < 3; k++) { const v = idx[t * 3 + k], u = uv[v * 2], w = uv[v * 2 + 1]; if (u < u0) u0 = u; if (u > u1) u1 = u; if (w < v0) v0 = w; if (w > v1) v1 = w; }
+    }
+    if (ok && pos > 0 && neg > 0) ok = false;
+    if (ok && sA > (u1 - u0) * (v1 - v0) * 1.001 + 1e-6) ok = false;
+    if (!ok) { bad.push(...tris); continue; }
+    const c = charts.length; charts.push({ tris, kind: 0 }); for (const t of tris) triChart[t] = c;
+  }
+  // re-chart the rest: near-planar patches grown from the lowest triangle index, projected on the seed plane
+  if (bad.length) {
+    bad.sort((a, b) => a - b);
+    const isBad = new Uint8Array(NT); for (const t of bad) isBad[t] = 1;
+    for (const seed of bad) {
+      if (triChart[seed] >= 0) continue;
+      const c = charts.length, tris = [seed], nx = tn[seed * 3], ny = tn[seed * 3 + 1], nz = tn[seed * 3 + 2]; triChart[seed] = c;
+      for (let q = 0; q < tris.length; q++) {
+        const t = tris[q];
+        for (let e = 0; e < 3; e++) {
+          const l = edges.get(eKey(wid[idx[t * 3 + e]], wid[idx[t * 3 + (e + 1) % 3]])); if (typeof l !== 'object') continue;
+          for (const se of l) { const s = (se / 3) | 0; if (isBad[s] && triChart[s] < 0 && ta[s] > 0 && tn[s * 3] * nx + tn[s * 3 + 1] * ny + tn[s * 3 + 2] * nz > 0.906) { triChart[s] = c; tris.push(s); } }
+        }
+      }
+      // basis: horizontal tangent for walls, x/z for floors (tight boxes on the axis-aligned world)
+      let ax, ay, az; if (Math.abs(ny) > 0.9 || !(ta[seed] > 0)) { ax = 1; ay = 0; az = 0; } else { const l = Math.hypot(nz, nx); ax = nz / l; ay = 0; az = -nx / l; }
+      if (Math.abs(ny) > 0.9 || !(ta[seed] > 0)) { const d = ax * nx; ax -= d * nx; ay -= d * ny; az -= d * nz; const l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l; }
+      const bx = ny * az - nz * ay, by = nz * ax - nx * az, bz = nx * ay - ny * ax;
+      tris.sort((a, b) => a - b);
+      charts.push({ tris, kind: 1, basis: [ax, ay, az, bx, by, bz] });
+    }
+  }
+  return { charts, triChart, NT, NV };
+}
+// skyline bottom-left packer (deterministic): rects [{w, h}] -> sets r.x, r.y; returns the used height or -1
+function lmPack(rects, W, maxH) {
+  let sky = [[0, 0, W]];   // [x, y, width] segments, left to right
+  let top = 0;
+  for (const r of rects) {
+    let best = -1, bx = 0, by = Infinity;
+    for (let i = 0; i < sky.length; i++) {
+      const x = sky[i][0]; if (x + r.w > W) break;
+      let y = 0, wl = r.w, j = i;
+      while (wl > 0) { y = Math.max(y, sky[j][1]); wl -= sky[j][2]; j++; if (wl > 0 && j >= sky.length) { y = Infinity; break; } }
+      if (y < by || (y === by && x < bx)) { by = y; bx = x; best = i; }
+    }
+    if (best < 0 || by + r.h > maxH) return -1;
+    r.x = bx; r.y = by; top = Math.max(top, by + r.h);
+    // replace the covered span [bx, bx + w) with one segment at by + h (segments stay sorted and contiguous)
+    const ns = [], x1 = bx + r.w, nh = by + r.h; let put = false;
+    for (const s of sky) {
+      const s0 = s[0], s1 = s[0] + s[2];
+      if (s1 <= bx) { ns.push(s); continue; }
+      if (s0 >= x1) { if (!put) { ns.push([bx, nh, r.w]); put = true; } ns.push(s); continue; }
+      if (s0 < bx) ns.push([s0, s[1], bx - s0]);
+      if (!put) { ns.push([bx, nh, r.w]); put = true; }
+      if (s1 > x1) ns.push([x1, s[1], s1 - x1]);
+    }
+    if (!put) ns.push([bx, nh, r.w]);
+    sky = [];   // merge equal-height neighbours
+    for (const s of ns) { const l = sky[sky.length - 1]; if (l && l[1] === s[1] && l[0] + l[2] === s[0]) l[2] += s[2]; else sky.push(s.slice()); }
+  }
+  return top;
+}
+export function lightmapUV2(merged, terr, pathG, opt = {}) {
+  const W = LMUV.W, entries = Object.entries(merged), out = { ver: LMUV.ver, W, H: 0, texel: 0, terrTexel: LMUV.terrTexel, geos: [] };
+  // charts per merged geometry; per (vertex, chart) one uv2 vertex (duplicates appended at the end)
+  const all = [];
+  for (const [key, g] of entries) {
+    const C = lmCharts(g), idx = g.index.array, NV0 = g.attributes.position.count;
+    const vChart = new Int32Array(NV0).fill(-1), dup = new Map(), extra = [];
+    for (let t = 0; t < C.NT; t++) for (let k = 0; k < 3; k++) {
+      const v = idx[t * 3 + k], c = C.triChart[t];
+      if (vChart[v] < 0 || vChart[v] === c) { vChart[v] = c; continue; }
+      const dk = v * 65536 + c; let nv = dup.get(dk);   // (c < 65536 charts per geometry)
+      if (nv === undefined) { nv = NV0 + extra.length; extra.push(v); dup.set(dk, nv); }
+      idx[t * 3 + k] = nv;
+    }
+    if (extra.length) {   // append the duplicated vertices (every attribute copied)
+      for (const [name, a] of Object.entries(g.attributes)) {
+        const n = a.itemSize, arr = new a.array.constructor((NV0 + extra.length) * n); arr.set(a.array.subarray(0, NV0 * n));
+        extra.forEach((v, i) => { for (let c = 0; c < n; c++) arr[(NV0 + i) * n + c] = a.array[v * n + c]; });
+        g.setAttribute(name, new THREE.BufferAttribute(arr, n, a.normalized));
+      }
+      g.index.needsUpdate = true;
+    }
+    const NV = g.attributes.position.count, vc = new Int32Array(NV).fill(-1);
+    for (let t = 0; t < C.NT; t++) for (let k = 0; k < 3; k++) vc[idx[t * 3 + k]] = C.triChart[t];
+    // chart parameter (metres) per vertex: its uv, or the seed-plane projection
+    const p = g.attributes.position.array, uv = g.attributes.uv.array, par = new Float64Array(NV * 2);
+    for (let v = 0; v < NV; v++) {
+      const ch = C.charts[vc[v]]; if (!ch) continue;
+      if (ch.kind === 0) { par[v * 2] = uv[v * 2]; par[v * 2 + 1] = uv[v * 2 + 1]; }
+      else { const b = ch.basis; par[v * 2] = p[v * 3] * b[0] + p[v * 3 + 1] * b[1] + p[v * 3 + 2] * b[2]; par[v * 2 + 1] = p[v * 3] * b[3] + p[v * 3 + 1] * b[4] + p[v * 3 + 2] * b[5]; }
+    }
+    for (const ch of C.charts) {
+      let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
+      for (const t of ch.tris) for (let k = 0; k < 3; k++) { const v = idx[t * 3 + k], a = par[v * 2], b = par[v * 2 + 1]; if (a < u0) u0 = a; if (a > u1) u1 = a; if (b < v0) v0 = b; if (b > v1) v1 = b; }
+      ch.u0 = u0; ch.v0 = v0; ch.du = Math.round((u1 - u0) * 1e4) / 1e4; ch.dv = Math.round((v1 - v0) * 1e4) / 1e4;
+      all.push(ch);
+    }
+    out.geos.push({ key, g, C, vc, par });
+  }
+  // terrain: one top-down chart over its x/z extent
+  const tp = terr.attributes.position.array; let tx0 = Infinity, tz0 = Infinity, tx1 = -Infinity, tz1 = -Infinity;
+  for (let i = 0; i < tp.length; i += 3) { tx0 = Math.min(tx0, tp[i]); tx1 = Math.max(tx1, tp[i]); tz0 = Math.min(tz0, tp[i + 2]); tz1 = Math.max(tz1, tp[i + 2]); }
+  const tn = Math.round(Math.max(tx1 - tx0, tz1 - tz0) / LMUV.terrTexel) + 1, tRect = { w: tn + 2, h: tn + 2, terr: true };
+  // texel size: coarsen until it packs
+  let texel = LMUV.texel, H = -1, rects;
+  for (let tries = 0; ; tries++) {
+    const s = 1 / texel;
+    rects = all.map((ch, i) => {
+      const nx = Math.round(ch.du * s) + 1, ny = Math.round(ch.dv * s) + 1, rot = ny > nx;
+      return { ch, i, nx, ny, rot, w: (rot ? ny : nx) + 2, h: (rot ? nx : ny) + 2 };
+    });
+    rects.sort((a, b) => b.h - a.h || b.w - a.w || a.i - b.i);
+    H = lmPack([tRect, ...rects], W, LMUV.maxH);
+    if (H >= 0) break;
+    if (tries > 24) throw new Error('[A1] lightmap atlas overflow');
+    texel = Math.round(texel * 1.08 * 1e5) / 1e5;
+  }
+  H = Math.ceil(H / 8) * 8; out.H = H; out.texel = texel;
+  out.terr = { x0: tx0, z0: tz0, n: tn, ox: tRect.x, oy: tRect.y, s: (tn - 1) / Math.max(tx1 - tx0, tz1 - tz0) };
+  for (const r of rects) { const ch = r.ch; ch.ox = r.x; ch.oy = r.y; ch.rot = r.rot; ch.nx = r.nx; ch.ny = r.ny; ch.sx = r.nx > 1 ? (r.nx - 1) / ch.du : 0; ch.sy = r.ny > 1 ? (r.ny - 1) / ch.dv : 0; }
+  // write uv2 (texel centres: chart edges land on the first/last texel centre)
+  for (const G of out.geos) {
+    const { g, C, vc, par } = G, NV = g.attributes.position.count, a = new Float32Array(NV * 2);
+    for (let v = 0; v < NV; v++) {
+      const ch = C.charts[vc[v]]; if (!ch) continue;
+      const cu = 1.5 + (par[v * 2] - ch.u0) * ch.sx, cv = 1.5 + (par[v * 2 + 1] - ch.v0) * ch.sy;
+      a[v * 2] = (ch.ox + (ch.rot ? cv : cu)) / W; a[v * 2 + 1] = (ch.oy + (ch.rot ? cu : cv)) / H;
+    }
+    g.setAttribute('uv2', new THREE.BufferAttribute(a, 2));
+  }
+  const T = out.terr, terrUV2 = (geo) => {
+    const q = geo.attributes.position.array, n = q.length / 3, a = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      const cu = Math.min(T.n + 0.5, Math.max(1.5, 1.5 + (q[i * 3] - T.x0) * T.s)), cv = Math.min(T.n + 0.5, Math.max(1.5, 1.5 + (q[i * 3 + 2] - T.z0) * T.s));
+      a[i * 2] = (T.ox + cu) / W; a[i * 2 + 1] = (T.oy + cv) / H;
+    }
+    geo.setAttribute('uv2', new THREE.BufferAttribute(a, 2));
+  };
+  terrUV2(terr); if (pathG) terrUV2(pathG);
+  out.charts = all.length;
+  if (!opt.detail) delete out.geos;
+  return out;
+}
+// geometry hash of what the lightmaps depend on: per lightmapped mesh (merged materials in order, then the terrain)
+// its name (= material assignment), vertex count, position, normal, uv2 and index, plus the atlas layout. Cosmetic
+// attributes (uv, aY) are left out, so surface retunes don't stale the bake. Algorithm "mm3x2/1" = tools/geohash.mjs
+// (stream G), inlined so the runtime doesn't load anything from tools/: same words, same value (bakelm.mjs checks).
+// G's export-world.mjs records it as world.json hash.worldBando; lm.json stores it as `hash`. ~5 ms.
+const _C1 = 0xcc9e2d51, _C2 = 0x1b873593, _rotl = (x, r) => (x << r) | (x >>> (32 - r));
+const _fmix = (h) => { h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16; return h >>> 0; };
+class GeoHash {
+  constructor() { this.a = 0x9747b28c | 0; this.b = 0x2f0f5d1b | 0; this.n = 0; }
+  word(w) { this._w(w); return this; }
+  str(s) { s = String(s); this.word(s.length); for (let i = 0; i < s.length; i++) this.word(s.charCodeAt(i)); return this; }
+  array(arr) {   // typed arrays only: count, then Float32 bit patterns / integer values
+    const n = arr.length; this._w(n);
+    const w = arr instanceof Float32Array ? new Uint32Array(arr.buffer, arr.byteOffset, n) : arr;
+    for (let i = 0; i < n; i++) this._w(w[i]);
+    return this;
+  }
+  _w(x) {
+    let k = Math.imul(x | 0, _C1); k = _rotl(k, 15); k = Math.imul(k, _C2);
+    let a = this.a ^ k; a = _rotl(a, 13); this.a = (Math.imul(a, 5) + 0xe6546b64) | 0;
+    let b = this.b ^ k; b = _rotl(b, 13); this.b = (Math.imul(b, 5) + 0xe6546b64) | 0;
+    this.n++;
+  }
+  hex() { const a = _fmix((this.a ^ this.n) >>> 0), b = _fmix((this.b ^ this.n) >>> 0); return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0'); }
+}
+export function geometryHash(geo) {
+  const lay = geo.terr.userData.lm, h = new GeoHash().str('lightmap').str(`${lay.ver}:${lay.W}x${lay.H}:${lay.texel}:${lay.terrTexel}`);
+  const list = [...Object.entries(geo.merged), ['terr', geo.terr]];
+  h.word(list.length);
+  for (const [name, g] of list) {
+    h.str(name).word(g.attributes.position.count);
+    for (const k of ['position', 'normal', 'uv2']) h.str(k).word(g.attributes[k].itemSize).array(g.attributes[k].array);
+    h.str('index').array(g.index.array);
+  }
+  return h.hex();
+}
+
 // ---------------------------------------------------------------- [A] static far shadow map (rendered once at load)
 // Covers every caster in light space at ~13 cm texels; the live map (+-48 m around the camera) fades into it, so the
 // hall and silos cast shadows from the spawn and from altitude. Cost: one depth pass at load, 0 per frame, 16 MB.
@@ -1558,6 +1806,7 @@ export function buildGeometry(R = rng(7), seed = 7) {
   const bvh = new MeshBVH(colGeo, { maxLeafTris: 5 });
   // proximity / skim scoring: built structures and trunks only, so skimming the grass scores nothing
   const skimBvh = new MeshBVH(solidGeo, { maxLeafTris: 5 });
+  terr.userData.lm = lightmapUV2(merged, terr, pathG);   // [A1] lightmap uv2 on merged/terr/pathG (append-only; layout on terr.userData.lm)
 
   return { site, terr, far, pathG, treeSpots, treeline, merged, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart };
 }
