@@ -1179,7 +1179,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   // A load-time mask replaces the per-vertex footprint/path loops. Altitude: hashes come from the integer base-cell
   // index, so level-2 tufts are exactly a subset of level-1 tufts; the others shrink away before the switch, width and
   // radius change continuously, and the field fades out above ~30 m AGL (the ground shader carries it from there).
-  const gN = { low: 120, auto: 170, high: 220 }[quality] || 170, gCell = 0.45, baseR = gN * gCell * 0.5;
+  const gN = { low: 150, auto: 210, high: 260 }[quality] || 210, gCell = 0.34, baseR = gN * gCell * 0.5;   // narrow tufts, denser cells
   const GRECTS = [[205, 765, 345, 898], [335, 765, 478, 898], [598, 772, 722, 872], [712, 772, 842, 872], [28, 888, 206, 998], [238, 905, 378, 999], [365, 905, 508, 999], [588, 882, 705, 1020], [695, 882, 812, 1020]];
   const gtx = texOf.grass || {}, atlasOK = !!(gtx.diff && gtx.alpha);
   const grassU = { uOrigin: { value: new THREE.Vector2() }, uCam: { value: new THREE.Vector3() }, uCell: { value: gCell }, uCell0: { value: gCell }, uR: { value: baseR },
