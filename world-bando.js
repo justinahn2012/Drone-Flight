@@ -18,16 +18,28 @@ export const SKIES = {
   sunny: { id: 'kloofendal_48d_partly_cloudy_puresky', label: 'Sunny', sunRatio: 7.5, sunDir: [0.5544, 0.7417, 0.3775] },
   overcast: { id: 'overcast_soil_puresky', label: 'Overcast', sunRatio: 0, sunDir: [0.3813, 0.921, 0.0794] },
 };
+// [B] surfaces. CC0 Poly Haven sets at 1k; `maps` = which maps are worth downloading.
+// color = linear multiplier on the diffuse map (measured texture means, see report); w = weathering
+// [streaks, base damp, up-facing grime, moss]; roughMin = roughness floor (kills the glossy blue sky rim).
+// albedo = linear mean RGB of the final shaded material (texture x color x mean weathering): the light bake reads it.
 const MATS = {
-  silo: { id: 'concrete_layers_02', tile: 3.0 },
-  wall: { id: 'dirty_concrete', tile: 3.5 },
-  slab: { id: 'concrete_floor_worn_001', tile: 4.0 },
-  brick: { id: 'factory_brick', tile: 2.2 },
-  rust: { id: 'rusty_metal_02', tile: 2.0, metal: true },
-  ground: { id: 'forrest_ground_01', tile: 5.0, ground: true },
-  bark: { id: 'bark_brown_02', tile: 1.5, foliage: true },
-  path: { id: 'grass_path_2', tile: 3.5, ground: true },
+  silo: { id: 'concrete_layers_02', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.6, 1.54, 1.51], rough: 0.95, roughMin: 0.86, w: [0.5, 0.34, 0.5, 0.35], albedo: [0.315, 0.287, 0.254] },
+  wall: { id: 'concrete_wall_006', tile: 3.0, maps: ['diff', 'nor_gl'], color: [3.06, 3.64, 4.44], rough: 0.95, roughMin: 0.86, w: [0.45, 0.36, 0.55, 0.3], albedo: [0.308, 0.281, 0.249] },
+  slab: { id: 'concrete_floor_02', tile: 4.0, maps: ['diff', 'nor_gl'], color: [1.75, 1.94, 2.72], rough: 0.95, roughMin: 0.88, w: [0.35, 0.3, 0.6, 0.45], albedo: [0.295, 0.272, 0.243] },
+  brick: { id: 'factory_brick', tile: 2.2, maps: ['diff', 'nor_gl'], color: [1.23, 1.12, 1.88], rough: 0.9, roughMin: 0.8, w: [0.3, 0.3, 0.4, 0.2], albedo: [0.297, 0.171, 0.180] },
+  rust: { id: 'rust_coarse_01', tile: 2.0, maps: ['diff'], color: [2.05, 3.2, 6.53], rough: 0.82, roughMin: 0.7, w: [0.25, 0.2, 0.35, 0.1], albedo: [0.245, 0.128, 0.089] },
+  ground: { id: 'grass_ground', tile: 4.0, maps: ['diff'], color: [1.25, 1.35, 1.6], rough: 1, kind: 'ground', albedo: [0.190, 0.158, 0.083] },
+  bark: { id: 'bark_brown_02', tile: 1.5, maps: ['diff'], color: [1.1, 1.1, 1.1], rough: 0.95, kind: 'bark', albedo: [0.136, 0.111, 0.066] },
+  path: { id: 'grass_path_2', tile: 3.5, maps: ['diff'], color: [0.74, 0.8, 0.95], rough: 1, kind: 'track', albedo: [0.206, 0.182, 0.126] },
+  // not merged-geometry materials: the paved apron is sampled inside the ground shader; grass and leaves are atlases
+  apron: { id: 'asphalt_02', tile: 5.0, maps: ['diff'], color: [1.75, 1.72, 1.72], kind: 'aux', albedo: [0.176, 0.170, 0.152], radius: 9 },   // radius: mean paved reach around footprints (5-12 m)
+  grass: { model: 'grass_medium_01', tile: 1, maps: ['diff', 'alpha'], color: [1.7, 1.6, 1.9], kind: 'aux', albedo: [0.180, 0.160, 0.066] },
+  leaf: { model: 'tree_small_02', tile: 1, maps: ['leaves_diff', 'leaves_alpha'], color: [1.4, 1.3, 1.5], kind: 'aux', albedo: [0.099, 0.124, 0.035] },
 };
+// [B] treeline crowns get low-poly collision proxies (15.6k tris, appended after the terrain in the collider).
+// They cost ~7% of A's light-bake time (terrain-edge rays hit them); false = fly-through treeline, cheaper bake.
+const RING_COLLIDE = true;
+const texURL = (m, map) => m.model ? `${PH}/Models/jpg/1k/${m.model}/${m.model}_${map}_1k.jpg` : `${PH}/Textures/jpg/1k/${m.id}/${m.id}_${map}_1k.jpg`;
 
 function rng(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 const yieldUI = () => new Promise((r) => setTimeout(r, 0));
@@ -49,8 +61,16 @@ function cylGeo(rTop, rBot, h, seg, open) {
   const g = new THREE.CylinderGeometry(rTop, rBot, h, seg, Math.max(1, Math.round(h / 2.5)), open);
   const uv = g.attributes.uv, p = g.attributes.position, r = (rTop + rBot) / 2;
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2 * Math.PI * r, p.getY(i));
+  g.userData.cylR = r;            // Site.add snaps the wrap to whole texture tiles and offsets each cylinder
   return g;
 }
+// [B] element extent for weathering: aY = (bottom, top) world height of the element each vertex belongs to
+function setAY(g, y0, y1) {
+  const n = g.attributes.position.count, a = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) { a[i * 2] = y0; a[i * 2 + 1] = y1; }
+  g.setAttribute('aY', new THREE.BufferAttribute(a, 2));
+}
+const hash2 = (x, z) => { const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453; return s - Math.floor(s); };
 function flip(g) {
   const idx = g.index.array;
   for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; }
@@ -59,17 +79,28 @@ function flip(g) {
 }
 
 class Site {
-  constructor() { this.parts = {}; this.decalSpots = []; this.footprints = []; this.trunks = []; }
+  constructor() { this.parts = {}; this.decalSpots = []; this.footprints = []; this.trunks = []; this.colliders = []; }
   add(mat, g, collide = true) {
     if (!g.index) g = indexify(g);
+    // [B] cylinders: wrap the circumference in whole texture tiles (no seam) and give each one its own offset
+    const tile = MATS[mat]?.tile;
+    if (g.userData.cylR && tile) {
+      const circ = 2 * Math.PI * g.userData.cylR, k = Math.max(1, Math.round(circ / tile)) * tile / circ;
+      g.computeBoundingBox(); const bb = g.boundingBox;
+      const ou = hash2(bb.min.x + bb.max.x, bb.min.z + bb.max.z) * 7 * tile, ov = hash2(bb.min.z, bb.max.x) * 5 * tile;
+      const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * k + ou, uv.getY(i) + ov);
+      delete g.userData.cylR;
+    }
+    if (!g.attributes.aY) { g.computeBoundingBox(); setAY(g, g.boundingBox.min.y, g.boundingBox.max.y); }
     (this.parts[mat] ||= []).push({ g, collide });
   }
   // axis-aligned (or Y-rotated) box; y0 = bottom
   box(mat, cx, y0, cz, sx, sy, sz, rotY = 0, opt = {}) {
     const g = boxGeo(sx, sy, sz);
-    planarUV(g, { x: cx * 0.37, y: y0 + sy / 2, z: cz * 0.53 });
+    planarUV(g, opt.uvOff || { x: cx * 0.37, y: y0 + sy / 2, z: cz * 0.53 });
     if (rotY) g.rotateY(rotY);
     g.translate(cx, y0 + sy / 2, cz);
+    setAY(g, y0, y0 + sy);
     this.add(mat, g, opt.collide !== false);
     return g;
   }
@@ -78,6 +109,13 @@ class Site {
     const g = boxGeo(L, sy, sz);
     planarUV(g, { x: x0 + L / 2, y, z });
     g.translate(x0 + L / 2, y, z);
+    // aY per vertex: world height of this cross-section's underside and top (the member is sloped)
+    const p = g.attributes.position, e = M.elements, a = new Float32Array(p.count * 2);
+    for (let i = 0; i < p.count; i++) {
+      const lx = p.getX(i), lz = p.getZ(i), yb = e[1] * lx + e[5] * (y - sy / 2) + e[9] * lz + e[13], yt = e[1] * lx + e[5] * (y + sy / 2) + e[9] * lz + e[13];
+      a[i * 2] = Math.min(yb, yt); a[i * 2 + 1] = Math.max(yb, yt);
+    }
+    g.setAttribute('aY', new THREE.BufferAttribute(a, 2));
     g.applyMatrix4(M);
     this.add(mat, g);
   }
@@ -95,6 +133,7 @@ function wallWithHoles(site, mat, ox, oy, oz, L, H, T, holes, rotY = 0) {
   const xs = new Set([0, L]); holes.forEach((h) => { xs.add(Math.max(0, h.x0)); xs.add(Math.min(L, h.x1)); });
   const cuts = [...xs].sort((a, b) => a - b);
   const c = Math.cos(rotY), s = Math.sin(rotY);
+  const u0 = hash2(ox, oz) * 11, w0 = hash2(oz, oy + ox) * 7;     // [B] one UV origin per wall: texture runs on across jambs
   for (let i = 0; i < cuts.length - 1; i++) {
     const a = cuts[i], b = cuts[i + 1]; if (b - a < 0.01) continue;
     const mid = (a + b) / 2;
@@ -111,7 +150,7 @@ function wallWithHoles(site, mat, ox, oy, oz, L, H, T, holes, rotY = 0) {
     for (const [y0, y1] of ys) {
       if (y1 - y0 < 0.01) continue;
       const lx = mid, wx = ox + lx * c, wz = oz - lx * s;
-      site.box(mat, wx, oy + y0, wz, b - a, y1 - y0, T, rotY);
+      site.box(mat, wx, oy + y0, wz, b - a, y1 - y0, T, rotY, { uvOff: { x: lx + u0, y: oy + (y0 + y1) / 2, z: w0 } });
     }
   }
 }
@@ -629,35 +668,284 @@ function leafTexture(R) {
     }
   });
 }
-const TAGS = ['FCU', 'MS', 'OX', 'SKEB', 'ZOMB', 'RISE', 'DOK', 'KAOS', 'VEX', 'NOPE', 'BANDO', 'GONZ', 'RAW', 'SEKT', 'MOHA', 'LUX'];
+// [B] leaf clusters stamped from the photographed leaves (Poly Haven tree_small_02 leaf atlas): shaded leaves at the
+// back, sunlit and yellowed ones in front. Built as a DataTexture so transparent texels keep a leaf colour (no
+// black fringes in the mips).
+const LEAF_RECTS = [[62, 55, 200, 145], [235, 65, 350, 112], [33, 190, 180, 290], [250, 185, 375, 250], [62, 325, 210, 420], [250, 290, 350, 365], [62, 470, 180, 545],
+  [250, 425, 405, 515], [45, 610, 200, 705], [268, 545, 425, 645], [285, 680, 425, 750], [77, 745, 225, 840], [270, 780, 430, 870], [80, 890, 200, 965], [290, 900, 445, 1000]];
+function leafCluster(diffT, alphaT, R) {
+  const N = 1024, cv = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+  const src = cv(N, N), sg = src.getContext('2d', { willReadFrequently: true });
+  sg.drawImage(alphaT.image, 0, 0, N, N); const A = sg.getImageData(0, 0, N, N).data;
+  sg.clearRect(0, 0, N, N); sg.drawImage(diffT.image, 0, 0, N, N); const D = sg.getImageData(0, 0, N, N).data;
+  const vars = [[1, 1, 1], [0.6, 0.68, 0.72], [1.15, 1.08, 0.66]].map(([r, gg, b]) => {
+    const c = cv(N, N), cg = c.getContext('2d'), im = cg.createImageData(N, N), o = im.data;
+    for (let i = 0; i < N * N * 4; i += 4) { o[i] = Math.min(255, D[i] * r); o[i + 1] = Math.min(255, D[i + 1] * gg); o[i + 2] = Math.min(255, D[i + 2] * b); o[i + 3] = A[i + 1]; }
+    cg.putImageData(im, 0, 0); return c;
+  });
+  const S = 512, out = cv(S, S), g = out.getContext('2d', { willReadFrequently: true });
+  for (let i = 0; i < 230; i++) {
+    const back = i < 85, v = back ? 1 : (R() < 0.78 ? 0 : 2), [x0, y0, x1, y1] = LEAF_RECTS[Math.floor(R() * LEAF_RECTS.length)];
+    const a = R() * 6.283, rr = Math.sqrt(R()) * S * (back ? 0.33 : 0.43), w = x1 - x0, h = y1 - y0, s = (28 + R() * 30) / Math.max(w, h);
+    g.save(); g.translate(S / 2 + Math.cos(a) * rr, S / 2 + Math.sin(a) * rr); g.rotate(R() * 6.283); g.scale(s * (R() < 0.5 ? -1 : 1), s);
+    g.drawImage(vars[v], x0, y0, w, h, -w / 2, -h / 2, w, h); g.restore();
+  }
+  const px = g.getImageData(0, 0, S, S).data, data = new Uint8Array(px.length);
+  for (let i = 0; i < px.length; i += 4) {
+    const a = px[i + 3]; data[i + 3] = a;
+    if (a < 8) { data[i] = 46; data[i + 1] = 62; data[i + 2] = 22; } else { data[i] = px[i]; data[i + 1] = px[i + 1]; data[i + 2] = px[i + 2]; }
+  }
+  const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat); t.colorSpace = THREE.SRGBColorSpace;
+  t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.anisotropy = 4; t.needsUpdate = true;
+  return t;
+}
+// mean linear colour of a loaded texture (for distance fades / normalisation)
+function texMean(t, fallback) {
+  try {
+    const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(t.image, 0, 0, 32, 32);
+    const d = g.getImageData(0, 0, 32, 32).data, m = [0, 0, 0], lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) m[k] += lin(d[i + k]);
+    return m.map((v) => v / 1024);
+  } catch (e) { return fallback; }
+}
+
+// [B] graffiti atlas: 4 x 8 cells of 512 x 256. Pieces (3D block, outline, gradient fill, highlights), throw-ups
+// (bubble letters), tag clusters and buffed patches; overspray halos, drips and per-letter jitter.
+const CREWS = ['FCU', 'MSK', 'OX', 'SKEB', 'ZOMB', 'RISE', 'DOK', 'KAOS', 'VEX', 'NOPE', 'BANDO', 'GONZ', 'RAW', 'SEKT', 'MOHA', 'LUX', 'TWS', 'AOK', 'KEMS', 'ROEK', 'MUTE', 'HAZE', 'ODE', 'KRASH', 'BLUR', 'DRIP', 'NUKE', 'OMEN', 'REAX', 'UFO', 'SINE', 'BOLT'];
+const GPAL = [['#e8327c', '#ffb3d4', '#7a0f3c'], ['#1fa6e6', '#bdeeff', '#0b3f6e'], ['#f5c518', '#fff1a6', '#8a5a00'], ['#2fbf71', '#c9f7dc', '#0d5b33'], ['#f2641e', '#ffd0b5', '#7d2a05'],
+  ['#8e5cf0', '#e3d6ff', '#3a1d7a'], ['#c9ced6', '#ffffff', '#6b7079'], ['#d7263d', '#f7a072', '#5e0a14'], ['#0fb5ae', '#a6f0ea', '#05504d'], ['#c3e21b', '#f0ffb0', '#4f5e00']];
+const GTYPE = (k) => (k < 14 ? 'piece' : k < 22 ? 'throw' : k < 28 ? 'tags' : 'buff');
 function graffitiAtlas(R) {
-  const palette = [['#ff4f9a', '#ffd0e6'], ['#2ec4ff', '#c8f2ff'], ['#ffd23f', '#fff3b0'], ['#3ddc84', '#d6ffe8'], ['#ff6b35', '#ffd5c2'], ['#b388ff', '#ece0ff'], ['#f2f2f2', '#9ad'], ['#e63946', '#f4a261']];
-  return canvasTex(2048, 1024, (g, W, Hh) => {
-    g.clearRect(0, 0, W, Hh);
-    for (let k = 0; k < 16; k++) {
-      const cx = (k % 4) * 512, cy = Math.floor(k / 4) * 256, word = TAGS[k];
-      const [c1, c2] = palette[Math.floor(R() * palette.length)];
-      g.save(); g.translate(cx + 256, cy + 140); g.rotate((R() - 0.5) * 0.18); g.scale(0.85 + R() * 0.35, 1);
-      g.font = `900 ${150 - word.length * 12}px "Futura", "Avenir Next Condensed", "Arial Black", Impact, sans-serif`;
-      g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
-      const plain = R() < 0.3;
-      if (plain) { g.lineWidth = 8; g.strokeStyle = c1; g.font = `italic 700 ${110}px "Snell Roundhand", "Brush Script MT", cursive`; g.strokeText(word.toLowerCase(), 0, 0); }
+  return canvasTex(2048, 2048, (g, W, H) => {
+    g.clearRect(0, 0, W, H);
+    const fontB = (px) => `900 ${px | 0}px "Arial Rounded MT Bold", "Arial Black", Futura, "Helvetica Neue", "DejaVu Sans", sans-serif`;
+    const fontT = (px) => `italic 700 ${px | 0}px "Marker Felt", Noteworthy, "Brush Script MT", "Snell Roundhand", "URW Chancery L", cursive`;
+    const pick = (a) => a[Math.floor(R() * a.length)];
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round'; g.lineCap = 'round';
+    const layout = (word, size, maxW, font) => {
+      g.font = font(size); const ws = [...word].map((ch) => g.measureText(ch).width * 0.86); let tot = ws.reduce((a, b) => a + b, 0);
+      const k = Math.min(1, maxW / Math.max(1, tot)); g.font = font(size * k); tot *= k;
+      let x = -tot / 2; const out = [...word].map((ch, i) => { const w = ws[i] * k, l = { ch, x: x + w / 2, y: (R() - 0.5) * size * k * 0.16, rot: (R() - 0.5) * 0.24, s: 0.92 + R() * 0.2 }; x += w; return l; }); out.sz = size * k; return out;
+    };
+    const each = (L, fn) => L.forEach((l) => { g.save(); g.translate(l.x, l.y); g.rotate(l.rot); g.scale(l.s, l.s); fn(l.ch); g.restore(); });
+    const drips = (col, n, x0, x1, y, w) => {
+      g.strokeStyle = col; g.fillStyle = col;
+      for (let i = 0; i < n; i++) { const x = x0 + R() * (x1 - x0), y0 = y + (R() - 0.5) * 24, len = 8 + R() * R() * 80; g.lineWidth = w * (0.6 + R() * 0.8);
+        g.beginPath(); g.moveTo(x, y0); g.lineTo(x + (R() - 0.5) * 2, y0 + len); g.stroke(); g.beginPath(); g.arc(x, y0 + len, g.lineWidth * 0.75, 0, 6.283); g.fill(); }
+    };
+    const piece = (word, pal, size, maxW) => {
+      const [c1, c2, c3] = pal, L = layout(word, size, maxW, fontB), sz = L.sz;
+      if (R() < 0.55) {                                                     // background cloud / bubbles
+        g.save(); const bg = pick(GPAL)[R() < 0.5 ? 0 : 2]; g.fillStyle = bg; g.globalAlpha = 0.85; g.shadowColor = bg; g.shadowBlur = 18;
+        for (let i = 0; i < 9; i++) { g.beginPath(); g.ellipse((R() - 0.5) * maxW, (R() - 0.5) * 70, 40 + R() * 60, 30 + R() * 40, 0, 0, 6.283); g.fill(); }
+        g.restore();
+      }
+      const dk = R() < 0.5 ? '#141418' : c3;
+      each(L, (ch) => { g.fillStyle = dk; g.strokeStyle = dk; g.lineWidth = 22; for (let d = 12; d > 0; d -= 3) { g.strokeText(ch, d, d); g.fillText(ch, d, d); } });
+      each(L, (ch) => { g.lineWidth = 24; g.strokeStyle = '#0d0d10'; g.strokeText(ch, 0, 0); });
+      each(L, (ch) => {
+        const gr = g.createLinearGradient(0, -sz * 0.4, 0, sz * 0.4); gr.addColorStop(0, c2); gr.addColorStop(0.45, c1); gr.addColorStop(1, R() < 0.5 ? c1 : c3);
+        g.shadowColor = c1; g.shadowBlur = 10; g.fillStyle = gr; g.strokeStyle = gr; g.lineWidth = 7; g.strokeText(ch, 0, 0); g.fillText(ch, 0, 0); g.shadowBlur = 0;
+      });
+      each(L, (ch) => { g.save(); g.beginPath(); g.rect(-sz, -sz, 2 * sz, sz * 0.75); g.clip(); g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,0.85)'; g.strokeText(ch, -3, -4); g.restore(); });
+      drips(c1, 4 + Math.floor(R() * 7), -maxW / 2, maxW / 2, sz * 0.3, 4);
+      g.fillStyle = '#fff'; for (let i = 0; i < 4; i++) { const x = (R() - 0.5) * maxW, y = (R() - 0.5) * sz * 0.6, s = 5 + R() * 8; g.beginPath(); g.moveTo(x - s, y); g.lineTo(x, y - 1.5); g.lineTo(x + s, y); g.lineTo(x, y + 1.5); g.moveTo(x, y - s); g.lineTo(x + 1.5, y); g.lineTo(x, y + s); g.lineTo(x - 1.5, y); g.fill(); }
+    };
+    const throwUp = (word, size, maxW) => {
+      const fill = pick(['#f4f4f0', '#d9dde2', '#f4f4f0', '#ffd23f', '#ff5fa2', '#64d2ff']), line = R() < 0.75 ? '#101014' : pick(GPAL)[2];
+      const L = layout(word.slice(0, 2 + Math.floor(R() * 3)), size, maxW, fontB);
+      each(L, (ch) => { g.lineWidth = 42; g.strokeStyle = line; g.strokeText(ch, 0, 0); });
+      each(L, (ch) => { g.shadowColor = fill; g.shadowBlur = 8; g.lineWidth = 24; g.strokeStyle = fill; g.fillStyle = fill; g.strokeText(ch, 0, 0); g.fillText(ch, 0, 0); g.shadowBlur = 0; });
+      g.globalCompositeOperation = 'source-atop'; g.fillStyle = 'rgba(40,40,40,0.18)';     // patchy one-coat fill
+      for (let i = 0; i < 14; i++) { g.beginPath(); g.ellipse((R() - 0.5) * maxW, (R() - 0.5) * 90, 10 + R() * 30, 6 + R() * 16, R() * 3, 0, 6.283); g.fill(); }
+      g.globalCompositeOperation = 'source-over';
+      drips(fill, 3 + Math.floor(R() * 6), -maxW / 2, maxW / 2, size * 0.35, 3);
+    };
+    const tags = (n, spread) => {
+      for (let i = 0; i < n; i++) {
+        g.save(); g.translate((R() - 0.5) * spread, (R() - 0.5) * 150); g.rotate((R() - 0.5) * 0.6);
+        const word = pick(CREWS), col = pick(['#111', '#111', '#c8ccd2', '#e5e5e5', '#d7263d', '#1f6fe6', '#f2641e', '#2fbf71']);
+        const L = layout(R() < 0.6 ? word.toLowerCase() : word, 64 + R() * 50, 150 + R() * 140, fontT);
+        const stroke = R() < 0.5, lw = 4 + R() * 3;
+        each(L, (ch) => { g.shadowColor = col; g.shadowBlur = 4; g.lineWidth = lw; g.strokeStyle = col; g.fillStyle = col; if (stroke) g.strokeText(ch, 0, 0); else g.fillText(ch, 0, 0); g.shadowBlur = 0; });
+        if (R() < 0.5) { g.lineWidth = 3; g.strokeStyle = col; g.beginPath(); g.moveTo(-90, 40); g.quadraticCurveTo(0, 60 + R() * 20, 110, 28); g.stroke(); }
+        if (R() < 0.4) drips(col, 2 + Math.floor(R() * 3), -60, 60, 25, 2);
+        g.restore();
+      }
+    };
+    for (let k = 0; k < 32; k++) {
+      const cx = (k % 4) * 512, cy = Math.floor(k / 4) * 256, type = GTYPE(k), word = CREWS[k];
+      g.save(); g.beginPath(); g.rect(cx + 6, cy + 6, 500, 244); g.clip(); g.translate(cx + 256, cy + 124);
+      if (type === 'piece') { if (R() < 0.35) { g.save(); g.globalAlpha = 0.7; tags(3, 440); g.restore(); } piece(word, pick(GPAL), 150, 440); }
+      else if (type === 'throw') throwUp(word, 165, 420);
+      else if (type === 'tags') tags(4 + Math.floor(R() * 4), 380);
       else {
-        g.lineWidth = 30; g.strokeStyle = '#111'; g.strokeText(word, 0, 0);
-        const gr = g.createLinearGradient(0, -60, 0, 60); gr.addColorStop(0, c2); gr.addColorStop(0.55, c1); gr.addColorStop(1, c1);
-        g.fillStyle = gr; g.fillText(word, 0, 0);
-        g.lineWidth = 4; g.strokeStyle = 'rgba(255,255,255,0.75)'; g.strokeText(word, -3, -3);
-        g.fillStyle = c1; for (let d = 0; d < 6; d++) { const x = (R() - 0.5) * 300, len = 10 + R() * 50; g.fillRect(x, 50, 3, len); }
+        g.save(); g.globalAlpha = 0.8; piece(word, pick(GPAL), 140, 420); g.restore();
+        g.fillStyle = pick(['#8d8a82', '#a39c8c', '#77756f', '#9a948a']); g.globalAlpha = 0.95;
+        const bw = 200 + R() * 220, bh = 120 + R() * 90, bx = (R() - 0.5) * (440 - bw);
+        for (let i = 0; i < 6; i++) g.fillRect(bx - bw / 2 + (R() - 0.5) * 14, -bh / 2 + (R() - 0.5) * 14, bw, bh);
+        g.globalAlpha = 1; tags(1 + Math.floor(R() * 2), 300);
       }
       g.restore();
     }
   });
 }
+// [B] treeline crown: a few lumps, normals from the crown centre (it shades as one mass), base at y = 0, height ~1
+function crownGeometry(lumps = 5) {     // 20 tris per lump
+  const parts = [[0, 0.5, 0, 0.46, 0], [0.12, 0.78, 0.06, 0.27, 0], [0.27, 0.4, 0.1, 0.32, 0], [-0.25, 0.38, -0.14, 0.32, 0], [-0.14, 0.7, -0.04, 0.24, 0],
+    [0.06, 0.4, 0.28, 0.27, 0], [-0.05, 0.42, -0.3, 0.26, 0]].slice(0, lumps);
+  const g = mergeGeometries(parts.map(([x, y, z, r, d]) => { const p = new THREE.IcosahedronGeometry(r, d); p.rotateY(x * 9 + z * 5); p.translate(x, y, z); return p; }), false);
+  const p = g.attributes.position, n = g.attributes.normal, v = new THREE.Vector3(), c = new THREE.Vector3(0, 0.45, 0);
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i); const k = 1 + (hash2(v.x * 7.1 + v.y * 3.3, v.z * 5.7 - v.y) - 0.5) * 0.3; v.sub(c).multiplyScalar(k).add(c);
+    v.y = Math.max(v.y, 0.04 + 0.1 * hash2(v.x * 3.1, v.z * 2.3)); p.setXYZ(i, v.x, v.y, v.z);
+    v.sub(c).normalize(); v.y += 0.2; v.normalize(); n.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.deleteAttribute('uv'); g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(p.count * 2), 2));
+  return g;
+}
+// [B] ground mask over the yard terrain tile (0.625 m texels): R grass density, G paved apron/road,
+// B terrain AO (baked), A grass height. Replaces the per-vertex footprint/path loops of the grass shader.
+const MASK = { N: 512, x0: -165, z0: -150, size: 320 };
+function buildGroundMask(site, terr) {
+  const { N, x0, z0, size } = MASK, d = new Uint8Array(N * N * 4), sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const fh = (i, j) => { let h = Math.imul(i, 374761393) + Math.imul(j, 668265263) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  // path segments with bounding boxes: only distances below ~7 m matter
+  const segs = []; for (const p of PATHS) for (let k = 0; k < p.length - 1; k++) { const [ax, az] = p[k], [bx, bz] = p[k + 1]; segs.push([ax, az, bx - ax, bz - az, Math.min(ax, bx) - 7, Math.max(ax, bx) + 7, Math.min(az, bz) - 7, Math.max(az, bz) + 7, (bx - ax) ** 2 + (bz - az) ** 2]); }
+  const pathD = (x, z) => {
+    let best = 49;
+    for (const [ax, az, vx, vz, xa, xb, za, zb, l2] of segs) {
+      if (x < xa || x > xb || z < za || z > zb) continue;
+      const t = Math.max(0, Math.min(1, ((x - ax) * vx + (z - az) * vz) / l2)), dx = x - ax - t * vx, dz = z - az - t * vz, q = dx * dx + dz * dz; if (q < best) best = q;
+    }
+    return Math.sqrt(best);
+  };
+  const vno = (x, z) => { const i = Math.floor(x), j = Math.floor(z), fx = x - i, fz = z - j, u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+    return (fh(i, j) * (1 - u) + fh(i + 1, j) * u) * (1 - v) + (fh(i, j + 1) * (1 - u) + fh(i + 1, j + 1) * u) * v; };
+  const tao = terr.attributes.ao, TS = 128;
+  const aoAt = (x, z) => {
+    if (!tao) return 1;
+    const fx = Math.min(TS - 1e-3, Math.max(0, (x + 165) / 2.5)), fz = Math.min(TS - 1e-3, Math.max(0, (z + 150) / 2.5)), i = Math.floor(fx), j = Math.floor(fz), u = fx - i, v = fz - j;
+    const a = (ii, jj) => tao.getX(jj * (TS + 1) + ii);
+    return (a(i, j) * (1 - u) + a(i + 1, j) * u) * (1 - v) + (a(i, j + 1) * (1 - u) + a(i + 1, j + 1) * u) * v;
+  };
+  const fps = site.footprints;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const x = x0 + (i + 0.5) * size / N, z = z0 + (j + 0.5) * size / N, o = (j * N + i) * 4;
+    let sd = Infinity;
+    for (const f of fps) { const dx = Math.max(f.x0 - x, x - f.x1), dz = Math.max(f.z0 - z, z - f.z1); const e = dx > 0 || dz > 0 ? Math.sqrt(Math.max(dx, 0) ** 2 + Math.max(dz, 0) ** 2) : Math.max(dx, dz); if (e < sd) sd = e; }
+    const yard = Math.max(Math.abs(x + 5) - 95, Math.abs(z - 10) - 85), paved = 1 - sm(-14, 0, yard);
+    const n1 = vno(x * 0.05, z * 0.05), n2 = vno(x * 0.17 + 3, z * 0.17 + 7), dP = pathD(x, z);
+    const apW = 5 + 7 * n1;
+    let ap = sd < 0 ? 1 : 1 - sm(apW - 2, apW + 2, sd + (n2 - 0.5) * 4);
+    ap = Math.max(ap, (1 - sm(2.0, 3.6, dP + (n2 - 0.5) * 1.4 - vno(x * 0.03 + 11, z * 0.03) * 1.2)) * paved);
+    const n3 = vno(x * 0.45 + 1, z * 0.45 + 2);
+    let dens = (0.42 + 0.58 * vno(x * 0.09 + 5, z * 0.09)) * (1 - 0.8 * sm(0.7, 0.88, vno(x * 0.035 + 17, z * 0.035 + 3)));
+    dens *= sm(0.0, 1.2, sd) * (1 - 0.88 * sm(0.25, 0.75, ap)) * sm(1.4, 4.4, dP + (n3 - 0.5) * 2.4);
+    let ht = 0.45 + 0.8 * vno(x * 0.06 + 9, z * 0.06 + 1) + 0.35 * n3 + 0.5 * (1 - sm(0, 5, sd));
+    ht *= 1 - 0.45 * sm(0.3, 0.8, ap);
+    d[o] = dens * 255; d[o + 1] = ap * 255; d[o + 2] = Math.min(1, aoAt(x, z)) * 255; d[o + 3] = Math.min(1, ht / 2) * 255;
+  }
+  const t = new THREE.DataTexture(d, N, N, THREE.RGBAFormat); t.magFilter = t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; t.needsUpdate = true;
+  return t;
+}
 
 // ---------------------------------------------------------------- materials
-function weatherPatch(mat, { ground = false, foliage = false, wind = false } = {}, uniforms) {
+// [B] One shader patch for every world material. kind: built | decal | ground | track | bark | leaf | grass | treeline.
+// Each kind compiles its own program (customProgramCacheKey: three keys programs on onBeforeCompile.toString(),
+// which is the same for every patched material). Per-material numbers are uniforms, so one kind = one program.
+// Optional hooks (grass, treeline): vsHead/vsBegin (vertex decls / code after begin_vertex), fsHead/fsMap, aoExpr.
+// Stream A owns the lighting terms: the aomap block below, and may add an [A-lighting] block at
+// lights_fragment_end / fog_fragment; nothing here touches those injection points.
+const GLSL_NOISE = `
+float h21(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y); }
+float lum3(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }`;
+// built weathering: per-element run-off streaks from the element top (sills, slab edges, rims), rising damp at the
+// foot, dust at storey floors, grime/moss on up-facing faces, warm dust where the weather can't reach (baked AO)
+const GLSL_WEATHER = `
+uniform vec4 uWx;
+vec3 weather(vec3 c, vec3 nw, vec3 wp, vec2 ay, float ao) {
+  float side = 1.0 - smoothstep(0.45, 0.8, abs(nw.y));
+  float along = abs(nw.x) > abs(nw.z) ? wp.z : wp.x;
+  float ht = max(ay.y - wp.y, 0.0), hb = max(wp.y - ay.x, 0.0);
+  float L = clamp((ay.y - ay.x) * 0.45, 1.2, 16.0);
+  float seed = h21(vec2(ay.x * 1.31 + ay.y * 0.77, floor(along * 0.21) + 0.5));
+  c *= 0.86 + 0.28 * vn(vec2(along * 0.13 + seed * 17.0, wp.y * 0.11));
+  float col = along * 1.7;
+  float Lc = L * (0.3 + 0.9 * vn(vec2(col * 0.6, seed * 9.0)));
+  float s = smoothstep(0.42, 0.8, vn(vec2(col, 0.5 + seed * 5.0))) * (0.5 + 0.5 * vn(vec2(along * 6.5, ht * 0.7)));
+  s *= 1.0 - smoothstep(0.15 * Lc, Lc, ht);
+  float lip = (1.0 - smoothstep(0.0, 0.3, ht)) * 0.55;
+  c *= 1.0 - uWx.x * max(s, lip) * side;
+  float onG = 1.0 - step(0.6, ay.x);
+  float damp = (1.0 - smoothstep(0.1, 1.0 + 0.7 * vn(vec2(along * 0.45, 2.0)), wp.y)) * onG;
+  c = mix(c, c * vec3(0.6, 0.66, 0.5), uWx.y * damp);
+  float dust = (1.0 - smoothstep(0.0, 0.4, hb)) * (1.0 - onG) * side;
+  c = mix(c, c * vec3(0.86, 0.8, 0.7), dust * 0.6);
+  float up = smoothstep(0.55, 0.9, nw.y);
+  float pt = vn(wp.xz * 0.6) * 0.6 + vn(wp.xz * 2.7) * 0.4;
+  c = mix(c, c * vec3(0.64, 0.58, 0.48), up * uWx.z * (0.45 + 0.55 * pt));
+  c = mix(c, c * vec3(0.5, 0.66, 0.3), up * uWx.w * smoothstep(0.5, 0.78, pt) * smoothstep(0.45, 0.85, ao));
+  float cov = 1.0 - smoothstep(0.25, 0.7, ao);
+  c = mix(c, c * vec3(1.05, 0.98, 0.86), cov * 0.7);
+  return c;
+}`;
+const WP_FRAG = {
+  built: `
+  diffuseColor.rgb = weather(diffuseColor.rgb, normalize(vNW), vWPos, vAY, vAO);`,
+  decal: `
+  { vec3 nwd = normalize(vNW); float along = abs(nwd.x) > abs(nwd.z) ? vWPos.z : vWPos.x;
+    float wl = lum3(texture2D(uWallTex, vec2(along, vWPos.y) * uWallRep).rgb) / uWallMean;   // the concrete shows through
+    diffuseColor.rgb *= clamp(wl, 0.55, 1.5);
+    diffuseColor.rgb = weather(diffuseColor.rgb, nwd, vWPos, vAY, vAO);
+    diffuseColor.a *= (0.74 + 0.26 * vn(vec2(along * 0.9, vWPos.y * 0.9))) * smoothstep(0.1, 0.3, vn(vec2(along * 5.0, vWPos.y * 5.0))); }`,
+  ground: `
+  { vec2 xz = vWPos.xz; float far = smoothstep(40.0, 140.0, distance(vWPos, cameraPosition));
+    vec3 base = mix(diffuseColor.rgb, uGMean, far);                       // no tiling grid from altitude
+    float p1 = vn(xz * 0.045) * 0.6 + vn(xz * 0.19) * 0.4;
+    float dry = smoothstep(0.3, 0.75, vn(xz * 0.021 + 7.0) * 0.65 + p1 * 0.35);
+    base = mix(base * vec3(0.92, 1.03, 0.84), lum3(base) * vec3(1.42, 1.16, 0.62), dry * 0.75);
+    vec3 dirt = lum3(base) * vec3(1.2, 0.98, 0.72) * (0.8 + 0.3 * p1);
+    float bare = smoothstep(0.66, 0.82, vn(xz * 0.07 + 2.0) * 0.7 + vn(xz * 0.6) * 0.3);
+    float cov = 1.0 - smoothstep(0.3, 0.78, vAO);                         // under slabs / inside: bare dirt
+    base = mix(base, dirt, max(bare * 0.7, cov));
+    // the landscape seen from altitude: green and straw fields, and woods beyond the site (complements the treeline)
+    float big = vn(xz * 0.0045 + 11.0) * 0.7 + vn(xz * 0.017) * 0.3, rr = length(xz - vec2(-5.0, 10.0));
+    base *= mix(vec3(1.05, 0.98, 0.86), vec3(0.8, 0.96, 0.72), smoothstep(0.35, 0.7, big));
+    float wood = smoothstep(0.58, 0.7, vn(xz * 0.0065 + 3.7) * 0.75 + vn(xz * 0.04) * 0.25) * smoothstep(175.0, 240.0, rr);
+    base = mix(base, vec3(0.035, 0.05, 0.022) * (0.7 + 0.6 * vn(xz * 0.3)), wood);
+    vec4 mk = texture2D(uMask, (xz - uMaskO) / uMaskS);
+    float ap = smoothstep(0.42, 0.58, mk.g + (vn(xz * 0.9) - 0.5) * 0.34 + (vn(xz * 3.7) - 0.5) * 0.12);
+    vec3 at = texture2D(uApron, xz * uApronRep).rgb;                     // (sampled outside any branch: mip derivatives)
+    float al = lum3(at) / uAMean.w;
+    vec3 asph = mix(at * uApronCol, uAMean.rgb, far);
+    asph *= 0.8 + 0.35 * vn(xz * 0.11 + 4.0);                             // patches of old repair and stain
+    float crack = (1.0 - smoothstep(0.4, 0.68, al)) * (1.0 - far);         // weeds and moss in the cracks
+    asph = mix(asph, vec3(0.045, 0.06, 0.02), crack * 0.8);
+    asph = mix(asph, dirt, (1.0 - smoothstep(0.2, 0.75, ap)) * 0.55 + smoothstep(0.7, 0.9, vn(xz * 0.33)) * 0.35);
+    diffuseColor.rgb = mix(base, asph, ap); }`,
+  track: `
+  { vec4 mk = texture2D(uMask, (vWPos.xz - uMaskO) / uMaskS);
+    float a = diffuseColor.a + (vn(vWPos.xz * 0.9) - 0.5) * 0.6;
+    diffuseColor.a = smoothstep(0.3, 0.65, a) * (1.0 - smoothstep(0.35, 0.6, mk.g));
+    diffuseColor.rgb *= 0.88 + 0.24 * vn(vWPos.xz * 0.2); }`,
+  bark: `
+  diffuseColor.rgb *= mix(0.72, 1.0, smoothstep(0.0, 1.2, vWPos.y - vAY.x));`,
+  leaf: '', grass: '', treeline: '',
+};
+function weatherPatch(mat, opt = {}, uniforms) {
+  const kind = opt.kind || (opt.ground ? 'ground' : opt.foliage ? 'leaf' : 'built');
+  const usesAY = kind === 'built' || kind === 'decal' || kind === 'bark';
+  const weathers = kind === 'built' || kind === 'decal';
+  const foliage = kind === 'leaf' || kind === 'grass';
+  const wu = { uWx: { value: new THREE.Vector4(...(opt.w || [0.4, 0.3, 0.5, 0.3])) }, uRoughMin: { value: opt.roughMin ?? 0 }, ...(opt.uniforms || {}) };
+  mat.customProgramCacheKey = () => 'wp:' + kind + (opt.key || '');
+  mat.userData.wu = wu;
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = uniforms.uTime;
+    Object.assign(sh.uniforms, wu);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
 attribute float ao;
@@ -665,44 +953,59 @@ attribute vec3 bounce;
 varying float vAO;
 varying vec3 vBounce;
 varying vec3 vWPos;
-uniform float uTime;`)
+uniform float uTime;
+varying vec3 vNW;
+${usesAY ? 'attribute vec2 aY;\nvarying vec2 vAY;' : ''}
+${kind === 'leaf' ? 'attribute float aSway;' : ''}
+${opt.vsHead || ''}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-${wind ? `#ifdef USE_INSTANCING
-  vec3 ip = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
-  float sway = sin(uTime * 1.9 + ip.x * 0.31 + ip.z * 0.23) + 0.4 * sin(uTime * 4.3 + ip.x * 1.7);
-  transformed.x += sway * 0.07 * position.y; transformed.z += sway * 0.04 * position.y;
-#endif` : ''}`)
+${kind === 'leaf' ? `  transformed += vec3(sin(uTime * 1.7 + position.x * 0.4 + position.z * 0.3), 0.3 * sin(uTime * 2.3 + position.y), cos(uTime * 1.3 + position.z * 0.35)) * aSway;` : ''}
+${opt.vsBegin || ''}`)
       .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
-  vAO = ao; vBounce = bounce;
+  vAO = ${opt.aoExpr || 'ao'}; vBounce = bounce;
   vec4 wpp = vec4(transformed, 1.0);
+  vec3 nwo = objectNormal;
   #ifdef USE_INSTANCING
-    wpp = instanceMatrix * wpp;
+    wpp = instanceMatrix * wpp; nwo = mat3(instanceMatrix) * nwo;
   #endif
-  vWPos = (modelMatrix * wpp).xyz;`);
+  vWPos = (modelMatrix * wpp).xyz;
+  vNW = mat3(modelMatrix) * nwo;
+  ${usesAY ? 'vAY = aY;' : ''}`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
 varying float vAO;
 varying vec3 vBounce;
 varying vec3 vWPos;
-float h21(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
-float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y); }`)
+varying vec3 vNW;
+uniform float uRoughMin;
+${usesAY ? 'varying vec2 vAY;' : ''}
+${GLSL_NOISE}
+${weathers ? GLSL_WEATHER : ''}
+${kind === 'decal' ? 'uniform sampler2D uWallTex; uniform float uWallRep; uniform float uWallMean;' : ''}
+${kind === 'ground' || kind === 'track' ? 'uniform sampler2D uMask; uniform vec2 uMaskO; uniform float uMaskS;' : ''}
+${kind === 'ground' ? 'uniform sampler2D uApron; uniform float uApronRep; uniform vec3 uApronCol; uniform vec3 uGMean; uniform vec4 uAMean;' : ''}
+${opt.fsHead || ''}`)
       .replace('#include <map_fragment>', `#include <map_fragment>
-${ground ? `
-  float patchy = vn(vWPos.xz * 0.045) * 0.6 + vn(vWPos.xz * 0.19) * 0.4;
-  diffuseColor.rgb *= mix(vec3(0.82, 0.86, 0.72), vec3(1.08, 1.04, 0.9), patchy);
-  vec3 meadow = mix(vec3(0.20, 0.25, 0.08), vec3(0.42, 0.40, 0.18), vn(vWPos.xz * 0.06));
-  diffuseColor.rgb = mix(diffuseColor.rgb, meadow, 0.45 * smoothstep(0.25, 0.75, vn(vWPos.xz * 0.013 + 3.0) + 0.35));` : foliage ? '' : `
-  float hgt = vWPos.y;
-  float damp = mix(0.62, 1.0, smoothstep(0.0, 1.9, hgt - 0.05));
-  float hc = vWPos.x + vWPos.z;
-  float streak = smoothstep(0.55, 0.92, vn(vec2(hc * 1.3, hgt * 0.07)));
-  float blot = vn(vec2(hc * 0.11, hgt * 0.09)) * 0.7 + vn(vec2(hc * 0.5, hgt * 0.5)) * 0.3;
-  diffuseColor.rgb *= damp * (1.0 - 0.3 * streak) * (0.78 + 0.36 * blot);
-  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.78, 0.92, 0.62), (1.0 - smoothstep(0.0, 1.4, hgt)) * 0.55);`}`)
+${kind === 'track' ? '' : WP_FRAG[kind]}
+${opt.fsMap || ''}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+${kind === 'track' ? WP_FRAG.track : ''}`)
+      .replace('#include <alphamap_fragment>', `#include <alphamap_fragment>
+${foliage ? `#ifdef DOUBLE_SIDED
+  { vec3 fdn = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));      // cards seen edge-on fade out (no planks):
+    diffuseColor.a *= smoothstep(${kind === 'grass' ? '0.22, 0.5' : '0.12, 0.38'}, abs(dot(fdn, normalize(vViewPosition)))); }   // 2 of 3 tuft cards always face >= 0.5
+#endif` : ''}
+${opt.fsAlpha || ''}`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+  roughnessFactor = max(roughnessFactor, uRoughMin);`)
+      .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
+${foliage ? `#ifdef DOUBLE_SIDED
+  normal *= faceDirection; nonPerturbedNormal = normal;     // cards are lit like the canopy/ground they belong to, both faces
+#endif` : ''}`)
       .replace('#include <aomap_fragment>', `reflectedLight.indirectDiffuse = reflectedLight.indirectDiffuse * vAO + vBounce * BRDF_Lambert(material.diffuseColor);
   reflectedLight.indirectSpecular *= vAO * vAO;
 #include <aomap_fragment>`);
+    if (opt.fsFog) sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', `${opt.fsFog}\n#include <fog_fragment>`);   // before, never instead of
     // [A-lighting] begin: baked sun/sky bounce, sun mask, far shadow map, forward-scatter haze (see aLightingPatch)
     aLightingPatch(sh, uniforms);
     // [A-lighting] end
@@ -1178,24 +1481,63 @@ export function buildGeometry(R = rng(7), seed = 7) {
   pathG.setAttribute('position', new THREE.Float32BufferAttribute(pathPos, 3)); pathG.setAttribute('uv', new THREE.Float32BufferAttribute(pathUV, 2));
   pathG.setAttribute('color', new THREE.Float32BufferAttribute(pathCol, 4)); pathG.setIndex(pathIdx); pathG.computeVertexNormals();
 
-  // trees: trunks collide, canopies don't
-  const treeSpots = [];
-  for (let k = 0; k < 70; k++) {
-    let x, z, ok = false;
-    for (let t = 0; t < 20 && !ok; t++) {
-      x = -110 + R() * 230; z = -80 + R() * 200;
-      ok = !site.footprints.some((f) => x > f.x0 - 4 && x < f.x1 + 4 && z > f.z0 - 4 && z < f.z1 + 4) && distToPaths(x, z) > 5 && Math.hypot(x, z - 120) > 12;
+  // [B] trees: thickets hugging the buildings plus lone field trees. Own RNG, so layout edits elsewhere
+  // don't reshuffle them. Trunks collide, canopies don't.
+  const TR = rng(1101), treeSpots = [];
+  const clearOf = (x, z, m) => !site.footprints.some((f) => x > f.x0 - m && x < f.x1 + m && z > f.z0 - m && z < f.z1 + m);
+  const okTree = (x, z) => clearOf(x, z, 2.5) && distToPaths(x, z) > 4.5 && Math.hypot(x, z - 120) > 14 && !treeSpots.some((t) => Math.hypot(t.x - x, t.z - z) < 2.4 + t.h * 0.12);
+  const addTree = (x, z, h) => {
+    const y = terrainHeight(x, z), r = 0.09 + h * 0.02;
+    treeSpots.push({ x, z, h, r, y });
+    const g = cylGeo(r * 0.55, r, h * 0.62, 7, false); g.translate(x, y + h * 0.31 - 0.1, z); site.add('bark', g);
+  };
+  const bigF = site.footprints.filter((f) => (f.x1 - f.x0) * (f.z1 - f.z0) > 60);
+  for (let k = 0; k < 9 && bigF.length; k++) {
+    const f = bigF[Math.floor(TR() * bigF.length)], side = Math.floor(TR() * 4), off = 3 + TR() * 5, t = TR();
+    const cx = side < 2 ? f.x0 + t * (f.x1 - f.x0) : (side === 2 ? f.x0 - off : f.x1 + off);
+    const cz = side < 2 ? (side === 0 ? f.z0 - off : f.z1 + off) : f.z0 + t * (f.z1 - f.z0);
+    for (let i = 0, n = 3 + Math.floor(TR() * 4); i < n; i++) {
+      const x = cx + (TR() - 0.5) * 10, z = cz + (TR() - 0.5) * 10;
+      if (okTree(x, z)) addTree(x, z, 5 + TR() * 8);
     }
-    if (!ok) continue;
-    const h = 4 + R() * 7; treeSpots.push({ x, z, h, r: 0.15 + h * 0.025 });
-    const g = cylGeo(0.12 + h * 0.02, 0.18 + h * 0.03, h * 0.75, 7, false); g.translate(x, terrainHeight(x, z) + h * 0.375, z); site.add('bark', g);
+  }
+  for (let k = 0; k < 60 && treeSpots.length < 62; k++) {
+    const x = -135 + TR() * 255, z = -105 + TR() * 235;
+    if (okTree(x, z) && clearOf(x, z, 9)) addTree(x, z, 7 + TR() * 8);
+  }
+
+  // [B] distant treeline ring (r ~150-420 m around the site): the horizon for skies with no photographed ground.
+  // Crowns are instanced in buildBando; low-poly proxies keep the drone out of them (site.colliders).
+  const treeline = [];
+  {
+    const LR = rng(1201), fb = new MeshBVH(far.clone()), ray = new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(0, -1, 0));
+    const groundAt = (x, z) => {
+      ray.origin.set(x, 400, z); const h = fb.raycastFirst(ray, THREE.DoubleSide);
+      let y = h ? h.point.y : 0; if (Math.abs(x + 5) < 158 && Math.abs(z - 10) < 158) y = Math.max(y, terrainHeight(x, z)); return y;
+    };
+    // a belt with a ragged inner edge (125-185 m) and uneven depth, groves breaking out of it on both sides,
+    // and tall/short stands so the skyline isn't a hedge
+    const belt = (a) => 0.5 + 0.5 * Math.sin(a * 3 + 1.3) * Math.cos(a * 5 - 0.4);
+    const inner = (a) => 150 + 22 * Math.sin(a * 4 + 0.7) + 13 * Math.sin(a * 11 - 1.9);
+    const stand = (a) => 0.75 + 0.5 * (0.5 + 0.5 * Math.sin(a * 7 + 2.1) * Math.sin(a * 2.3));
+    const groves = Array.from({ length: 16 }, (_, i) => { const a = LR() * 6.283, r = i < 5 ? 118 + LR() * 25 : 250 + LR() * 150; return [-5 + Math.cos(a) * r, 10 + Math.sin(a) * r, i < 5 ? 14 : 30]; });
+    const proxy = new THREE.IcosahedronGeometry(1, 0);
+    for (let k = 0; k < 780; k++) {
+      let x, z, a;
+      if (k < 590) { a = LR() * Math.PI * 2; const r = inner(a) + Math.pow(LR(), 1.6) * (30 + 100 * belt(a)); x = -5 + Math.cos(a) * r; z = 10 + Math.sin(a) * r; }
+      else { const g = groves[k % groves.length]; x = g[0] + (LR() - 0.5) * 2 * g[2]; z = g[1] + (LR() - 0.5) * 2 * g[2]; a = Math.atan2(z - 10, x + 5); }
+      if (!clearOf(x, z, 12) || distToPaths(x, z) < 8 || Math.hypot(x, z - 118) < 25) continue;
+      const h = (7 + Math.pow(LR(), 0.8) * 13) * stand(a), w = h * (0.55 + LR() * 0.35), y = groundAt(x, z) - 0.6;
+      treeline.push({ x, y, z, h, w, d: w * (0.8 + LR() * 0.4), rot: LR() * 6.283, tint: LR() });
+      if (RING_COLLIDE) { const c = proxy.clone(); c.scale(w * 0.36, h * 0.4, w * 0.36); c.translate(x, y + h * 0.5, z); site.colliders.push(indexify(c)); }
+    }
   }
 
   // merge structures per material + one collision geometry
   const solids = [];
   const merged = {};
   for (const [mat, list] of Object.entries(site.parts)) {
-    merged[mat] = mergeGeometries(list.map((e) => { const g = e.g; for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k); return g; }), false);
+    merged[mat] = mergeGeometries(list.map((e) => { const g = e.g; for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv', 'aY'].includes(k)) g.deleteAttribute(k); return g; }), false);
     list.forEach((e) => e.collide && solids.push(e.g));
   }
   const posOnly = (g) => { const c = new THREE.BufferGeometry(); c.setAttribute('position', g.attributes.position); c.setIndex(g.index); return c; };
@@ -1210,13 +1552,14 @@ export function buildGeometry(R = rng(7), seed = 7) {
     for (let k = 0; k < src.length; k += 3) if (!(inTile(src[k]) && inTile(src[k + 1]) && inTile(src[k + 2]))) keep.push(src[k], src[k + 1], src[k + 2]);
     const c = new THREE.BufferGeometry(); c.setAttribute('position', p); c.setIndex(keep); return c;
   })();
-  const colGeo = mergeGeometries([solidGeo, posOnly(terr), farCol], false);
+  // [B] collision-only treeline proxies go last (A's collider map: solids, then terrain, then anything else)
+  const colGeo = mergeGeometries([solidGeo, posOnly(terr), farCol, ...(site.colliders || []).map(posOnly)], false);
   colGeo.computeBoundingBox();
   const bvh = new MeshBVH(colGeo, { maxLeafTris: 5 });
   // proximity / skim scoring: built structures and trunks only, so skimming the grass scores nothing
   const skimBvh = new MeshBVH(solidGeo, { maxLeafTris: 5 });
 
-  return { site, terr, far, pathG, treeSpots, merged, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart };
+  return { site, terr, far, pathG, treeSpots, treeline, merged, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart };
 }
 
 // ---------------------------------------------------------------- build everything
@@ -1228,12 +1571,13 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
 
   // textures (stream in parallel with the sky)
   const tl = new THREE.TextureLoader(); tl.setCrossOrigin('anonymous');
-  let texDone = 0; const texTotal = Object.keys(MATS).length * 3;
+  let texDone = 0; const texTotal = Object.values(MATS).reduce((s, m) => s + (m.maps?.length || 0), 0);
   const loadTex = (url, srgb) => new Promise((res) => tl.load(url, (t) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; if (srgb) t.colorSpace = THREE.SRGBColorSpace; texDone++; res(t); }, undefined, () => { texDone++; res(null); }));
   const texJobs = {};
   for (const [k, m] of Object.entries(MATS)) {
-    const b = `${PH}/Textures/jpg/1k/${m.id}/${m.id}_`;
-    texJobs[k] = Promise.all([loadTex(b + 'diff_1k.jpg', true), loadTex(b + 'nor_gl_1k.jpg', false), loadTex(b + 'arm_1k.jpg', false)]);
+    const maps = m.maps || [];
+    texJobs[k] = Promise.all(maps.map((map) => loadTex(texURL(m, map), /diff/.test(map))))
+      .then((ts) => Object.fromEntries(maps.map((map, i) => [map.replace(/^leaves_/, ''), ts[i]])));
   }
   // [A] sky + light. The bake needs only the per-sky sun direction, so it runs right after the geometry while the HDR
   // and textures stream; the HDR's measured sun/sky intensities then scale it through uniforms (uniforms.aLight).
@@ -1246,7 +1590,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
 
   // geometry (CPU) while downloads run
   const geo = buildGeometry(R, seed);
-  const { site, terr, far, pathG, treeSpots, merged, colGeo, bvh, skimBvh } = geo;
+  const { site, terr, far, pathG, treeSpots, treeline, merged, colGeo, bvh, skimBvh } = geo;
   prog(0.1, 'Baking light');
   await yieldUI();
   const bake = await bakeLight(geo, { sunDir, sun: hasSun, quality, onTick: (f) => (bakeFrac = f) });
@@ -1269,130 +1613,386 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   scene.background = sk.sky; scene.environment = sk.env;
   scene.fog = new THREE.Fog(sk.fogColor, 40, 2600);
 
-  const mkMat = (key, extra = {}) => {
-    const m = MATS[key], [d, n, arm] = texOf[key] || [];
-    const rep = 1 / m.tile;
-    [d, n, arm].forEach((t) => t && t.repeat.set(rep, rep));
-    const mat = new THREE.MeshStandardMaterial({ map: d || null, normalMap: n || null, roughnessMap: arm || null, metalnessMap: m.metal ? arm : null, aoMap: arm || null, aoMapIntensity: 0.8,
-      roughness: 1, metalness: m.metal ? 1 : 0, color: d ? 0xffffff : 0x9a9690, normalScale: new THREE.Vector2(1, 1), ...extra });
-    return weatherPatch(mat, { ground: !!m.ground, foliage: !!m.foliage }, uniforms);
+  const bStats = { ms: {} }; globalThis.__bandoStats = bStats;    // [B] counts + CPU ms per block, for the smoke harness / integrator
+  let tLap = performance.now(); const lap = (k) => { const n = performance.now(); bStats.ms[k] = Math.round(n - tLap); tLap = n; };
+  // [B] ground mask (grass density, paved apron, terrain AO, grass height) shared by the ground, tracks and grass
+  const gmask = buildGroundMask(site, terr);
+  const maskU = { uMask: { value: gmask }, uMaskO: { value: new THREE.Vector2(MASK.x0, MASK.z0) }, uMaskS: { value: MASK.size } };
+  const lin3 = (a) => new THREE.Color().setRGB(a[0], a[1], a[2]);
+  const meanOf = (key) => { const m = MATS[key], t = texOf[key]?.diff, raw = t ? texMean(t, null) : null; return raw ? { raw, col: raw.map((v, i) => v * m.color[i]) } : { raw: [0.1, 0.1, 0.1], col: m.albedo }; };
+  const kindU = (key) => {
+    const m = MATS[key];
+    if (m.kind === 'ground') {
+      const gm = meanOf('ground'), am = meanOf('apron'), at = texOf.apron?.diff;
+      return { ...maskU, uApron: { value: at || gmask }, uApronRep: { value: 1 / MATS.apron.tile }, uApronCol: { value: lin3(MATS.apron.color) },
+        uGMean: { value: lin3(gm.col) }, uAMean: { value: new THREE.Vector4(...am.col, Math.max(0.02, 0.2126 * am.raw[0] + 0.7152 * am.raw[1] + 0.0722 * am.raw[2])) } };
+    }
+    return m.kind === 'track' ? maskU : {};
   };
-  const mats = {}; for (const k of Object.keys(MATS)) mats[k] = mkMat(k);
+  const mkMat = (key, extra = {}) => {
+    const m = MATS[key], t = texOf[key] || {};
+    const rep = 1 / m.tile;
+    Object.values(t).forEach((tx) => tx && tx.repeat.set(rep, rep));
+    const mat = new THREE.MeshStandardMaterial({ map: t.diff || null, normalMap: t.nor_gl || null, roughness: m.rough ?? 1, metalness: 0,
+      color: t.diff ? lin3(m.color) : new THREE.Color(0x9a9690), normalScale: new THREE.Vector2(1, 1), ...extra });
+    return weatherPatch(mat, { kind: m.kind || 'built', w: m.w, roughMin: m.roughMin, uniforms: kindU(key) }, uniforms);
+  };
+  const mats = {}; for (const [k, m] of Object.entries(MATS)) if (m.kind !== 'aux') mats[k] = mkMat(k);
   mats.path.transparent = true; mats.path.vertexColors = true; mats.path.depthWrite = false; mats.path.polygonOffset = true; mats.path.polygonOffsetFactor = -2;
 
   for (const [mat, g] of Object.entries(merged)) {
-    const mesh = new THREE.Mesh(g, mats[mat]); mesh.castShadow = true; mesh.receiveShadow = true; mesh.matrixAutoUpdate = false; scene.add(mesh);
+    const mesh = new THREE.Mesh(g, mats[mat] || mats.wall); mesh.castShadow = true; mesh.receiveShadow = true; mesh.matrixAutoUpdate = false; scene.add(mesh);
   }
   const terrMesh = new THREE.Mesh(terr, mats.ground); terrMesh.receiveShadow = true; scene.add(terrMesh);
   const farMat = mkMat('ground'); const farMesh = new THREE.Mesh(far, farMat); farMesh.receiveShadow = false; scene.add(farMesh);
   const pathMesh = new THREE.Mesh(pathG, mats.path); pathMesh.receiveShadow = true; pathMesh.renderOrder = 1; scene.add(pathMesh);
 
-  // graffiti decals
+  lap('mask+materials');
+  // [B] graffiti: ~100 big pieces placed by a raycast pass on ground-storey walls (outside and in), in the hall, the
+  // stair shaft and under the silo table, plus Site.decalSpots as hints. Each piece is a grid conformed to the surface
+  // by rays (so it also wraps silos and the chimney) and is rejected over openings, edges and steps. The paint
+  // multiplies the wall texture and gets the same weathering as the wall under it.
   {
-    const atlas = graffitiAtlas(R);
-    const pos = [], uv = [], nor = [], aoA = [], boA = [], idx = [];
-    const Q = new THREE.Vector3(), U = new THREE.Vector3(), V = new THREE.Vector3(0, 1, 0);
-    site.decalSpots.forEach((s, k) => {
-      const cell = Math.floor(R() * 16), cu = (cell % 4) / 4, cv = 1 - (Math.floor(cell / 4) + 1) / 4;
-      U.crossVectors(V, s.n).normalize();
-      const w = s.w, h = Math.min(s.h, w * 0.5), c = s.c.clone().addScaledVector(s.n, 0.035);
-      const b = pos.length / 3;
-      for (const [a, bb] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-        Q.copy(c).addScaledVector(U, a * w / 2).addScaledVector(V, bb * h / 2);
-        pos.push(Q.x, Q.y, Q.z); nor.push(s.n.x, s.n.y, s.n.z); uv.push(cu + (a + 1) / 2 / 4, cv + (bb + 1) / 2 / 4);
-        aoA.push(aoCurve(lightProbe(bvh, Q, s.n, 26, 6))); boA.push(LP.out.x, LP.out.y, LP.out.z);
+    const GR = rng(1401), atlas = graffitiAtlas(rng(1402));
+    const pos = [], uv = [], nor = [], aoA = [], boA = [], ayA = [], idx = [], placed = [];
+    const ray = new THREE.Ray(), UP = new THREE.Vector3(0, 1, 0), DN = new THREE.Vector3(0, -1, 0), U = new THREE.Vector3(), V = new THREE.Vector3(), Q = new THREE.Vector3(), nd = new THREE.Vector3();
+    const cast = (o, d, maxD) => { ray.origin.copy(o); ray.direction.copy(d); return bvh.raycastFirst(ray, THREE.DoubleSide, 0, maxD); };
+    const cellsBy = { piece: [], throw: [], tags: [], buff: [] }; for (let k = 0; k < 32; k++) cellsBy[GTYPE(k)].push(k);
+    const kindPref = () => { const r = GR(); return r < 0.5 ? 'piece' : r < 0.82 ? 'throw' : r < 0.92 ? 'buff' : 'tags'; };
+    const tryPiece = (P, n, w, h, kind) => {
+      U.crossVectors(UP, n).normalize(); V.crossVectors(n, U); nd.copy(n).negate();
+      for (const p of placed) { const dv = P.clone().sub(p.c); if (p.n.dot(n) > 0.7 && Math.abs(dv.dot(n)) < 0.7 && Math.abs(dv.dot(U)) < (p.w + w) * 0.46 && Math.abs(dv.y) < (p.h + h) * 0.5) return false; }
+      const nx = Math.max(3, Math.round(w / 0.55)), ny = Math.max(2, Math.round(h / 0.55)), grid = [];
+      for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++) {
+        Q.copy(P).addScaledVector(U, (i / nx - 0.5) * w).addScaledVector(V, (j / ny - 0.5) * h).addScaledVector(n, 0.45);
+        const hit = cast(Q, nd, 1.0); if (!hit) return false;
+        const hn = hit.face.normal.clone(); if (hn.dot(n) < 0) hn.negate(); if (hn.dot(n) < 0.6) return false;
+        grid.push({ p: hit.point.clone().addScaledVector(hn, 0.012), n: hn, d: hit.distance });
       }
-      idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
-    });
+      for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++) {
+        const a = grid[j * (nx + 1) + i];
+        if (i < nx && Math.abs(a.d - grid[j * (nx + 1) + i + 1].d) > 0.12) return false;
+        if (j < ny && Math.abs(a.d - grid[(j + 1) * (nx + 1) + i].d) > 0.12) return false;
+      }
+      // the element under the paint: from just inside the surface, the first hits up and down are its top and bottom
+      const S = grid[Math.floor(grid.length / 2)].p.clone().addScaledVector(n, -0.1);
+      const hu = cast(S, UP, 60), hd = cast(S, DN, 60), top = hu ? S.y + hu.distance : P.y + h, bot = hd ? S.y - hd.distance : 0;
+      const list = cellsBy[kind], cell = list[Math.floor(GR() * list.length)], cu = (cell % 4) / 4, cv = 1 - (Math.floor(cell / 4) + 1) / 8;
+      const b = pos.length / 3;
+      grid.forEach((q, k) => {
+        const i = k % (nx + 1), j = Math.floor(k / (nx + 1));
+        pos.push(q.p.x, q.p.y, q.p.z); nor.push(q.n.x, q.n.y, q.n.z); uv.push(cu + (i / nx) * 0.25, cv + (j / ny) * 0.125); ayA.push(bot, top);
+        aoA.push(aoCurve(lightProbe(bvh, q.p, q.n, 22, 4))); boA.push(LP.out.x, LP.out.y, LP.out.z);
+      });
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { const a = b + j * (nx + 1) + i; idx.push(a, a + 1, a + nx + 2, a, a + nx + 2, a + nx + 1); }
+      placed.push({ c: P.clone(), n: n.clone(), w, h });
+      return true;
+    };
+    // the flat (or gently curved) span of surface around H along axis A, probing in 0.2 m steps up to lim each way
+    const span = (H, n, A, lim) => {
+      const o = new THREE.Vector3(), nn = n.clone().negate(), r = [0, 0];
+      const d0 = cast(o.copy(H).addScaledVector(n, 0.45), nn, 1.0); if (!d0) return r;
+      for (const s of [-1, 1]) {
+        let prev = d0.distance, t = 0;
+        while (t < lim) {
+          const h = cast(o.copy(H).addScaledVector(A, s * (t + 0.2)).addScaledVector(n, 0.45), nn, 1.0);
+          if (!h || Math.abs(h.distance - prev) > 0.08 || Math.abs(h.face.normal.dot(n)) < 0.6) break;
+          prev = h.distance; t += 0.2;
+        }
+        r[s < 0 ? 0 : 1] = s * t;
+      }
+      return r;
+    };
+    // H: a hit point on a wall, hn: its normal. Fit the piece into the free span around H (bands under ribbon
+    // windows get wide, low pieces), then try smaller; tag-sized pieces go on columns and narrow piers.
+    const place = (H, hn, wMin, wMax) => {
+      const n = hn.clone().setY(0); if (n.lengthSq() < 0.5) return false; n.normalize();
+      U.crossVectors(UP, n).normalize();
+      const Ua = U.clone(), sv = span(H, n, UP, 3.2), C0 = H.clone().addScaledVector(UP, (sv[0] + sv[1]) / 2);
+      const su = span(C0, n, Ua, 4.2), C = C0.clone().addScaledVector(Ua, (su[0] + su[1]) / 2);
+      const spanV = sv[1] - sv[0] - 0.12, spanU = su[1] - su[0] - 0.15;
+      let w = Math.min(wMin + GR() * (wMax - wMin), spanU);
+      for (let t = 0; t < 3 && w >= 0.6; t++, w *= 0.75) {
+        let h = Math.min(w * 0.5, spanV); if (h < w * 0.36) w = h / 0.36;
+        if (w < 0.6 || h < 0.3) return false;
+        const kind = w < 1.7 ? 'tags' : kindPref();
+        if (tryPiece(C, n, w, h, kind)) return true;
+      }
+      return false;
+    };
+    const shoot = (o, d, maxD, minD, wMin, wMax) => {
+      const hit = cast(o, d, maxD); if (!hit || hit.distance < minD) return false;
+      const hn = hit.face.normal.clone(); if (hn.dot(d) > 0) hn.negate(); if (Math.abs(hn.y) > 0.3) return false;
+      return place(hit.point, hn, wMin, wMax);
+    };
+    const hdir = () => { const a = GR() * 6.283; return new THREE.Vector3(Math.cos(a), 0, Math.sin(a)); };
+    const zone = (quota, tries, gen) => { let n = 0; for (let t = 0; t < tries && n < quota; t++) if (gen()) n++; return n; };
+    const counts = {};
+    // hints from the site plan
+    counts.spots = site.decalSpots.reduce((n, s) => n + (shoot(s.c.clone().addScaledVector(s.n, 0.8), s.n.clone().negate(), 2.0, 0, Math.max(2.2, s.w), Math.max(3.2, s.w * 1.5)) ? 1 : 0), 0);
+    const bigF = site.footprints.filter((f) => (f.x1 - f.x0) * (f.z1 - f.z0) > 30);
+    const ring = (yLo, yHi) => () => {
+      const f = bigF[Math.floor(GR() * bigF.length)], side = Math.floor(GR() * 4), t = 0.08 + GR() * 0.84, off = 4 + GR() * 3;
+      const x = side < 2 ? f.x0 + t * (f.x1 - f.x0) : side === 2 ? f.x0 - off : f.x1 + off, z = side < 2 ? (side === 0 ? f.z0 - off : f.z1 + off) : f.z0 + t * (f.z1 - f.z0);
+      const d = side === 0 ? new THREE.Vector3(0, 0, 1) : side === 1 ? new THREE.Vector3(0, 0, -1) : side === 2 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(-1, 0, 0);
+      return shoot(new THREE.Vector3(x, terrainHeight(x, z) + yLo + GR() * (yHi - yLo), z), d, off + 12, 0.5, 2.4, 6);
+    };
+    counts.outside = zone(44, 500, ring(1.5, 3.0));
+    counts.upper = zone(9, 200, ring(6.2, 10));
+    const inBox = (x0, x1, z0, z1, ys, minD) => () => shoot(new THREE.Vector3(x0 + GR() * (x1 - x0), ys(), z0 + GR() * (z1 - z0)), hdir(), 25, minD, 2.2, 5.5);
+    const hall = site.footprints.find((f) => f.x1 - f.x0 > 50) || bigF[0];
+    counts.hall = zone(26, 400, inBox(hall.x0 + 2, hall.x1 - 2, hall.z0 + 2, hall.z1 - 2, () => { const r = GR(); return (r < 0.6 ? 0 : r < 0.85 ? 5 : 10) + 1.4 + GR() * 1.3; }, 1.5));
+    counts.table = zone(10, 200, inBox(-53, -15, -27, -1, () => 1.3 + GR() * 1.8, 1.0));
+    counts.shaft = zone(9, 120, () => { const a = Math.floor(GR() * 4) * Math.PI / 2 + (GR() - 0.5) * 0.3; return shoot(new THREE.Vector3(-33.9, 1.6 + Math.floor(GR() * 9) * 4 + GR() * 1.4, -14), new THREE.Vector3(Math.cos(a), 0, Math.sin(a)), 3, 0.3, 1.6, 2.6); });
+    const shop = site.footprints.find((f) => f.x0 < -55 && f.z0 > 30);
+    if (shop) counts.workshop = zone(8, 150, inBox(shop.x0 + 2, shop.x1 - 2, shop.z0 + 2, shop.z1 - 2, () => (GR() < 0.7 ? 1.3 : 5.5) + GR() * 1.2, 1.2));
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setAttribute('ao', new THREE.Float32BufferAttribute(aoA, 1)); g.setAttribute('bounce', new THREE.Float32BufferAttribute(boA, 3)); g.setIndex(idx);
-    const m = weatherPatch(new THREE.MeshStandardMaterial({ map: atlas, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, roughness: 0.85, metalness: 0 }), { foliage: true }, uniforms);
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setAttribute('ao', new THREE.Float32BufferAttribute(aoA, 1)); g.setAttribute('bounce', new THREE.Float32BufferAttribute(boA, 3)); g.setAttribute('aY', new THREE.Float32BufferAttribute(ayA, 2)); g.setIndex(idx);
+    const wallT = texOf.wall?.diff, wm = wallT ? texMean(wallT, null) : null;
+    const white = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1); white.needsUpdate = true;
+    const m = weatherPatch(new THREE.MeshStandardMaterial({ map: atlas, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, roughness: 0.85, metalness: 0 }),
+      { kind: 'decal', w: MATS.wall.w, roughMin: 0.8, uniforms: { uWallTex: { value: wallT || white }, uWallRep: { value: 1 / MATS.wall.tile }, uWallMean: { value: wm ? Math.max(0.01, 0.2126 * wm[0] + 0.7152 * wm[1] + 0.0722 * wm[2]) : 1 } } }, uniforms);
     const mesh = new THREE.Mesh(g, m); mesh.receiveShadow = true; mesh.renderOrder = 2; scene.add(mesh);
+    bStats.graffiti = { pieces: placed.length, big: placed.filter((p) => p.w >= 1.7).length, m2: Math.round(placed.reduce((s, p) => s + p.w * p.h, 0)), tris: idx.length / 3, ...counts };
   }
 
-  // grass: a dense field of tufts that travels with the drone. Each tuft is anchored to a world grid cell
-  // (snapped origin + per-cell hash), so nothing swims; tufts fade out at the edge of the patch.
-  const gN = { low: 120, auto: 170, high: 220 }[quality] || 170, gCell = 0.45;
-  const grassU = { uOrigin: { value: new THREE.Vector2() }, uCam: { value: new THREE.Vector3() }, uCell: { value: gCell }, uR: { value: gN * gCell * 0.5 }, uScale: { value: 1 },
-    uFoot: { value: site.footprints.slice(0, 24).map((f) => new THREE.Vector4(f.x0, f.z0, f.x1, f.z1)) }, uSeg: { value: [] } };
-  for (const pl of PATHS) for (let i = 0; i < pl.length - 1; i++) grassU.uSeg.value.push(new THREE.Vector4(pl[i][0], pl[i][1], pl[i + 1][0], pl[i + 1][1]));
-  while (grassU.uFoot.value.length < 24) grassU.uFoot.value.push(new THREE.Vector4(1e5, 1e5, 1e5, 1e5));
-  const nSeg = grassU.uSeg.value.length;
+  lap('graffiti');
+  // [B] grass: photographed clumps (Poly Haven grass_medium_01: 9 sub-rects of its clump strip) on trapezoid cross
+  // cards, one tuft per world-anchored base cell (no swimming), straw-to-green by low-frequency noise.
+  // Perf (pixel-identical): cells are stored in rings around the camera cell, so the draw is front-to-back from every
+  // heading; instanceCount stops at the fade radius; the vertex shader drops tufts outside the 4 side frustum planes.
+  // A load-time mask replaces the per-vertex footprint/path loops. Altitude: hashes come from the integer base-cell
+  // index, so level-2 tufts are exactly a subset of level-1 tufts; the others shrink away before the switch, width and
+  // radius change continuously, and the field fades out above ~30 m AGL (the ground shader carries it from there).
+  const gN = { low: 150, auto: 210, high: 260 }[quality] || 210, gCell = 0.34, baseR = gN * gCell * 0.5;   // narrow tufts, denser cells
+  const GRECTS = [[205, 765, 345, 898], [335, 765, 478, 898], [598, 772, 722, 872], [712, 772, 842, 872], [28, 888, 206, 998], [238, 905, 378, 999], [365, 905, 508, 999], [588, 882, 705, 1020], [695, 882, 812, 1020]];
+  const gtx = texOf.grass || {}, atlasOK = !!(gtx.diff && gtx.alpha);
+  const grassU = { uOrigin: { value: new THREE.Vector2() }, uCam: { value: new THREE.Vector3() }, uCell: { value: gCell }, uCell0: { value: gCell }, uR: { value: baseR },
+    uWide: { value: 1 }, uOddK: { value: 1 }, uFade: { value: 1 }, uFr: { value: [0, 1, 2, 3].map(() => new THREE.Vector4(0, 0, 0, 1e6)) },
+    uRects: { value: GRECTS.map(([x0, y0, x1, y1]) => (atlasOK ? new THREE.Vector4(x0 / 1024, 1 - y1 / 1024, (x1 - x0) / 1024, (y1 - y0) / 1024) : new THREE.Vector4(0, 0, 1, 1))) }, ...maskU };
+  let grass, ringR = null, horizonBand = null;
   {
     const card = new THREE.InstancedBufferGeometry();
-    const P = [], UV = [], N = [], I = [];
+    const P = [], UV = [], N = [], I = [], bw = 0.72;                      // trapezoid: base 0.72 x the top width
     for (let k = 0; k < 3; k++) {
-      const a = k * Math.PI / 3, cx = Math.cos(a) * 0.5, cz = Math.sin(a) * 0.5, b = P.length / 3;
-      P.push(-cx, 0, -cz, cx, 0, cz, cx, 1, cz, -cx, 1, -cz); UV.push(0, 0, 1, 0, 1, 1, 0, 1); N.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
+      const a = k * Math.PI / 3 + 0.2, cx = Math.cos(a) * 0.5, cz = Math.sin(a) * 0.5, b = P.length / 3;
+      P.push(-cx * bw, 0, -cz * bw, cx * bw, 0, cz * bw, cx, 1, cz, -cx, 1, -cz); UV.push(0.5 - bw / 2, 0, 0.5 + bw / 2, 0, 1, 1, 0, 1); N.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
       I.push(b, b + 1, b + 2, b, b + 2, b + 3);
     }
     card.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); card.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2));
     card.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3)); card.setIndex(I);
     card.setAttribute('ao', new THREE.Float32BufferAttribute(new Array(12).fill(1), 1));
-    const cells = new Float32Array(gN * gN * 2); for (let i = 0; i < gN; i++) for (let j = 0; j < gN; j++) { cells[(i * gN + j) * 2] = i; cells[(i * gN + j) * 2 + 1] = j; }
+    const order = []; for (let i = 0; i < gN; i++) for (let j = 0; j < gN; j++) order.push([i, j, Math.hypot(i - gN / 2, j - gN / 2)]);
+    order.sort((a, b) => a[2] - b[2]);
+    const cells = new Float32Array(gN * gN * 2); ringR = new Float32Array(order.length);
+    order.forEach(([i, j, r], k) => { cells[k * 2] = i; cells[k * 2 + 1] = j; ringR[k] = r; });
     card.setAttribute('aCell', new THREE.InstancedBufferAttribute(cells, 2));
     card.instanceCount = gN * gN;
-    const gm = new THREE.MeshStandardMaterial({ map: grassTexture(R), alphaTest: 0.42, side: THREE.DoubleSide, roughness: 0.95, metalness: 0 });
-    weatherPatch(gm, { foliage: true }, uniforms);
-    const base = gm.onBeforeCompile;
-    gm.onBeforeCompile = (sh) => {
-      base(sh);
-      Object.assign(sh.uniforms, grassU);
-      sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>
-attribute vec2 aCell;
-uniform vec2 uOrigin; uniform vec3 uCam; uniform float uCell; uniform float uR; uniform float uScale;
-uniform vec4 uFoot[24]; uniform vec4 uSeg[${nSeg}];
-varying vec3 vTint;
+    const gm = new THREE.MeshStandardMaterial({ map: atlasOK ? gtx.diff : grassTexture(rng(1501)), alphaMap: atlasOK ? gtx.alpha : null, alphaTest: 0.38, alphaToCoverage: true,
+      side: THREE.DoubleSide, roughness: 0.92, metalness: 0, color: atlasOK ? lin3(MATS.grass.color) : new THREE.Color(1, 1, 1) });
+    if (atlasOK) [gtx.diff, gtx.alpha].forEach((t) => { t.repeat.set(1, 1); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; });
+    weatherPatch(gm, { kind: 'grass', aoExpr: 'gAO', uniforms: grassU,
+      vsHead: `attribute vec2 aCell;
+uniform vec2 uOrigin; uniform vec3 uCam; uniform float uCell; uniform float uCell0; uniform float uR; uniform float uWide; uniform float uOddK; uniform float uFade;
+uniform vec4 uRects[9]; uniform vec4 uFr[4];
+uniform sampler2D uMask; uniform vec2 uMaskO; uniform float uMaskS;
+varying vec3 vTint; varying float vDry;
 float gh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float gvn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(gh(i), gh(i + vec2(1, 0)), f.x), mix(gh(i + vec2(0, 1)), gh(i + vec2(1, 1)), f.x), f.y); }
 float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95.0, abs(z - 10.0) - 85.0), 0.0);
   float n = sin(x * 0.021) * cos(z * 0.017) * 1.2 + sin(x * 0.053 + z * 0.041) * 0.45 + sin(z * 0.11 - x * 0.07) * 0.15;
-  float ramp = min(1.0, d / 40.0); return n * ramp + min(d, 180.0) * 0.012 * ramp - 0.05 * (1.0 - ramp); }`)
-        .replace('#include <begin_vertex>', `#include <begin_vertex>
-  vec2 cw = uOrigin + aCell * uCell;
-  vec2 bp = cw + (vec2(gh(cw), gh(cw + 17.3)) - 0.5) * uCell * 0.95;
-  float keep = 1.0 - smoothstep(uR * 0.7, uR, distance(bp, uCam.xz));
-  for (int i = 0; i < 24; i++) { vec4 f = uFoot[i]; if (bp.x > f.x && bp.x < f.z && bp.y > f.y && bp.y < f.w) keep *= 0.0; }
-  for (int i = 0; i < ${nSeg}; i++) { vec4 sg = uSeg[i]; vec2 a = sg.xy, b = sg.zw, ab = b - a; float t = clamp(dot(bp - a, ab) / dot(ab, ab), 0.0, 1.0);
-    if (distance(bp, a + ab * t) < 2.3 + gh(bp + 3.1) * 0.8) keep = 0.0; }
-  float r1 = gh(bp + 7.7), r2 = gh(bp + 3.3), r3 = gh(bp + 11.1);
-  float hh = (0.32 + 0.85 * pow(r1, 1.4)) * keep * mix(1.0, uScale, 0.6), wd = (0.7 + 0.7 * r2) * keep * uScale, ang = r3 * 3.14159;
-  float ca = cos(ang), sa = sin(ang);
+  float ramp = min(1.0, d / 40.0); return n * ramp + min(d, 180.0) * 0.012 * ramp - 0.05 * (1.0 - ramp); }`,
+      vsBegin: `
+  vec2 bi = floor((uOrigin + aCell * uCell) / uCell0 + 0.5);            // integer base-cell index: same tuft at every level
+  vec2 bp = bi * uCell0 + (vec2(gh(bi), gh(bi + 17.3)) - 0.5) * uCell0 * 0.95;
+  vec4 mk = textureLod(uMask, (bp - uMaskO) / uMaskS, 0.0);
+  float r1 = gh(bi + 7.7), r2 = gh(bi + 3.3), r3 = gh(bi + 11.1), r4 = gh(bi + 23.9), r5 = gh(bi + 5.5);
+  float member = step(mod(bi.x, 2.0) + mod(bi.y, 2.0), 0.5);
+  float dcam = distance(bp, uCam.xz);
+  // (r5 + 0.005: the fp32 hash is quantised to 1/256, so r5 == 0 happens and would keep tufts where density is 0)
+  float keep = (1.0 - smoothstep(uR * 0.7, uR, dcam)) * step(r5 + 0.005, mk.r) * mix(uOddK, 1.0, member) * uFade * smoothstep(0.25, 0.7, dcam);
+  vec4 rc = uRects[int(r4 * 8.999)];
+  float hh = (0.32 + 0.8 * pow(r1, 1.3)) * (0.45 + 1.1 * mk.a) * keep;
+  // the clumps are ~30 cm grass: squeeze them ~2.2x horizontally so blades stay blade-thin on 0.4-1.6 m tufts
+  float wd = hh * (rc.z / rc.w) * 0.45 * (0.85 + 0.3 * r2) * uWide;
+  vec3 gbase = vec3(bp.x, terrH(bp) - 0.04, bp.y);
+  vec3 gc = gbase + vec3(0.0, hh * 0.5, 0.0); float grad = 0.62 * wd + 0.5 * hh + 0.12;
+  bool cull = keep < 0.002;
+  for (int i = 0; i < 4; i++) cull = cull || dot(uFr[i].xyz, gc) + uFr[i].w < -grad;
+  if (cull) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  float ang = r3 * 6.2832, ca = cos(ang), sa = sin(ang);
   vec3 lp = vec3(position.x * wd, position.y * hh, position.z * wd);
   lp = vec3(ca * lp.x - sa * lp.z, lp.y, sa * lp.x + ca * lp.z);
   float sway = sin(uTime * 1.9 + bp.x * 0.31 + bp.y * 0.23) + 0.4 * sin(uTime * 4.3 + bp.x * 1.7);
-  lp.x += sway * 0.07 * lp.y; lp.z += sway * 0.04 * lp.y;
-  transformed = lp + vec3(bp.x, terrH(bp) - 0.03, bp.y);
-  vTint = vec3(0.92 + r2 * 0.25, 0.95 + r1 * 0.18, 0.78 + r3 * 0.2);`);
-      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vTint;')
-        .replace('#include <map_fragment>', '#include <map_fragment>\n  diffuseColor.rgb *= vTint;');
+  lp.x += sway * 0.06 * lp.y; lp.z += sway * 0.035 * lp.y;
+  transformed = lp + gbase;
+  #ifdef USE_MAP
+  vMapUv = rc.xy + uv * rc.zw;
+  #endif
+  #ifdef USE_ALPHAMAP
+  vAlphaMapUv = rc.xy + uv * rc.zw;
+  #endif
+  vDry = clamp(smoothstep(0.18, 0.62, gvn(bp * 0.035 + 3.0) * 0.65 + gvn(bp * 0.21) * 0.35) * (0.45 + 0.55 * r2) + 0.2 * r1 * r1, 0.0, 1.0);
+  vTint = vec3(0.9 + r2 * 0.22, 0.93 + r1 * 0.16, 0.8 + r3 * 0.25);
+  float gAO = mix(0.5, 1.0, uv.y) * (0.3 + 0.7 * mk.b);`,
+      fsHead: 'varying vec3 vTint; varying float vDry;',
+      fsMap: `
+  diffuseColor.rgb = mix(diffuseColor.rgb, lum3(diffuseColor.rgb) * vec3(1.55, 1.22, 0.6), vDry) * vTint;`,
+      fsAlpha: `
+  #ifdef USE_MAP
+  { vec2 tx = vMapUv * 1024.0; diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
+  #endif` }, uniforms);
+    grass = new THREE.Mesh(card, gm); grass.frustumCulled = false; grass.receiveShadow = true; grass.renderOrder = 1; scene.add(grass);
+    const fr = new THREE.Frustum(), pm = new THREE.Matrix4();
+    grass.onBeforeRender = (r, s, cam) => {
+      pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse); fr.setFromProjectionMatrix(pm);
+      for (let i = 0; i < 4; i++) { const p = fr.planes[i]; grassU.uFr.value[i].set(p.normal.x, p.normal.y, p.normal.z, p.constant); }
     };
-    const grass = new THREE.Mesh(card, gm); grass.frustumCulled = false; grass.receiveShadow = true; scene.add(grass);
   }
-  // bushes + tree canopies: instanced leaf-card balls
+  const ringCount = (r) => { let lo = 0, hi = ringR.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ringR[m] <= r) lo = m + 1; else hi = m; } return lo; };
+  lap('grass');
+  // [B] trees, wall thickets, field shrubs and saplings on slab edges: one merged mesh of leaf-card balls with the
+  // photographed leaves. Normals point out of the whole crown (it shades as one mass, both card faces alike);
+  // light is baked per plant with the same probe as the buildings, so nothing glows under the silo table.
+  const foliageStats = bStats.foliage = {};
   {
-    const ball = new THREE.BufferGeometry(); const P = [], UV = [], N = [], I = [];
+    const FR = rng(1301), lt = texOf.leaf || {}, UPV = new THREE.Vector3(0, 1, 0), fray = new THREE.Ray();
+    const leafOK = !!(lt.diff && lt.alpha), leafMap = leafOK ? leafCluster(lt.diff, lt.alpha, FR) : leafTexture(FR);
+    const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    const tpl = [];
     for (let k = 0; k < 9; k++) {
-      const ax = new THREE.Vector3(R() - 0.5, R() - 0.5, R() - 0.5).normalize(), ang = R() * Math.PI;
-      const qq = new THREE.Quaternion().setFromAxisAngle(ax, ang), b = P.length / 3;
-      for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { const vv = new THREE.Vector3(u * 0.6, v * 0.6, 0).applyQuaternion(qq); P.push(vv.x, vv.y, vv.z); const nn = vv.clone().normalize(); N.push(nn.x, nn.y * 0.7 + 0.3, nn.z); UV.push((u + 1) / 2, (v + 1) / 2); }
-      I.push(b, b + 1, b + 2, b, b + 2, b + 3);
+      const qq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(FR() - 0.5, FR() - 0.5, FR() - 0.5).normalize(), FR() * Math.PI);
+      tpl.push([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => ({ p: new THREE.Vector3(u * 0.6, v * 0.6, 0).applyQuaternion(qq), uv: [(u + 1) / 2, (v + 1) / 2] })));
     }
-    ball.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); ball.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2));
-    ball.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3)); ball.setIndex(I); ball.setAttribute('ao', new THREE.Float32BufferAttribute(new Array(P.length / 3).fill(1), 1));
-    const lm = weatherPatch(new THREE.MeshStandardMaterial({ map: leafTexture(R), alphaTest: 0.4, side: THREE.DoubleSide, roughness: 0.85 }), { foliage: true, wind: false }, uniforms);
-    const spots = [];
-    for (const t of treeSpots) for (let k = 0; k < 4; k++) spots.push({ x: t.x + (R() - 0.5) * t.h * 0.35, y: terrainHeight(t.x, t.z) + t.h * (0.6 + R() * 0.35), z: t.z + (R() - 0.5) * t.h * 0.35, s: t.h * (0.3 + R() * 0.18) });
-    for (let k = 0; k < 160; k++) {
-      const f = site.footprints[Math.floor(R() * site.footprints.length)];
-      const side = R() < 0.5; const x = side ? (R() < 0.5 ? f.x0 - 1.2 : f.x1 + 1.2) : f.x0 + R() * (f.x1 - f.x0), z = side ? f.z0 + R() * (f.z1 - f.z0) : (R() < 0.5 ? f.z0 - 1.2 : f.z1 + 1.2);
-      if (distToPaths(x, z) < 3) continue;
-      spots.push({ x, y: terrainHeight(x, z) + 0.5 + R() * 0.6, z, s: 0.9 + R() * 1.8 });
+    const P = [], N = [], UV = [], C = [], AO = [], BO = [], SW = [], I = [];
+    const q = new THREE.Quaternion(), eu = new THREE.Euler(), v = new THREE.Vector3(), n = new THREE.Vector3(), d = new THREE.Vector3();
+    const ball = (c, s, cc, rad, pr, tint, swayK, baseY) => {
+      eu.set(FR() * 6.28, FR() * 6.28, FR() * 6.28); q.setFromEuler(eu); const sy = s * (0.8 + FR() * 0.35);
+      for (const quad of tpl) {
+        const b = P.length / 3;
+        for (const { p, uv } of quad) {
+          v.copy(p).applyQuaternion(q); v.set(v.x * s, v.y * sy, v.z * s).add(c);
+          d.copy(v).sub(cc); const dl = d.length() / rad; d.normalize();
+          n.copy(v).sub(c).normalize().lerp(d, 0.7); n.y += 0.25; n.normalize();
+          const occ = 0.42 + 0.58 * sm(0.1, 1.0, dl * 0.7 + (d.y * 0.5 + 0.5) * 0.4);
+          P.push(v.x, v.y, v.z); N.push(n.x, n.y, n.z); UV.push(uv[0], uv[1]); C.push(tint[0], tint[1], tint[2]);
+          AO.push(pr.ao * occ); BO.push(pr.bo.x * occ, pr.bo.y * occ, pr.bo.z * occ); SW.push(Math.max(0, v.y - baseY) * swayK);
+        }
+        I.push(b, b + 1, b + 2, b, b + 2, b + 3);
+      }
+    };
+    const probe = (p) => { const vis = lightProbe(bvh, p, UPV, 18, 4); return { vis, ao: aoCurve(vis), bo: LP.out.clone() }; };
+    const tintOf = () => (FR() < 0.12 ? [1.25, 1.12, 0.62] : [0.85 + FR() * 0.3, 0.9 + FR() * 0.2, 0.8 + FR() * 0.3]);
+    const clear = (x, y, z) => { let m = 6; for (let k = 0; k < 6; k++) { const a = k * 1.047; fray.origin.set(x, y, z); fray.direction.set(Math.cos(a), 0, Math.sin(a)); const h = bvh.raycastFirst(fray, THREE.DoubleSide, 0, 6); if (h) m = Math.min(m, h.distance); } return m; };
+    const shrub = (x, z, s, nb, swayK) => {
+      const y = terrainHeight(x, z), cl = clear(x, y + 0.6 * s, z); if (cl < 0.35) return false;
+      s = Math.min(s, (cl + 0.3) / 0.6);
+      const pr = probe(new THREE.Vector3(x, y + s, z)); if (pr.vis < 0.3) return false;       // no light, no growth
+      const cc = new THREE.Vector3(x, y + s * 0.55, z), tint = tintOf();
+      for (let b = 0; b < nb; b++) ball(new THREE.Vector3(x + (FR() - 0.5) * s * 0.9, y + s * (0.3 + FR() * 0.5), z + (FR() - 0.5) * s * 0.9), s * (0.65 + FR() * 0.4), cc, s * 1.2, pr, tint, swayK, y);
+      return true;
+    };
+    // trees: an irregular crown from ~0.3 h up (~1.3x taller than wide) made of 3-5 limbs, each a clump of leaf
+    // balls, so the silhouette is lumpy with sky gaps rather than one ball
+    for (const t of treeSpots) {
+      const cc = new THREE.Vector3(t.x + (FR() - 0.5) * 0.8, t.y + t.h * 0.64, t.z + (FR() - 0.5) * 0.8), rx = t.h * (0.24 + FR() * 0.1), ry = t.h * 0.33;
+      const pr = probe(cc.clone().addScaledVector(UPV, ry * 0.6)), tint = tintOf();
+      for (let l = 0, nl = 3 + Math.floor(FR() * 3); l < nl; l++) {
+        const th = FR() * 6.283, cp = FR() * 1.6 - 0.6, sp = Math.sqrt(1 - cp * cp), r = 0.5 + 0.45 * FR();
+        const lc = new THREE.Vector3(cc.x + Math.cos(th) * sp * rx * r, cc.y + cp * ry * r, cc.z + Math.sin(th) * sp * rx * r), lr = t.h * (0.13 + FR() * 0.08);
+        for (let b = 0, nb = 3 + Math.floor(FR() * 3); b < nb; b++)
+          ball(lc.clone().add(new THREE.Vector3((FR() - 0.5) * 2 * lr, (FR() - 0.5) * 1.6 * lr, (FR() - 0.5) * 2 * lr)), t.h * (0.13 + FR() * 0.08), cc, Math.max(rx, ry), pr, tint, 0.012, t.y + t.h * 0.3);
+      }
     }
-    const inst = new THREE.InstancedMesh(ball, lm, spots.length); const M = new THREE.Matrix4(), q = new THREE.Quaternion(), col = new THREE.Color();
-    spots.forEach((b, i) => { q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), R() * 6.28); M.compose(new THREE.Vector3(b.x, b.y, b.z), q, new THREE.Vector3(b.s, b.s * (0.8 + R() * 0.4), b.s)); inst.setMatrixAt(i, M);
-      const vis = Math.pow(skyVisibility(bvh, new THREE.Vector3(b.x, b.y + b.s * 0.6, b.z), new THREE.Vector3(0, 1, 0), 16, 3), 1.2); col.setRGB(0.8 + R() * 0.3, 0.85 + R() * 0.3, 0.75 + R() * 0.2).multiplyScalar(0.4 + 0.6 * vis); inst.setColorAt(i, col); });
-    inst.castShadow = true; inst.receiveShadow = true; scene.add(inst);
+    // thickets hugging the walls: runs that come and go along every side of every footprint
+    let nBush = 0, nField = 0, nSap = 0;
+    for (const f of site.footprints) {
+      if ((f.x1 - f.x0) * (f.z1 - f.z0) < 20) continue;
+      for (let side = 0; side < 4; side++) {
+        const len = side < 2 ? f.x1 - f.x0 : f.z1 - f.z0; let on = FR() < 0.5;
+        for (let t = FR() * 2; t < len; t += 1.2 + FR() * 1.4) {
+          if (FR() < 0.22) on = !on; if (!on) continue;
+          const o = -0.6 + FR() * 2.2, x = side < 2 ? f.x0 + t : side === 2 ? f.x0 - o : f.x1 + o, z = side < 2 ? (side === 0 ? f.z0 - o : f.z1 + o) : f.z0 + t;
+          if (distToPaths(x, z) < 3.2) continue;
+          if (shrub(x, z, 0.8 + FR() * 1.5, 2 + Math.floor(FR() * 3), 0.03)) nBush++;
+        }
+      }
+    }
+    const outside = (x, z, m) => !site.footprints.some((f) => x > f.x0 - m && x < f.x1 + m && z > f.z0 - m && z < f.z1 + m);
+    for (let k = 0; k < 90; k++) {
+      const x = -125 + FR() * 240, z = -100 + FR() * 225;
+      if (!outside(x, z, 3) || distToPaths(x, z) < 4 || Math.hypot(x, z - 118) < 12) continue;
+      if (shrub(x, z, 1.2 + FR() * 1.4, 3 + Math.floor(FR() * 3), 0.025)) nField++;
+    }
+    // saplings where slabs and roofs end (rain, a crack, a little soil)
+    const bigF = site.footprints.filter((f) => (f.x1 - f.x0) * (f.z1 - f.z0) > 60);
+    for (let k = 0; k < 300 && nSap < 30 && bigF.length; k++) {
+      const f = bigF[Math.floor(FR() * bigF.length)], x = f.x0 + FR() * (f.x1 - f.x0), z = f.z0 + FR() * (f.z1 - f.z0);
+      fray.origin.set(x, 90, z); fray.direction.set(0, -1, 0); const h = bvh.raycastFirst(fray, THREE.DoubleSide, 0, 120);
+      if (!h || h.point.y < 3.5 || Math.abs(h.face.normal.y) < 0.9) continue;
+      let edge = false;
+      for (const [dx, dz] of [[1.1, 0], [-1.1, 0], [0, 1.1], [0, -1.1]]) { fray.origin.set(x + dx, h.point.y + 0.4, z + dz); if (!bvh.raycastFirst(fray, THREE.DoubleSide, 0, 1.5)) edge = true; }
+      if (!edge) continue;
+      const s = 0.45 + FR() * 0.8, base = h.point.clone(), cc = base.clone().addScaledVector(UPV, s * 0.5), pr = probe(cc.clone().addScaledVector(UPV, s * 0.5));
+      if (pr.vis < 0.6) continue;                                   // roofs and outer edges only, not interior hole rims
+      for (let b = 0, nb = 1 + Math.floor(FR() * 2); b < nb; b++) ball(cc.clone().add(new THREE.Vector3((FR() - 0.5) * s * 0.6, FR() * s * 0.4, (FR() - 0.5) * s * 0.6)), s, cc, s, pr, tintOf(), 0.04, base.y);
+      nSap++;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(C, 3)); g.setAttribute('ao', new THREE.Float32BufferAttribute(AO, 1)); g.setAttribute('bounce', new THREE.Float32BufferAttribute(BO, 3));
+    g.setAttribute('aSway', new THREE.Float32BufferAttribute(SW, 1)); g.setIndex(I); g.computeBoundingSphere();
+    const lm = weatherPatch(new THREE.MeshStandardMaterial({ map: leafMap, alphaTest: 0.42, alphaToCoverage: true, side: THREE.DoubleSide, roughness: 0.8, metalness: 0, vertexColors: true,
+      color: leafOK ? lin3(MATS.leaf.color) : new THREE.Color(1, 1, 1) }), { kind: 'leaf', fsAlpha: `
+  #ifdef USE_MAP
+  { vec2 tx = vMapUv * 512.0; diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
+  #endif` }, uniforms);
+    const mesh = new THREE.Mesh(g, lm); mesh.castShadow = true; mesh.receiveShadow = true; mesh.renderOrder = 1; scene.add(mesh);
+    Object.assign(foliageStats, { trees: treeSpots.length, thickets: nBush, shrubs: nField, saplings: nSap, cards: I.length / 6 });
+  }
+
+  lap('foliage');
+  // [B] distant treeline ring: instanced low-poly crowns in 4 sectors (frustum-culled), fogged by the scene fog,
+  // shrinking into the ground before the camera's 300 m far plane so no crown is ever cut in half
+  {
+    const crown = crownGeometry(5), SEC = 4, by = Array.from({ length: SEC }, () => []), UPV = new THREE.Vector3(0, 1, 0);
+    for (const t of treeline) { const a = (Math.atan2(t.z - 10, t.x + 5) / (2 * Math.PI) + 1) % 1; by[Math.min(SEC - 1, Math.floor(a * SEC))].push(t); }
+    // uBand 0: world-anchored ring (shrinks away at 245-282 m from the camera); 1: the horizon band, a ring of crowns
+    // at 262-285 m that follows the camera (no parallax at that range), so the horizon is never empty sky + terrain edge
+    const tmat = (band, off) => weatherPatch(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0 }), { kind: 'treeline', aoExpr: 'gAO',
+      uniforms: { uBand: { value: band }, uOff: { value: off } },
+      vsHead: 'uniform float uBand;',
+      vsBegin: `
+  vec3 ipos = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+  float shr = mix(1.0 - smoothstep(245.0, 282.0, distance(ipos.xz, cameraPosition.xz)), 1.0, uBand);
+  transformed.y *= shr; transformed.xz *= mix(0.4, 1.0, shr);
+  float gAO = mix(0.3, 1.0, smoothstep(0.0, 0.85, position.y)) * (0.78 + 0.22 * normal.y);`,
+      fsHead: 'uniform vec3 uOff;',
+      fsFog: `#ifdef USE_FOG
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, 0.62 * smoothstep(40.0, 290.0, vFogDepth));   // aerial perspective of a distant wood
+#endif`,
+      fsMap: `
+  { vec3 np = vWPos - uOff; float lv = vn(np.xz * 0.6 + np.y * 0.7) * 0.6 + vn(vec2(np.x + np.z, np.y) * 2.2) * 0.4;
+    diffuseColor.rgb *= 0.42 + 1.0 * lv * lv + 0.25 * smoothstep(0.55, 1.0, lv); }` }, uniforms);
+    const tm = tmat(0, new THREE.Vector3());
+    const M = new THREE.Matrix4(), qq = new THREE.Quaternion(), col = new THREE.Color(), P = new THREE.Vector3(), S = new THREE.Vector3();
+    const greens = [[0.04, 0.062, 0.022], [0.06, 0.074, 0.031], [0.031, 0.046, 0.024], [0.074, 0.084, 0.036]];
+    const tint = (im, i, t) => { const gc = greens[Math.min(3, Math.floor(t * 4))], k = 0.85 + t * 0.3; col.setRGB(gc[0] * k, gc[1] * k, gc[2] * k); im.setColorAt(i, col); };
+    for (const list of by) {
+      if (!list.length) continue;
+      const im = new THREE.InstancedMesh(crown, tm, list.length);
+      list.forEach((t, i) => { qq.setFromAxisAngle(UPV, t.rot); M.compose(P.set(t.x, t.y, t.z), qq, S.set(t.w, t.h, t.d)); im.setMatrixAt(i, M); tint(im, i, t.tint); });
+      im.computeBoundingSphere(); im.castShadow = false; im.receiveShadow = false; im.renderOrder = 1; scene.add(im);
+    }
+    const BR = rng(1601), NB = 340, bandOff = new THREE.Vector3(), bm = tmat(1, bandOff);
+    horizonBand = new THREE.InstancedMesh(crownGeometry(3), bm, NB);
+    for (let i = 0; i < NB; i++) {
+      const a = (i + BR() * 0.8) / NB * 6.2832, r = 262 + BR() * 23, h = 9 + Math.pow(BR(), 0.7) * 16, w = h * (0.6 + BR() * 0.35);
+      qq.setFromAxisAngle(UPV, BR() * 6.28); M.compose(P.set(Math.cos(a) * r, -3 - BR() * 2, Math.sin(a) * r), qq, S.set(w, h, w)); horizonBand.setMatrixAt(i, M); tint(horizonBand, i, BR());
+    }
+    horizonBand.frustumCulled = false; horizonBand.castShadow = false; horizonBand.receiveShadow = false; horizonBand.renderOrder = 1; horizonBand.userData.off = bandOff; scene.add(horizonBand);
+    foliageStats.treeline = treeline.length; foliageStats.band = NB; lap('treeline');
   }
 
   // [A] sun: a shadowed DirectionalLight carrying the energy clamped out of the HDR.
@@ -1419,13 +2019,18 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   let grassLevel = 1;
   const update = (camPos, dt, camQuat) => {
     uniforms.uTime.value += dt;
+    // [B] grass LOD: level 2 (2x cells) is a subset of level 1; non-members shrink away between 8 and 11 m AGL,
+    // the switch happens at 14 m (back at 11), width/radius change continuously, the field fades out at 24-32 m
     grassU.uCam.value.copy(camPos);
-    const alt = camPos.y - terrainHeight(camPos.x, camPos.z);
-    const want = alt > 40 ? 4 : alt > 14 ? 2 : 1;                       // power-of-two steps, with hysteresis
-    if (want !== grassLevel && (want > grassLevel ? true : alt < (grassLevel === 4 ? 34 : 11))) grassLevel = want;
+    const alt = camPos.y - terrainHeight(camPos.x, camPos.z), sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    if (grassLevel === 1 && alt > 14) grassLevel = 2; else if (grassLevel === 2 && alt < 11) grassLevel = 1;
     const cell = gCell * grassLevel;
-    grassU.uCell.value = cell; grassU.uScale.value = grassLevel; grassU.uR.value = gN * cell * 0.5;
+    grassU.uCell.value = cell; grassU.uOddK.value = 1 - sm(8, 11, alt); grassU.uWide.value = 1 + 0.45 * sm(8, 26, alt); grassU.uFade.value = 1 - sm(24, 32, alt);
+    grassU.uR.value = Math.min(baseR * (1 + sm(14, 30, alt)), gN * cell * 0.5);
     grassU.uOrigin.value.set(Math.floor(camPos.x / cell) * cell - (gN / 2) * cell, Math.floor(camPos.z / cell) * cell - (gN / 2) * cell);
+    grass.visible = alt < 32.5;
+    grass.geometry.instanceCount = Math.min(gN * gN, ringCount(grassU.uR.value / cell + 2.2));
+    if (horizonBand) { horizonBand.position.set(camPos.x, 0, camPos.z); horizonBand.userData.off.copy(horizonBand.position); }
     // [A] live shadow map follows a point ahead of the camera; re-render only when its snapped centre moves
     _ctr.copy(camPos);
     if (camQuat) { _fwd.set(0, 0, -1).applyQuaternion(camQuat); _fwd.y = 0; const l = _fwd.length(); if (l > 1e-3) _ctr.addScaledVector(_fwd, (0.3 * ext) / l); }
@@ -1447,7 +2052,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   BAKE = null;   // [A] the probe solution was only needed while building (decals); free it
   scene.userData.aLight = aLight; scene.userData.lightBake = bake.stats;   // [A] live tuning hooks (uSunB, uSkyB, uFarOn, uHaze...)
   return {
-    scene, colliderScene: colScene, bvh, skimBvh, update, hdr: true,
+    scene, colliderScene: colScene, bvh, skimBvh, update, hdr: true, stats: bStats,
     spawn: new THREE.Vector3(0, terrainHeight(0, 118) + 1.4, 118), yaw: 0,                       // first flight: the reveal
     takeStart: { pos: new THREE.Vector3(...site.takeStart.pos), yaw: site.takeStart.yaw },      // take retries: by the chimney mouth
     lines: site.lines,
