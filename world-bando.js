@@ -28,12 +28,15 @@ const MATS = {
   rust: { id: 'rust_coarse_01', tile: 2.0, maps: ['diff'], color: [2.05, 3.2, 6.53], rough: 0.82, roughMin: 0.7, w: [0.25, 0.2, 0.35, 0.1], albedo: [0.245, 0.128, 0.089] },
   ground: { id: 'grass_ground', tile: 4.0, maps: ['diff'], color: [1.25, 1.35, 1.6], rough: 1, kind: 'ground', albedo: [0.190, 0.158, 0.083] },
   bark: { id: 'bark_brown_02', tile: 1.5, maps: ['diff'], color: [1.1, 1.1, 1.1], rough: 0.95, kind: 'bark', albedo: [0.136, 0.111, 0.066] },
-  path: { id: 'grass_path_2', tile: 3.5, maps: ['diff'], color: [0.8, 0.8, 0.82], rough: 1, kind: 'track', albedo: [0.223, 0.182, 0.109] },
+  path: { id: 'grass_path_2', tile: 3.5, maps: ['diff'], color: [0.74, 0.8, 0.95], rough: 1, kind: 'track', albedo: [0.206, 0.182, 0.126] },
   // not merged-geometry materials: the paved apron is sampled inside the ground shader; grass and leaves are atlases
   apron: { id: 'asphalt_02', tile: 5.0, maps: ['diff'], color: [1.75, 1.72, 1.72], kind: 'aux', albedo: [0.176, 0.170, 0.152], radius: 9 },   // radius: mean paved reach around footprints (5-12 m)
   grass: { model: 'grass_medium_01', tile: 1, maps: ['diff', 'alpha'], color: [1.7, 1.6, 1.9], kind: 'aux', albedo: [0.180, 0.160, 0.066] },
   leaf: { model: 'tree_small_02', tile: 1, maps: ['leaves_diff', 'leaves_alpha'], color: [1.4, 1.3, 1.5], kind: 'aux', albedo: [0.099, 0.124, 0.035] },
 };
+// [B] treeline crowns get low-poly collision proxies (15.6k tris, appended after the terrain in the collider).
+// They cost ~7% of A's light-bake time (terrain-edge rays hit them); false = fly-through treeline, cheaper bake.
+const RING_COLLIDE = true;
 const texURL = (m, map) => m.model ? `${PH}/Models/jpg/1k/${m.model}/${m.model}_${map}_1k.jpg` : `${PH}/Textures/jpg/1k/${m.id}/${m.id}_${map}_1k.jpg`;
 
 function rng(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
@@ -960,7 +963,7 @@ export function buildGeometry(R = rng(7)) {
       if (!clearOf(x, z, 12) || distToPaths(x, z) < 8 || Math.hypot(x, z - 118) < 25) continue;
       const h = (7 + Math.pow(LR(), 0.8) * 13) * stand(a), w = h * (0.55 + LR() * 0.35), y = groundAt(x, z) - 0.6;
       treeline.push({ x, y, z, h, w, d: w * (0.8 + LR() * 0.4), rot: LR() * 6.283, tint: LR() });
-      const c = proxy.clone(); c.scale(w * 0.42, h * 0.42, w * 0.42); c.translate(x, y + h * 0.5, z); site.colliders.push(indexify(c));
+      if (RING_COLLIDE) { const c = proxy.clone(); c.scale(w * 0.36, h * 0.4, w * 0.36); c.translate(x, y + h * 0.5, z); site.colliders.push(indexify(c)); }
     }
   }
 
