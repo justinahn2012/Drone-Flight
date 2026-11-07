@@ -511,12 +511,13 @@ function buildSite(seed = 7) {
   }
   S.chimney = CHIM;
   S.lines = buildLines();
-  // take retry point: hovering beside the chimney mouth, facing down the door/rack line, silo caps in frame on the left
-  const ty = Math.atan2(-DOOR[0], -DOOR[1]) + TAKE_YAW;
-  S.takeStart = { pos: [CHIM.x - DOOR[0] * 12, CHIM.h + 5, CHIM.z - DOOR[1] * 12], yaw: ty };
+  // take retry point: hovering 12 m north-east of the chimney mouth, looking at it (aimed 12 deg right) with the north
+  // row's silo caps receding on the right and the head house beyond: the reference's signature frame. The door is a
+  // quarter turn left at the bottom of the dive.
+  const ts = [0.8, -0.6];
+  S.takeStart = { pos: [CHIM.x + ts[0] * 12, CHIM.h + 5, CHIM.z + ts[1] * 12], yaw: Math.atan2(ts[0], ts[1]) - 0.21 };
   return S;
 }
-const TAKE_YAW = 0.35;   // rad left of the door line, so the caps share the first frame
 
 // ---- named lines: invisible portals, each {name, caption (*accent* word), pts, c, n, w, h} (+ u: width axis, two: either way,
 // pre: gates that must have been crossed (same way) within `within` s). A segment of flight crossing the rectangle
@@ -869,9 +870,9 @@ export function buildGeometry(R = rng(7), seed = 7) {
   })();
   const colGeo = mergeGeometries([solidGeo, posOnly(terr), farCol], false);
   colGeo.computeBoundingBox();
-  const bvh = new MeshBVH(colGeo);
+  const bvh = new MeshBVH(colGeo, { maxLeafTris: 5 });
   // proximity / skim scoring: built structures and trunks only, so skimming the grass scores nothing
-  const skimBvh = new MeshBVH(solidGeo);
+  const skimBvh = new MeshBVH(solidGeo, { maxLeafTris: 5 });
 
   return { site, terr, far, pathG, treeSpots, merged, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart };
 }
