@@ -78,7 +78,7 @@ export class Controls {
       x = (t.clientX - (r.left + r.width / 2)) / R;
       y = -(t.clientY - (r.top + r.height / 2)) / R;
     } else {
-      const R = Math.min(70, window.innerHeight * 0.16);
+      const R = Math.min(95, window.innerHeight * 0.2);
       x = (t.clientX - s.ox) / R; y = -(t.clientY - s.oy) / R;
       const f = this.floats[s.side];
       if (f) { f.style.opacity = 1; f.style.transform = `translate(${s.ox}px, ${s.oy}px)`; f.querySelector('i').style.transform = `translate(${Math.max(-1, Math.min(1, x)) * R}px, ${Math.max(-1, Math.min(1, -y)) * R}px)`; }
@@ -88,7 +88,8 @@ export class Controls {
         st.x = Math.max(-1, Math.min(1, x)); st.y = thr * 2 - 1; return;
       }
     }
-    st.x = Math.max(-1, Math.min(1, x)); st.y = Math.max(-1, Math.min(1, y));
+    const dz = (v) => Math.abs(v) < 0.07 ? 0 : (v - Math.sign(v) * 0.07) / 0.93;
+    st.x = dz(Math.max(-1, Math.min(1, x))); st.y = dz(Math.max(-1, Math.min(1, y)));
   }
 
   poll(dt) {
@@ -115,8 +116,9 @@ export class Controls {
       if (this.throttleCentering) { if (k.has('KeyW') || k.has('KeyS')) ly = a('KeyW', 'KeyS'); }
       else if (k.has('KeyW') || k.has('KeyS')) { this.thr = Math.max(0, Math.min(1, this.thr + a('KeyW', 'KeyS') * dt * 0.6)); ly = this.thr * 2 - 1; this.sticks.L.y = ly; }
     }
-    this.yaw = lx; this.roll = rx; this.pitch = ry;
-    if (this.throttleCentering) { this.climb = ly; }
+    const ex = (v, e) => v * (1 - e) + v * v * v * e;
+    this.yaw = ex(lx, 0.55); this.roll = ex(rx, 0.55); this.pitch = ex(ry, 0.45);
+    if (this.throttleCentering) { this.climb = ex(ly, 0.35); }
     else { this.thr = (ly + 1) / 2; }
     // draw radio gimbals
     for (const side of ['L', 'R']) {

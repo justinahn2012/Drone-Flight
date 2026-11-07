@@ -27,9 +27,9 @@ const QUALITY = {
 const STAB = { off: 0, light: 0.03, heavy: 0.09 };
 
 // ---------------- settings
-const DEF = { world: 'lane', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'on', sound: 'on' };
+const DEF = { v: 2, world: 'lane', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'on', sound: 'on' };
 let S = { ...DEF };
-try { Object.assign(S, JSON.parse(localStorage.getItem('onetake.settings') || '{}')); } catch (e) {}
+try { const saved = JSON.parse(localStorage.getItem('onetake.settings') || '{}'); if (saved.v !== 2) { delete saved.tilt; saved.v = 2; } Object.assign(S, saved); } catch (e) {}
 const save = () => { try { localStorage.setItem('onetake.settings', JSON.stringify(S)); } catch (e) {} };
 const params = new URLSearchParams(location.search);
 if (params.get('splat')) {
@@ -92,9 +92,10 @@ function applySettings() {
   audio.on = S.sound === 'on';
   document.body.classList.toggle('nohud', S.hud === 'off');
   $('rMode').textContent = { cine: 'CINE', angle: 'ANGLE', acro: 'ACRO' }[S.mode];
-  $('lblL').textContent = S.mode === 'cine' ? 'CLIMB · YAW' : 'THROTTLE · YAW';
+  $('lblL').textContent = S.mode === 'cine' ? 'CLIMB · TURN' : 'THROTTLE · YAW';
+  const rl = document.querySelectorAll('.wlabel')[1]; if (rl) rl.textContent = S.mode === 'cine' ? 'SPEED · CARVE' : 'PITCH · ROLL';
   $('modeHint').textContent = {
-    cine: 'Easiest on a phone. Right thumb banks and pitches with coordinated turns; left thumb climbs and yaws. Holds altitude.',
+    cine: 'Easiest on a phone. Right thumb: push for speed, left/right to carve. Left thumb: climb and turn. Let go and it brakes to a hover.',
     angle: 'Self-levelling with manual throttle. Left stick up/down is throttle.',
     acro: 'Real FPV. Sticks command rotation rates (Betaflight actual rates). No self-levelling. Flips, dives, power loops.',
   }[S.mode];
@@ -256,8 +257,11 @@ async function loadWorld(def) {
       const cm = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
       cm.frustumCulled = false; cs.add(cm);
       world.colliderScene = cs;
-      world.bounds = geo.boundingBox.clone().expandByScalar(3);
-    }
+      world.bounds = geo.boundingBox.clone().expandByScalar(4);
+      setLoad(null, 0.96, 'Mapping flyable space…');
+      await new Promise((r) => setTimeout(r, 30));
+      world.envelope = measureEnvelope(mesh, world.bvh, geo.boundingBox);
+    } else world.envelope = null;
     world.def = def;
     world.spawn.set(0, 0, 0); world.yaw = 0;
     applySettings();
@@ -272,6 +276,47 @@ async function loadWorld(def) {
   }
 }
 
+// Generated worlds are built in 3D only near where they were generated; above that the collider stops
+// and the splats turn into a painted backdrop. Find the height where visible splats lose their collision
+// surface (sampled in 0.5 m bands) and cap flight just below it. Same for the sides: the collider's box.
+function measureEnvelope(mesh, bvh, bb) {
+  // Two signals per 0.5 m height band, sampled from the splats inside the collider's box:
+  //  - coverage: share of visible splats with a collision surface within 0.4 m
+  //  - quality: median splat size. Well-observed surfaces are ~1 cm blobs; the backdrop the generator
+  //    only guessed at is 2-6 cm smears. The ceiling is the first band that fails either test.
+  mesh.updateMatrixWorld(true);
+  const V = mesh.matrixWorld, P = new THREE.Vector3(), t = {};
+  const y0 = bb.min.y, band = 0.5, bins = Math.max(1, Math.ceil((bb.max.y - y0) / band));
+  const tot = new Array(bins).fill(0), miss = new Array(bins).fill(0), sizes = Array.from({ length: bins }, () => []);
+  try {
+    mesh.forEachSplat((i, c, sc, q, a) => {
+      if (i % 8 || a < 0.4) return;
+      P.copy(c).applyMatrix4(V);
+      if (P.x < bb.min.x || P.x > bb.max.x || P.y < bb.min.y || P.y > bb.max.y || P.z < bb.min.z || P.z > bb.max.z) return;
+      const b = Math.min(bins - 1, Math.floor((P.y - y0) / band));
+      const mx = Math.max(sc.x, sc.y, sc.z);
+      if (sizes[b].length < 6000) sizes[b].push(mx);
+      if (i % 16 === 0 && a >= 0.5 && mx <= 0.5) { tot[b]++; if (!bvh.closestPointToPoint(P, t, 0, 0.4)) miss[b]++; }
+    });
+  } catch (e) { console.warn('envelope scan failed', e); }
+  const med = (arr) => { if (!arr.length) return NaN; const a = arr.slice().sort((x, y) => x - y); return a[a.length >> 1]; };
+  const meds = sizes.map((a) => (a.length >= 60 ? med(a) : NaN));
+  const ref = med(meds.slice(1, 4).filter((v) => !isNaN(v))) || meds[0] || 0.012;   // bands 0.5-2.0 m up: the good stuff
+  let top = y0 + 1.5;
+  for (let b = 0; b < bins; b++) {
+    const covOK = tot[b] < 25 || miss[b] / tot[b] <= 0.1;
+    const qualOK = isNaN(meds[b]) || b < 1 || meds[b] <= ref * 1.8;
+    if (!covOK || !qualOK) break;
+    if (sizes[b].length >= 60 || tot[b] >= 25) top = y0 + (b + 1) * band;
+  }
+  const r = 0.15;
+  const env = { min: new THREE.Vector3(bb.min.x + r, bb.min.y + r, bb.min.z + r), max: new THREE.Vector3(bb.max.x - r, Math.min(top, bb.max.y) - r, bb.max.z - r) };
+  env.max.y = Math.max(env.max.y, 0.9);           // always room above the spawn
+  console.info('flyable envelope', env.min.toArray().map((v) => +v.toFixed(2)), env.max.toArray().map((v) => +v.toFixed(2)),
+    'size cm', meds.map((v) => (isNaN(v) ? '-' : (v * 100).toFixed(1))).join(' '), 'miss%', tot.map((n, i) => (n ? Math.round(100 * miss[i] / n) : '-')).join(' '));
+  return env;
+}
+
 function findSpawn() {
   // Marble worlds are generated around the origin (best detail there); nudge up until clear.
   if (!world.bvh) return;
@@ -281,6 +326,7 @@ function findSpawn() {
     if (!world.bvh.closestPointToPoint(p, t, 0, r)) break;
     p.y += 0.1;
   }
+  if (world.envelope) p.y = Math.min(p.y, world.envelope.max.y - 0.1);
   world.spawn.copy(p);
 }
 
@@ -410,7 +456,7 @@ function showClip(blob) {
 $('clipClose').onclick = () => { $('clip').classList.add('hidden'); $('clipVid').pause(); };
 
 // ---------------- HUD / radio OLED
-let hudT = 0, flightT = 0;
+let hudT = 0, flightT = 0, lastLimitToast = 0;
 const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 function updateHud(dt) {
   popT -= dt; if (popT <= 0) $('pop').classList.remove('show');
@@ -423,11 +469,12 @@ function updateHud(dt) {
   if (state === 'replay') $('recT').textContent = fmt((performance.now() - recStart) / 1000);
   const bars = Math.max(0, Math.min(4, Math.round(4 - world.lastDist / 0.5)));
   const prox = world.lastDist < 3 ? '▮'.repeat(bars).padEnd(4, '▯') : '▯▯▯▯';
+  if (drone.limitHit > 0 && performance.now() - lastLimitToast > 2500) { lastLimitToast = performance.now(); pop(drone.pos.y >= (world.envelope?.max.y ?? 1e9) - 0.01 ? 'CEILING' : 'WORLD EDGE'); }
   $('oled').textContent =
     `${{ cine: 'CINE ', angle: 'ANGLE', acro: 'ACRO ' }[S.mode]}  ${fmt(flightT)}\n` +
     `${String(kmh).padStart(3)} km/h  ${prox}\n` +
     `SCORE ${Math.round(score.total).toLocaleString()}\n` +
-    (score.streak > 0 ? `SKIM x${score.mult} +${Math.round(score.streak)}` : state === 'replay' ? '● REC REPLAY' : drone.crashed ? 'CRASHED' : `BEST ${score.best.toLocaleString()}`);
+    (score.streak > 0 ? `SKIM x${score.mult} +${Math.round(score.streak)}` : state === 'replay' ? '● REC REPLAY' : drone.crashed ? 'CRASHED' : drone.limitHit > 0 ? '▲ LIMIT' : `BEST ${score.best.toLocaleString()}`);
 }
 
 // ---------------- main loop
