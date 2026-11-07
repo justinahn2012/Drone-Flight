@@ -21,12 +21,16 @@ const QUALITY = {
 const STAB = { off: 0, light: 0.03, heavy: 0.09 };
 
 // ---------------- settings
-const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'on', sound: 'on' };
+const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'osd', sound: 'on', game: 'take' };
 let S = { ...DEF };
 try { const saved = JSON.parse(localStorage.getItem('onetake.settings') || '{}'); if (saved.v !== 3) { delete saved.tilt; delete saved.world; saved.v = 3; } Object.assign(S, saved); } catch (e) {}
-if (!['yard', 'yard-overcast', 'file', 'url'].includes(S.world)) S.world = 'yard';
+if (!['yard', 'yard-overcast', 'url'].includes(S.world)) S.world = 'yard';   // a saved 'file' world can't reload (the file input is empty): no dead-end FLY
+if (S.hud === 'on') S.hud = 'osd';                                            // overlay is now OSD | Minimal | Clean
+if (!['take', 'free'].includes(S.game)) S.game = 'take';
 const save = () => { try { localStorage.setItem('onetake.settings', JSON.stringify(S)); } catch (e) {} };
 const params = new URLSearchParams(location.search);
+const DEV = params.has('dev');                        // developer items (own-world splats, splat density) only under ?dev
+document.body.classList.toggle('dev', DEV);
 if (params.get('splat')) {
   WORLDS.unshift({ id: 'url', name: params.get('name') || 'Your World', note: 'From link', craft: params.get('craft') || 'freestyle5', splat: params.get('splat'), collider: params.get('collider') || null, flip: params.get('flip') !== '0' });
   S.world = 'url';
@@ -69,19 +73,32 @@ function layout() {
   const portrait = H > W * 1.05;
   document.body.classList.toggle('portrait', portrait);
   let vh = H;
-  if (portrait) vh = Math.round(Math.min(H * 0.6, W * 1.12));
+  if (portrait) vh = Math.round(Math.min(H * 0.6, W * 1.25));   // 4:5 view, the radio gets the rest
   $('view').style.height = vh + 'px';
   $('radio').style.top = vh + 'px';
+  $('radio').style.setProperty('--radioH', (H - vh) + 'px');
+  $('ghost').style.setProperty('--R', Math.round(Math.min(95, H * 0.2)) + 'px');   // same throw as the landscape floating sticks
   const q = QUALITY[S.quality];
   const dpr = Math.min(window.devicePixelRatio || 1, q.dpr);
   const w = Math.round(W * dpr), h = Math.round(vh * dpr);
   renderer.setSize(w, h, false);
   canvas.style.width = W + 'px'; canvas.style.height = vh + 'px';
   fpv.resize(w, h);
+  menuFrames = 0;
 }
 window.addEventListener('resize', layout);
-window.addEventListener('orientationchange', () => setTimeout(layout, 250));
+window.addEventListener('orientationchange', () => { controls.cancelAll?.(); setTimeout(layout, 250); });   // stale touches = instant full stick
 
+const MODE_HINT = {
+  cine: 'Easiest on a phone. Right thumb: push for speed, left/right to carve. Left thumb: climb and turn. Let go and it brakes to a hover.',
+  angle: 'Self-levelling with manual throttle. Left stick up/down is throttle; the orange tick on the OSD bar marks hover.',
+  acro: 'Expert · best with a gamepad or USB radio. Sticks command rotation rates (Betaflight Actual 200 · 720 · 0.55). No self-levelling.',
+};
+const GAME_HINT = {
+  take: 'One take: fly through named lines to build FLOW. 5 s without a line banks it; a crash loses what isn\'t banked. Hover hands-off for 1.5 s to CUT.',
+  free: 'No clock, no take. Crash and you fly on from where you last flew clear.',
+};
+const STICK_LBL = { cine: ['CLIMB · TURN', 'SPEED · CARVE'], angle: ['THROTTLE · YAW', 'PITCH · ROLL'], acro: ['THROTTLE · YAW', 'PITCH · ROLL'] };
 function applySettings() {
   const q = QUALITY[S.quality];
   fpv.setQualityRange(q.min, q.max);
@@ -94,41 +111,51 @@ function applySettings() {
   fpv.targetMs = S.fps === '30' ? 33.3 : 16.7;
   controls.mode = S.mode;
   audio.on = S.sound === 'on';
-  document.body.classList.toggle('nohud', S.hud === 'off');
+  const B = document.body.classList;
+  B.toggle('nohud', S.hud === 'off'); B.toggle('hud-min', S.hud === 'min'); B.toggle('thr', S.mode !== 'cine');
   $('rMode').textContent = { cine: 'CINE', angle: 'ANGLE', acro: 'ACRO' }[S.mode];
-  $('lblL').textContent = S.mode === 'cine' ? 'CLIMB · TURN' : 'THROTTLE · YAW';
-  const rl = document.querySelectorAll('.wlabel')[1]; if (rl) rl.textContent = S.mode === 'cine' ? 'SPEED · CARVE' : 'PITCH · ROLL';
-  $('modeHint').textContent = {
-    cine: 'Easiest on a phone. Right thumb: push for speed, left/right to carve. Left thumb: climb and turn. Let go and it brakes to a hover.',
-    angle: 'Self-levelling with manual throttle. Left stick up/down is throttle.',
-    acro: 'Real FPV. Sticks command rotation rates (Betaflight actual rates). No self-levelling. Flips, dives, power loops.',
-  }[S.mode];
+  const [ll, rl] = STICK_LBL[S.mode] || STICK_LBL.cine;
+  $('lblL').textContent = ll; $('lblR').textContent = rl; $('gLt').textContent = ll; $('gRt').textContent = rl;
+  $('modeHint').textContent = MODE_HINT[S.mode];
+  $('gameHint').textContent = GAME_HINT[S.game] || '';
   const craftKey = craftFor(world.def);
   if (drone.key !== craftKey) { drone.setCraft(craftKey); }
+  audio.setCraft?.(craftKey);
+  if (!audio.on) audio.idle?.();
   const tilt = S.tilt >= 0 ? S.tilt : defTilt(CRAFTS[craftKey]);
   $('tilt').value = tilt; $('tiltV').textContent = tilt + '°';
   fpv.computeLens();
   syncSegs();
   save();
+  menuFrames = 0;   // paused: re-render one frame so the frozen view shows the new settings
 }
 const craftFor = (def) => (S.craft !== 'auto' ? S.craft : def?.craft || 'freestyle5');
 
 // ---------------- menu UI
 function buildWorlds() {
+  // one Silo Yard card (Sky = Sun | Overcast seg inside it); link/dev worlds below
+  $('yardCard').classList.toggle('on', S.world === 'yard' || S.world === 'yard-overcast');
   const box = $('worlds'); box.innerHTML = '';
   for (const w of WORLDS) {
+    if (w.proc) continue;
     const b = document.createElement('button');
     b.className = 'world' + (w.id === S.world ? ' on' : '');
-    b.innerHTML = `<b>${w.name}</b><small>${w.note} · ${CRAFTS[w.craft].label}</small>`;
+    b.innerHTML = `<b>${esc(w.name)}</b><small>${esc(w.note)} · ${CRAFTS[w.craft]?.label || ''}</small>`;
     b.onclick = () => { S.world = w.id; buildWorlds(); $('custom').classList.remove('open'); save(); };
     box.appendChild(b);
   }
-  const c = document.createElement('button');
-  c.className = 'world custom' + (S.world === 'file' ? ' on' : '');
-  c.innerHTML = `<b>Your own world</b><small>Load a splat + collider from this device</small>`;
-  c.onclick = () => { S.world = 'file'; buildWorlds(); $('custom').classList.add('open'); };
-  box.appendChild(c);
+  if (DEV) {
+    const c = document.createElement('button');
+    c.className = 'world custom' + (S.world === 'file' ? ' on' : '');
+    c.innerHTML = `<b>Your own world</b><small>Load a splat + collider from this device</small>`;
+    c.onclick = () => { S.world = 'file'; buildWorlds(); $('custom').classList.add('open'); };
+    box.appendChild(c);
+  }
 }
+$('yardCard').addEventListener('click', (e) => {
+  if (e.target.closest('.seg')) return;
+  if (S.world !== 'yard' && S.world !== 'yard-overcast') { S.world = 'yard'; buildWorlds(); syncSegs(); $('custom').classList.remove('open'); save(); }
+});
 function syncSegs() {
   document.querySelectorAll('.seg').forEach((seg) => {
     const key = seg.dataset.key;
@@ -142,41 +169,72 @@ document.querySelectorAll('.seg').forEach((seg) => {
     S[key] = b.dataset.v;
     if (key === 'quality') layout();
     if (key === 'craft' && state !== 'menu') respawn();
+    if (key === 'world') { buildWorlds(); $('custom').classList.remove('open'); }
     applySettings();
     if (key === 'splats' && prev !== S[key]) loadedId = null;
   });
 });
 $('tilt').addEventListener('input', (e) => { S.tilt = +e.target.value; $('tiltV').textContent = S.tilt + '°'; save(); });
-$('openSet').onclick = () => $('settings').classList.toggle('hidden');
+$('openSet').onclick = () => { const st = $('settings'); st.classList.toggle('hidden'); if (!st.classList.contains('hidden')) setTimeout(() => st.scrollIntoView({ behavior: 'smooth', block: 'start' }), 30); };
 $('fly').onclick = () => startFlight(true);
 $('resume').onclick = () => startFlight(false);
 $('btnMenu').onclick = () => openMenu();
-$('rMode').onclick = () => { const order = ['cine', 'angle', 'acro']; S.mode = order[(order.indexOf(S.mode) + 1) % 3]; applySettings(); controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); toast(S.mode.toUpperCase()); };
-$('rReset').onclick = () => respawn(true);
+
+// tap vs long-press (pointer events; touches on .ui never reach the sticks)
+function press(el, tap, hold, ms = 600) {
+  let tm = null, fired = false;
+  el.addEventListener('pointerdown', (e) => { e.preventDefault(); fired = false; clearTimeout(tm); tm = setTimeout(() => { fired = true; tm = null; hold?.(); }, ms); });
+  el.addEventListener('pointerup', () => { if (tm === null) return; clearTimeout(tm); tm = null; if (!fired) tap?.(); });
+  const cancel = () => { clearTimeout(tm); tm = null; };
+  el.addEventListener('pointercancel', cancel); el.addEventListener('pointerleave', cancel);
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+const canReset = () => state === 'fly' || state === 'crash';
+// RESET = back to the last safe point; hold = back to the start
+const doReset = () => { if (canReset()) respawn(false); };
+const doStart = () => { if (canReset()) { respawn(true); toast('BACK TO START'); } };
+press($('rReset'), doReset, doStart);
+press($('btnReset'), doReset, doStart);
+// portrait mode button: hold 0.5 s, toggles Cine <-> Angle only (Acro lives in the menu)
+press($('rMode'), () => toast('HOLD TO SWITCH CINE / ANGLE'), () => {
+  S.mode = S.mode === 'cine' ? 'angle' : 'cine'; applySettings(); controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); toast(S.mode === 'cine' ? 'CINE ASSIST' : 'ANGLE');
+}, 500);
 $('rClip').onclick = () => saveClip();
 $('cReset').onclick = () => respawn();
 $('cClip').onclick = () => saveClip();
-controls.onButton = (b) => { if (b === 'reset' && (state === 'fly' || state === 'crash')) respawn(state === 'fly'); if (b === 'menu') state === 'menu' ? startFlight(false) : openMenu(); };
+$('recCancel').onclick = () => { if (replay) { endReplay(true); toast('CLIP CANCELLED'); } };
+controls.onButton = (b) => { if (b === 'reset' && (state === 'fly' || state === 'crash')) respawn(false); if (b === 'menu') state === 'menu' ? startFlight(false) : openMenu(); };
 
 function openMenu() {
   if (state === 'replay') return;
   if (state === 'fly' || state === 'crash') prevState = state;
   state = 'menu';
   $('menu').classList.remove('hidden');
-  $('resume').style.display = loadedId ? '' : 'none';
+  // paused: RESUME is the hot button, FLY becomes a ghost RESTART
+  const paused = !!loadedId;
+  document.body.classList.toggle('paused', paused);
+  $('resume').classList.toggle('hidden', !paused);
+  $('fly').className = paused ? 'ghost' : 'hotbtn';
+  $('fly').textContent = paused ? 'Restart' : 'FLY';
+  $('resume').parentNode.insertBefore(paused ? $('resume') : $('fly'), paused ? $('fly') : $('resume'));
   controls.enabled = false;
+  controls.cancelAll?.();
+  menuFrames = 0;
+  setTimeout(() => { if (state === 'menu') audio.idle?.(); }, 250);   // after the mute fade: stop the audio thread
 }
 let prevState = 'fly';
 
 async function startFlight(fresh) {
   audio.start();
+  armBack();
+  warmFonts();
   const want = S.world;
   const wantKey = want === 'file' ? 'file:' + ($('fSplat').files[0]?.name || '') : want + ':' + S.splats;
   if (fresh || loadedId !== wantKey) {
     let def;
     if (want === 'file') {
       const f = $('fSplat').files[0];
-      if (!f) { alert('Choose a splat file first (.spz / .ply).'); return; }
+      if (!f) { toast('CHOOSE A SPLAT FILE FIRST (.SPZ / .PLY)'); return; }
       const cf = $('fCol').files[0];
       def = { id: 'file', name: f.name, craft: 'freestyle5', splatFile: f, colliderFile: cf || null, flip: true };
     } else def = WORLDS.find((w) => w.id === want) || WORLDS[0];
@@ -190,13 +248,34 @@ async function startFlight(fresh) {
     state = prevState === 'crash' ? 'crash' : 'fly';
   }
   $('menu').classList.add('hidden');
+  document.body.classList.remove('paused');
   controls.enabled = true;
   if (state !== 'crash') state = 'fly';
+  coachStart();
 }
 
 // ---------------- loading
+const STICK_COACH = {
+  cine: [['LEFT THUMB', 'climb · turn'], ['RIGHT THUMB', 'speed · carve'], ['LET GO', 'brakes to a hover']],
+  angle: [['LEFT THUMB', 'throttle · yaw'], ['RIGHT THUMB', 'pitch · roll'], ['LET GO', 'self-levels · you hold throttle']],
+  acro: [['LEFT THUMB', 'throttle · yaw'], ['RIGHT THUMB', 'pitch · roll rates'], ['NO SELF-LEVEL', 'expert · gamepad or radio']],
+};
+const LOAD_TIPS = {
+  take: ['<b>Lines</b> are named gaps, holes and dives. Each one adds FLOW; 5 s without one banks the chain.', '<b>CUT</b>: hover hands-off for 1.5 s to end the take and keep everything.', 'A crash loses the <b>unbanked</b> chain. Bank it or push on: your call.'],
+  free: ['<b>Free fly</b>: no clock. Crash and you fly on from where you last flew clear.'],
+  any: ['<b>CLIP</b> turns your last 60 s into a stabilised, captioned video for your camera roll.', '<b>RESET</b> goes back to your last clear spot; hold it to go back to the start.'],
+};
 function setLoad(title, frac, text) {
-  $('loading').classList.remove('hidden');
+  const L = $('loading');
+  if (L.classList.contains('hidden')) {
+    // fresh card: the mode's stick diagram + one tip, no error buttons
+    L.classList.remove('hidden'); $('ldErr').classList.remove('on'); $('ldCoach').classList.remove('hidden');
+    const portrait = document.body.classList.contains('portrait');
+    $('ldSticks').innerHTML = (STICK_COACH[S.mode] || STICK_COACH.cine).map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('') +
+      (portrait ? '<dt>PORTRAIT</dt><dd>use the radio gimbals below</dd>' : '');
+    const tips = [...(LOAD_TIPS[S.game] || []), ...LOAD_TIPS.any];
+    $('ldTip').innerHTML = tips[Math.floor(Math.random() * tips.length)];
+  }
   if (title) $('ldTitle').textContent = title;
   if (frac !== null) $('ldBar').style.width = Math.round(frac * 100) + '%';
   if (text !== undefined) $('ldText').textContent = text;
@@ -215,6 +294,16 @@ async function fetchBytes(url, onProgress) {
   return buf.subarray(0, got);
 }
 const mb = (b) => (b / 1048576).toFixed(1);
+
+// errors stay up until the player acts: BACK to the menu, or RELOAD
+function loadError(title, msg, back) {
+  setLoad(title, 0, msg);
+  $('ldCoach').classList.add('hidden'); $('ldTip').innerHTML = '';
+  $('ldErr').classList.add('on'); $('ldBack').classList.toggle('hidden', !back);
+  $('ldReload').className = back ? 'pill ui' : 'pill hot ui';
+}
+$('ldBack').onclick = () => { $('loading').classList.add('hidden'); openMenu(); };
+$('ldReload').onclick = () => location.reload();
 
 function clearWorld() {
   if (world.mesh) { splatScene.remove(world.mesh); world.mesh.dispose?.(); world.mesh = null; }
@@ -306,8 +395,7 @@ async function loadWorld(def) {
     return true;
   } catch (err) {
     console.error(err);
-    setLoad('Could not load world', 0, String(err.message || err));
-    setTimeout(() => { $('loading').classList.add('hidden'); openMenu(); }, 2600);
+    loadError('Could not load world', String(err.message || err), true);
     return false;
   }
 }
@@ -384,6 +472,7 @@ function respawn(toStart = false) {
   state = 'fly';
   $('crashBar').classList.add('hidden'); $('banner').classList.add('hidden');
   $('fade').style.opacity = 0;
+  uiRespawn();   // F: summary card, run stats, clip trim, coaching
 }
 
 // ---------------- scoring: proximity "skims"
@@ -392,9 +481,6 @@ const score = {
   reset() { this.total = 0; this.streak = 0; this.mult = 1; this.streakT = 0; },
 };
 try { score.best = +localStorage.getItem('onetake.best') || 0; } catch (e) {}
-let popT = 0;
-function pop(text) { const p = $('pop'); p.textContent = text; p.classList.add('show'); popT = 1.2; }
-function toast(t) { pop(t); }
 const _cp = {};
 function updateScore(dt, now) {
   if (!world.bvh || drone.crashed) { world.lastDist = Infinity; return; }
@@ -411,14 +497,14 @@ function updateScore(dt, now) {
     score.lastClose = now;
   } else if (score.streak > 0 && now - score.lastClose > 0.9) {
     const pts = Math.round(score.streak);
-    score.total += pts; pop(`SKIM ×${score.mult}  +${pts.toLocaleString()}`);
+    score.total += pts; pop(`SKIM${score.mult >= 2 ? ` <em>×${score.mult}</em>` : ''} +${pts.toLocaleString('en-US')}`, 'score');
     score.streak = 0; score.streakT = 0; score.mult = 1;
     if (score.total > score.best) { score.best = score.total; try { localStorage.setItem('onetake.best', score.best); } catch (e) {} }
   }
 }
 drone.onCrash = (impact) => {
   audio.thud(impact);
-  if (score.streak > 0) pop('STREAK LOST');
+  if (score.streak > 0) pop('STREAK LOST', 'warn');
   score.streak = 0; score.streakT = 0; score.mult = 1;
 };
 
@@ -444,88 +530,414 @@ function rigCamera(dt) {
 }
 
 // ---------------- replay buffer + clip export
-const replayBuf = []; const REPLAY_SEC = 20;
-let replay = null, recorder = null, recChunks = [], recStart = 0;
+// Clips are the Short itself: the replay is re-rendered through the full camera, composited on a 2D canvas with
+// burned-in captions (reference Shorts style), framing smoothed Gyroflow-style, audio re-synthesised into the track.
+const replayBuf = []; const REPLAY_SEC = 60;
+let replay = null, recorder = null, recChunks = [];
+let capNow = null, clipEndT = null;              // caption to stamp on the next replay frame; end-of-clip trim (crash/cut + pad)
+const comp = $('comp'), cctx = comp.getContext('2d');
 function pushReplay(t) {
-  replayBuf.push({ t, p: camPose.pos.clone(), q: camPose.quat.clone(), v: motion.vel.clone(), w: motion.ang.clone(), vib: motion.vib, m: drone.motors.slice(), s: drone.vel.length(), wash: drone.wash, c: drone.crashed });
+  replayBuf.push({ t, p: camPose.pos.clone(), q: camPose.quat.clone(), v: motion.vel.clone(), w: motion.ang.clone(), vib: motion.vib, m: drone.motors.slice(), s: drone.vel.length(), wash: drone.wash, c: drone.crashed,
+    hz: motion.hz, hit: hitNow, thud: thudNow, ax: { ...ax }, cap: capNow });
+  thudNow = 0; capNow = null;
   while (replayBuf.length && t - replayBuf[0].t > REPLAY_SEC) replayBuf.shift();
 }
 function pickMime() {
-  const c = ['video/mp4;codecs=avc1.42E01F', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
+  const c = ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1.4d0028', 'video/mp4', 'video/mp4;codecs=avc1.42E01F', 'video/webm;codecs=vp9', 'video/webm'];
   return c.find((m) => window.MediaRecorder?.isTypeSupported?.(m)) || '';
 }
+// Gyroflow-style post stabilisation: Gaussian-smooth the view quaternions using frames before AND after each moment
+// (sigma 0.12 s, horizon free). Velocity/rotation for the blur stay raw, so motion blur keeps the physical shake.
+function smoothReplay(src, sigma = 0.12) {
+  const n = src.length, out = new Array(n), seg = new Int32Array(n), W = 3 * sigma, k = -1 / (2 * sigma * sigma);
+  for (let i = 1, s = 0; i < n; i++) { if (src[i].t - src[i - 1].t > 0.25 || src[i].p.distanceToSquared(src[i - 1].p) > 9) s++; seg[i] = s; }   // never blend across a teleport
+  let lo = 0;
+  for (let i = 0; i < n; i++) {
+    const qi = src[i].q, ti = src[i].t;
+    while (lo < i && (src[lo].t < ti - W || seg[lo] !== seg[i])) lo++;
+    let x = 0, y = 0, z = 0, w = 0;
+    for (let j = lo; j < n && src[j].t <= ti + W && seg[j] === seg[i]; j++) {
+      const q = src[j].q, d = src[j].t - ti, g0 = Math.exp(d * d * k);
+      const g = (q.x * qi.x + q.y * qi.y + q.z * qi.z + q.w * qi.w) < 0 ? -g0 : g0;   // same hemisphere
+      x += q.x * g; y += q.y * g; z += q.z * g; w += q.w * g;
+    }
+    out[i] = { ...src[i], q: new THREE.Quaternion(x, y, z, w).normalize() };
+  }
+  return out;
+}
+const CLIP_SIGMA = { off: 0, light: 0.06, heavy: 0.12 };   // fallback if E's STAB_REPLAY isn't in this build
+function clipSigma() {
+  let t = CLIP_SIGMA; try { if (typeof STAB_REPLAY !== 'undefined' && STAB_REPLAY) t = STAB_REPLAY; } catch (e) {}
+  const v = t[S.stab]; return typeof v === 'number' ? v : 0.12;
+}
 function saveClip() {
-  if (state === 'replay' || replayBuf.length < 30) { toast('FLY FIRST'); return; }
-  if (!window.MediaRecorder || !canvas.captureStream) { toast('NO RECORDER'); return; }
-  const stream = canvas.captureStream(30);
-  const at = audio.streamDest?.stream.getAudioTracks()[0]; if (at) stream.addTrack(at);
+  if (state === 'replay') return;
+  const src = clipEndT ? replayBuf.filter((f) => f.t <= clipEndT) : replayBuf.slice();
+  if (src.length < 30) { toast('FLY FIRST'); return; }
+  if (!window.MediaRecorder || !comp.captureStream) { toast('THIS BROWSER CAN\'T RECORD CLIPS'); return; }
+  audio.kick?.();                                            // inside the tap: make sure the clip gets sound
   const mime = pickMime();
+  const cap = mime.includes('42E01F') ? 1280 : 1920;         // baseline L3.1 tops out at 720p
+  const sc = Math.min(1, cap / Math.max(canvas.width, canvas.height));
+  comp.width = Math.max(2, Math.round(canvas.width * sc / 2) * 2); comp.height = Math.max(2, Math.round(canvas.height * sc / 2) * 2);
+  const sigma = clipSigma();
+  const frames = sigma > 0 ? smoothReplay(src, sigma) : src;
+  const t0 = frames[0].t, caps = [];
+  for (const f of frames) if (f.cap) caps.push({ t: f.t - t0, text: f.cap.text, flow: f.cap.flow || 1 });
+  warmFonts(Math.round(comp.height * 0.085));
+  const stream = comp.captureStream(30);
+  const at = audio.streamDest?.stream.getAudioTracks()[0]; if (at) stream.addTrack(at);
   try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 14e6 } : undefined); }
-  catch (e) { toast('NO RECORDER'); return; }
+  catch (e) { toast('THIS BROWSER CAN\'T RECORD CLIPS'); return; }
   recChunks = [];
-  recorder.ondataavailable = (e) => e.data.size && recChunks.push(e.data);
-  recorder.onstop = () => showClip(new Blob(recChunks, { type: recorder.mimeType || mime || 'video/mp4' }));
-  replay = { frames: replayBuf.slice(), t0: performance.now() / 1000, prev: state };
-  replay.dur = replay.frames[replay.frames.length - 1].t - replay.frames[0].t;
-  state = 'replay'; controls.enabled = false; fpv.resetExposure = true;
+  const rec = recorder;
+  rec.ondataavailable = (e) => e.data.size && recChunks.push(e.data);
+  rec.onstop = () => showClip(new Blob(recChunks, { type: rec.mimeType || mime || 'video/mp4' }), { dur: replayDur, caps: caps.length, smooth: sigma > 0 });
+  replay = { frames, caps, t0: performance.now() / 1000, prev: state, i: -1, t: 0 };
+  replay.dur = frames[frames.length - 1].t - t0;
+  const replayDur = replay.dur;
+  state = 'replay'; controls.enabled = false; controls.cancelAll?.(); fpv.resetExposure = true;
   $('crashBar').classList.add('hidden'); $('banner').classList.add('hidden');
-  $('recDot').style.display = 'flex'; recStart = performance.now();
-  recorder.start(250);
+  comp.classList.remove('hidden'); document.body.classList.add('replaying');
+  $('recT').textContent = `REPLAY 0:00 / ${fmtS(replay.dur)}`; $('recP').style.width = '0%';
+  rec.start(250);
 }
 function replayFrame() {
   const t = performance.now() / 1000 - replay.t0;
   const f = replay.frames; const t0 = f[0].t;
   if (t >= replay.dur) { endReplay(); return null; }
-  let i = 0; while (i < f.length - 1 && f[i + 1].t - t0 <= t) i++;
+  let i = Math.max(0, replay.i); while (i < f.length - 1 && f[i + 1].t - t0 <= t) i++;
+  for (let k = replay.i + 1; k <= i; k++) { if (f[k].hit) audio.hit(f[k].hit); if (f[k].thud) audio.thud(f[k].thud); }   // bumps + crash land in the clip
+  replay.i = i; replay.t = t;
   return f[i];
 }
-function endReplay() {
+function endReplay(cancel = false) {
+  if (!replay) return;
+  const r = replay; replay = null;
+  if (cancel && recorder) { recorder.onstop = null; recorder.ondataavailable = null; recChunks = []; }
   try { recorder?.stop(); } catch (e) {}
-  $('recDot').style.display = 'none';
-  state = replay.prev === 'crash' ? 'crash' : 'fly';
-  if (state === 'crash') $('crashBar').classList.remove('hidden');
-  replay = null; controls.enabled = true;
+  comp.classList.add('hidden'); document.body.classList.remove('replaying');
+  state = r.prev === 'crash' ? 'crash' : 'fly';
+  if (sum.data || state === 'crash') showSummary(sum.kind || 'crash', sum.data);   // put the card back
+  controls.enabled = true; fpv.resetExposure = true;
+}
+// composite one replay frame: WebGL frame (still valid in this task, so no preserveDrawingBuffer needed) + caption
+function compFrame() {
+  const W = comp.width, H = comp.height;
+  cctx.drawImage(canvas, 0, 0, W, H);
+  let cap = null;
+  for (const c of replay.caps) { if (c.t <= replay.t) cap = c; else break; }
+  if (cap) drawCaption(cctx, W, H, cap.text, cap.flow, replay.t - cap.t);
+}
+const ACC = '#E75211', CAP_DUR = 1.6;
+// split "THE SMALL GAP!" into [white, accent, white]. *WORD* in a caption picks the accent explicitly.
+function splitAccent(text) {
+  text = String(text || '').toUpperCase();
+  const m = text.match(/\*([^*]+)\*/);
+  if (m) return [text.slice(0, m.index), m[1], text.slice(m.index + m[0].length)].map((s) => s.replace(/\*/g, ''));
+  const words = text.split(/\s+/).filter(Boolean); if (!words.length) return ['', '', ''];
+  const core = (w) => w.replace(/[^A-Z0-9'×]/g, '');
+  let k = words.length - 1;                                           // 1-2 words: the last (CHIMNEY *DIVE*, *SICK*!)
+  if (words.length >= 3) {                                            // 3+: the shortest real word (IN *THE* TUNNEL)
+    let best = 99; words.forEach((w, i) => { const L = core(w).length; if (L >= 3 && L < best) { best = L; k = i; } });
+  }
+  const w = words[k], tail = w.match(/[^A-Z0-9'×]+$/)?.[0] || '';
+  const pre = words.slice(0, k).join(' ') + (k ? ' ' : ''), acc = w.slice(0, w.length - tail.length);
+  const post = tail + (k < words.length - 1 ? ' ' + words.slice(k + 1).join(' ') : '');
+  return [pre, acc, post];
+}
+function drawCaption(g, W, H, text, flow, age) {
+  if (age < 0 || age > CAP_DUR) return;
+  const lb = Math.max(0, fpv.look.letterbox || 0) * H, ih = H - 2 * lb;
+  const fs = Math.round(ih * 0.085);                                   // cap height ~6 % of the frame
+  const parts = splitAccent(text).map((s, i) => [s, i === 1 ? ACC : '#fff']).filter((p) => p[0]);
+  g.save();
+  g.font = `900 ${fs}px Montserrat, "Barlow Condensed", system-ui, sans-serif`;
+  g.textBaseline = 'alphabetic'; g.textAlign = 'left'; g.lineJoin = 'round'; g.miterLimit = 2;
+  const ws = parts.map((p) => g.measureText(p[0]).width), tw = ws.reduce((a, b) => a + b, 0);
+  const fit = Math.min(1, (W * 0.9) / Math.max(1, tw));
+  const k = Math.min(1, age / 0.16), popS = 1 + 0.25 * (1 - k) * (1 - k);
+  g.globalAlpha = Math.max(0, Math.min(1, age / 0.05, (CAP_DUR - age) / 0.25));
+  g.translate(W / 2, H - lb - ih * 0.07); g.scale(fit * popS, fit * popS);
+  g.lineWidth = fs * 0.18; g.strokeStyle = '#000';
+  g.shadowColor = 'rgba(0,0,0,.45)'; g.shadowBlur = fs * 0.12; g.shadowOffsetY = fs * 0.05;
+  let x = -tw / 2; parts.forEach((p, i) => { g.strokeText(p[0], x, 0); x += ws[i]; });
+  g.shadowColor = 'transparent';
+  x = -tw / 2; parts.forEach((p, i) => { g.fillStyle = p[1]; g.fillText(p[0], x, 0); x += ws[i]; });
+  if (flow >= 6) { g.textAlign = 'center'; g.font = `${Math.round(fs * 1.3)}px system-ui, "Apple Color Emoji", sans-serif`; g.fillText('😮', 0, -fs * 1.12); }
+  g.restore();
 }
 let clipURL = null;
-function showClip(blob) {
+function showClip(blob, info = {}) {
   if (clipURL) URL.revokeObjectURL(clipURL);
   clipURL = URL.createObjectURL(blob);
   const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
   const v = $('clipVid'); v.src = clipURL; v.play().catch(() => {});
   const a = $('clipSave'); a.href = clipURL; a.download = `onetake-${Date.now()}.${ext}`;
+  const file = new File([blob], a.download, { type: blob.type });
+  const canShare = !!navigator.canShare?.({ files: [file] });
+  // the share sheet is the primary save on iOS ("Save Video" -> Photos); <a download> only reaches Files
+  $('clipShare').textContent = canShare ? 'SAVE VIDEO' : 'DOWNLOAD';
+  a.classList.toggle('hidden', !canShare);
+  $('clipMeta').textContent = `${fmtS(info.dur || 0)} · 30p · 1/60 · 180°${info.smooth ? ' · smoothed' : ''}${info.caps ? ` · ${info.caps} caption${info.caps > 1 ? 's' : ''}` : ''}`;
   $('clip').classList.remove('hidden');
   $('clipShare').onclick = async () => {
-    const file = new File([blob], a.download, { type: blob.type });
-    if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: 'One Take' }); } catch (e) {} }
+    if (canShare) { try { await navigator.share({ files: [file], title: 'One Take' }); } catch (e) {} }
     else a.click();
   };
 }
 $('clipClose').onclick = () => { $('clip').classList.add('hidden'); $('clipVid').pause(); };
 
-// ---------------- HUD / radio OLED
-let hudT = 0, flightT = 0, lastLimitToast = 0;
+// ---------------- HUD: HD-OSD, captions (pop), warnings, toasts
+let hudT = 0, flightT = 0, lastLimitToast = 0, lqS = 100, thrS = 0.39;
 const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-function updateHud(dt) {
-  popT -= dt; if (popT <= 0) $('pop').classList.remove('show');
-  hudT += dt; if (hudT < 0.1) return; hudT = 0;
-  const kmh = Math.round(drone.vel.length() * 3.6);
-  $('spd').textContent = `${kmh} km/h`;
-  $('tmr').textContent = fmt(flightT);
-  $('score').textContent = Math.round(score.total).toLocaleString();
-  $('streak').textContent = score.streak > 0 ? `SKIM ×${score.mult}  ${Math.round(score.streak).toLocaleString()}` : (score.best ? `BEST ${score.best.toLocaleString()}` : '');
-  if (state === 'replay') $('recT').textContent = fmt((performance.now() - recStart) / 1000);
-  const bars = Math.max(0, Math.min(4, Math.round(4 - world.lastDist / 0.5)));
-  const prox = world.lastDist < 3 ? '▮'.repeat(bars).padEnd(4, '▯') : '▯▯▯▯';
-  if (drone.limitHit > 0 && performance.now() - lastLimitToast > 2500) { lastLimitToast = performance.now(); pop(drone.pos.y >= (world.envelope?.max.y ?? 1e9) - 0.01 ? 'CEILING' : 'WORLD EDGE'); }
-  $('oled').textContent =
-    `${{ cine: 'CINE ', angle: 'ANGLE', acro: 'ACRO ' }[S.mode]}  ${fmt(flightT)}\n` +
-    `${String(kmh).padStart(3)} km/h  ${prox}\n` +
-    `SCORE ${Math.round(score.total).toLocaleString()}\n` +
-    (score.streak > 0 ? `SKIM x${score.mult} +${Math.round(score.streak)}` : state === 'replay' ? '● REC REPLAY' : drone.crashed ? 'CRASHED' : drone.limitHit > 0 ? '▲ LIMIT' : `BEST ${score.best.toLocaleString()}`);
+const fmtS = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+const fmtN = (n) => Math.round(n || 0).toLocaleString('en-US');
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const accentHTML = (text) => { const [a, b, c] = splitAccent(text); return `${esc(a)}<em>${esc(b)}</em>${esc(c)}`; };
+const fontsWarm = new Set();
+function warmFonts(px = 40) {       // canvas captions need the face loaded before the first draw
+  const f = `900 ${px}px Montserrat`; if (fontsWarm.has(f)) return; fontsWarm.add(f);
+  try { document.fonts?.load?.(f, 'THE SMALL GAP!')?.catch?.(() => {}); } catch (e) {}
+}
+// Take (C, take.js): name the instance `take` or call bindTake(instance). Falls back to the legacy skim score.
+let takeRef = null;
+function bindTake(t) { takeRef = t; }
+function curTake() {
+  if (takeRef) return takeRef;
+  try { if (typeof take !== 'undefined' && take && typeof take === 'object' && 'total' in take) return take; } catch (e) {}
+  return null;
+}
+function scoreView() {
+  const t = curTake();
+  if (t) return { take: true, total: t.total || 0, flow: t.flow || 1, unbanked: t.unbanked || 0, best: t.best || 0, state: t.state, time: t.stats?.time };
+  try { if (typeof score !== 'undefined' && score) return { take: false, total: score.total, flow: score.mult, unbanked: score.streak, best: score.best }; } catch (e) {}
+  return { take: false, total: 0, flow: 1, unbanked: 0, best: 0 };
 }
 
+// pop(text, kind) — contract #5. kind: 'line' (Shorts caption) | 'score' (mono sub-line) | 'warn' (blinking) | 'info' (toast)
+let popKind = '', popTm = 0;
+function pop(text, kind = 'score') {
+  if (kind === 'line') return showLine(text, '', 1);
+  if (kind === 'warn') return warn(text);
+  if (kind === 'info') return toast(text);
+  const p = $('pop');
+  if (popKind === 'line' && p.classList.contains('show')) { p.querySelector('.sub').innerHTML = text; return; }   // don't stomp a caption
+  setPop('score', '', text, 1.2);
+}
+function showLine(text, subHTML = '', flow = 1) {
+  setPop('line', (flow >= 6 ? '<span class="emo">😮</span>' : '') + accentHTML(text), subHTML, CAP_DUR);
+}
+function setPop(kind, capHTML, subHTML, dur) {
+  const p = $('pop'); popKind = kind;
+  p.querySelector('.cap').innerHTML = capHTML; p.querySelector('.sub').innerHTML = subHTML || '';
+  p.className = kind; p.style.setProperty('--popDur', dur + 's');
+  void p.offsetWidth; p.classList.add('show');
+  clearTimeout(popTm); popTm = setTimeout(() => { p.classList.remove('show'); popKind = ''; }, dur * 1000);
+  $('live').classList.remove('show');
+}
+let warnTm = 0, toastTm = 0;
+function warn(text, secs = 1.6) {
+  const w = $('warn'); w.textContent = String(text).toUpperCase(); w.classList.remove('show'); void w.offsetWidth; w.classList.add('show');
+  clearTimeout(warnTm); warnTm = setTimeout(() => w.classList.remove('show'), secs * 1000);
+}
+function toast(text, secs = 1.8) {
+  const t = $('toast'); t.textContent = text; t.classList.add('show');
+  clearTimeout(toastTm); toastTm = setTimeout(() => t.classList.remove('show'), secs * 1000);
+}
+
+function updateHud(dt) {
+  hudT += dt; if (hudT < 0.1) return; hudT = 0;
+  if (state === 'replay' && replay) {
+    $('recT').textContent = `REPLAY ${fmtS(replay.t)} / ${fmtS(replay.dur)}`;
+    $('recP').style.width = Math.min(100, 100 * replay.t / Math.max(0.01, replay.dur)).toFixed(1) + '%';
+    return;
+  }
+  const v = scoreView();
+  const spd = drone.vel.length(), kmh = Math.round(spd * 3.6), time = v.time ?? flightT;
+  thrS += ((drone.thrust / drone.tMax || 0) - thrS) * 0.3;
+  // --- HD OSD (landscape)
+  $('score').textContent = fmtN(v.total);
+  $('best').textContent = v.best ? `BEST ${fmtN(Math.max(v.best, v.total))}` : '';
+  $('spd').innerHTML = `${kmh} <small>KM/H</small>`;
+  $('tmr').textContent = fmt(time);
+  $('oAlt').innerHTML = `${Math.max(0, drone.pos.y).toFixed(1)}<small>M</small>`;
+  $('oVolt').innerHTML = `${Math.max(13.6, 16.8 - 0.9 * thrS - 0.25 * flightT / 60).toFixed(1)}<small>V</small>`;
+  $('oMode').textContent = { cine: 'CINE', angle: 'ANGL', acro: 'ACRO' }[S.mode];
+  lqS += ((100 - 4 * room.roof - 9 * room.tube - (Math.random() < 0.1 ? 2 : 0)) - lqS) * 0.25;
+  $('oLQ').textContent = `LQ ${Math.round(Math.min(100, lqS))}`;
+  if (S.mode !== 'cine') {
+    $('oThr').querySelector('i').style.height = (controls.thr * 100).toFixed(1) + '%';
+    $('oThr').querySelector('u').style.bottom = (Math.sqrt(1 / drone.c.twr) * 100).toFixed(1) + '%';
+  }
+  const tag = $('takeTag'), ts = v.take ? v.state : null;
+  tag.className = 'o tl' + (ts ? ' on' : '') + (ts === 'live' ? ' live' : '');
+  if (ts) $('takeTxt').textContent = ts === 'live' ? `TAKE ${fmt(time)}` : ts === 'done' ? 'CUT' : 'READY';
+  // live chain at the caption spot (0.7), only while no caption is up
+  const L = $('live');
+  if (v.unbanked > 0 && popKind !== 'line' && state === 'fly' && !summaryUp()) {
+    L.innerHTML = `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ` <em>×${v.flow}</em>` : ''} · ${fmtN(v.unbanked)}`; L.classList.add('show');
+  } else L.classList.remove('show');
+  if (drone.limitHit > 0 && performance.now() - lastLimitToast > 2500) { lastLimitToast = performance.now(); warn(drone.pos.y >= (world.envelope?.max.y ?? 1e9) - 0.01 ? 'CEILING' : 'WORLD EDGE'); }
+  // --- radio OLED (portrait)
+  $('oMd').textContent = { cine: 'CINE', angle: 'ANGLE', acro: 'ACRO' }[S.mode]; $('oT').textContent = fmt(time); $('oS').textContent = `${kmh} KM/H`;
+  const bars = world.lastDist < 3 ? Math.max(0, Math.min(4, Math.round(4 - world.lastDist / 0.5))) : 0;
+  $('oPx').querySelectorAll('i').forEach((el, i) => el.classList.toggle('on', i < bars));
+  $('oSc').textContent = fmtN(v.total);
+  $('oSt').textContent = drone.crashed ? 'CRASHED' : drone.limitHit > 0 ? 'LIMIT' :
+    v.unbanked > 0 ? `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ' x' + v.flow : ''} +${fmtN(v.unbanked)}` :
+    ts === 'live' ? '● TAKE' : ts === 'ready' ? 'READY · FLY A LINE' : ts === 'done' ? 'CUT' :
+    S.mode !== 'cine' ? `THR ${Math.round(controls.thr * 100)}%  BEST ${fmtN(v.best)}` : `BEST ${fmtN(v.best)}`;
+}
+
+// ---------------- take events (contract #3), summary card, recovery
+// main.js dispatch (C): (typeof onTakeEvent === 'function' ? onTakeEvent : (e) => defaultTakeUI(e, pop))(e)
+const runStats = { maxSpeed: 0, maxFlow: 1 };
+let pendingSum = null, bestAtStart = 0, uiWasCrashed = false, padArmed = false;
+const sum = { kind: null, data: null };
+function caption(text, flow = 1) { capNow = { text, flow }; }   // recorded into the replay buffer -> burned into the clip
+function onTakeEvent(e) {
+  if (!e || !e.type) return;
+  const now = performance.now() / 1000;
+  switch (e.type) {
+    case 'start':
+      hideSummary(); sum.kind = sum.data = null; pendingSum = null; clipEndT = null;
+      bestAtStart = scoreView().best || 0; runStats.maxSpeed = 0; runStats.maxFlow = 1;
+      break;
+    case 'line': {
+      const text = e.caption || e.name || 'NICE!', flow = e.flow || 1;
+      showLine(text, `+${fmtN(e.pts)}${flow >= 2 ? ` <em>×${flow}</em>` : ''}`, flow);
+      caption(text, flow); runStats.maxFlow = Math.max(runStats.maxFlow, flow);
+      break;
+    }
+    case 'repeat': {
+      const text = world.lines?.find?.((l) => l.name === e.name)?.caption || e.name || 'AGAIN';
+      showLine(text, `REPEAT +${fmtN(e.pts)}`, 1); caption(text, 1);
+      break;
+    }
+    case 'bank': pop(`BANKED <em>+${fmtN(e.pts)}</em>`, 'score'); break;
+    case 'lost': if (e.pts > 0) warn(`CHAIN LOST -${fmtN(e.pts)}`, 2); break;
+    case 'skim': break;                                   // the live FLOW line on the HUD already reflects it
+    case 'cut': clipEndT = now + 0.6; showSummary('cut', e); break;
+    case 'crash': clipEndT = now + 1.2; pendingSum = e; break;   // card appears 0.8 s after the hit (uiFrame)
+  }
+}
+function showSummary(kind, e) {
+  const v = scoreView(), st = (e && e.stats) || {};
+  const isTake = !!(e && 'total' in e) || v.take;
+  const total = e?.total ?? v.total ?? 0;
+  const best = Math.max(v.best || 0, total), newBest = total > 0 && total > bestAtStart;
+  const maxSp = st.maxSpeed ?? runStats.maxSpeed, time = st.time ?? v.time ?? flightT, mf = st.maxFlow ?? runStats.maxFlow;
+  const lines = Array.isArray(st.lines) ? st.lines.map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean) : null;
+  sum.kind = kind; sum.data = e || null;
+  const T = $('bTitle'); T.className = kind; T.innerHTML = kind === 'cut' ? 'CUT<em>.</em>' : 'CRASHED';
+  $('bSub').textContent = kind === 'cut' ? 'That\'s a take · touch a stick for a new one' : isTake ? 'Take over · touch a stick to retry' : 'Touch a stick to fly on';
+  const row = (k, val) => `<span>${k}</span><b>${val}</b>`;
+  $('bStats').innerHTML = row('MAX SPEED', `${Math.round(maxSp * 3.6)} KM/H`) + row('FLY TIME', fmt(time)) +
+    row('SCORE', fmtN(total)) + row('BEST', newBest ? `<em>NEW</em> ${fmtN(best)}` : fmtN(best)) +
+    row('MAX FLOW', `×${mf || 1}`) + (lines ? row('LINES', String(lines.length)) : '');
+  $('bLines').textContent = lines && lines.length ? [...new Set(lines)].join(' · ') : '';
+  $('cReset').textContent = isTake ? 'RETRY' : 'FLY ON';
+  $('banner').classList.remove('hidden'); $('crashBar').classList.remove('hidden'); $('live').classList.remove('show');
+  document.body.classList.add('sumup');
+  padArmed = false;
+}
+function hideSummary() { $('banner').classList.add('hidden'); $('crashBar').classList.add('hidden'); document.body.classList.remove('sumup'); }
+const summaryUp = () => !$('banner').classList.contains('hidden');
+function uiRespawn() {
+  hideSummary(); sum.kind = sum.data = null; pendingSum = null; clipEndT = null; capNow = null;
+  runStats.maxSpeed = 0; runStats.maxFlow = 1; bestAtStart = scoreView().best || 0;
+  lastBump = drone.bump; wasCrashed = uiWasCrashed = false;
+}
+// per-frame UI: crash card timing, fly-on, run stats, coaching
+function uiFrame(dt) {
+  if (uiWasCrashed && !drone.crashed) { pendingSum = null; if (sum.kind === 'crash') { hideSummary(); sum.kind = sum.data = null; } }
+  uiWasCrashed = drone.crashed;
+  if (state === 'fly') {
+    const v = scoreView();
+    runStats.maxSpeed = Math.max(runStats.maxSpeed, drone.vel.length()); runStats.maxFlow = Math.max(runStats.maxFlow, v.flow || 1);
+  }
+  if (state === 'crash' && drone.crashT > 0.8) {
+    if (!summaryUp() || sum.kind !== 'crash') showSummary('crash', pendingSum);
+    // gamepad / keyboard / held thumb: re-centre then move a stick = fly on
+    const m = Math.abs(controls.yaw) + Math.abs(controls.roll) + Math.abs(controls.pitch) + (S.mode === 'cine' ? Math.abs(controls.climb) : 0);
+    if (m < 0.12) padArmed = true; else if (padArmed && m > 0.35) respawn();
+  }
+  coachFrame(dt);
+}
+// after a crash, any fresh stick touch flies on (0.8 s grace so the hit registers); after a CUT it clears the card
+function stickStart(side) {
+  if (state === 'crash' && drone.crashT > 0.8) respawn();
+  else if (state === 'fly' && sum.kind === 'cut' && summaryUp()) { hideSummary(); sum.kind = sum.data = null; }
+}
+function flyOnTouch(e) { if (!e.target?.closest?.('button, .ui, input, select, a')) stickStart(null); }
+
+// ---------------- onboarding: ghost gates until each stick has been held 1 s; rotate tip in portrait
+const coach = { on: false, held: { L: 0, R: 0 } };
+try { coach.done = localStorage.getItem('onetake.coached') === '1'; } catch (e) { coach.done = false; }
+let rotateTipped = false;
+function coachStart() {
+  coach.on = !coach.done; document.body.classList.toggle('coach', coach.on);
+  if (!rotateTipped && document.body.classList.contains('portrait')) { rotateTipped = true; setTimeout(() => toast('Full screen: turn off Rotation Lock and turn sideways.', 4.5), 900); }
+}
+function coachFrame(dt) {
+  if (!coach.on) return;
+  const touching = { L: false, R: false };
+  for (const t of controls.touches?.values?.() || []) touching[t.side] = true;
+  for (const s of ['L', 'R']) {
+    if (touching[s] && state === 'fly') coach.held[s] += dt;
+    const g = $('g' + s); g.classList.toggle('held', touching[s]); g.classList.toggle('done', coach.held[s] >= 1);
+  }
+  if ((coach.held.L >= 1 && coach.held.R >= 1) || controls.padActive || controls.keys?.size) {
+    coach.on = false; coach.done = true; document.body.classList.remove('coach');
+    try { localStorage.setItem('onetake.coached', '1'); } catch (e) {}
+  }
+}
+
+// ---------------- audio glue (sound panel main-glue.js): rooms, proximity, bumps, scrapes
+// Room probe: 10 BVH rays, 2 per frame -> hall convolver / tube flutter. Impacts from drone.bump rising, scrapes
+// from drone.contactN; no flight.js change. Proximity comb reads world.lastDist (set by the skim/take code).
+const room = { i: 0, up: [0, 0, 0, 0], h: [40, 40, 40, 40, 40, 40], hall: 0, tube: 0, tubeD: 3, roof: 0 };
+const _rr = new THREE.Ray(), c01 = (x) => Math.max(0, Math.min(1, x));
+const RD = [[0, 1, 0], [0.707, 0.707, 0], [-0.354, 0.707, 0.612], [-0.354, 0.707, -0.612]];
+for (let k = 0; k < 6; k++) RD.push([Math.cos(k * Math.PI / 3), 0, Math.sin(k * Math.PI / 3)]);
+function probeRoom() {
+  if (!world.bvh) { room.hall = room.tube = room.roof = 0; return; }
+  for (let k = 0; k < 2; k++) {
+    const j = room.i++ % 10, d = RD[j];
+    _rr.origin.copy(drone.pos); _rr.direction.set(d[0], d[1], d[2]);
+    const hit = world.bvh.raycastFirst(_rr, THREE.DoubleSide, 0, 40);
+    if (j < 4) room.up[j] = hit ? 1 : 0; else room.h[j - 4] = hit ? hit.distance : 40;
+  }
+  const u = room.up, roof = Math.max((2 * u[0] + u[1] + u[2] + u[3]) / 5, 0.9 * (u[1] + u[2] + u[3]) / 3);   // chimney top is open
+  const hs = room.h.slice().sort((a, b) => a - b), hHit = hs.filter((v) => v < 40).length / 6;
+  const narrow = (hs[0] + hs[1]) / 2, mean = hs.reduce((a, b) => a + b, 0) / 6;
+  room.roof = roof;
+  room.tube = roof * c01((6 - narrow) / 4) * c01((15 - mean) / 8);          // chimney, conveyor gallery
+  room.hall = roof * hHit * c01((mean - 3) / 9) * (1 - room.tube);          // factory hall, workshop
+  room.tubeD = Math.max(1.2, narrow);
+}
+let lastBump = 0, hitNow = 0, thudNow = 0, wasCrashed = false;
+const ax = { dist: Infinity, hall: 0, tube: 0, tubeD: 3, scrape: 0 };
+function audioFrame(now) {
+  probeRoom();
+  const bumpUp = drone.bump - lastBump; lastBump = drone.bump;
+  hitNow = bumpUp > 0.03 && !drone.crashed ? drone.bump * 4 : 0;             // bump = min(1, impact/4) on every impact > 0.4 m/s
+  if (hitNow) audio.hit(hitNow);
+  if (drone.crashed && !wasCrashed) {                                       // crash edge: thud (audio.js de-dupes onCrash's), trim the clip
+    thudNow = Math.max(4, drone.lastImpact || 0); audio.thud(thudNow);
+    if (!clipEndT || clipEndT < now) clipEndT = now + 1.2;
+  }
+  wasCrashed = drone.crashed;
+  ax.dist = world.lastDist; ax.hall = room.hall; ax.tube = room.tube; ax.tubeD = room.tubeD;
+  ax.scrape = drone.contactN.lengthSq() > 0 && !drone.crashed ? drone.vel.length() : 0;
+}
+
+// ---------------- iOS lifecycle: swipe-back guard
+function armBack() { try { if (!history.state?.onetake) history.pushState({ onetake: 1 }, ''); } catch (e) {} }
+
 // ---------------- main loop
-let last = performance.now(), acc30 = 0, frameN = 0;
+let last = performance.now(), acc30 = 0, frameN = 0, menuFrames = 0;
 const PHYS = 1 / 240;
 const MANUAL = new URLSearchParams(location.search).has('manual');
 function frame(now) {
@@ -541,15 +953,14 @@ function frame(now) {
     const steps = Math.max(1, Math.ceil(dt / PHYS)); const h = dt / steps;
     for (let i = 0; i < steps; i++) drone.step(h, inp, S.mode, world);
     if (drone.crashed && state === 'fly') { state = 'crash'; }
-    if (state === 'crash' && drone.crashT > 1.1 && $('crashBar').classList.contains('hidden')) {
-      $('crashBar').classList.remove('hidden'); $('bTitle').textContent = 'CRASHED'; $('bSub').textContent = `${Math.round(score.total).toLocaleString()} pts`; $('banner').classList.remove('hidden');
-    }
     if (world.bounds && !world.bounds.containsPoint(drone.pos)) {
       $('fade').style.opacity = 1; setTimeout(respawn, 380); state = 'loading';
     }
     updateScore(dt, now / 1000);
     rigCamera(dt);
     trackSafe(dt, now / 1000);
+    audioFrame(now / 1000);
+    uiFrame(dt);
     pushReplay(now / 1000);
   }
   if (!world.mesh && !world.scene) return;
@@ -557,15 +968,18 @@ function frame(now) {
   if (state === 'replay') {
     const f = replayFrame();
     if (f) {
-      camPose.pos.copy(f.p); camPose.quat.copy(f.q); motion.vel.copy(f.v); motion.ang.copy(f.w); motion.vib = f.vib;
-      audio.update(f.m, f.s, f.wash, f.c, false);
+      camPose.pos.copy(f.p); camPose.quat.copy(f.q); motion.vel.copy(f.v); motion.ang.copy(f.w); motion.vib = f.vib; motion.hz = f.hz;
+      audio.update(f.m, f.s, f.wash, f.c, false, f.ax);
     }
   } else {
-    audio.update(drone.motors, drone.vel.length(), drone.wash ?? 0, drone.crashed, state === 'menu' || state === 'loading');
+    audio.update(drone.motors, drone.vel.length(), drone.wash ?? 0, drone.crashed, state === 'menu' || state === 'loading', ax);
   }
-  if (state === 'menu' && !loadedId) return;
+  // paused: render one frame under the menu blur, then stop (battery + no GPU work behind the blur)
+  if (state === 'menu' && (!loadedId || menuFrames++ > 1)) return;
+  if (state !== 'menu') menuFrames = 0;
   world.update?.(camPose.pos, dt);
   fpv.render(world, camPose, motion, dt);
+  if (state === 'replay' && replay) compFrame();
   updateHud(dt);
 }
 
@@ -574,10 +988,27 @@ buildWorlds();
 layout();
 applySettings();
 syncSegs();
-document.addEventListener('visibilitychange', () => { if (document.hidden && (state === 'fly' || state === 'crash')) openMenu(); });
-canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); setLoad('Graphics reset', 0, 'The GPU context was lost — reload the page.'); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  if (state === 'replay') { endReplay(true); toast('CLIP CANCELLED'); }   // rAF stops in the background: the recording would be junk
+  if (state === 'fly' || state === 'crash') openMenu();
+  audio.idle?.();
+});
+canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); loadError('Graphics reset', 'The GPU context was lost. Reload to keep flying.', false); });
+// iOS: calls / Siri / Control Center leave the context 'interrupted' without visibilitychange; any touch recovers it
+document.addEventListener('touchend', () => { if (state === 'fly' || state === 'crash' || state === 'replay') audio.kick?.(); }, { passive: true });
+if ('onStickStart' in controls) controls.onStickStart = (side) => stickStart(side);   // E's controls.js hook
+else { document.addEventListener('touchstart', flyOnTouch, { passive: true }); document.addEventListener('mousedown', flyOnTouch); }
+window.addEventListener('keydown', (e) => { if (/^(Key[WASD]|Arrow)/.test(e.code)) flyOnTouch(e); });
+// iOS: a left-edge swipe-back pauses instead of leaving the page
+window.addEventListener('popstate', () => {
+  if (state === 'replay') { endReplay(true); toast('CLIP CANCELLED'); }
+  if (!$('clip').classList.contains('hidden')) { $('clip').classList.add('hidden'); $('clipVid').pause(); }
+  if (state === 'fly' || state === 'crash') openMenu();
+});
 window.__onetake = {
   S, drone, fpv, world, controls, renderer, get spark() { return spark; }, startFlight, respawn, applySettings, get state() { return state; },
+  ui: { onTakeEvent, pop, warn, toast, showSummary, hideSummary, saveClip, endReplay, openMenu, bindTake, scoreView, smoothReplay, splitAccent, get replay() { return replay; }, replayBuf, room },
   tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; },
   // test hook (?manual): advance n frames of dtMs each and return the canvas
   step(dtMs = 16.7, n = 1, grab = true) { for (let i = 0; i < n; i++) { last = performance.now() - dtMs; frame(performance.now()); } return grab ? canvas.toDataURL('image/jpeg', 0.92) : null; },
