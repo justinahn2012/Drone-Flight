@@ -301,9 +301,9 @@ function rt(w, h, { filter = THREE.LinearFilter, mips = false, type = THREE.Unsi
 // clipEv: highlights hard-clip this many EV over the auto-exposure target (null = old soft shoulder, never clips).
 const GRADES = {
   // display-referred splat captures: the original look, unchanged
-  ldr: { wb: [1.06, 1.0, 0.88], wbShade: null, lift: 0.07, clipEv: null, toe: 0, veil: 0, shadowSat: 1, skySel: 0, greenSel: 0, skyBoost: 0, grainEv: [0, 0.9] },
+  ldr: { wb: [1.06, 1.0, 0.88], wbShade: null, evBias: 0, lift: 0.07, clipEv: null, toe: 0, veil: 0, shadowSat: 1, skySel: 0, greenSel: 0, skyBoost: 0, grainEv: [0, 0.9] },
   // scene-linear mesh worlds: colorist's FINAL block (panel/color.md) with the PLAN's sky gain 0.6 and half shade-WB shift
-  hdr: { wb: [1.063, 0.993, 0.883], wbShade: [1.145, 0.977, 0.80], lift: 0, clipEv: 3.0, toe: 0.012, veil: 0.07, shadowSat: 0.6, skySel: 1, greenSel: 1, skyBoost: 0.6, grainEv: [1, 0.55] },
+  hdr: { wb: [1.063, 0.993, 0.883], wbShade: [1.145, 0.977, 0.80], evBias: 0, lift: 0, clipEv: 3.0, toe: 0.012, veil: 0.07, shadowSat: 0.6, skySel: 1, greenSel: 1, skyBoost: 0.6, grainEv: [1, 0.55] },
 };
 const TAU = Math.PI * 2;
 const JELLO_RATIO = [1, 1.077, 0.93], JELLO_AXIS = [1, 0.8, 0.5];
