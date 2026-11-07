@@ -1360,6 +1360,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
       for (const [dx, dz] of [[1.1, 0], [-1.1, 0], [0, 1.1], [0, -1.1]]) { fray.origin.set(x + dx, h.point.y + 0.4, z + dz); if (!bvh.raycastFirst(fray, THREE.DoubleSide, 0, 1.5)) edge = true; }
       if (!edge) continue;
       const s = 0.45 + FR() * 0.8, base = h.point.clone(), cc = base.clone().addScaledVector(UPV, s * 0.5), pr = probe(cc.clone().addScaledVector(UPV, s * 0.5));
+      if (pr.vis < 0.6) continue;                                   // roofs and outer edges only, not interior hole rims
       for (let b = 0, nb = 1 + Math.floor(FR() * 2); b < nb; b++) ball(cc.clone().add(new THREE.Vector3((FR() - 0.5) * s * 0.6, FR() * s * 0.4, (FR() - 0.5) * s * 0.6)), s, cc, s, pr, tintOf(), 0.04, base.y);
       nSap++;
     }
