@@ -14,10 +14,12 @@ const WORLDS = [
   { id: 'yard', name: 'Silo Yard', note: 'Open bando · silos, chimney, factory hall · sunny', craft: 'freestyle5', proc: true, sky: 'sunny' },
   { id: 'yard-overcast', name: 'Silo Yard · Overcast', note: 'Same site under flat grey sky', craft: 'freestyle5', proc: true, sky: 'overcast' },
 ];
+// [D] max: render scale ceiling (auto 1.2: the MSAA/shadow-split savings go into centre sharpness, 0.46 -> 0.59 px/px);
+// msaa: scene MSAA samples (0 = off); ao: contact SSAO (0 = off)
 const QUALITY = {
-  low: { dpr: 1.25, min: 0.5, max: 0.85, samples: 8, std: Math.sqrt(5) },
-  auto: { dpr: 1.6, min: 0.55, max: 1.0, samples: 14, std: Math.sqrt(5.5) },
-  high: { dpr: 2.0, min: 0.65, max: 1.12, samples: 20, std: Math.sqrt(7) },
+  low: { dpr: 1.25, min: 0.5, max: 0.85, samples: 8, std: Math.sqrt(5), msaa: 0, ao: 0 },
+  auto: { dpr: 1.6, min: 0.55, max: 1.2, samples: 14, std: Math.sqrt(5.5), msaa: 4, ao: 1 },
+  high: { dpr: 2.0, min: 0.65, max: 1.12, samples: 20, std: Math.sqrt(7), msaa: 4, ao: 1 },
 };
 // Live display lag (s) per stabilisation setting. 'heavy' is replay-only: live it behaves like 'light' (a 90 ms lag
 // makes acro pilots over-correct into oscillations); clips get its extra smoothing in the replay path (STAB_REPLAY,
@@ -43,7 +45,7 @@ if (params.get('splat')) {
 
 // ---------------- renderer & scenes
 const canvas = $('c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: false });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance', preserveDrawingBuffer: false });   // [D] the canvas only takes fpvcam's final quad
 renderer.setPixelRatio(1);
 renderer.autoClear = false;
 renderer.shadowMap.enabled = true;
@@ -108,6 +110,7 @@ function applySettings() {
   const q = QUALITY[S.quality];
   fpv.setQualityRange(q.min, q.max);
   fpv.look.maxSamples = q.samples;
+  fpv.look.msaa = q.msaa ?? 4; fpv.look.ssao = q.ao ?? 1;   // [D]
   if (spark) spark.maxStdDev = q.std;
   fpv.look.lens = LENSES[S.lens] || LENSES.ref;
   fpv.look.shutter = (SHUTTERS[S.shutter] || SHUTTERS.nd16).t;
@@ -329,10 +332,13 @@ async function loadProcWorld(def) {
   world.spawn.copy(w.spawn); world.yaw = w.yaw;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);
-  // [A] evMax 4.0: a real hall interior sits ~6 stops under open ground; the camera may open up 4 EV over outdoors.
-  // Look line from stream D; overcast wb rescaled from D's farmland_overcast value by the sky change (skyE rgb/G
-  // farmland 0.889/1/1.202 -> overcast_soil_puresky 1.009/1/1.004), so the rendered grey lands where D put it.
-  Object.assign(fpv.look, { evMin: -5.5, evMax: 4.0, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: def.sky === 'overcast' ? [0.990, 0.985, 0.941] : [1.063, 0.993, 0.883], evBias: def.sky === 'overcast' ? 0.3 : 0 });
+  // [D] HDR look (colorist round 2, PLAN3 decisions 4/5): evMax 3.6 (interiors ~p50 60-87, not pinned at +4); WB fitted to
+  // the puresky sun+sky (grey card R/G 1.015, B/G 0.95); overcast shade WB = its WB (no sepia hall); sunny evBias -0.15.
+  const oc = def.sky === 'overcast';
+  Object.assign(fpv.look, { evMin: -5.5, evMax: 3.6, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: oc ? [1.038, 0.998, 0.907] : [1.036, 0.994, 0.956],
+    wbShade: oc ? [1.038, 0.998, 0.907] : [1.125, 0.978, 0.845], evBias: oc ? 0.3 : -0.15 });
+  Object.assign(world, { depthScene: w.depthScene || null, aoUniforms: w.aoUniforms || null });   // [D] contracts C2/C3 (optional inputs)
+  fpv.warmup?.();                                                                                   // [D] post programs behind the loader
   fpv.cam.near = 0.06; fpv.cam.far = 3000; fpv.cam.updateProjectionMatrix();
   // [A] shader warm-up behind the loader: compile every world program now (in parallel where
   // KHR_parallel_shader_compile exists) instead of hitching the first frames. Compiled against a
