@@ -10,13 +10,13 @@ export const CRAFTS = {
     rates: { roll: [200, 720, 0.55], pitch: [200, 720, 0.55], yaw: [160, 520, 0.45] },
     tauRate: 0.022, tauMotor: 0.035, camTilt: 24, crashSpeed: 7.0, maxAngle: 40,
     // Cine Assist: stick = target velocity, release = brake to hover
-    cineSpeed: 10, cineTilt: 32, cineYaw: 85, cineClimb: 2.5,
+    cineSpeed: 15, cineTilt: 34, cineYaw: 90, cineClimb: 4.5,
   },
   cinewhoop: {
     label: '3" Cinewhoop', mass: 0.34, twr: 4.0, radius: 0.085, cdA: [0.022, 0.07, 0.022], pitchSpeed: 32,
     rates: { roll: [150, 520, 0.5], pitch: [150, 520, 0.5], yaw: [120, 380, 0.4] },
     tauRate: 0.03, tauMotor: 0.03, camTilt: 10, crashSpeed: 5.0, maxAngle: 28,
-    cineSpeed: 4.5, cineTilt: 22, cineYaw: 70, cineClimb: 1.4,
+    cineSpeed: 7, cineTilt: 26, cineYaw: 80, cineClimb: 2.2,
   },
 };
 
@@ -218,6 +218,20 @@ export class Drone {
       n.divideScalar(dist);
       this.pos.copy(res.point).addScaledVector(n, r + 0.003);
       resolve(n);
+    }
+    // final guard: whatever the push-outs did, the step may never cross a surface
+    {
+      const seg = _v1.copy(this.pos).sub(this.prev), L = seg.length();
+      if (L > 1e-5) {
+        seg.divideScalar(L); _ray.set(this.prev, seg);
+        const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, L);
+        if (hit && hit.face) {
+          const n = _v2.copy(hit.face.normal); if (n.dot(seg) > 0) n.negate();
+          this.pos.copy(this.prev);
+          const vn = this.vel.dot(n); if (vn < 0) this.vel.addScaledVector(n, -1.3 * vn);
+          touched = true; n0.add(n);
+        }
+      }
     }
     // un-stick: wedged against geometry and barely moving for half a second -> pop out along the contact normal
     if (touched && !this.crashed && this.vel.length() < 0.6) this.contactT += dt; else this.contactT = Math.max(0, this.contactT - dt * 2);

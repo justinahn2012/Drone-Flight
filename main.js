@@ -1,6 +1,5 @@
 // main.js — One Take FPV: world loading, game loop, scoring, clips, UI.
 import * as THREE from 'three';
-import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshBVH } from 'three-mesh-bvh';
 import { FPVCamera, LENSES, SHUTTERS } from './fpvcam.js';
@@ -10,14 +9,9 @@ import { MotorAudio } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
-const WB = 'https://wlt-ai-cdn.art/example_exports/';
-const marble = (slug) => ({ splat: `${WB}${slug}/${slug}_500k.spz`, splatHQ: `${WB}${slug}/${slug}_2m.spz`, collider: `${WB}${slug}/${slug}_collider.glb`, flip: true });
 const WORLDS = [
-  { id: 'lane', name: 'Cobblestone Lane', note: 'Outdoor · 40 m alley · balconies', craft: 'freestyle5', ...marble('narrow_european_cobblestone_lane') },
-  { id: 'house', name: 'Garden House', note: 'Outdoor · trees, terrace, glass', craft: 'freestyle5', ...marble('modern_house_with_lush_landscaping') },
-  { id: 'library', name: 'Old Library', note: 'Indoor · shelves, fireplace', craft: 'cinewhoop', ...marble('elegant_library_with_fireplace') },
-  { id: 'rustic', name: 'Rustic Kitchen', note: 'Indoor · beams, window light', craft: 'cinewhoop', ...marble('rustic_kitchen_with_natural_light') },
-  { id: 'kitchen', name: 'Farmhouse Kitchen', note: 'Indoor · tight gaps', craft: 'cinewhoop', ...marble('warm_traditional_kitchen_interior') },
+  { id: 'yard', name: 'Silo Yard', note: 'Open bando · silos, chimney, factory hall · sunny', craft: 'freestyle5', proc: true, sky: 'sunny' },
+  { id: 'yard-overcast', name: 'Silo Yard · Overcast', note: 'Same site under flat grey sky', craft: 'freestyle5', proc: true, sky: 'overcast' },
 ];
 const QUALITY = {
   low: { dpr: 1.25, min: 0.5, max: 0.85, samples: 8, std: Math.sqrt(5) },
@@ -27,9 +21,10 @@ const QUALITY = {
 const STAB = { off: 0, light: 0.03, heavy: 0.09 };
 
 // ---------------- settings
-const DEF = { v: 2, world: 'lane', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'on', sound: 'on' };
+const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'on', sound: 'on' };
 let S = { ...DEF };
-try { const saved = JSON.parse(localStorage.getItem('onetake.settings') || '{}'); if (saved.v !== 2) { delete saved.tilt; saved.v = 2; } Object.assign(S, saved); } catch (e) {}
+try { const saved = JSON.parse(localStorage.getItem('onetake.settings') || '{}'); if (saved.v !== 3) { delete saved.tilt; delete saved.world; saved.v = 3; } Object.assign(S, saved); } catch (e) {}
+if (!['yard', 'yard-overcast', 'file', 'url'].includes(S.world)) S.world = 'yard';
 const save = () => { try { localStorage.setItem('onetake.settings', JSON.stringify(S)); } catch (e) {} };
 const params = new URLSearchParams(location.search);
 if (params.get('splat')) {
@@ -42,14 +37,23 @@ const canvas = $('c');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: false });
 renderer.setPixelRatio(1);
 renderer.autoClear = false;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const splatScene = new THREE.Scene();
-const spark = new SparkRenderer({ renderer, maxStdDev: QUALITY[S.quality].std });
-splatScene.add(spark);
-// Splats are trained (and blended) in display/sRGB space. Spark converts to linear whenever it renders
-// into an offscreen target; pin it to sRGB so our buffer matches the capture and keeps 8-bit shadow precision.
-try { Object.defineProperty(spark.uniforms.encodeLinear, 'value', { get: () => false, set: () => {} }); } catch (e) { console.warn('encodeLinear pin failed', e); }
+// Spark (Gaussian splats) only loads for custom splat worlds
+let spark = null, SplatMesh = null;
+async function ensureSpark() {
+  if (spark) return;
+  const mod = await import('@sparkjsdev/spark');
+  SplatMesh = mod.SplatMesh;
+  spark = new mod.SparkRenderer({ renderer, maxStdDev: QUALITY[S.quality].std });
+  splatScene.add(spark);
+  // Splats are trained (and blended) in display/sRGB space. Spark converts to linear whenever it renders
+  // into an offscreen target; pin it to sRGB so our buffer matches the capture and keeps 8-bit shadow precision.
+  try { Object.defineProperty(spark.uniforms.encodeLinear, 'value', { get: () => false, set: () => {} }); } catch (e) { console.warn('encodeLinear pin failed', e); }
+}
 const fpv = new FPVCamera(renderer);
-const world = { splatScene, colliderScene: null, bvh: null, mesh: null, bounds: null, spawn: new THREE.Vector3(), yaw: 0, def: null, lastDist: Infinity };
+const world = { scene: null, splatScene, colliderScene: null, bvh: null, mesh: null, bounds: null, spawn: new THREE.Vector3(), yaw: 0, def: null, lastDist: Infinity };
 const drone = new Drone('freestyle5');
 const audio = new MotorAudio();
 const controls = new Controls({
@@ -82,7 +86,7 @@ function applySettings() {
   const q = QUALITY[S.quality];
   fpv.setQualityRange(q.min, q.max);
   fpv.look.maxSamples = q.samples;
-  spark.maxStdDev = q.std;
+  if (spark) spark.maxStdDev = q.std;
   fpv.look.lens = LENSES[S.lens] || LENSES.ref;
   fpv.look.shutter = (SHUTTERS[S.shutter] || SHUTTERS.nd16).t;
   fpv.look.letterbox = S.frame === 'cine' ? 0.5 - (fpv.outW / fpv.outH) / 2.39 / 2 : 0;
@@ -101,7 +105,7 @@ function applySettings() {
   }[S.mode];
   const craftKey = craftFor(world.def);
   if (drone.key !== craftKey) { drone.setCraft(craftKey); }
-  const tilt = S.tilt >= 0 ? S.tilt : CRAFTS[craftKey].camTilt;
+  const tilt = S.tilt >= 0 ? S.tilt : defTilt(CRAFTS[craftKey]);
   $('tilt').value = tilt; $('tiltV').textContent = tilt + '°';
   fpv.computeLens();
   syncSegs();
@@ -148,11 +152,11 @@ $('fly').onclick = () => startFlight(true);
 $('resume').onclick = () => startFlight(false);
 $('btnMenu').onclick = () => openMenu();
 $('rMode').onclick = () => { const order = ['cine', 'angle', 'acro']; S.mode = order[(order.indexOf(S.mode) + 1) % 3]; applySettings(); controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); toast(S.mode.toUpperCase()); };
-$('rReset').onclick = () => respawn();
+$('rReset').onclick = () => respawn(true);
 $('rClip').onclick = () => saveClip();
 $('cReset').onclick = () => respawn();
 $('cClip').onclick = () => saveClip();
-controls.onButton = (b) => { if (b === 'reset' && (state === 'fly' || state === 'crash')) respawn(); if (b === 'menu') state === 'menu' ? startFlight(false) : openMenu(); };
+controls.onButton = (b) => { if (b === 'reset' && (state === 'fly' || state === 'crash')) respawn(state === 'fly'); if (b === 'menu') state === 'menu' ? startFlight(false) : openMenu(); };
 
 function openMenu() {
   if (state === 'replay') return;
@@ -181,7 +185,7 @@ async function startFlight(fresh) {
       if (!ok) return;
       loadedId = wantKey;
     }
-    respawn();
+    respawn(true);
   } else {
     state = prevState === 'crash' ? 'crash' : 'fly';
   }
@@ -212,10 +216,42 @@ async function fetchBytes(url, onProgress) {
 }
 const mb = (b) => (b / 1048576).toFixed(1);
 
+function clearWorld() {
+  if (world.mesh) { splatScene.remove(world.mesh); world.mesh.dispose?.(); world.mesh = null; }
+  if (world.scene) {
+    world.scene.traverse((o) => { o.geometry?.dispose?.(); const m = o.material; (Array.isArray(m) ? m : m ? [m] : []).forEach((mm) => { Object.values(mm).forEach((v) => v?.isTexture && v.dispose()); mm.dispose(); }); });
+    world.scene.background?.dispose?.(); world.scene.environment?.dispose?.();
+  }
+  world.scene = null; world.bvh = null; world.colliderScene = null; world.bounds = null; world.envelope = null; world.update = null;
+}
+
+async function loadProcWorld(def) {
+  const { buildBando } = await import('./world-bando.js');
+  const w = await buildBando(renderer, { sky: def.sky, quality: S.quality, onProgress: (f, t) => setLoad(null, f, t) });
+  clearWorld();
+  Object.assign(world, { scene: w.scene, colliderScene: w.colliderScene, bvh: w.bvh, bounds: w.bounds, envelope: w.envelope, update: w.update, hdr: true });
+  world.spawn.copy(w.spawn); world.yaw = w.yaw;
+  // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
+  fpv.setHDR(true);
+  Object.assign(fpv.look, { evMin: -5.5, evMax: 2.6, invTone: 0, lift: 0.04, saturation: 1.1, expo: 0.85 });
+  fpv.cam.near = 0.06; fpv.cam.far = 3000; fpv.cam.updateProjectionMatrix();
+}
+
 async function loadWorld(def) {
   state = 'loading';
   try {
-    setLoad(def.name, 0, 'Fetching world…');
+    setLoad(def.name, 0, def.proc ? 'Building site…' : 'Fetching world…');
+    if (def.proc) {
+      await loadProcWorld(def);
+      world.def = def;
+      applySettings();
+      $('loading').classList.add('hidden');
+      return true;
+    }
+    await ensureSpark();
+    fpv.setHDR(false);
+    Object.assign(fpv.look, { evMin: -1.2, evMax: 1.8, invTone: 0.84, lift: 0.07, saturation: 0.95, expo: 0.85 });
+    fpv.cam.near = 0.04; fpv.cam.far = 300; fpv.cam.updateProjectionMatrix();
     let bytes, fname;
     if (def.splatFile) { bytes = new Uint8Array(await def.splatFile.arrayBuffer()); fname = def.splatFile.name; }
     else {
@@ -227,7 +263,7 @@ async function loadWorld(def) {
     const mesh = new SplatMesh({ fileBytes: bytes, fileName: fname });
     await mesh.initialized;
     if (def.flip) mesh.quaternion.set(1, 0, 0, 0);   // Marble/OpenCV (+y down, +z fwd) -> three.js
-    if (world.mesh) { splatScene.remove(world.mesh); world.mesh.dispose?.(); }
+    clearWorld(); world.hdr = false;
     world.mesh = mesh; splatScene.add(mesh);
 
     world.bvh = null; world.colliderScene = null; world.bounds = null;
@@ -330,12 +366,21 @@ function findSpawn() {
   world.spawn.copy(p);
 }
 
-function respawn() {
+// open world: after a crash you go back to where you last were flying clear, not to the start
+const safePts = []; let safeT = 0;
+function trackSafe(dt, now) {
+  safeT += dt; if (safeT < 1.0 || drone.crashed) return; safeT = 0;
+  if (world.lastDist > 1.2 && drone.vel.length() < 30) { safePts.push({ t: now, p: drone.pos.clone(), yaw: drone.heading }); if (safePts.length > 30) safePts.shift(); }
+}
+function respawn(toStart = false) {
   drone.setCraft(craftFor(world.def));
-  drone.reset(world.spawn, world.yaw);
+  const now = performance.now() / 1000;
+  const sp = toStart ? null : [...safePts].reverse().find((s) => now - s.t > 2.0);
+  if (sp) drone.reset(sp.p, sp.yaw); else { drone.reset(world.spawn, world.yaw); score.reset(); flightT = 0; }
+  if (toStart) safePts.length = 0;
   controls.resetThrottle(Math.sqrt(1 / drone.c.twr));
   camQ.copy(drone.q); fpv.resetExposure = true;
-  score.reset(); flightT = 0; replayBuf.length = 0;
+  replayBuf.length = 0;
   state = 'fly';
   $('crashBar').classList.add('hidden'); $('banner').classList.add('hidden');
   $('fade').style.opacity = 0;
@@ -380,11 +425,13 @@ drone.onCrash = (impact) => {
 // ---------------- camera rig
 const camQ = new THREE.Quaternion();
 const tiltQ = new THREE.Quaternion();
+// uptilt is matched to cruise attitude: assisted flight cruises at ~10-20 deg of lean, acro at 30+
+function defTilt(c) { return Math.round(c.camTilt * (S.mode === 'acro' ? 1 : S.mode === 'angle' ? 0.8 : 0.55)); }
 const camPose = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
 const motion = { vel: new THREE.Vector3(), ang: new THREE.Vector3(), vib: 1 };
 const _q = new THREE.Quaternion(), _v = new THREE.Vector3();
 function rigCamera(dt) {
-  const tilt = (S.tilt >= 0 ? S.tilt : drone.c.camTilt) * DEG;
+  const tilt = (S.tilt >= 0 ? S.tilt : defTilt(drone.c)) * DEG;
   tiltQ.setFromAxisAngle(_v.set(1, 0, 0), tilt);
   _q.copy(drone.q).multiply(tiltQ);
   const tau = STAB[S.stab] || 0;
@@ -502,9 +549,10 @@ function frame(now) {
     }
     updateScore(dt, now / 1000);
     rigCamera(dt);
+    trackSafe(dt, now / 1000);
     pushReplay(now / 1000);
   }
-  if (!world.mesh) return;
+  if (!world.mesh && !world.scene) return;
 
   if (state === 'replay') {
     const f = replayFrame();
@@ -516,6 +564,7 @@ function frame(now) {
     audio.update(drone.motors, drone.vel.length(), drone.wash ?? 0, drone.crashed, state === 'menu' || state === 'loading');
   }
   if (state === 'menu' && !loadedId) return;
+  world.update?.(camPose.pos, dt);
   fpv.render(world, camPose, motion, dt);
   updateHud(dt);
 }
@@ -528,7 +577,8 @@ syncSegs();
 document.addEventListener('visibilitychange', () => { if (document.hidden && (state === 'fly' || state === 'crash')) openMenu(); });
 canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); setLoad('Graphics reset', 0, 'The GPU context was lost — reload the page.'); });
 window.__onetake = {
-  S, drone, fpv, world, controls, spark, startFlight, respawn, applySettings, get state() { return state; },
+  S, drone, fpv, world, controls, renderer, get spark() { return spark; }, startFlight, respawn, applySettings, get state() { return state; },
+  tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; },
   // test hook (?manual): advance n frames of dtMs each and return the canvas
   step(dtMs = 16.7, n = 1, grab = true) { for (let i = 0; i < n; i++) { last = performance.now() - dtMs; frame(performance.now()); } return grab ? canvas.toDataURL('image/jpeg', 0.92) : null; },
 };

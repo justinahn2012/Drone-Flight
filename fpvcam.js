@@ -100,6 +100,8 @@ uniform vec2 uScale;
 uniform vec2 uTexel;     // source texel in viewport-uv
 uniform float uInv;
 uniform float uThresh;
+uniform float uHdr;
+uniform float uLumScale;
 void main(){
   vec3 c = vec3(0.0);
   c += texture(tSrc, clamp(vUv + vec2(-uTexel.x, -uTexel.y), 0.0, 1.0) * uScale).rgb;
@@ -107,12 +109,12 @@ void main(){
   c += texture(tSrc, clamp(vUv + vec2(-uTexel.x,  uTexel.y), 0.0, 1.0) * uScale).rgb;
   c += texture(tSrc, clamp(vUv + vec2( uTexel.x,  uTexel.y), 0.0, 1.0) * uScale).rgb;
   c *= 0.25;
-  vec3 lin = srgb2lin(c);
+  vec3 lin = uHdr > 0.5 ? max(c, 0.0) : srgb2lin(c);
   float L = dot(lin, LUMA);
   float ev = decodeEv(texelFetch(tExp, ivec2(0), 0));
-  vec3 e = invTone(lin, uInv) * exp2(ev);
+  vec3 e = (uHdr > 0.5 ? lin : invTone(lin, uInv)) * exp2(ev);
   vec3 bright = max(e - vec3(uThresh), 0.0);
-  fragColor = vec4(min(bright / 8.0, 1.0), sqrt(L));
+  fragColor = vec4(min(bright / 8.0, 1.0), sqrt(clamp(L / uLumScale, 0.0, 1.0)));
 }`;
 
 const METER_FS = /* glsl */`precision highp float;
@@ -131,12 +133,16 @@ uniform float uLock;
 uniform float uLockEv;
 uniform float uEvMin;
 uniform float uEvMax;
+uniform float uHdr;
+uniform float uLumScale;
 void main(){
+  float prevEv = decodeEv(texelFetch(tPrev, ivec2(0), 0));
   float lsum = 0.0, asum = 0.0, wsum = 0.0;
   for (int y = 0; y < 7; y++) for (int x = 0; x < 9; x++) {
     vec2 uv = (vec2(float(x), float(y)) + 0.5) / vec2(9.0, 7.0);
-    float L = texture(tSmall, uv).a; L *= L;
-    float Lh = min(invTone(vec3(L), uInv).r, 1.1);
+    float L = texture(tSmall, uv).a; L *= L * uLumScale;
+    // the meter reads the sensor, which saturates: a blown sky can't drag exposure down on its own
+    float Lh = uHdr > 0.5 ? min(L, 1.4 * exp2(-prevEv)) : min(invTone(vec3(L), uInv).r, 1.1);
     vec2 d = (uv - vec2(0.5, 0.45)) * vec2(1.6, 2.0);
     float w = exp(-dot(d, d) * 1.6);            // centre-weighted metering
     lsum += w * log2(Lh + 1e-3); asum += w * Lh; wsum += w;
@@ -191,6 +197,7 @@ uniform float uFrame;
 uniform float uLetter;    // letterbox fraction (0 = none)
 uniform vec3 uWB;
 uniform float uLift;
+uniform float uHdr;
 
 vec2 lensMap(vec2 uv, float ca, out float theta){
   vec2 q = (uv - 0.5) * 2.0 * uHalf;
@@ -217,11 +224,11 @@ void main(){
   vec2 px = 1.0 / uSrcPx;
   float Ln = dot(tex(sG + vec2(px.x, 0.0)) + tex(sG - vec2(px.x, 0.0)) + tex(sG + vec2(0.0, px.y)) + tex(sG - vec2(0.0, px.y)), LUMA) * 0.25;
   float Lc = dot(c, LUMA);
-  c = clamp(c + (Lc - Ln) * uSharp, 0.0, 1.0);
+  c = uHdr > 0.5 ? max(c + (Lc - Ln) * uSharp * 0.8, 0.0) : clamp(c + (Lc - Ln) * uSharp, 0.0, 1.0);
 
-  vec3 lin = srgb2lin(c);
+  vec3 lin = uHdr > 0.5 ? c : srgb2lin(c);
   float ev = decodeEv(texelFetch(tExp, ivec2(0), 0));
-  vec3 e = invTone(lin, uInv) * exp2(ev) * uWB;
+  vec3 e = (uHdr > 0.5 ? lin : invTone(lin, uInv)) * exp2(ev) * uWB;
   e += texture(tBloom, clamp(sG, 0.0, 1.0)).rgb * 8.0 * uBloom;           // halation / glare
   float vig = pow(max(cos(th), 0.0), 2.2);                                   // optical cos^n falloff
   e *= mix(1.0, vig, uVig);
@@ -256,9 +263,9 @@ function pass(fs, uniforms) {
   return { mat, scene, u: uniforms };
 }
 
-function rt(w, h, filter = THREE.LinearFilter, mips = false) {
+function rt(w, h, filter = THREE.LinearFilter, mips = false, type = THREE.UnsignedByteType) {
   return new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
-    minFilter: mips ? THREE.LinearMipmapLinearFilter : filter, magFilter: filter, type: THREE.UnsignedByteType, format: THREE.RGBAFormat,
+    minFilter: mips ? THREE.LinearMipmapLinearFilter : filter, magFilter: filter, type, format: THREE.RGBAFormat,
     depthBuffer: true, stencilBuffer: false, generateMipmaps: mips,
   });
 }
@@ -312,12 +319,12 @@ export class FPVCamera {
     });
     this.down = pass(DOWN_FS, {
       tSrc: { value: null }, tExp: { value: null }, uScale: { value: new THREE.Vector2(1, 1) },
-      uTexel: { value: new THREE.Vector2() }, uInv: { value: 0.82 }, uThresh: { value: 1.0 },
+      uTexel: { value: new THREE.Vector2() }, uInv: { value: 0.82 }, uThresh: { value: 1.0 }, uHdr: { value: 0 }, uLumScale: { value: 1 },
     });
     this.meter = pass(METER_FS, {
       tSmall: { value: null }, tPrev: { value: null }, uDt: { value: 0.016 }, uBias: { value: 0 }, uInv: { value: 0.82 },
       uUp: { value: 3.3 }, uDown: { value: 7.5 }, uReset: { value: 1 }, uLock: { value: 0 }, uLockEv: { value: 0 },
-      uEvMin: { value: -1.2 }, uEvMax: { value: 1.3 },
+      uEvMin: { value: -1.2 }, uEvMax: { value: 1.3 }, uHdr: { value: 0 }, uLumScale: { value: 1 },
     });
     this.bloomH = pass(BLOOM_FS, { tSrc: { value: null }, uDir: { value: new THREE.Vector2() } });
     this.bloomV = pass(BLOOM_FS, { tSrc: { value: null }, uDir: { value: new THREE.Vector2() } });
@@ -327,7 +334,7 @@ export class FPVCamera {
       uSrcTan: { value: new THREE.Vector2(1, 1) }, uRc: { value: 1 }, uCA: { value: 0.01 }, uVig: { value: 0.5 }, uSharp: { value: 0.5 },
       uGrain: { value: 0.04 }, uSat: { value: 1.2 }, uInv: { value: 0.82 }, uBloom: { value: 0.5 }, uExpo: { value: 1 },
       uTime: { value: 0 }, uFrame: { value: 0 }, uLetter: { value: 0 },
-      uWB: { value: new THREE.Vector3(1, 1, 1) }, uLift: { value: 0 },
+      uWB: { value: new THREE.Vector3(1, 1, 1) }, uLift: { value: 0 }, uHdr: { value: 0 },
     });
     this.quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.exp = [rt(1, 1, THREE.NearestFilter), rt(1, 1, THREE.NearestFilter)];
@@ -337,15 +344,20 @@ export class FPVCamera {
     this._v = new THREE.Vector3();
   }
 
+  // HDR worlds (lit meshes) hand us scene-linear radiance in half-float; splat worlds hand us display sRGB
+  readEv(renderer) { const b = new Uint8Array(4); renderer.readRenderTargetPixels(this.exp[this.expIdx], 0, 0, 1, 1, b); return -5 + 10 * (b[0] / 255 + b[1] / 255 / 255); }
+  setHDR(on) { if (this.hdr === on) return; this.hdr = on; this.resetExposure = true; if (this.outW > 2) this.resize(this.outW, this.outH); }
+
   setQualityRange(min, max) { this.minScale = min; this.maxScale = max; this.scale = Math.min(Math.max(this.scale, min), max); }
 
   resize(w, h) {
     this.outW = Math.max(2, Math.round(w)); this.outH = Math.max(2, Math.round(h));
     const cap = 1.15;
     const cw = Math.ceil(this.outW * cap), ch = Math.ceil(this.outH * cap);
-    if (!this.colorRT || this.colorRT.width !== cw || this.colorRT.height !== ch) {
+    const type = this.hdr ? THREE.HalfFloatType : THREE.UnsignedByteType;
+    if (!this.colorRT || this.colorRT.width !== cw || this.colorRT.height !== ch || this.colorRT.texture.type !== type) {
       this.colorRT?.dispose(); this.blurRT?.dispose(); this.depthRT?.dispose();
-      this.colorRT = rt(cw, ch, THREE.LinearFilter, true); this.blurRT = rt(cw, ch);
+      this.colorRT = rt(cw, ch, THREE.LinearFilter, true, type); this.blurRT = rt(cw, ch, THREE.LinearFilter, false, type);
       this.depthRT = rt(Math.ceil(cw / 2), Math.ceil(ch / 2), THREE.NearestFilter);
     }
     const sw = Math.max(16, Math.round(this.outW / 8)), sh = Math.max(9, Math.round(this.outH / 8));
@@ -416,7 +428,7 @@ export class FPVCamera {
     this.colorRT.viewport.set(0, 0, vw, vh);
     r.setRenderTarget(this.colorRT);
     r.setClearColor(0x000000, 1); r.clear(true, true, false);
-    r.render(world.splatScene, cam);
+    r.render(world.scene || world.splatScene, cam);
 
     // 2) depth from the physics collider (cheap: ~100k tris, half res, flat shader)
     const dw = Math.max(16, Math.round(vw / 2)), dh = Math.max(9, Math.round(vh / 2));
@@ -451,12 +463,15 @@ export class FPVCamera {
     du.uScale.value.set(vw / this.blurRT.width, vh / this.blurRT.height);
     du.uTexel.value.set(2 / this.smallRT.width * 0.5, 2 / this.smallRT.height * 0.5);
     du.uInv.value = lk.invTone; du.uThresh.value = 1.0;
+    const H = this.hdr ? 1 : 0, LS = this.hdr ? 16 : 1;
+    du.uHdr.value = H; du.uLumScale.value = LS;
     r.setRenderTarget(this.smallRT); r.render(this.down.scene, this.quadCam);
 
     // 5) auto-exposure with lag (GPU-side, no readback stalls)
     const mu = this.meter.u;
     mu.tSmall.value = this.smallRT.texture; mu.tPrev.value = prevExp.texture;
     mu.uDt.value = Math.min(dt, 0.1); mu.uBias.value = lk.evBias; mu.uInv.value = lk.invTone;
+    mu.uHdr.value = H; mu.uLumScale.value = LS; this.final.u.uHdr.value = H;
     mu.uEvMin.value = lk.evMin; mu.uEvMax.value = lk.evMax; mu.uUp.value = lk.aeUp; mu.uDown.value = lk.aeDown;
     mu.uReset.value = this.resetExposure ? 1 : 0; this.resetExposure = false;
     r.setRenderTarget(nextExp); r.render(this.meter.scene, this.quadCam);
