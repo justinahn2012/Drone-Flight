@@ -591,7 +591,17 @@ function crownGeometry(lumps = 5) {     // 20 tris per lump
 const MASK = { N: 512, x0: -165, z0: -150, size: 320 };
 function buildGroundMask(site, terr) {
   const { N, x0, z0, size } = MASK, d = new Uint8Array(N * N * 4), sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-  const fh = (i, j) => hash2(i * 1.7 + 0.31, j * 2.3 + 0.77);
+  const fh = (i, j) => { let h = Math.imul(i, 374761393) + Math.imul(j, 668265263) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  // path segments with bounding boxes: only distances below ~7 m matter
+  const segs = []; for (const p of PATHS) for (let k = 0; k < p.length - 1; k++) { const [ax, az] = p[k], [bx, bz] = p[k + 1]; segs.push([ax, az, bx - ax, bz - az, Math.min(ax, bx) - 7, Math.max(ax, bx) + 7, Math.min(az, bz) - 7, Math.max(az, bz) + 7, (bx - ax) ** 2 + (bz - az) ** 2]); }
+  const pathD = (x, z) => {
+    let best = 49;
+    for (const [ax, az, vx, vz, xa, xb, za, zb, l2] of segs) {
+      if (x < xa || x > xb || z < za || z > zb) continue;
+      const t = Math.max(0, Math.min(1, ((x - ax) * vx + (z - az) * vz) / l2)), dx = x - ax - t * vx, dz = z - az - t * vz, q = dx * dx + dz * dz; if (q < best) best = q;
+    }
+    return Math.sqrt(best);
+  };
   const vno = (x, z) => { const i = Math.floor(x), j = Math.floor(z), fx = x - i, fz = z - j, u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
     return (fh(i, j) * (1 - u) + fh(i + 1, j) * u) * (1 - v) + (fh(i, j + 1) * (1 - u) + fh(i + 1, j + 1) * u) * v; };
   const tao = terr.attributes.ao, TS = 128;
@@ -605,9 +615,9 @@ function buildGroundMask(site, terr) {
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
     const x = x0 + (i + 0.5) * size / N, z = z0 + (j + 0.5) * size / N, o = (j * N + i) * 4;
     let sd = Infinity;
-    for (const f of fps) { const dx = Math.max(f.x0 - x, x - f.x1), dz = Math.max(f.z0 - z, z - f.z1); sd = Math.min(sd, dx > 0 || dz > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dz, 0)) : Math.max(dx, dz)); }
+    for (const f of fps) { const dx = Math.max(f.x0 - x, x - f.x1), dz = Math.max(f.z0 - z, z - f.z1); const e = dx > 0 || dz > 0 ? Math.sqrt(Math.max(dx, 0) ** 2 + Math.max(dz, 0) ** 2) : Math.max(dx, dz); if (e < sd) sd = e; }
     const yard = Math.max(Math.abs(x + 5) - 95, Math.abs(z - 10) - 85), paved = 1 - sm(-14, 0, yard);
-    const n1 = vno(x * 0.05, z * 0.05), n2 = vno(x * 0.17 + 3, z * 0.17 + 7), dP = distToPaths(x, z);
+    const n1 = vno(x * 0.05, z * 0.05), n2 = vno(x * 0.17 + 3, z * 0.17 + 7), dP = pathD(x, z);
     const apW = 5 + 7 * n1;
     let ap = sd < 0 ? 1 : 1 - sm(apW - 2, apW + 2, sd + (n2 - 0.5) * 4);
     ap = Math.max(ap, (1 - sm(2.0, 3.6, dP + (n2 - 0.5) * 1.4 - vno(x * 0.03 + 11, z * 0.03) * 1.2)) * paved);
