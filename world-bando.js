@@ -573,9 +573,9 @@ function graffitiAtlas(R) {
   });
 }
 // [B] treeline crown: a few lumps, normals from the crown centre (it shades as one mass), base at y = 0, height ~1
-function crownGeometry() {
-  const parts = [[0, 0.5, 0, 0.44, 0], [0.27, 0.42, 0.1, 0.3, 0], [-0.25, 0.38, -0.12, 0.3, 0], [0.06, 0.4, 0.28, 0.27, 0], [-0.05, 0.42, -0.3, 0.26, 0],
-    [0.12, 0.78, 0.06, 0.25, 0], [-0.14, 0.7, -0.04, 0.22, 0]];
+function crownGeometry(lumps = 5) {     // 20 tris per lump
+  const parts = [[0, 0.5, 0, 0.46, 0], [0.12, 0.78, 0.06, 0.27, 0], [0.27, 0.4, 0.1, 0.32, 0], [-0.25, 0.38, -0.14, 0.32, 0], [-0.14, 0.7, -0.04, 0.24, 0],
+    [0.06, 0.4, 0.28, 0.27, 0], [-0.05, 0.42, -0.3, 0.26, 0]].slice(0, lumps);
   const g = mergeGeometries(parts.map(([x, y, z, r, d]) => { const p = new THREE.IcosahedronGeometry(r, d); p.rotateY(x * 9 + z * 5); p.translate(x, y, z); return p; }), false);
   const p = g.attributes.position, n = g.attributes.normal, v = new THREE.Vector3(), c = new THREE.Vector3(0, 0.45, 0);
   for (let i = 0; i < p.count; i++) {
@@ -1376,10 +1376,10 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     Object.assign(foliageStats, { trees: treeSpots.length, thickets: nBush, shrubs: nField, saplings: nSap, cards: I.length / 6 });
   }
 
-  // [B] distant treeline ring: instanced low-poly crowns in 6 sectors (frustum-culled), fogged by the scene fog,
+  // [B] distant treeline ring: instanced low-poly crowns in 4 sectors (frustum-culled), fogged by the scene fog,
   // shrinking into the ground before the camera's 300 m far plane so no crown is ever cut in half
   {
-    const crown = crownGeometry(), SEC = 6, by = Array.from({ length: SEC }, () => []), UPV = new THREE.Vector3(0, 1, 0);
+    const crown = crownGeometry(5), SEC = 4, by = Array.from({ length: SEC }, () => []), UPV = new THREE.Vector3(0, 1, 0);
     for (const t of treeline) { const a = (Math.atan2(t.z - 10, t.x + 5) / (2 * Math.PI) + 1) % 1; by[Math.min(SEC - 1, Math.floor(a * SEC))].push(t); }
     // uBand 0: world-anchored ring (shrinks away at 245-282 m from the camera); 1: the horizon band, a ring of crowns
     // at 262-285 m that follows the camera (no parallax at that range), so the horizon is never empty sky + terrain edge
@@ -1409,7 +1409,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
       im.computeBoundingSphere(); im.castShadow = false; im.receiveShadow = false; im.renderOrder = 1; scene.add(im);
     }
     const BR = rng(1601), NB = 340, bandOff = new THREE.Vector3(), bm = tmat(1, bandOff);
-    horizonBand = new THREE.InstancedMesh(crown, bm, NB);
+    horizonBand = new THREE.InstancedMesh(crownGeometry(3), bm, NB);
     for (let i = 0; i < NB; i++) {
       const a = (i + BR() * 0.8) / NB * 6.2832, r = 262 + BR() * 23, h = 9 + Math.pow(BR(), 0.7) * 16, w = h * (0.6 + BR() * 0.35);
       qq.setFromAxisAngle(UPV, BR() * 6.28); M.compose(P.set(Math.cos(a) * r, -3 - BR() * 2, Math.sin(a) * r), qq, S.set(w, h, w)); horizonBand.setMatrixAt(i, M); tint(horizonBand, i, BR());
