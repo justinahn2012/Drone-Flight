@@ -18,7 +18,11 @@ const QUALITY = {
   auto: { dpr: 1.6, min: 0.55, max: 1.0, samples: 14, std: Math.sqrt(5.5) },
   high: { dpr: 2.0, min: 0.65, max: 1.12, samples: 20, std: Math.sqrt(7) },
 };
-const STAB = { off: 0, light: 0.03, heavy: 0.09 };
+// Live display lag (s) per stabilisation setting. 'heavy' is replay-only: live it behaves like 'light' (a 90 ms lag
+// makes acro pilots over-correct into oscillations); clips get its extra smoothing in the replay path (STAB_REPLAY,
+// Gaussian sigma in s, for the Gyroflow-style pass over the replay quaternions).
+const STAB = { off: 0, light: 0.03, heavy: 0.03 };
+const STAB_REPLAY = { off: 0, light: 0, heavy: 0.12 };
 
 // ---------------- settings
 const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'on', sound: 'on' };
@@ -425,14 +429,17 @@ drone.onCrash = (impact) => {
 // ---------------- camera rig
 const camQ = new THREE.Quaternion();
 const tiltQ = new THREE.Quaternion();
-// uptilt is matched to cruise attitude: assisted flight cruises at ~10-20 deg of lean, acro at 30+
+// uptilt is matched to cruise attitude (5" camTilt 28): Cine cruises at ~10-20 deg of lean -> 15, angle 22, acro 28
+// (horizon near frame centre at 20-22 m/s acro cruise)
 function defTilt(c) { return Math.round(c.camTilt * (S.mode === 'acro' ? 1 : S.mode === 'angle' ? 0.8 : 0.55)); }
 const camPose = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
-const motion = { vel: new THREE.Vector3(), ang: new THREE.Vector3(), vib: 1 };
+// hz: jello/vibration frequency (motor rpm), read by fpvcam as `motion.hz ?? 170`
+const motion = { vel: new THREE.Vector3(), ang: new THREE.Vector3(), vib: 1, hz: 170 };
 const _q = new THREE.Quaternion(), _v = new THREE.Vector3();
 function rigCamera(dt) {
   const tilt = (S.tilt >= 0 ? S.tilt : defTilt(drone.c)) * DEG;
-  tiltQ.setFromAxisAngle(_v.set(1, 0, 0), tilt);
+  // Cine: the view also pitches with the climb/dive angle (flight.js camPitch; eases back to 0 in the other modes)
+  tiltQ.setFromAxisAngle(_v.set(1, 0, 0), tilt + drone.camPitch(dt, S.mode === 'cine'));
   _q.copy(drone.q).multiply(tiltQ);
   const tau = STAB[S.stab] || 0;
   if (tau > 0) camQ.slerp(_q, 1 - Math.exp(-dt / tau)); else camQ.copy(_q);
@@ -441,6 +448,7 @@ function rigCamera(dt) {
   motion.vel.copy(drone.vel);
   motion.ang.copy(drone.w).applyQuaternion(drone.q);   // physical camera rotation (blur uses the raw motion)
   motion.vib = drone.crashed ? 0.2 : 0.35 + 1.1 * Math.sqrt(drone.thrust / drone.tMax) + drone.wash * 3 + drone.bump * 4;
+  motion.hz = drone.rpmHz;                             // ~170 Hz at hover, ~430 Hz at full throttle (rpm ~ sqrt(thrust))
 }
 
 // ---------------- replay buffer + clip export
