@@ -12,9 +12,11 @@ import { MeshBVH } from 'three-mesh-bvh';
 
 const PH = 'https://dl.polyhaven.org/file/ph-assets';
 export const SKIES = {
-  // sunRatio: direct sun vs sky irradiance. HDR captures squash a hazy low sun; a clear day runs ~4-7x
-  sunny: { id: 'evening_meadow', label: 'Sunny', sunRatio: 4.2 },
-  overcast: { id: 'farmland_overcast', label: 'Overcast', sunRatio: 0 },
+  // [A] pure skies (no photographed ground/treeline at infinity: it broke scale at altitude). sunRatio: direct sun
+  // irradiance vs sky irradiance (HDR captures squash the sun; a clear 48 deg day runs ~5-7x horizontal).
+  // sunDir: measured once from the HDR's sun pixels (2k), so the light bake can run before the HDR has downloaded.
+  sunny: { id: 'kloofendal_48d_partly_cloudy_puresky', label: 'Sunny', sunRatio: 7.5, sunDir: [0.5544, 0.7417, 0.3775] },
+  overcast: { id: 'overcast_soil_puresky', label: 'Overcast', sunRatio: 0, sunDir: [0.3813, 0.921, 0.0794] },
 };
 const MATS = {
   silo: { id: 'concrete_layers_02', tile: 3.0 },
@@ -485,45 +487,39 @@ ${ground ? `
       .replace('#include <aomap_fragment>', `reflectedLight.indirectDiffuse = reflectedLight.indirectDiffuse * vAO + vBounce * BRDF_Lambert(material.diffuseColor);
   reflectedLight.indirectSpecular *= vAO * vAO;
 #include <aomap_fragment>`);
+    // [A-lighting] begin: baked sun/sky bounce, sun mask, far shadow map, forward-scatter haze (see aLightingPatch)
+    aLightingPatch(sh, uniforms);
+    // [A-lighting] end
   };
   return mat;
 }
 
-// ---------------------------------------------------------------- baked sky visibility
+// ---------------------------------------------------------------- [A] light bake (sky-independent: runs before the HDR arrives)
+// Needs only SKIES[sky].sunDir. Per render vertex it stores
+//   ao       cosine-weighted openness (ray misses) -> scales the env (PMREM) light in weatherPatch
+//   aBSun    multi-bounce irradiance per unit sun irradiance (rgb)  -> x uSunB (= sunColor * sunI)
+//   aBSky    multi-bounce irradiance per unit sky irradiance (rgb)  -> x uSkyB (= skyE * envI)
+//   aSunOcc  1 - dilated sun visibility, only where the mesh is fine enough to resolve it (chimney): no shadow-map leaks
+// The bounce is a gather: each vertex's rays remember the triangle + barycentrics they hit, then three passes of
+// pure arithmetic carry (direct sun + sky + far ground) x albedo from vertex to vertex. Albedo per material from MATS.
 const DIRS = (() => { const d = []; const n = 10; for (let i = 0; i < n; i++) { const u = (i + 0.5) / n, phi = i * 2.399963; const r = Math.sqrt(u); d.push([Math.cos(phi) * r, Math.sqrt(1 - u), Math.sin(phi) * r]); } return d; })();
 const _ray = new THREE.Ray(), _t1 = new THREE.Vector3(), _t2 = new THREE.Vector3(), _bx = new THREE.Vector3(), _by = new THREE.Vector3();
-// one-bounce probe: the sky a point can see, plus the sun and sky light thrown back at it by
-// everything around it (sunlit ground through a window is what lights a real interior)
+const _hn = new THREE.Vector3(), _sr = new THREE.Ray(), _P = new THREE.Vector3(), _N = new THREE.Vector3();
+const ALB_DEFAULT = [0.3, 0.29, 0.27];
+// mean linear albedo of today's textures after weathering (measured from the 1k diffuse maps), until MATS[key].albedo lands
+const ALB_FALLBACK = { silo: [0.18, 0.17, 0.15], wall: [0.21, 0.19, 0.16], slab: [0.08, 0.08, 0.075], brick: [0.21, 0.13, 0.085], rust: [0.25, 0.17, 0.08], bark: [0.11, 0.09, 0.055], path: [0.22, 0.19, 0.11], ground: [0.19, 0.18, 0.12] };
+const albedoOf = (k) => MATS[k]?.albedo ?? ALB_FALLBACK[k] ?? ALB_DEFAULT;
+function groundAlbedo() { const g = MATS.ground?.albedo, s = MATS.grass?.albedo; return g && s ? g.map((v, i) => (v + s[i]) / 2) : g ?? s ?? ALB_FALLBACK.ground; }
+const aoCurve = (v) => Math.pow(v, 1.15);
+// legacy probe API (decals etc.): lightProbe() returns openness and leaves the final-unit bounce in LP.out
 const LP = { sun: new THREE.Vector3(0, 1, 0), sunRGB: new THREE.Vector3(), skyRGB: new THREE.Vector3(), out: new THREE.Vector3() };
-const _hn = new THREE.Vector3(), _sr = new THREE.Ray(), _alb = new THREE.Vector3();
-const ALB_GROUND = new THREE.Vector3(0.19, 0.19, 0.13), ALB_BUILT = new THREE.Vector3(0.36, 0.34, 0.3);
+let BAKE = null;
 function lightProbe(bvh, p, n, maxD, rays) {
-  const up = Math.abs(n.y) < 0.95 ? _t2.set(0, 1, 0) : _t2.set(1, 0, 0);
-  _bx.crossVectors(up, n).normalize(); _by.crossVectors(n, _bx);
-  let open = 0; const E = LP.out.set(0, 0, 0);
-  for (let i = 0; i < rays; i++) {
-    const [a, b, c] = DIRS[(i * 3 + 1) % DIRS.length];
-    _t1.set(0, 0, 0).addScaledVector(_bx, a).addScaledVector(n, b).addScaledVector(_by, c).normalize();
-    _ray.origin.copy(p).addScaledVector(n, 0.06); _ray.direction.copy(_t1);
-    const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, maxD);
-    if (!hit) { open += 1; continue; }
-    _hn.copy(hit.face.normal); if (_hn.dot(_t1) > 0) _hn.negate();
-    const gnd = hit.point.y < terrainHeight(hit.point.x, hit.point.z) + 0.35;
-    _alb.copy(gnd ? ALB_GROUND : ALB_BUILT);
-    let e = 0;
-    const cs = _hn.dot(LP.sun);
-    _sr.origin.copy(hit.point).addScaledVector(_hn, 0.05);
-    if (cs > 0) { _sr.direction.copy(LP.sun); if (!bvh.raycastFirst(_sr, THREE.DoubleSide, 0, 160)) e = cs; }
-    _sr.direction.copy(_hn).addScaledVector(_t2.set(0, 1, 0), 0.8).normalize();
-    const skyHit = bvh.raycastFirst(_sr, THREE.DoubleSide, 0, 40) ? 0.06 : 0.55 + 0.4 * _hn.y;
-    E.x += _alb.x * (LP.sunRGB.x * e + LP.skyRGB.x * skyHit);
-    E.y += _alb.y * (LP.sunRGB.y * e + LP.skyRGB.y * skyHit);
-    E.z += _alb.z * (LP.sunRGB.z * e + LP.skyRGB.z * skyHit);
-  }
-  E.multiplyScalar(1.25 / rays);           // 1.25: the second and later bounces
-  return open / rays;
+  if (!BAKE) { LP.out.set(0, 0, 0); return skyVisibility(bvh, p, n, maxD, rays); }
+  const r = BAKE.probe(p, n, Math.max(4, rays), maxD);
+  LP.out.set(r.bs[0] * LP.sunRGB.x + r.bk[0] * LP.skyRGB.x, r.bs[1] * LP.sunRGB.y + r.bk[1] * LP.skyRGB.y, r.bs[2] * LP.sunRGB.z + r.bk[2] * LP.skyRGB.z);
+  return r.open;
 }
-const aoCurve = (v) => Math.pow(v, 1.15) * 0.96 + 0.04;
 function skyVisibility(bvh, p, n, maxD, rays) {
   // cosine-weighted hemisphere around n
   const up = Math.abs(n.y) < 0.95 ? _t2.set(0, 1, 0) : _t2.set(1, 0, 0);
@@ -538,56 +534,402 @@ function skyVisibility(bvh, p, n, maxD, rays) {
   }
   return open / rays;
 }
-async function bakeAO(g, bvh, maxD, rays, onTick) {
-  const p = g.attributes.position, n = g.attributes.normal, ao = new Float32Array(p.count), bo = new Float32Array(p.count * 3);
-  const P = new THREE.Vector3(), N = new THREE.Vector3();
-  for (let i = 0; i < p.count; i++) {
-    P.fromBufferAttribute(p, i); N.fromBufferAttribute(n, i);
-    ao[i] = aoCurve(lightProbe(bvh, P, N, maxD, rays)); bo[i * 3] = LP.out.x; bo[i * 3 + 1] = LP.out.y; bo[i * 3 + 2] = LP.out.z;
-    if ((i & 2047) === 0) { onTick?.(i / p.count); await yieldUI(); }
+// a fixed cosine-weighted pattern (same for every vertex: smooth, not noisy)
+function cosPattern(n) { const d = []; for (let i = 0; i < n; i++) { const u = (i + 0.5) / n, ph = 2 * Math.PI * ((i * 0.618034 + 0.31) % 1), r = Math.sqrt(u); d.push([r * Math.cos(ph), Math.sqrt(1 - u), r * Math.sin(ph)]); } return d; }
+// collider vertex -> render vertex. Assumes colGeo = [collidable parts in site.parts order..., terrain, anything else];
+// every part is verified by position, and anything unmatched falls back to a per-hit estimate.
+function colliderMap(site, terr, colGeo, list, base) {
+  const cp = colGeo.attributes.position.array, NC = cp.length / 3, map = new Int32Array(NC).fill(-1);
+  const same = (a, i, c) => Math.abs(a[i * 3] - cp[c * 3]) < 1e-4 && Math.abs(a[i * 3 + 1] - cp[c * 3 + 1]) < 1e-4 && Math.abs(a[i * 3 + 2] - cp[c * 3 + 2]) < 1e-4;
+  let oc = 0, ok = true;
+  const link = (a, n, r0) => { if (n === 0) return true; if (oc + n > NC || !same(a, 0, oc) || !same(a, n - 1, oc + n - 1)) return false; for (let i = 0; i < n; i++) map[oc + i] = r0 + i; oc += n; return true; };
+  for (const [mat, parts] of Object.entries(site.parts)) {
+    const gi = list.findIndex(([k]) => k === mat); let om = 0;
+    for (const e of parts) { const n = e.g.attributes.position.count; if (ok && e.collide) ok = gi >= 0 && link(e.g.attributes.position.array, n, base[gi] + om); om += n; }
   }
-  g.setAttribute('ao', new THREE.BufferAttribute(ao, 1)); g.setAttribute('bounce', new THREE.BufferAttribute(bo, 3));
+  if (ok) ok = link(terr.attributes.position.array, terr.attributes.position.count, base[list.length - 1]);
+  if (!ok) console.warn('[A-lighting] collider layout changed: bounce at unmatched hits is estimated per hit', oc, '/', NC);
+  return { map, matched: oc };
 }
-
-// ---------------------------------------------------------------- sky: real HDR photo, sun split out for shadows
-async function loadSky(id, renderer, onProgress) {
-  const url = `${PH}/HDRIs/hdr/2k/${id}_2k.hdr`;
-  const tex = await new HDRLoader().setDataType(THREE.FloatType).loadAsync(url, (e) => e.total && onProgress?.(e.loaded / e.total));
-  const { width: W, height: H, data } = tex.image; const ch = data.length / (W * H);
-  // find the sun, measure its irradiance, clamp it out of the map (the directional light carries it, with shadows)
-  let maxL = 0, mi = 0;
-  for (let i = 0; i < W * H; i++) { const L = 0.2126 * data[i * ch] + 0.7152 * data[i * ch + 1] + 0.0722 * data[i * ch + 2]; if (L > maxL) { maxL = L; mi = i; } }
-  const dirOf = (px, py) => { const u = (px + 0.5) / W, v = 1 - (py + 0.5) / H; const lat = (v - 0.5) * Math.PI, phi = (u - 0.5) * 2 * Math.PI; return new THREE.Vector3(Math.cos(phi) * Math.cos(lat), Math.sin(lat), Math.sin(phi) * Math.cos(lat)); };
-  const sunDir = dirOf(mi % W, Math.floor(mi / W));
-  const T = Math.max(8, Math.min(40, maxL * 0.05));
-  const E = new THREE.Vector3();
-  let horizon = new THREE.Vector3(), hn = 0; const skyE = new THREE.Vector3();
-  for (let py = 0; py < H; py++) {
-    const lat = (0.5 - (py + 0.5) / H) * Math.PI, dO = (2 * Math.PI / W) * (Math.PI / H) * Math.cos(lat);
-    for (let px = 0; px < W; px++) {
-      const i = (py * W + px) * ch, L = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
-      if (Math.abs(lat) < 0.06 && px % 4 === 0) { horizon.x += data[i]; horizon.y += data[i + 1]; horizon.z += data[i + 2]; hn++; }
-      if (L > T) {
-        const k = (L - T) / L, cosT = Math.max(0, dirOf(px, py).dot(sunDir));
-        E.x += data[i] * k * dO * cosT; E.y += data[i + 1] * k * dO * cosT; E.z += data[i + 2] * k * dO * cosT;
-        data[i] *= 1 - k; data[i + 1] *= 1 - k; data[i + 2] *= 1 - k;
-      }
-      if (lat > 0) { const w = dO * Math.sin(lat); skyE.x += data[i] * w; skyE.y += data[i + 1] * w; skyE.z += data[i + 2] * w; }
+// vertices whose longest adjacent edge is <= lim: there a per-vertex sun mask is trustworthy
+function fineVerts(g, lim) {
+  const idx = g.index.array, p = g.attributes.position.array, mx = new Float32Array(g.attributes.position.count);
+  const d2 = (a, b) => { const x = p[a * 3] - p[b * 3], y = p[a * 3 + 1] - p[b * 3 + 1], z = p[a * 3 + 2] - p[b * 3 + 2]; return x * x + y * y + z * z; };
+  for (let t = 0; t < idx.length; t += 3) { const a = idx[t], b = idx[t + 1], c = idx[t + 2], m = Math.max(d2(a, b), d2(b, c), d2(c, a)); if (m > mx[a]) mx[a] = m; if (m > mx[b]) mx[b] = m; if (m > mx[c]) mx[c] = m; }
+  const out = new Uint8Array(mx.length); for (let i = 0; i < mx.length; i++) out[i] = mx[i] > 0 && mx[i] <= lim * lim ? 1 : 0; return out;
+}
+// welded vertex graph (same position within 2 mm + similar normal = one node), 1-ring CSR adjacency: smooths the
+// baked light over neighbours (an irradiance filter: ~8 x (1 + ring) effective rays per vertex)
+function weldGraph(list, base, NV) {
+  const node = new Int32Array(NV), head = new Map(), nextN = new Int32Array(NV), nQ = new Int32Array(NV * 3), nN = new Float32Array(NV * 3); let nn = 0;
+  for (let gi = 0; gi < list.length; gi++) {
+    const g = list[gi][1], p = g.attributes.position.array, nr = g.attributes.normal.array, cnt = g.attributes.position.count;
+    for (let li = 0; li < cnt; li++) {
+      const x = Math.round(p[li * 3] * 500), y = Math.round(p[li * 3 + 1] * 500), z = Math.round(p[li * 3 + 2] * 500), h = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) | 0;
+      const nx = nr[li * 3], ny = nr[li * 3 + 1], nz = nr[li * 3 + 2];
+      let n = head.has(h) ? head.get(h) : -1, f = -1;
+      while (n >= 0) { if (nQ[n * 3] === x && nQ[n * 3 + 1] === y && nQ[n * 3 + 2] === z && nN[n * 3] * nx + nN[n * 3 + 1] * ny + nN[n * 3 + 2] * nz > 0.8) { f = n; break; } n = nextN[n]; }
+      if (f < 0) { f = nn++; nQ[f * 3] = x; nQ[f * 3 + 1] = y; nQ[f * 3 + 2] = z; nN[f * 3] = nx; nN[f * 3 + 1] = ny; nN[f * 3 + 2] = nz; nextN[f] = head.has(h) ? head.get(h) : -1; head.set(h, f); }
+      node[base[gi] + li] = f;
     }
   }
-  horizon.divideScalar(Math.max(1, hn));
-  // upload as half float (linear filtering is core in WebGL2; float32 filtering isn't guaranteed on iOS)
+  const deg = new Int32Array(nn + 1);
+  const eachEdge = (fn) => { for (let gi = 0; gi < list.length; gi++) { const idx = list[gi][1].index.array, b = base[gi]; for (let t = 0; t < idx.length; t += 3) { const a = node[b + idx[t]], c = node[b + idx[t + 1]], d = node[b + idx[t + 2]]; if (a !== c) { fn(a, c); fn(c, a); } if (c !== d) { fn(c, d); fn(d, c); } if (d !== a) { fn(d, a); fn(a, d); } } } };
+  eachEdge((a) => deg[a + 1]++);
+  for (let i = 0; i < nn; i++) deg[i + 1] += deg[i];
+  const adj = new Int32Array(deg[nn]), fill = deg.slice(0, nn); eachEdge((a, c) => { adj[fill[a]++] = c; });
+  // dedupe each neighbour list (shared triangle edges appear twice)
+  const off = new Int32Array(nn + 1); let w = 0;
+  for (let i = 0; i < nn; i++) { off[i] = w; const s = adj.subarray(deg[i], deg[i + 1]).sort(); let prev = -1; for (let k = 0; k < s.length; k++) { const x = s[k]; if (x !== prev) { adj[w++] = x; prev = x; } } }
+  off[nn] = w;
+  const cntN = new Float32Array(nn); for (let v = 0; v < NV; v++) cntN[node[v]]++;
+  // in place: arr (NV x comps) <- 1-ring mean over welded nodes, `rings` times
+  const smooth = (arr, comps, rings = 1) => {
+    let acc = new Float32Array(nn * comps);
+    for (let v = 0; v < NV; v++) for (let c = 0; c < comps; c++) acc[node[v] * comps + c] += arr[v * comps + c];
+    for (let n = 0; n < nn; n++) for (let c = 0; c < comps; c++) acc[n * comps + c] /= cntN[n];
+    for (let r = 0; r < rings; r++) {
+      const out = new Float32Array(nn * comps);
+      for (let n = 0; n < nn; n++) { const k0 = off[n], k1 = off[n + 1], inv = 1 / (1 + k1 - k0);
+        for (let c = 0; c < comps; c++) { let sum = acc[n * comps + c]; for (let k = k0; k < k1; k++) sum += acc[adj[k] * comps + c]; out[n * comps + c] = sum * inv; } }
+      acc = out;
+    }
+    for (let v = 0; v < NV; v++) for (let c = 0; c < comps; c++) arr[v * comps + c] = acc[node[v] * comps + c];
+  };
+  return { nodes: nn, edges: w, smooth, node, off, adj };
+}
+function fastYield() {   // a MessageChannel hop: no 4 ms timer clamp, still lets network callbacks + the loader paint run
+  if (typeof MessageChannel === 'undefined') return { y: yieldUI, close() {} };
+  const ch = new MessageChannel(), q = []; ch.port1.onmessage = () => q.shift()?.();
+  return { y: () => new Promise((r) => { q.push(r); ch.port2.postMessage(0); }), close() { ch.port1.close(); ch.port2.close(); } };
+}
+
+const SMOOTH_RINGS = 1;   // measured on visible hall/table surfaces vs 64-ray probes: RMS log err 0.71 (0 rings) / 0.66 (1) / 0.69 (2)
+export async function bakeLight(geo, { sunDir, sun = true, quality = 'auto', onTick } = {}) {
+  const t0 = performance.now();
+  const { site, merged, terr, colGeo, bvh } = geo;
+  const L = new THREE.Vector3(...(sunDir?.isVector3 ? sunDir.toArray() : sunDir || [0, 1, 0])).normalize();
+  const list = [...Object.entries(merged), ['terr', terr]], base = []; let NV = 0;
+  for (const [, g] of list) { base.push(NV); NV += g.attributes.position.count; }
+  const rays = quality === 'low' ? 6 : quality === 'high' ? 10 : 8, raysT = quality === 'low' ? 4 : quality === 'high' ? 6 : 5;
+  const R = rays, PAT = cosPattern(rays), PATT = cosPattern(raysT);
+  const albTab = list.map(([k]) => (k === 'terr' ? groundAlbedo() : albedoOf(k))), albG = groundAlbedo();
+  const gOf = new Uint8Array(NV); list.forEach(([, g], gi) => gOf.fill(gi, base[gi], base[gi] + g.attributes.position.count));
+  // albedo index per vertex: the material's, except terrain under the dirt tracks (path) and, once stream B adds
+  // MATS.apron, the concrete apron within MATS.apron.radius (default 9 m) of a footprint (what a window looks out on)
+  const aOf = gOf.slice();
+  {
+    const ti = list.length - 1, tp = terr.attributes.position.array, iPath = albTab.push(albedoOf('path')) - 1, ap = MATS.apron?.albedo, rad = MATS.apron?.radius ?? 9;
+    const iApron = ap ? albTab.push(ap) - 1 : -1, fps = site.footprints || [];
+    for (let i = 0; i < terr.attributes.position.count; i++) {
+      const x = tp[i * 3], z = tp[i * 3 + 2], v = base[ti] + i;
+      if (iApron >= 0 && fps.some((f) => Math.max(f.x0 - x, 0, x - f.x1) ** 2 + Math.max(f.z0 - z, 0, z - f.z1) ** 2 < rad * rad)) aOf[v] = iApron;
+      else if (distToPaths(x, z) < 2.6) aOf[v] = iPath;
+    }
+  }
+  const invR = list.map(([k]) => 1 / (k === 'terr' ? raysT : rays));
+  const { map: c2r } = colliderMap(site, terr, colGeo, list, base);
+  const hV = new Int32Array(NV * R * 3).fill(-1), hW = new Float32Array(NV * R * 2);
+  const open = new Float32Array(NV), S = new Float32Array(NV), occ = new Float32Array(NV);
+  const K = new Float32Array(NV * 3), G = new Float32Array(NV * 3), X = new Float32Array(NV * 6);
+  const sunMax = Math.min(400, 70 / Math.max(0.1, L.y) + 10), sinE = Math.max(0, L.y);
+  const sunVis = (o) => { _sr.origin.copy(o); _sr.direction.copy(L); return !bvh.raycastFirst(_sr, THREE.DoubleSide, 0, sunMax); };
+  const Q = new THREE.Vector3(), D = new THREE.Vector3();
+  // a hit we can't map to a render vertex: estimate the light at the hit point itself (sun ray + unoccluded sky)
+  const estimate = (hit, dir, out, o6, w) => {
+    _hn.copy(hit.face.normal); if (_hn.dot(dir) > 0) _hn.negate();
+    const hp = hit.point, a = hp.y < terrainHeight(hp.x, hp.z) + 0.35 ? albG : ALB_DEFAULT;
+    let e = 0; if (sun) { const cs = _hn.dot(L); if (cs > 0 && sunVis(Q.copy(hp).addScaledVector(_hn, 0.05))) e = cs; }
+    const sky = 0.5 + 0.5 * _hn.y;
+    for (let c = 0; c < 3; c++) { out[o6 + c] += a[c] * e * w; out[o6 + 3 + c] += a[c] * sky * w; }
+  };
+  // trace one vertex/probe: openness + env split (up misses = sky, down misses = lit far ground) + hit records
+  const trace = (P, N, pat, maxD, hv, hw, h0, kOut, gOut, o3, xOut, o6, rot = 0) => {
+    const up = Math.abs(N.y) < 0.95 ? _t2.set(0, 1, 0) : _t2.set(1, 0, 0);
+    _bx.crossVectors(up, N).normalize(); _by.crossVectors(N, _bx);
+    if (rot) { const cr = Math.cos(rot), sr = Math.sin(rot); _t1.copy(_bx).multiplyScalar(cr).addScaledVector(_by, sr); _by.multiplyScalar(cr).addScaledVector(_bx, -sr); _bx.copy(_t1); }
+    let nUp = 0, nDn = 0; const w = 1 / pat.length;
+    for (let k = 0; k < pat.length; k++) {
+      const [a, b, c] = pat[k];
+      D.set(0, 0, 0).addScaledVector(_bx, a).addScaledVector(N, b).addScaledVector(_by, c).normalize();
+      _ray.origin.copy(P).addScaledVector(N, 0.06); _ray.direction.copy(D);
+      const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, maxD);
+      if (!hit) { if (D.y >= 0) nUp++; else nDn++; continue; }
+      const ra = c2r[hit.face.a], rb = c2r[hit.face.b], rc = c2r[hit.face.c];
+      if (ra >= 0 && rb >= 0 && rc >= 0) { const j = h0 + k; hv[j * 3] = ra; hv[j * 3 + 1] = rb; hv[j * 3 + 2] = rc; hw[j * 2] = hit.barycoord.y; hw[j * 2 + 1] = hit.barycoord.z; }
+      else estimate(hit, D, xOut, o6, w);
+    }
+    for (let c = 0; c < 3; c++) { kOut[o3 + c] = (nUp + nDn * albG[c]) * w; gOut[o3 + c] = sun ? nDn * albG[c] * sinE * w : 0; }
+    return (nUp + nDn) * w;
+  };
+  const Y = fastYield(); let tY = performance.now(), done = 0;
+  for (let gi = 0; gi < list.length; gi++) {
+    const [key, g] = list[gi], p = g.attributes.position.array, nr = g.attributes.normal.array, cnt = g.attributes.position.count, isT = key === 'terr';
+    const pat = isT ? PATT : PAT, maxD = isT ? 24 : 40, fine = isT ? null : fineVerts(g, 2.2);
+    for (let li = 0; li < cnt; li++) {
+      const v = base[gi] + li;
+      _P.set(p[li * 3], p[li * 3 + 1], p[li * 3 + 2]); _N.set(nr[li * 3], nr[li * 3 + 1], nr[li * 3 + 2]).normalize();
+      if (sun) {
+        const nl = _N.dot(L);
+        if (nl > 0 && sunVis(Q.copy(_P).addScaledVector(_N, 0.05))) S[v] = nl;
+        if (fine && fine[li] && !(S[v] > 0)) {
+          // dilated mask: lit if the sun reaches any of 5 points within ~1.2 m on this surface (back faces: dark)
+          let m = 0;
+          if (nl > -0.25) {
+            const up = Math.abs(_N.y) < 0.95 ? _t2.set(0, 1, 0) : _t2.set(1, 0, 0);
+            _bx.crossVectors(up, _N).normalize(); _by.crossVectors(_N, _bx);
+            for (const [u, w] of [[0, 0], [1.2, 0], [-1.2, 0], [0, 1.2], [0, -1.2]]) { if (sunVis(Q.copy(_P).addScaledVector(_N, 0.08).addScaledVector(_bx, u).addScaledVector(_by, w))) { m = 1; break; } }
+          }
+          occ[v] = 1 - m;
+        }
+      }
+      open[v] = trace(_P, _N, pat, maxD, hV, hW, v * R, K, G, v * 3, X, v * 6, ((v * 0.618034) % 1) * 2 * Math.PI);   // decorrelated per vertex
+      if ((++done & 255) === 0 && performance.now() - tY > 24) { onTick?.(done / NV); await Y.y(); tY = performance.now(); }
+    }
+  }
+  Y.close();
+  const t1 = performance.now();
+  const WG = weldGraph(list, base, NV);
+  WG.smooth(open, 1); WG.smooth(K, 3); WG.smooth(G, 3); WG.smooth(X, 6);
+  // gather: B(v) = mean over v's ray hits of albedo x interp(direct sun + env + B) at the hit; 3 bounces
+  let Bs = new Float32Array(NV * 3), Bk = new Float32Array(NV * 3);
+  const Es = new Float32Array(NV * 3), Ek = new Float32Array(NV * 3);
+  const evalE = () => { for (let v = 0; v < NV; v++) for (let c = 0; c < 3; c++) { const i = v * 3 + c; Es[i] = S[v] + G[i] + Bs[i]; Ek[i] = K[i] + Bk[i]; } };
+  const gatherInto = (hv, hw, h0, n, inv, out, o3, x, o6) => {
+    let s0 = 0, s1 = 0, s2 = 0, k0 = 0, k1 = 0, k2 = 0;
+    for (let k = 0; k < n; k++) {
+      const j = h0 + k, a = hv[j * 3]; if (a < 0) continue;
+      const b = hv[j * 3 + 1], c = hv[j * 3 + 2], wb = hw[j * 2], wc = hw[j * 2 + 1], wa = 1 - wb - wc, al = albTab[aOf[a]];
+      s0 += al[0] * (Es[a * 3] * wa + Es[b * 3] * wb + Es[c * 3] * wc); s1 += al[1] * (Es[a * 3 + 1] * wa + Es[b * 3 + 1] * wb + Es[c * 3 + 1] * wc); s2 += al[2] * (Es[a * 3 + 2] * wa + Es[b * 3 + 2] * wb + Es[c * 3 + 2] * wc);
+      k0 += al[0] * (Ek[a * 3] * wa + Ek[b * 3] * wb + Ek[c * 3] * wc); k1 += al[1] * (Ek[a * 3 + 1] * wa + Ek[b * 3 + 1] * wb + Ek[c * 3 + 1] * wc); k2 += al[2] * (Ek[a * 3 + 2] * wa + Ek[b * 3 + 2] * wb + Ek[c * 3 + 2] * wc);
+    }
+    out[0][o3] = s0 * inv + x[o6]; out[0][o3 + 1] = s1 * inv + x[o6 + 1]; out[0][o3 + 2] = s2 * inv + x[o6 + 2];
+    out[1][o3] = k0 * inv + x[o6 + 3]; out[1][o3 + 1] = k1 * inv + x[o6 + 4]; out[1][o3 + 2] = k2 * inv + x[o6 + 5];
+  };
+  for (let it = 0; it < 3; it++) {
+    evalE();
+    const nS = new Float32Array(NV * 3), nK = new Float32Array(NV * 3), out = [nS, nK];
+    for (let v = 0; v < NV; v++) gatherInto(hV, hW, v * R, R, invR[gOf[v]], out, v * 3, X, v * 6);
+    WG.smooth(nS, 3, SMOOTH_RINGS); WG.smooth(nK, 3, SMOOTH_RINGS);
+    Bs = nS; Bk = nK;
+  }
+  evalE();   // final radiosity source for probes
+  // write the attributes
+  for (let gi = 0; gi < list.length; gi++) {
+    const g = list[gi][1], n = g.attributes.position.count, o = base[gi];
+    const ao = new Float32Array(n); for (let i = 0; i < n; i++) ao[i] = aoCurve(open[o + i]);
+    g.setAttribute('ao', new THREE.BufferAttribute(ao, 1));
+    g.setAttribute('aBSun', new THREE.BufferAttribute(Bs.slice(o * 3, (o + n) * 3), 3));
+    g.setAttribute('aBSky', new THREE.BufferAttribute(Bk.slice(o * 3, (o + n) * 3), 3));
+    g.setAttribute('aSunOcc', new THREE.BufferAttribute(occ.slice(o, o + n), 1));
+  }
+  const t2 = performance.now();
+  // probe anywhere (paths, decals): trace fresh rays, gather from the converged solution
+  const pK = new Float32Array(3), pG = new Float32Array(3), pX = new Float32Array(6), pV = new Int32Array(64 * 3), pW = new Float32Array(64 * 2), pO = [new Float32Array(3), new Float32Array(3)];
+  const pats = {};
+  const probe = (P, N, n = rays, maxD = 26) => {
+    n = Math.min(64, n); const pat = (pats[n] ||= cosPattern(n));
+    pV.fill(-1); pX.fill(0);
+    const op = trace(P, N, pat, maxD, pV, pW, 0, pK, pG, 0, pX, 0);
+    gatherInto(pV, pW, 0, n, 1 / n, pO, 0, pX, 0);
+    let sv = 0; if (sun) { const nl = N.dot(L); if (nl > 0 && sunVis(Q.copy(P).addScaledVector(N, 0.05))) sv = 1; }
+    return { open: op, bs: [pO[0][0], pO[0][1], pO[0][2]], bk: [pO[1][0], pO[1][1], pO[1][2]], sun: sv };
+  };
+  // apply to any extra ground-hugging geometry (path ribbons...)
+  const applyTo = (g, n = 4, maxD = 18) => {
+    const p = g.attributes.position.array, nr = g.attributes.normal?.array, cnt = g.attributes.position.count;
+    const ao = new Float32Array(cnt), bs = new Float32Array(cnt * 3), bk = new Float32Array(cnt * 3), P = new THREE.Vector3(), N = new THREE.Vector3(0, 1, 0);
+    for (let i = 0; i < cnt; i++) { P.fromArray(p, i * 3); if (nr) N.fromArray(nr, i * 3).normalize(); const r = probe(P, N, n, maxD); ao[i] = aoCurve(r.open); bs.set(r.bs, i * 3); bk.set(r.bk, i * 3); }
+    g.setAttribute('ao', new THREE.BufferAttribute(ao, 1)); g.setAttribute('aBSun', new THREE.BufferAttribute(bs, 3)); g.setAttribute('aBSky', new THREE.BufferAttribute(bk, 3));
+  };
+  const stats = { verts: NV, nodes: WG.nodes, rays, raysT, traceMs: Math.round(t1 - t0), gatherMs: Math.round(t2 - t1) };
+  BAKE = { probe, applyTo, stats, sunDir: L, c2r, albedoAtCollider: (c) => (c2r[c] >= 0 ? albTab[aOf[c2r[c]]] : null) };
+  return BAKE;
+}
+
+// ---------------------------------------------------------------- [A] shader patch (one hook inside weatherPatch)
+// uniforms.aLight: uSunB/uSkyB scale the baked bounce once the HDR is measured; uFar* = static far shadow map that takes
+// over where the live (camera-following) map ends; uSunW/uHaze = forward-scatter haze in the fog.
+function lightUniforms() {
+  return { uSunB: { value: new THREE.Vector3() }, uSkyB: { value: new THREE.Vector3() }, uFarSM: { value: null }, uFarMat: { value: new THREE.Matrix4() },
+    uFarOn: { value: 0 }, uFarTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) }, uSunW: { value: new THREE.Vector3(0, 1, 0) }, uHaze: { value: 1.2 } };
+}
+const A_DIR_LINE = 'directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;';
+const A_LIGHTS_BEGIN = THREE.ShaderChunk.lights_fragment_begin.includes(A_DIR_LINE)
+  ? THREE.ShaderChunk.lights_fragment_begin.replace(A_DIR_LINE, A_DIR_LINE.replace('? getShadow(', '? aDirShadow( getShadow(').replace(' ) : 1.0;', ' ), vDirectionalShadowCoord[ i ] ) : 1.0;'))
+  : null;
+if (!A_LIGHTS_BEGIN) console.warn('[A-lighting] three lights_fragment_begin changed: far shadows + sun mask disabled');
+function aLightingPatch(sh, uniforms) {
+  const U = uniforms?.aLight; if (!U) return;
+  Object.assign(sh.uniforms, U);
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', `#include <common>
+attribute vec3 aBSun;
+attribute vec3 aBSky;
+attribute float aSunOcc;
+uniform vec3 uSunB;
+uniform vec3 uSkyB;
+uniform mat4 uFarMat;
+varying vec3 vBounceA;
+varying vec4 vFarC;`)
+    .replace('#include <fog_vertex>', `#include <fog_vertex>
+  vBounceA = aBSun * uSunB + aBSky * uSkyB;
+  {
+    vec4 aW = vec4( transformed, 1.0 );
+    #ifdef USE_INSTANCING
+      aW = instanceMatrix * aW;
+    #endif
+    aW = modelMatrix * aW;
+    vec3 aN = inverseTransformDirection( transformedNormal, viewMatrix );
+    vFarC = vec4( ( uFarMat * vec4( aW.xyz + aN * 0.15, 1.0 ) ).xyz, 1.0 - aSunOcc );
+  }`);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', `#include <common>
+uniform sampler2DShadow uFarSM;
+uniform float uFarOn;
+uniform vec2 uFarTexel;
+uniform vec3 uSunW;
+uniform float uHaze;
+varying vec3 vBounceA;
+varying vec4 vFarC;
+float aFarShadow() {
+  vec3 c = vFarC.xyz;
+  if ( uFarOn < 0.5 || c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0 ) return 1.0;
+  vec2 t = uFarTexel * 0.5;
+  return 0.25 * ( texture( uFarSM, vec3( c.xy - t, c.z ) ) + texture( uFarSM, vec3( c.xy + vec2( t.x, - t.y ), c.z ) )
+    + texture( uFarSM, vec3( c.xy + vec2( - t.x, t.y ), c.z ) ) + texture( uFarSM, vec3( c.xy + t, c.z ) ) );
+}
+float aDirShadow( float live, vec4 sc ) {
+  vec3 c = sc.xyz / sc.w;
+  vec2 e = min( c.xy, 1.0 - c.xy );
+  float wL = smoothstep( 0.0, 0.05, min( e.x, e.y ) ) * step( c.z, 1.0 );
+  float s = wL > 0.999 ? live : mix( aFarShadow(), live, wL );
+  return s * smoothstep( 0.05, 0.4, vFarC.w );
+}`)
+    .replace('#include <aomap_fragment>', `reflectedLight.indirectDiffuse += vBounceA * BRDF_Lambert( material.diffuseColor );
+#include <aomap_fragment>`)
+    .replace('#include <fog_fragment>', `#ifdef USE_FOG
+  #ifdef FOG_EXP2
+    float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+  #else
+    float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+  #endif
+  vec3 aVd = inverseTransformDirection( normalize( - vViewPosition ), viewMatrix );
+  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor * ( 1.0 + uHaze * pow( max( dot( aVd, uSunW ), 0.0 ), 6.0 ) ), fogFactor );
+#endif`);
+  if (A_LIGHTS_BEGIN) sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_begin>', A_LIGHTS_BEGIN);
+}
+
+// ---------------------------------------------------------------- [A] static far shadow map (rendered once at load)
+// Covers every caster in light space at ~13 cm texels; the live map (+-48 m around the camera) fades into it, so the
+// hall and silos cast shadows from the spawn and from altitude. Cost: one depth pass at load, 0 per frame, 16 MB.
+function renderFarShadow(renderer, scene, merged, L, size, U) {
+  const box = new THREE.Box3(); for (const g of Object.values(merged)) { if (!g.boundingBox) g.computeBoundingBox(); box.union(g.boundingBox); }
+  box.expandByScalar(8);
+  const lx = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), L).normalize(), ly = new THREE.Vector3().crossVectors(L, lx);
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], c = new THREE.Vector3();
+  for (let k = 0; k < 8; k++) {
+    c.set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z);
+    [c.dot(lx), c.dot(ly), c.dot(L)].forEach((v, i) => { lo[i] = Math.min(lo[i], v); hi[i] = Math.max(hi[i], v); });
+  }
+  const hx = Math.min(170, (hi[0] - lo[0]) / 2), hy = Math.min(170, (hi[1] - lo[1]) / 2), back = (hi[2] - lo[2]) / 2 + 60;
+  const ctr = new THREE.Vector3().addScaledVector(lx, (lo[0] + hi[0]) / 2).addScaledVector(ly, (lo[1] + hi[1]) / 2).addScaledVector(L, (lo[2] + hi[2]) / 2);
+  const cam = new THREE.OrthographicCamera(-hx, hx, hy, -hy, 1, 2 * back);
+  cam.position.copy(ctr).addScaledVector(L, back); cam.up.set(0, 1, 0); cam.lookAt(ctr); cam.updateMatrixWorld(true); cam.updateProjectionMatrix();
+  const dt = new THREE.DepthTexture(size, size); dt.type = THREE.UnsignedIntType; dt.compareFunction = THREE.LessEqualCompare; dt.minFilter = dt.magFilter = THREE.LinearFilter;
+  const rt = new THREE.WebGLRenderTarget(size, size, { depthTexture: dt, depthBuffer: true, format: THREE.RedFormat, type: THREE.UnsignedByteType, generateMipmaps: false });
+  // proxies of every shadow caster with a depth-only material (alpha-tested where the original is)
+  const proxy = new THREE.Scene(), plain = new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide }), extra = [];
+  scene.updateMatrixWorld(true);
+  scene.traverse((o) => {
+    if (!o.isMesh || !o.castShadow || !o.visible) return;
+    const m = Array.isArray(o.material) ? o.material[0] : o.material;
+    let mat = plain;
+    if (m && m.alphaTest > 0 && m.map) { mat = new THREE.MeshBasicMaterial({ map: m.map, alphaTest: m.alphaTest, side: THREE.DoubleSide, colorWrite: false }); extra.push(mat); }
+    const p = o.isInstancedMesh ? new THREE.InstancedMesh(o.geometry, mat, o.count) : new THREE.Mesh(o.geometry, mat);
+    if (o.isInstancedMesh) p.instanceMatrix = o.instanceMatrix;
+    p.matrixAutoUpdate = false; p.matrix.copy(o.matrixWorld); p.matrixWorld.copy(o.matrixWorld); p.frustumCulled = false; proxy.add(p);
+  });
+  const prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(rt); renderer.clear(true, true, true); renderer.render(proxy, cam); renderer.setRenderTarget(prev);
+  extra.forEach((m) => m.dispose()); plain.dispose();
+  rt.depthTexture = null; rt.dispose();   // keep only the depth texture (frees the FBO and the colour plane)
+  const M = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
+  M.elements[14] -= 0.08 / (2 * back - 1);   // 8 cm depth bias (plus the 15 cm normal offset in the shader)
+  U.uFarMat.value.copy(M); U.uFarSM.value = dt; U.uFarOn.value = 1; U.uFarTexel.value.set(1 / size, 1 / size);
+  return { tex: dt, texel: (2 * Math.max(hx, hy)) / size };
+}
+
+// ---------------------------------------------------------------- [A] sky: real HDR photo, sun split out for shadows
+// Returns: background (its lower hemisphere = fog x haze, so a puresky's mirrored "ground" never shows), a PMREM env
+// from a 1024x512 copy whose lower hemisphere is the lit ground (albedo x (sun + sky) / pi), and the measured sun
+// colour / intensity, sky irradiance and fog colour (mean of the sky 0.5-5 deg above the horizon).
+async function loadSky(def, renderer, { envI = 0.85, groundAlb = ALB_FALLBACK.ground, haze = 1.2, onProgress } = {}) {
+  const id = def.id, url = `${PH}/HDRIs/hdr/2k/${id}_2k.hdr`;
+  const tex = await new HDRLoader().setDataType(THREE.FloatType).loadAsync(url, (e) => e.total && onProgress?.(e.loaded / e.total));
+  const { width: W, height: H, data } = tex.image; const ch = data.length / (W * H);
+  const L = new THREE.Vector3(...def.sunDir).normalize();
+  let maxL = 0, mi = 0;
+  for (let i = 0; i < W * H; i++) { const l = 0.2126 * data[i * ch] + 0.7152 * data[i * ch + 1] + 0.0722 * data[i * ch + 2]; if (l > maxL) { maxL = l; mi = i; } }
+  const cosP = new Float32Array(W), sinP = new Float32Array(W); for (let px = 0; px < W; px++) { const ph = ((px + 0.5) / W - 0.5) * 2 * Math.PI; cosP[px] = Math.cos(ph); sinP[px] = Math.sin(ph); }
+  const latOf = (py) => (0.5 - (py + 0.5) / H) * Math.PI;
+  { const px = mi % W, la = latOf(Math.floor(mi / W)), m = new THREE.Vector3(cosP[px] * Math.cos(la), Math.sin(la), sinP[px] * Math.cos(la));
+    if (def.sunRatio > 0 && m.angleTo(L) > 0.05) console.warn('[A-lighting] SKIES.sunDir', def.sunDir, 'but the HDR sun is at', m.toArray().map((v) => +v.toFixed(4))); }
+  const T = Math.max(8, Math.min(40, maxL * 0.05));
+  const E = [0, 0, 0], skyE = new THREE.Vector3(), fog = [0, 0, 0]; let fogN = 0;
+  for (let py = 0; py < H; py++) {
+    const lat = latOf(py), cl = Math.cos(lat), sl = Math.sin(lat), dO = (2 * Math.PI / W) * (Math.PI / H) * cl, latD = lat * 180 / Math.PI;
+    for (let px = 0; px < W; px++) {
+      const i = (py * W + px) * ch, l = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      if (l > T) {
+        const k = (l - T) / l, cosT = Math.max(0, cosP[px] * cl * L.x + sl * L.y + sinP[px] * cl * L.z);
+        for (let c = 0; c < 3; c++) { E[c] += data[i + c] * k * dO * cosT; data[i + c] *= 1 - k; }
+      }
+      if (lat > 0) { const w = dO * sl; skyE.x += data[i] * w; skyE.y += data[i + 1] * w; skyE.z += data[i + 2] * w; }
+      if (latD >= 0.5 && latD <= 5) { fog[0] += data[i]; fog[1] += data[i + 1]; fog[2] += data[i + 2]; fogN++; }
+    }
+  }
+  const Ei = Math.max(...E), skyLum = 0.2126 * skyE.x + 0.7152 * skyE.y + 0.0722 * skyE.z;
+  const sunColor = Ei > 1e-2 ? new THREE.Color(E[0] / Ei, E[1] / Ei, E[2] / Ei) : new THREE.Color(1, 1, 1);
+  const sunI = Math.min(16, Math.max(Ei > 1e-2 ? Ei : 0, (def.sunRatio || 0) * skyLum * envI));
+  const fogC = new THREE.Color(fog[0] / fogN, fog[1] / fogN, fog[2] / fogN);
+  const sst = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const H1 = THREE.DataUtils.toHalfFloat(1);
+  // background: below the horizon = what the fog converges to (fog colour x forward-scatter haze)
   const half = new Uint16Array(W * H * 4);
-  for (let i = 0; i < W * H; i++) for (let c = 0; c < 4; c++) half[i * 4 + c] = THREE.DataUtils.toHalfFloat(c < 3 ? data[i * ch + c] : 1);
-  const sky = new THREE.DataTexture(half, W, H, THREE.RGBAFormat, THREE.HalfFloatType);
-  sky.mapping = THREE.EquirectangularReflectionMapping; sky.colorSpace = THREE.LinearSRGBColorSpace;
-  sky.magFilter = THREE.LinearFilter; sky.minFilter = THREE.LinearFilter; sky.generateMipmaps = false; sky.flipY = true; sky.needsUpdate = true;
+  for (let py = 0; py < H; py++) {
+    const lat = latOf(py), t = sst(0.5, -1.0, lat * 180 / Math.PI), cl = Math.cos(lat), sl = Math.sin(lat);
+    for (let px = 0; px < W; px++) {
+      const i = (py * W + px) * ch, o = (py * W + px) * 4;
+      let r = data[i], g = data[i + 1], b = data[i + 2];
+      if (t > 0) { const hz = 1 + haze * Math.pow(Math.max(0, cosP[px] * cl * L.x + sl * L.y + sinP[px] * cl * L.z), 6); r += (fogC.r * hz - r) * t; g += (fogC.g * hz - g) * t; b += (fogC.b * hz - b) * t; }
+      half[o] = THREE.DataUtils.toHalfFloat(r); half[o + 1] = THREE.DataUtils.toHalfFloat(g); half[o + 2] = THREE.DataUtils.toHalfFloat(b); half[o + 3] = H1;
+    }
+  }
+  // env source at 1024x512: lower hemisphere = the lit ground (radiance / envI, since the env is scaled by envI)
+  const w2 = W >> 1, h2 = H >> 1, src = new Uint16Array(w2 * h2 * 4);
+  const gR = [0, 1, 2].map((c) => (groundAlb[c] * (sunI * Math.max(0, L.y) * [sunColor.r, sunColor.g, sunColor.b][c] + [skyE.x, skyE.y, skyE.z][c] * envI)) / Math.PI / envI);
+  for (let py = 0; py < h2; py++) {
+    const latD = (0.5 - (py + 0.5) / h2) * 180, t = sst(0, -2, latD);
+    for (let px = 0; px < w2; px++) {
+      const o = (py * w2 + px) * 4;
+      for (let c = 0; c < 3; c++) {
+        const a = ((2 * py) * W + 2 * px) * ch + c, b = ((2 * py + 1) * W + 2 * px) * ch + c;
+        const v = 0.25 * (data[a] + data[a + ch] + data[b] + data[b + ch]);
+        src[o + c] = THREE.DataUtils.toHalfFloat(v + (gR[c] - v) * t);
+      }
+      src[o + 3] = H1;
+    }
+  }
   tex.dispose();
+  const mk = (arr, w, h) => { const t = new THREE.DataTexture(arr, w, h, THREE.RGBAFormat, THREE.HalfFloatType); t.mapping = THREE.EquirectangularReflectionMapping; t.colorSpace = THREE.LinearSRGBColorSpace;
+    t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; t.flipY = true; t.needsUpdate = true; return t; };
+  const sky = mk(half, W, H), envSrc = mk(src, w2, h2);
   const pm = new THREE.PMREMGenerator(renderer);
-  const env = pm.fromEquirectangular(sky).texture; pm.dispose();
-  const Ei = Math.max(E.x, E.y, E.z, 1e-3);
-  console.info('sky', id, 'sun irradiance', E.toArray().map((v) => +v.toFixed(2)), 'maxL', +maxL.toFixed(1), 'T', +T.toFixed(1), 'sunDir', sunDir.toArray().map((v) => +v.toFixed(2)), 'horizon', horizon.toArray().map((v) => +v.toFixed(2)), 'skyE', skyE.toArray().map((v) => +v.toFixed(2)));
-  return { sky, env, sunDir, sunColor: new THREE.Color(E.x / Ei, E.y / Ei, E.z / Ei), sunE: Ei, horizon, skyE };
+  const env = pm.fromEquirectangular(envSrc).texture; pm.dispose(); envSrc.dispose();
+  console.info('sky', id, 'sunI', +sunI.toFixed(2), 'sunE', +Ei.toFixed(2), 'sunColor', [sunColor.r, sunColor.g, sunColor.b].map((v) => +v.toFixed(3)), 'skyE', skyE.toArray().map((v) => +v.toFixed(3)),
+    'fog', [fogC.r, fogC.g, fogC.b].map((v) => +v.toFixed(3)), 'ground', gR.map((v) => +v.toFixed(3)), 'maxL', +maxL.toFixed(0));
+  return { sky, env, sunDir: L, sunColor, sunI, sunE: Ei, skyE, fogColor: fogC };
 }
 
 
@@ -663,40 +1005,31 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
     const b = `${PH}/Textures/jpg/1k/${m.id}/${m.id}_`;
     texJobs[k] = Promise.all([loadTex(b + 'diff_1k.jpg', true), loadTex(b + 'nor_gl_1k.jpg', false), loadTex(b + 'arm_1k.jpg', false)]);
   }
-  let skyFrac = 0;
-  const ticker = setInterval(() => prog(0.05 + 0.55 * (skyFrac * 0.5 + (texDone / texTotal) * 0.5), 'Streaming sky and materials'), 200);
-  const skyP = loadSky(SKIES[sky]?.id || SKIES.sunny.id, renderer, (f) => (skyFrac = f));
+  // [A] sky + light. The bake needs only the per-sky sun direction, so it runs right after the geometry while the HDR
+  // and textures stream; the HDR's measured sun/sky intensities then scale it through uniforms (uniforms.aLight).
+  const skyDef = SKIES[sky] || SKIES.sunny, hasSun = skyDef.sunRatio > 0, envI = 0.85, sunDir = new THREE.Vector3(...skyDef.sunDir).normalize();
+  const aLight = (uniforms.aLight = lightUniforms());
+  aLight.uSunW.value.copy(sunDir); aLight.uHaze.value = hasSun ? 1.2 : 0;
+  let skyFrac = 0, bakeFrac = 0;
+  const ticker = setInterval(() => prog(0.05 + 0.85 * (skyFrac * 0.3 + (texDone / texTotal) * 0.3 + bakeFrac * 0.4), bakeFrac < 1 ? 'Baking light' : 'Streaming sky and materials'), 200);
+  const skyP = loadSky(skyDef, renderer, { envI, groundAlb: groundAlbedo(), haze: aLight.uHaze.value, onProgress: (f) => (skyFrac = f) });
 
   // geometry (CPU) while downloads run
-  const { site, terr, far, pathG, treeSpots, merged, colGeo, bvh } = buildGeometry(R);
-  prog(0.62, 'Building collision');
+  const geo = buildGeometry(R);
+  const { site, terr, far, pathG, treeSpots, merged, colGeo, bvh } = geo;
+  prog(0.1, 'Baking light');
   await yieldUI();
+  const bake = await bakeLight(geo, { sunDir, sun: hasSun, quality, onTick: (f) => (bakeFrac = f) });
+  bake.applyTo(pathG, 4, 18);
+  far.setAttribute('ao', new THREE.BufferAttribute(new Float32Array(far.attributes.position.count).fill(1), 1));
+  bakeFrac = 1;
+  console.info('light bake', bake.stats);
 
   const sk = await skyP;
-  const envI = 0.85, skyLum = 0.2126 * sk.skyE.x + 0.7152 * sk.skyE.y + 0.0722 * sk.skyE.z;
-  const sunI = Math.min(16, Math.max(sk.sunE, (SKIES[sky]?.sunRatio || 0) * skyLum * envI));
-  LP.sun.copy(sk.sunDir); if (LP.sun.y < 0.12) { LP.sun.y = 0.12; LP.sun.normalize(); } LP.sunRGB.set(sk.sunColor.r, sk.sunColor.g, sk.sunColor.b).multiplyScalar(sunI); LP.skyRGB.copy(sk.skyE).multiplyScalar(envI);
-  prog(0.62, 'Baking light');
-  // baked light: sky visibility (what can't reach under slabs, into the chimney, into corners) + one bounce
-  const rays = quality === 'low' ? 4 : quality === 'high' ? 8 : 6;
-  const bakeList = [...Object.values(merged), terr];
-  const totalV = bakeList.reduce((s, g) => s + g.attributes.position.count, 0); let doneV = 0;
-  for (const g of bakeList) {
-    await bakeAO(g, bvh, g === terr ? 18 : 26, g === terr ? Math.max(4, rays - 3) : rays, (f) => prog(0.62 + 0.26 * ((doneV + f * g.attributes.position.count) / totalV), 'Baking light'));
-    doneV += g.attributes.position.count;
-  }
-  if (merged.brick) {
-    const g = merged.brick, p = g.attributes.position, n = g.attributes.normal, ao = g.attributes.ao;
-    const bo = g.attributes.bounce;
-    for (let i = 0; i < p.count; i++) { const rx = p.getX(i) - 44, rz = p.getZ(i) + 40; if (rx * n.getX(i) + rz * n.getZ(i) < 0) { ao.setX(i, ao.getX(i) * 0.3); bo.setXYZ(i, bo.getX(i) * 0.5, bo.getY(i) * 0.5, bo.getZ(i) * 0.5); } }
-  }
-  const farAO = new Float32Array(far.attributes.position.count).fill(1); far.setAttribute('ao', new THREE.BufferAttribute(farAO, 1));
-  const zeroB = (g) => g.setAttribute('bounce', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 3), 3));
-  zeroB(far);
-  const pathAO = new Float32Array(pathG.attributes.position.count);
-  const pathB = new Float32Array(pathG.attributes.position.count * 3);
-  { const p = pathG.attributes.position, P = new THREE.Vector3(), N = new THREE.Vector3(0, 1, 0); for (let i = 0; i < p.count; i++) { P.fromBufferAttribute(p, i); pathAO[i] = aoCurve(lightProbe(bvh, P, N, 18, 4)); LP.out.toArray(pathB, i * 3); } }
-  pathG.setAttribute('ao', new THREE.BufferAttribute(pathAO, 1)); pathG.setAttribute('bounce', new THREE.BufferAttribute(pathB, 3));
+  const sunI = sk.sunI;
+  aLight.uSunB.value.set(sk.sunColor.r, sk.sunColor.g, sk.sunColor.b).multiplyScalar(sunI);
+  aLight.uSkyB.value.copy(sk.skyE).multiplyScalar(envI);
+  LP.sun.copy(sunDir); LP.sunRGB.copy(aLight.uSunB.value); LP.skyRGB.copy(aLight.uSkyB.value);   // legacy lightProbe() callers
 
   const texSets = await Promise.all(Object.values(texJobs));
   clearInterval(ticker);
@@ -704,7 +1037,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   prog(0.9, 'Lighting');
 
   scene.background = sk.sky; scene.environment = sk.env;
-  scene.fog = new THREE.Fog(new THREE.Color(sk.horizon.x, sk.horizon.y, sk.horizon.z), 180, 2200);
+  scene.fog = new THREE.Fog(sk.fogColor, 40, 2600);
 
   const mkMat = (key, extra = {}) => {
     const m = MATS[key], [d, n, arm] = texOf[key] || [];
@@ -832,19 +1165,29 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     inst.castShadow = true; inst.receiveShadow = true; scene.add(inst);
   }
 
-  // sun with shadows that follow the drone
+  // [A] sun: a shadowed DirectionalLight carrying the energy clamped out of the HDR.
+  // Live map: +-48 m (4.7 cm texels at 2048), centred 0.3*ext ahead of the camera, snapped to a texel-aligned ~4 m
+  // light-space grid and re-rendered only when that snapped centre moves (autoUpdate off). Beyond it the static far map.
   const sun = new THREE.DirectionalLight(sk.sunColor, sunI);
   scene.environmentIntensity = envI;
-  sun.castShadow = true;
+  sun.castShadow = sunI > 0.5;                       // overcast: no shadow pass at all
   const sm = quality === 'low' ? 1024 : 2048; sun.shadow.mapSize.set(sm, sm);
-  const ext = 55; Object.assign(sun.shadow.camera, { left: -ext, right: ext, top: ext, bottom: -ext, near: 1, far: 400 });
-  sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.05; sun.shadow.camera.updateProjectionMatrix();
+  const ext = 48, back = 150;
+  Object.assign(sun.shadow.camera, { left: -ext, right: ext, top: ext, bottom: -ext, near: 1, far: 2 * back });
+  sun.shadow.bias = -0.00008; sun.shadow.normalBias = 0.04; sun.shadow.camera.updateProjectionMatrix();   // 2.4 cm depth bias
+  sun.shadow.autoUpdate = false; sun.shadow.needsUpdate = true;
+  if (mats.brick) mats.brick.shadowSide = THREE.DoubleSide;   // the chimney tube casts with both skins (no leak down its throat)
   scene.add(sun); scene.add(sun.target);
-  const texel = (2 * ext) / sm;
-  const sunDir = sk.sunDir.clone(); if (sunDir.y < 0.12) { sunDir.y = 0.12; sunDir.normalize(); }
+  const texel = (2 * ext) / sm, snap = texel * Math.max(1, Math.round(4 / texel));
   const lightBasisX = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), sunDir).normalize(), lightBasisY = new THREE.Vector3().crossVectors(sunDir, lightBasisX);
+  const _fwd = new THREE.Vector3(), _ctr = new THREE.Vector3(); let shAx = NaN, shAy = NaN;
+  if (sun.castShadow) {
+    const fs = renderFarShadow(renderer, scene, merged, sunDir, quality === 'low' ? 1024 : 2048, aLight);
+    if (mats.slab) mats.slab.aFarShadowTex = fs.tex;   // so clearWorld()'s material sweep disposes it with the world
+    console.info('far shadow texel m', +fs.texel.toFixed(3));
+  }
   let grassLevel = 1;
-  const update = (camPos, dt) => {
+  const update = (camPos, dt, camQuat) => {
     uniforms.uTime.value += dt;
     grassU.uCam.value.copy(camPos);
     const alt = camPos.y - terrainHeight(camPos.x, camPos.z);
@@ -853,11 +1196,17 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     const cell = gCell * grassLevel;
     grassU.uCell.value = cell; grassU.uScale.value = grassLevel; grassU.uR.value = gN * cell * 0.5;
     grassU.uOrigin.value.set(Math.floor(camPos.x / cell) * cell - (gN / 2) * cell, Math.floor(camPos.z / cell) * cell - (gN / 2) * cell);
-    // snap the shadow frustum to texels so edges don't crawl
-    const ax = Math.round(camPos.dot(lightBasisX) / texel) * texel, ay = Math.round(camPos.dot(lightBasisY) / texel) * texel, az = camPos.dot(sunDir);
-    const c = lightBasisX.clone().multiplyScalar(ax).addScaledVector(lightBasisY, ay).addScaledVector(sunDir, az);
-    sun.target.position.copy(c); sun.position.copy(c).addScaledVector(sunDir, 200);
-    sun.target.updateMatrixWorld(); sun.updateMatrixWorld();
+    // [A] live shadow map follows a point ahead of the camera; re-render only when its snapped centre moves
+    _ctr.copy(camPos);
+    if (camQuat) { _fwd.set(0, 0, -1).applyQuaternion(camQuat); _fwd.y = 0; const l = _fwd.length(); if (l > 1e-3) _ctr.addScaledVector(_fwd, (0.3 * ext) / l); }
+    const ax = Math.round(_ctr.dot(lightBasisX) / snap) * snap, ay = Math.round(_ctr.dot(lightBasisY) / snap) * snap;
+    if (ax !== shAx || ay !== shAy) {
+      shAx = ax; shAy = ay;
+      const c = _ctr.set(0, 0, 0).addScaledVector(lightBasisX, ax).addScaledVector(lightBasisY, ay).addScaledVector(sunDir, camPos.dot(sunDir));
+      sun.target.position.copy(c); sun.position.copy(c).addScaledVector(sunDir, back);
+      sun.target.updateMatrixWorld(); sun.updateMatrixWorld();
+      sun.shadow.needsUpdate = true;
+    }
   };
   update(new THREE.Vector3(0, 0, 100), 0);
 
@@ -865,6 +1214,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   const colScene = new THREE.Scene();
   const cm = new THREE.Mesh(colGeo, new THREE.MeshBasicMaterial()); cm.frustumCulled = false; colScene.add(cm);
   prog(0.98, 'Ready');
+  BAKE = null;   // [A] the probe solution was only needed while building (decals); free it
   return {
     scene, colliderScene: colScene, bvh, update, hdr: true,
     spawn: new THREE.Vector3(0, terrainHeight(0, 118) + 1.4, 118), yaw: 0,

@@ -233,7 +233,10 @@ async function loadProcWorld(def) {
   world.spawn.copy(w.spawn); world.yaw = w.yaw;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);
-  Object.assign(fpv.look, { evMin: -5.5, evMax: 2.6, invTone: 0, lift: 0.04, saturation: 1.1, expo: 0.85 });
+  // [A] evMax 4.0: a real hall interior sits ~6 stops under open ground; the camera may open up 4 EV over outdoors.
+  // Look line from stream D; overcast wb rescaled from D's farmland_overcast value by the sky change (skyE rgb/G
+  // farmland 0.889/1/1.202 -> overcast_soil_puresky 1.009/1/1.004), so the rendered grey lands where D put it.
+  Object.assign(fpv.look, { evMin: -5.5, evMax: 4.0, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: def.sky === 'overcast' ? [0.990, 0.985, 0.941] : [1.063, 0.993, 0.883], evBias: def.sky === 'overcast' ? 0.3 : 0 });
   fpv.cam.near = 0.06; fpv.cam.far = 3000; fpv.cam.updateProjectionMatrix();
 }
 
@@ -564,7 +567,7 @@ function frame(now) {
     audio.update(drone.motors, drone.vel.length(), drone.wash ?? 0, drone.crashed, state === 'menu' || state === 'loading');
   }
   if (state === 'menu' && !loadedId) return;
-  world.update?.(camPose.pos, dt);
+  world.update?.(camPose.pos, dt, camPose.quat);   // [A] quat: the live shadow map leads the view
   fpv.render(world, camPose, motion, dt);
   updateHud(dt);
 }
