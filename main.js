@@ -6,6 +6,7 @@ import { FPVCamera, LENSES, SHUTTERS } from './fpvcam.js';
 import { Drone, CRAFTS } from './flight.js';
 import { Controls } from './controls.js';
 import { MotorAudio } from './audio.js';
+import { Take, defaultTakeUI } from './take.js';
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
@@ -21,10 +22,11 @@ const QUALITY = {
 const STAB = { off: 0, light: 0.03, heavy: 0.09 };
 
 // ---------------- settings
-const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'on', sound: 'on' };
+const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'on', sound: 'on', game: 'take' };
 let S = { ...DEF };
 try { const saved = JSON.parse(localStorage.getItem('onetake.settings') || '{}'); if (saved.v !== 3) { delete saved.tilt; delete saved.world; saved.v = 3; } Object.assign(S, saved); } catch (e) {}
 if (!['yard', 'yard-overcast', 'file', 'url'].includes(S.world)) S.world = 'yard';
+if (!['take', 'free'].includes(S.game)) S.game = 'take';
 const save = () => { try { localStorage.setItem('onetake.settings', JSON.stringify(S)); } catch (e) {} };
 const params = new URLSearchParams(location.search);
 if (params.get('splat')) {
@@ -223,6 +225,7 @@ function clearWorld() {
     world.scene.background?.dispose?.(); world.scene.environment?.dispose?.();
   }
   world.scene = null; world.bvh = null; world.colliderScene = null; world.bounds = null; world.envelope = null; world.update = null;
+  world.skimBvh = null; world.lines = null; world.takeStart = null;
 }
 
 async function loadProcWorld(def) {
@@ -230,6 +233,7 @@ async function loadProcWorld(def) {
   const w = await buildBando(renderer, { sky: def.sky, quality: S.quality, onProgress: (f, t) => setLoad(null, f, t) });
   clearWorld();
   Object.assign(world, { scene: w.scene, colliderScene: w.colliderScene, bvh: w.bvh, bounds: w.bounds, envelope: w.envelope, update: w.update, hdr: true });
+  Object.assign(world, { skimBvh: w.skimBvh, lines: w.lines, takeStart: w.takeStart });   // C: the take
   world.spawn.copy(w.spawn); world.yaw = w.yaw;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);
@@ -366,7 +370,8 @@ function findSpawn() {
   world.spawn.copy(p);
 }
 
-// open world: after a crash you go back to where you last were flying clear, not to the start
+// free fly (open world): after a crash you go back to where you last were flying clear, not to the start.
+// take: a retry starts at once, hovering by the chimney mouth (the first line); toStart = the spawn and its reveal.
 const safePts = []; let safeT = 0;
 function trackSafe(dt, now) {
   safeT += dt; if (safeT < 1.0 || drone.crashed) return; safeT = 0;
@@ -375,10 +380,14 @@ function trackSafe(dt, now) {
 function respawn(toStart = false) {
   drone.setCraft(craftFor(world.def));
   const now = performance.now() / 1000;
-  const sp = toStart ? null : [...safePts].reverse().find((s) => now - s.t > 2.0);
-  if (sp) drone.reset(sp.p, sp.yaw); else { drone.reset(world.spawn, world.yaw); score.reset(); flightT = 0; }
-  if (toStart) safePts.length = 0;
-  controls.resetThrottle(Math.sqrt(1 / drone.c.twr));
+  const takeMode = S.game !== 'free';
+  const sp = toStart || takeMode ? null : [...safePts].reverse().find((s) => now - s.t > 2.0);
+  if (sp) drone.reset(sp.p, sp.yaw);
+  else if (takeMode && !toStart && world.takeStart) { drone.reset(world.takeStart.pos, world.takeStart.yaw); flightT = 0; }
+  else { drone.reset(world.spawn, world.yaw); flightT = 0; }
+  if (toStart || takeMode) safePts.length = 0;
+  take.reset();
+  controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); thrRef = controls.thr;
   camQ.copy(drone.q); fpv.resetExposure = true;
   replayBuf.length = 0;
   state = 'fly';
@@ -386,41 +395,33 @@ function respawn(toStart = false) {
   $('fade').style.opacity = 0;
 }
 
-// ---------------- scoring: proximity "skims"
-const score = {
-  total: 0, streak: 0, mult: 1, streakT: 0, lastClose: 0, best: 0,
-  reset() { this.total = 0; this.streak = 0; this.mult = 1; this.streakT = 0; },
-};
-try { score.best = +localStorage.getItem('onetake.best') || 0; } catch (e) {}
+// ---------------- the take (take.js): named lines, FLOW, bank / crash / CUT
+const take = new Take();
 let popT = 0;
 function pop(text) { const p = $('pop'); p.textContent = text; p.classList.add('show'); popT = 1.2; }
 function toast(t) { pop(t); }
 const _cp = {};
-function updateScore(dt, now) {
+// proximity to anything (terrain included): flight turbulence, audio, OLED bars. Scoring uses world.skimBvh.
+function updateProx() {
   if (!world.bvh || drone.crashed) { world.lastDist = Infinity; return; }
   const res = world.bvh.closestPointToPoint(drone.pos, _cp, 0, 2.0);
-  const gap = res ? res.distance - drone.c.radius : Infinity;
-  world.lastDist = gap;
-  const spd = drone.vel.length();
-  const zone = drone.key === 'cinewhoop' ? 0.9 : 1.4;
-  if (gap < zone && spd > 3) {
-    const c = 1 - gap / zone;
-    score.streakT += dt;
-    score.mult = Math.min(8, 1 + Math.floor(score.streakT / 1.2));
-    score.streak += dt * spd * c * c * 60 * score.mult;
-    score.lastClose = now;
-  } else if (score.streak > 0 && now - score.lastClose > 0.9) {
-    const pts = Math.round(score.streak);
-    score.total += pts; pop(`SKIM ×${score.mult}  +${pts.toLocaleString()}`);
-    score.streak = 0; score.streakT = 0; score.mult = 1;
-    if (score.total > score.best) { score.best = score.total; try { localStorage.setItem('onetake.best', score.best); } catch (e) {} }
-  }
+  world.lastDist = res && res.distance <= 2.0 ? res.distance - drone.c.radius : Infinity;
 }
-drone.onCrash = (impact) => {
-  audio.thud(impact);
-  if (score.streak > 0) pop('STREAK LOST');
-  score.streak = 0; score.streakT = 0; score.mult = 1;
-};
+// "hands on": any centred stick deflected, or the (non-centring) throttle being moved
+let thrRef = 0.39, takeGame = S.game;
+function sticksActive(inp, dt) {
+  const d = inp.thr - thrRef; thrRef += d * Math.min(1, dt / 0.5);
+  const m = Math.max(Math.abs(inp.pitch), Math.abs(inp.roll), Math.abs(inp.yaw), S.mode === 'cine' ? Math.abs(inp.climb) : 0);
+  return m > 0.12 || (S.mode !== 'cine' && Math.abs(d) > 0.04);
+}
+const takeEvent = (e) => (typeof onTakeEvent === 'function' ? onTakeEvent : (ev) => defaultTakeUI(ev, pop))(e);
+function updateTake(dt, inp) {
+  const on = sticksActive(inp, dt);
+  if (S.game !== takeGame) { takeGame = S.game; take.reset(); }
+  if (S.game === 'free') return;                      // free fly: no take, safe-point respawn
+  for (const e of take.update(dt, drone, world, on)) takeEvent(e);
+}
+drone.onCrash = (impact) => { audio.thud(impact); };
 
 // ---------------- camera rig
 const camQ = new THREE.Quaternion();
@@ -510,18 +511,19 @@ function updateHud(dt) {
   hudT += dt; if (hudT < 0.1) return; hudT = 0;
   const kmh = Math.round(drone.vel.length() * 3.6);
   $('spd').textContent = `${kmh} km/h`;
-  $('tmr').textContent = fmt(flightT);
-  $('score').textContent = Math.round(score.total).toLocaleString();
-  $('streak').textContent = score.streak > 0 ? `SKIM ×${score.mult}  ${Math.round(score.streak).toLocaleString()}` : (score.best ? `BEST ${score.best.toLocaleString()}` : '');
+  const free = S.game === 'free', tt = free ? flightT : take.stats.time;
+  $('tmr').textContent = fmt(tt);
+  $('score').textContent = free ? '' : take.total.toLocaleString();
+  $('streak').textContent = free ? '' : take.unbanked > 0 ? `FLOW ×${take.flow}  +${take.unbanked.toLocaleString()}  BANK ${take.bankIn.toFixed(1)}` : take.state === 'ready' ? 'TAKE READY' : (take.best ? `BEST ${take.best.toLocaleString()}` : '');
   if (state === 'replay') $('recT').textContent = fmt((performance.now() - recStart) / 1000);
   const bars = Math.max(0, Math.min(4, Math.round(4 - world.lastDist / 0.5)));
   const prox = world.lastDist < 3 ? '▮'.repeat(bars).padEnd(4, '▯') : '▯▯▯▯';
   if (drone.limitHit > 0 && performance.now() - lastLimitToast > 2500) { lastLimitToast = performance.now(); pop(drone.pos.y >= (world.envelope?.max.y ?? 1e9) - 0.01 ? 'CEILING' : 'WORLD EDGE'); }
   $('oled').textContent =
-    `${{ cine: 'CINE ', angle: 'ANGLE', acro: 'ACRO ' }[S.mode]}  ${fmt(flightT)}\n` +
+    `${{ cine: 'CINE ', angle: 'ANGLE', acro: 'ACRO ' }[S.mode]}  ${fmt(tt)}\n` +
     `${String(kmh).padStart(3)} km/h  ${prox}\n` +
-    `SCORE ${Math.round(score.total).toLocaleString()}\n` +
-    (score.streak > 0 ? `SKIM x${score.mult} +${Math.round(score.streak)}` : state === 'replay' ? '● REC REPLAY' : drone.crashed ? 'CRASHED' : drone.limitHit > 0 ? '▲ LIMIT' : `BEST ${score.best.toLocaleString()}`);
+    (free ? 'FREE FLY\n' : `SCORE ${take.total.toLocaleString()}\n`) +
+    (!free && take.unbanked > 0 ? `FLOW x${take.flow} +${take.unbanked}` : state === 'replay' ? '● REC REPLAY' : drone.crashed ? 'CRASHED' : drone.limitHit > 0 ? '▲ LIMIT' : free ? '' : `BEST ${take.best.toLocaleString()}`);
 }
 
 // ---------------- main loop
@@ -542,12 +544,14 @@ function frame(now) {
     for (let i = 0; i < steps; i++) drone.step(h, inp, S.mode, world);
     if (drone.crashed && state === 'fly') { state = 'crash'; }
     if (state === 'crash' && drone.crashT > 1.1 && $('crashBar').classList.contains('hidden')) {
-      $('crashBar').classList.remove('hidden'); $('bTitle').textContent = 'CRASHED'; $('bSub').textContent = `${Math.round(score.total).toLocaleString()} pts`; $('banner').classList.remove('hidden');
+      $('crashBar').classList.remove('hidden'); $('bTitle').textContent = 'CRASHED'; $('bSub').textContent = S.game === 'free' ? 'Retry from the last safe point' : `${take.total.toLocaleString()} pts · best ${take.best.toLocaleString()}`; $('banner').classList.remove('hidden');
     }
     if (world.bounds && !world.bounds.containsPoint(drone.pos)) {
+      for (const e of take.fail()) takeEvent(e);      // leaving the world ends a take like a crash
       $('fade').style.opacity = 1; setTimeout(respawn, 380); state = 'loading';
     }
-    updateScore(dt, now / 1000);
+    updateProx();
+    if (state !== 'loading') updateTake(dt, inp);
     rigCamera(dt);
     trackSafe(dt, now / 1000);
     pushReplay(now / 1000);
@@ -577,7 +581,7 @@ syncSegs();
 document.addEventListener('visibilitychange', () => { if (document.hidden && (state === 'fly' || state === 'crash')) openMenu(); });
 canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); setLoad('Graphics reset', 0, 'The GPU context was lost — reload the page.'); });
 window.__onetake = {
-  S, drone, fpv, world, controls, renderer, get spark() { return spark; }, startFlight, respawn, applySettings, get state() { return state; },
+  S, drone, fpv, world, controls, renderer, take, get spark() { return spark; }, startFlight, respawn, applySettings, get state() { return state; },
   tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; },
   // test hook (?manual): advance n frames of dtMs each and return the canvas
   step(dtMs = 16.7, n = 1, grab = true) { for (let i = 0; i < n; i++) { last = performance.now() - dtMs; frame(performance.now()); } return grab ? canvas.toDataURL('image/jpeg', 0.92) : null; },

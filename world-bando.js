@@ -162,133 +162,281 @@ function terrainHeight(x, z) {
   return GROUND + n * ramp + Math.min(d, 180) * 0.012 * ramp - 0.05 * (1 - ramp);
 }
 
-function buildSite(R) {
+// per-subsystem RNG streams: a draw added in one part of the site never reshuffles another part
+function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+const subRng = (seed, name) => rng((hashStr(name) ^ Math.imul(seed | 0, 0x9E3779B1)) >>> 0);
+const Y_UP = new THREE.Vector3(0, 1, 0);
+
+// ---- layout. -z is north (silos, chimney), +z south (the hall, the spawn). The site is shaped around its named
+// lines (see buildLines): chimney door -> pipe rack -> hall window is one straight line, the stair shaft is open
+// top to bottom, the silo row has one 1.6 m gap lined up with the stair tower's openings.
+const SILO = { x: [-48.3, -38.9, -28.9, -19.5], z: [-22, -6], r: 4.2, table: 5.2, top: 32 };   // gaps 1.0 / 1.6 / 1.0 m
+const TOWER = { x: -33.9, z: -14, w: 4.4, T: 0.3 };
+const SHAFT = { x0: TOWER.x - 2.05, x1: TOWER.x + 2.05, z0: TOWER.z - 2.05, z1: TOWER.z + 2.05 };   // inner faces
+const HEAD = { x0: -54, x1: -14, z0: -17.8, z1: 0 };    // head house over the south row: the north row's caps stay open
+const CHIM = { x: -8, z: -22, h: 50, rb: 3.4, rt: 2.0, th: 0.35 };   // in line with the north row: mouth beside the caps
+const HALL = { x0: 6, x1: 70, z0: 14, z1: 36, fh: 5, levels: 3, cols: 11, rows: 5 };
+const GAL = { A: [-14.3, 33.4, -6.5], B: [12.5, 15.35, 24.5], W: 3.0, H: 2.6 };
+const ENTRY = [13.9, 14];       // hall window (north facade, bay 1) the chimney door + rack aim through, threading the columns
+const DOOR = (() => { const x = ENTRY[0] - CHIM.x, z = ENTRY[1] - CHIM.z, l = Math.hypot(x, z); return [x / l, z / l]; })();
+const RACK = { K: [CHIM.x + DOOR[0] * 6, CHIM.z + DOOR[1] * 6], H: [ENTRY[0] - DOOR[0] * 2.5, ENTRY[1] - DOOR[1] * 2.5] };
+// bays the lines need, whatever the RNG says. Slab key `L:i:j` (slab over storey L; 2 = roof); facade key `fL:z0|z1:i`
+const FORCE = {
+  '0:1:0': 'hole', '1:1:0': 'hole', '2:1:0': 'slot',                              // TRIPLE POP / DROP behind the entry window
+  '2:0:1': 'solid', '2:1:1': 'solid', '2:0:2': 'solid', '2:1:2': 'solid',          // the roof the gallery lands on
+  'f0:z0:1': 'open', 'f0:z0:3': 'open', 'f0:z1:3': 'open',                         // rack entry; STRAIGHT THROUGH
+};
+
+// a horizontal slab (x0..x1, z0..z1, bottom y, thickness t) with rectangular holes [{x0, x1, z0, z1}]
+function slabWithHoles(S, mat, x0, x1, z0, z1, y, t, holes) {
+  const xs = new Set([x0, x1]); holes.forEach((h) => { xs.add(Math.max(x0, Math.min(x1, h.x0))); xs.add(Math.max(x0, Math.min(x1, h.x1))); });
+  const cuts = [...xs].sort((a, b) => a - b);
+  for (let i = 0; i < cuts.length - 1; i++) {
+    const a = cuts[i], b = cuts[i + 1]; if (b - a < 0.01) continue;
+    const mid = (a + b) / 2; let zs = [[z0, z1]];
+    for (const h of holes) {
+      if (h.x0 > mid || h.x1 < mid) continue;
+      zs = zs.flatMap(([p, q]) => (h.z1 <= p || h.z0 >= q ? [[p, q]] : [[p, Math.max(p, h.z0)], [Math.min(q, h.z1), q]].filter(([u, v]) => v - u > 0.01)));
+    }
+    for (const [p, q] of zs) S.box(mat, mid, y, (p + q) / 2, b - a, t, q - p);
+  }
+}
+// a parapet / coping run along x or z: 1.5-6 m pieces, tops knocked down 0-0.6 m, ~10% of it missing
+function brokenRun(S, R, mat, ax, az, bx, bz, y, H, T) {
+  const alongX = Math.abs(bx - ax) >= Math.abs(bz - az), L = alongX ? bx - ax : bz - az;
+  let s = 0;
+  while (s < L - 0.05) {
+    const len = Math.min(L - s, 1.5 + R() * 4.5), r = R();
+    if (r < 0.1 && s > 0 && L - s > 2.5) { s += 0.6 + R() * 1.0; continue; }
+    const h = Math.max(0.25, H - (r < 0.55 ? R() * 0.6 : 0)), c = s + len / 2;
+    if (alongX) S.box(mat, ax + c, y, az, len, h, T); else S.box(mat, ax, y, az + c, T, h, len);
+    s += len;
+  }
+}
+// a placement matrix whose local +x runs along d (right-handed, local +y as close to world up as it can be)
+function alongM(d, px, py, pz) {
+  const side = new THREE.Vector3().crossVectors(d, Y_UP).normalize(), up = new THREE.Vector3().crossVectors(side, d);
+  return new THREE.Matrix4().makeBasis(d, up, side).setPosition(px, py, pz);
+}
+// 3.5 cm rebar sticking out of a broken slab edge (a->b) into the hole (inward nx, nz), drooping
+function rebar(S, R, ax, az, bx, bz, y, nx, nz, count, maxLen) {
+  for (let k = 0; k < count; k++) {
+    const t = 0.08 + R() * 0.84, px = ax + (bx - ax) * t, pz = az + (bz - az) * t;
+    const len = 0.22 + R() * (maxLen - 0.22), droop = 0.12 + R() * 0.7, yaw = (R() - 0.5) * 0.6, c = Math.cos(yaw), s = Math.sin(yaw);
+    const d = new THREE.Vector3((nx * c - nz * s) * Math.cos(droop), -Math.sin(droop), (nx * s + nz * c) * Math.cos(droop));
+    const g = new THREE.CylinderGeometry(0.02, 0.02, len + 0.15, 3, 1, true);   // 8 verts: cheap to bake
+    g.translate(0, (len + 0.15) / 2, 0); g.applyQuaternion(_rq.setFromUnitVectors(Y_UP, d)); g.translate(px - nx * 0.15, y + (R() - 0.5) * 0.14, pz - nz * 0.15);
+    S.add('rust', g);
+  }
+}
+const _rq = new THREE.Quaternion();
+// a long member with few vertices along it (beams in shadow need no 3 m bake resolution)
+function lowBox(S, mat, cx, y0, cz, sx, sy, sz) {
+  const g = new THREE.BoxGeometry(sx, sy, sz, Math.max(1, Math.round(sx / 6.5)), 1, Math.max(1, Math.round(sz / 6.5)));
+  planarUV(g, { x: cx * 0.37, y: y0 + sy / 2, z: cz * 0.53 }); g.translate(cx, y0 + sy / 2, cz); S.add(mat, g);
+}
+// a hinged slab fragment hanging from a hole edge
+function hangingChunk(S, R, ax, az, bx, bz, y, nx, nz) {
+  const t = 0.25 + R() * 0.5, px = ax + (bx - ax) * t, pz = az + (bz - az) * t, tilt = 0.4 + R() * 0.5, depth = 0.5 + R() * 0.5;
+  const d = new THREE.Vector3(nx * Math.cos(tilt), -Math.sin(tilt), nz * Math.cos(tilt));
+  S.beam('slab', alongM(d, px, y, pz), -0.05, depth, 0, 0, 0.26, 0.8 + R() * 0.8);
+}
+// jittered, squashed icosahedron: a broken lump of concrete
+function rock(R, s, x, y, z) {
+  const g = s > 0.55 ? new THREE.IcosahedronGeometry(s, 0) : new THREE.OctahedronGeometry(s, 0), p = g.attributes.position, jit = new Map();
+  for (let i = 0; i < p.count; i++) {
+    const key = `${p.getX(i).toFixed(3)},${p.getY(i).toFixed(3)},${p.getZ(i).toFixed(3)}`;
+    let j = jit.get(key); if (!j) jit.set(key, (j = [1 + (R() - 0.5) * 0.5, 1 + (R() - 0.5) * 0.5, 1 + (R() - 0.5) * 0.5]));
+    p.setXYZ(i, p.getX(i) * j[0], p.getY(i) * j[1] * 0.6, p.getZ(i) * j[2]);
+  }
+  g.rotateY(R() * 6.28); g.translate(x, y + s * 0.3, z); g.computeVertexNormals(); planarUV(g, { x: 0, y: 0, z: 0 });
+  return g;
+}
+function rubblePile(S, R, cx, cy, cz, rad, n) {
+  for (let k = 0; k < n; k++) {
+    const s = 0.2 + Math.pow(R(), 1.6) * 0.6, x = cx + (R() + R() - 1) * rad, z = cz + (R() + R() - 1) * rad;
+    if (R() < 0.4) S.add('slab', rock(R, s, x, cy, z));
+    else S.box('slab', x, cy - s * 0.12, z, s * (1.2 + R()), s * (0.4 + R() * 0.4), s * (0.8 + R() * 0.6), R() * 3);
+  }
+}
+// a steep industrial flight (waist slab + treads) from (a, y0) to (b, y1) in a band wd wide
+function stairFlight(S, [ax, az], y0, [bx, bz], y1, wd) {
+  const dx = bx - ax, dz = bz - az, run = Math.hypot(dx, dz), rise = y1 - y0, L = Math.hypot(run, rise);
+  S.beam('slab', alongM(new THREE.Vector3(dx / L, rise / L, dz / L), ax, y0, az), 0, L, -0.1, 0, 0.14, wd);
+  const n = Math.max(3, Math.round(rise / 0.6)), tl = (run / n) * 1.25;
+  for (let i = 1; i < n; i++) { const t = i / n; S.box('slab', ax + dx * t, y0 + rise * t - 0.04, az + dz * t, dx ? tl : wd, 0.06, dz ? tl : wd); }
+}
+
+function buildSite(seed = 7) {
   const S = new Site();
-  // ---- silo battery: 2 rows x 4 silos (r 4.2, 1.0 m gaps), on a column table, head house on top
-  const siloX = [-48, -38.6, -29.2, -19.8], siloZ = [-22, -6], sr = 4.2, tableTop = 5.2, siloTop = 32;
+  const rSpot = subRng(seed, 'spots'), rBay = subRng(seed, 'hall-bays'), rFac = subRng(seed, 'hall-facade'), rRub = subRng(seed, 'rubble'),
+    rBlk = subRng(seed, 'blocks'), rDet = subRng(seed, 'detail');
+  // ---- silo battery: 2 rows x 4 silos on a column table, stair tower between the rows, head house over the south row
+  const { r: sr, table: tableTop, top: siloTop } = SILO;
+  const inTower = (x, z, m) => Math.abs(x - TOWER.x) < TOWER.w / 2 + m && Math.abs(z - TOWER.z) < TOWER.w / 2 + m;
   S.footprints.push({ x0: -54.5, x1: -13.5, z0: -28.5, z1: 0.5 });
-  S.box('slab', -34, 4.6, -14, 41, 0.6, 29);                          // table slab
+  slabWithHoles(S, 'slab', -54.5, -13.5, -28.5, 0.5, 4.6, 0.6, [SHAFT]);        // table slab, open over the stair shaft
   for (let x = -53; x <= -15.1; x += 4.75) for (let z = -27; z <= -0.9; z += 5.2) {
+    if (inTower(x, z, 0.55)) continue;                                          // these stood inside the tower's walls
     S.box('wall', x, 0, z, 0.75, 4.6, 0.75);
-    if (R() < 0.12) S.spot(x, 1.6, z + 0.38, 0, 1, 0.75, 1.4);
+    if (rSpot() < 0.12) S.spot(x, 1.6, z + 0.38, 0, 1, 0.75, 1.4);
   }
-  for (const x of siloX) for (const z of siloZ) {
-    if (Math.abs(x + 33.9) < 6 && Math.abs(z + 14) < 1) continue;
+  // downstand beams under the table on the column lines (split around the stair shaft)
+  for (let z = -27; z <= -0.9; z += 5.2) lowBox(S, 'wall', -34, 4.1, z, 40.6, 0.5, 0.4);
+  for (let x = -53; x <= -15.1; x += 4.75) {
+    if (Math.abs(x - TOWER.x) < TOWER.w / 2) { lowBox(S, 'wall', x, 4.1, -22.35, 0.4, 0.5, 11.9); lowBox(S, 'wall', x, 4.1, -5.65, 0.4, 0.5, 11.9); }
+    else lowBox(S, 'wall', x, 4.1, -14, 0.4, 0.5, 28.6);
+  }
+  for (const x of SILO.x) for (const z of SILO.z) {
     const g = cylGeo(sr, sr, siloTop - tableTop, 44, true); g.translate(x, (siloTop + tableTop) / 2, z); S.add('silo', g);
+    if (z > HEAD.z0) continue;                                                  // capped by the head-house floor
     const cap = new THREE.CircleGeometry(sr, 44); cap.rotateX(-Math.PI / 2); planarUV(cap, { x, y: 0, z }); cap.translate(x, siloTop, z); S.add('slab', cap);
+    S.box('slab', x + (rDet() - 0.5) * 3, siloTop, z - 1.2 - rDet() * 1.5, 1.1, 0.35, 1.1, rDet() * 1.5);   // filling hatch
   }
-  // stair tower between the rows: open shaft, ring landings, big openings each storey, open top
+  // stair tower between the rows: open shaft top to bottom, ring landings, steep flights, an opening each storey
   {
-    const tx = -33.9, tz = -14, w = 4.4, top = 37.6, T = 0.3;
+    const { x: tx, z: tz, w, T } = TOWER, top = siloTop + 0.4 + 5.4;              // up to the head-house roof
     S.footprints.push({ x0: tx - 2.5, x1: tx + 2.5, z0: tz - 2.5, z1: tz + 2.5 });
     const holes = []; for (let y = 1.2; y < top - 2; y += 4) holes.push({ x0: 1.0, x1: 3.4, y0: y, y1: y + 2.6 });
-    wallWithHoles(S, 'wall', tx - w / 2, 0, tz - w / 2, w, top, T, holes.filter((_, i) => i % 2 === 0));
-    wallWithHoles(S, 'wall', tx - w / 2, 0, tz + w / 2, w, top, T, holes);
-    wallWithHoles(S, 'wall', tx - w / 2, 0, tz - w / 2, w, top, T, holes.filter((_, i) => i % 2 === 1), -Math.PI / 2);
-    wallWithHoles(S, 'wall', tx + w / 2, 0, tz - w / 2, w, top, T, holes, -Math.PI / 2);
-    const inner = w - 2 * T, ring = 0.65;
+    wallWithHoles(S, 'wall', tx - w / 2, 0, tz - w / 2, w, top, T, holes.filter((_, i) => i % 2 === 0));                          // north
+    wallWithHoles(S, 'wall', tx - w / 2, 0, tz + w / 2, w, top, T, holes);                                                         // south
+    wallWithHoles(S, 'wall', tx - w / 2, 0, tz - w / 2, w, top, T, holes.filter((_, i) => i % 2 === 1 || i === 0), -Math.PI / 2);  // west
+    wallWithHoles(S, 'wall', tx + w / 2, 0, tz - w / 2, w, top, T, holes, -Math.PI / 2);                                           // east
+    const inner = w - 2 * T, ring = 0.65, e = inner / 2 - ring / 2, run = inner / 2 - ring;
     for (let y = 4; y < top - 1; y += 4) {
-      S.box('slab', tx, y, tz - inner / 2 + ring / 2, inner, 0.22, ring);
-      S.box('slab', tx, y, tz + inner / 2 - ring / 2, inner, 0.22, ring);
-      S.box('slab', tx - inner / 2 + ring / 2, y, tz, ring, 0.22, inner - 2 * ring);
-      S.box('slab', tx + inner / 2 - ring / 2, y, tz, ring, 0.22, inner - 2 * ring);
+      S.box('slab', tx, y, tz - e, inner, 0.22, ring); S.box('slab', tx, y, tz + e, inner, 0.22, ring);
+      S.box('slab', tx - e, y, tz, ring, 0.22, inner - 2 * ring); S.box('slab', tx + e, y, tz, ring, 0.22, inner - 2 * ring);
     }
-    S.spot(tx, 1.8, tz + w / 2 + 0.2, 0, 1, 3.6, 1.6);
+    // flights in the side bands only: the 2.5 m well and the north-south openings stay clear. Ground flight on the
+    // south band keeps the east and west ground doors open.
+    for (let k = 0; k < 9; k++) {
+      const y0 = k ? 4 * k + 0.22 : 0, y1 = 4 * k + 4;
+      if (k === 0) stairFlight(S, [tx + run, tz + e], y0, [tx - run, tz + e], y1, ring - 0.04);
+      else if (k % 2) stairFlight(S, [tx - e, tz + run], y0, [tx - e, tz - run], y1, ring - 0.04);
+      else stairFlight(S, [tx + e, tz - run], y0, [tx + e, tz + run], y1, ring - 0.04);
+    }
+    S.spot(tx - w / 2 - 0.2, 10.5, tz, -1, 0, 3.6, 1.6);
   }
-  // head house: floor over the silos, ribbon windows both sides, roof
+  // head house: floor over the south row (open over the shaft), ribbon windows, gallery door in the east end, roof
   {
-    const x0 = -54, x1 = -14, z0 = -28, z1 = 0, y = siloTop, H = 5.4, L = x1 - x0, D = z1 - z0;
-    S.box('slab', -34, y, -14, L, 0.4, D);
-    // floor opening over the stair shaft
-    const band = (zz, rot) => {
-      const holes = []; for (let x = 2; x < L - 3; x += 4) holes.push({ x0: x, x1: x + 3.0, y0: 1.0, y1: 3.6 });
-      wallWithHoles(S, 'wall', x0, y + 0.4, zz, L, H, 0.3, holes, rot);
-    };
-    band(z0, 0); band(z1, 0);
+    const { x0, x1, z0, z1 } = HEAD, y = siloTop, H = 5.4, L = x1 - x0, D = z1 - z0;
+    slabWithHoles(S, 'slab', x0, x1, z0, z1, y, 0.4, [SHAFT]);
+    const band = (zz) => { const holes = []; for (let x = 2; x < L - 3; x += 4) holes.push({ x0: x, x1: x + 3.0, y0: 1.0, y1: 3.6 }); wallWithHoles(S, 'wall', x0, y + 0.4, zz, L, H, 0.3, holes); };
+    band(z0); band(z1);
     const endHoles = []; for (let z = 2; z < D - 3; z += 4.5) endHoles.push({ x0: z, x1: z + 3.2, y0: 1.0, y1: 3.6 });
     wallWithHoles(S, 'wall', x0, y + 0.4, z0, D, H, 0.3, endHoles, -Math.PI / 2);
-    wallWithHoles(S, 'wall', x1, y + 0.4, z0, D, H, 0.3, endHoles, -Math.PI / 2);
-    // roof with the stair shaft left open
-    S.box('slab', -44, y + 5.8, -14, 20, 0.35, D); S.box('slab', -21.5, y + 5.8, -14, 15, 0.35, D);
-    S.box('slab', -33.9, y + 5.8, -23, 4.2, 0.35, 10); S.box('slab', -33.9, y + 5.8, -5, 4.2, 0.35, 10);
+    const gz = GAL.A[2] - z0;
+    wallWithHoles(S, 'wall', x1, y + 0.4, z0, D, H, 0.3, [{ x0: 2, x1: 5.2, y0: 1.0, y1: 3.6 }, { x0: gz - 1.7, x1: gz + 1.7, y0: 0.7, y1: 3.9 }, { x0: D - 3.4, x1: D - 1.2, y0: 1.0, y1: 3.6 }], -Math.PI / 2);
+    const ry = y + 5.8, slotX = -29.0;                                          // roof: open over the shaft, plus a slot across
+    slabWithHoles(S, 'slab', x0, x1, z0, z1, ry, 0.35, [SHAFT, { x0: SHAFT.x1, x1: slotX, z0, z1 }]);
+    for (const zz of [z0 + 0.125, z1 - 0.125]) { brokenRun(S, rDet, 'wall', x0, zz, SHAFT.x1, zz, ry + 0.35, 0.7, 0.25); brokenRun(S, rDet, 'wall', slotX, zz, x1, zz, ry + 0.35, 0.7, 0.25); }
+    for (const xx of [x0 + 0.125, x1 - 0.125]) brokenRun(S, rDet, 'wall', xx, z0 + 0.25, xx, z1 - 0.25, ry + 0.35, 0.7, 0.25);
   }
 
-  // ---- chimney: hollow, tapered, brick; door at the base facing south
+  // ---- chimney: hollow, tapered, brick; the door faces the rack and the hall window
   {
-    const cx = 44, cz = -40, h = 50, rb = 3.4, rt = 2.0, th = 0.35;
-    const g = tubeGeo(rb, rt, h, th, 40, 25, (a, y) => y < 3.4 && (Math.abs(a) < 0.42 || Math.abs(a - Math.PI * 2) < 0.42));
+    const { x: cx, z: cz, h, rb, rt, th } = CHIM, aD = Math.atan2(DOOR[0], DOOR[1]);
+    const off = (a) => Math.abs(Math.atan2(Math.sin(a - aD), Math.cos(a - aD)));
+    const g = tubeGeo(rb, rt, h, th, 40, 25, (a, y) => y < 3.4 && off(a) < 0.42);
     g.translate(cx, 0, cz); S.add('brick', g);
     S.box('slab', cx, 0, cz, 8.5, 0.5, 8.5);
     S.footprints.push({ x0: cx - 4.5, x1: cx + 4.5, z0: cz - 4.5, z1: cz + 4.5 });
-    S.spot(cx + 2.4, 1.6, cz + 2.6, 0.67, 0.74, 2.0, 1.3);
+    const sa = aD + 1.05; S.spot(cx + Math.sin(sa) * 3.45, 1.6, cz + Math.cos(sa) * 3.45, Math.sin(sa), Math.cos(sa), 2.0, 1.3);
   }
 
   // ---- factory hall: 64 x 22 m, three storeys of 5 m, column grid, holes, ribbon windows, roof slots
   {
-    const x0 = 6, x1 = 70, z0 = 14, z1 = 36, fh = 5, levels = 3, cols = 11, rows = 5;
+    const { x0, x1, z0, z1, fh, levels, cols, rows } = HALL;
     const dx = (x1 - x0) / (cols - 1), dz = (z1 - z0) / (rows - 1);
     S.footprints.push({ x0: x0 - 1, x1: x1 + 1, z0: z0 - 1, z1: z1 + 1 });
     S.box('slab', (x0 + x1) / 2, 0, (z0 + z1) / 2, x1 - x0 + 1.2, 0.18, z1 - z0 + 1.2);
+    const holes = [], kindOf = {};
     for (let L = 0; L < levels; L++) {
-      const yb = L * fh, slabY = (L + 1) * fh - 0.35;
-      for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) S.box('wall', x0 + i * dx, yb + (L ? 0 : 0.18), z0 + j * dz, 0.6, fh - 0.35 - (L ? 0 : 0.18), 0.6);
-      // slab bays: some missing (holes), roof gets narrow slots instead
+      const yb = L * fh, slabY = (L + 1) * fh - 0.35, cy0 = L ? yb - 0.15 : 0.18;
+      for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+        if (L === 0 && j === 2 && (i === 0 || i === cols - 1)) continue;           // no column in the gable doors
+        S.box('wall', x0 + i * dx, cy0, z0 + j * dz, 0.6, slabY - cy0, 0.6);
+      }
+      // slab bays: some missing (holes), the roof gets narrow slots instead; FORCE keeps the lines' bays
       for (let i = 0; i < cols - 1; i++) for (let j = 0; j < rows - 1; j++) {
-        const cxb = x0 + (i + 0.5) * dx, czb = z0 + (j + 0.5) * dz;
-        const roof = L === levels - 1;
-        const r = R();
-        if (!roof && r < 0.13) continue;                                  // a hole to drop through
-        if (roof && r < 0.22) {                                            // slot ("the small gap")
-          const slot = 1.25;
-          S.box('slab', cxb - (dx + 0.02) / 4 - slot / 4, slabY, czb, (dx - slot) / 2 + 0.01, 0.35, dz + 0.02);
-          S.box('slab', cxb + (dx + 0.02) / 4 + slot / 4, slabY, czb, (dx - slot) / 2 + 0.01, 0.35, dz + 0.02);
+        const cxb = x0 + (i + 0.5) * dx, czb = z0 + (j + 0.5) * dz, roof = L === levels - 1, r = rBay(), f = FORCE[`${L}:${i}:${j}`];
+        const kind = f || (roof ? (r < 0.22 ? 'slot' : 'solid') : r < 0.13 ? 'hole' : 'solid');
+        kindOf[`${L}:${i}:${j}`] = kind;
+        if (kind === 'hole') { holes.push({ L, i, j, x0: cxb - dx / 2, x1: cxb + dx / 2, z0: czb - dz / 2, z1: czb + dz / 2, y: slabY, line: !!f }); continue; }
+        if (kind === 'slot') {
+          const slot = f ? 2.0 : 1.25, hw = (dx - slot) / 2;
+          S.box('slab', cxb - dx / 2 + hw / 2, slabY, czb, hw, 0.35, dz); S.box('slab', cxb + dx / 2 - hw / 2, slabY, czb, hw, 0.35, dz);
+          if (!f) for (const sgn of [-1, 1]) rebar(S, rDet, cxb + sgn * slot / 2, czb - dz / 2, cxb + sgn * slot / 2, czb + dz / 2, slabY + 0.17, -sgn, 0, 1, 0.35);
           continue;
         }
-        S.box('slab', cxb, slabY, czb, dx + 0.02, 0.35, dz + 0.02);
+        S.box('slab', cxb, slabY, czb, dx, 0.35, dz);
       }
-      // long facades: spandrel + lintel bands, open ribbon windows; some bays with rusty mullion grids
-      for (const [zz, nz] of [[z0, -1], [z1, 1]]) {
-        S.box('wall', (x0 + x1) / 2, yb + (L ? 0 : 0.18), zz, x1 - x0, 1.0, 0.25);
+      // downstand beams on the interior column lines
+      for (let i = 1; i < cols - 1; i++) lowBox(S, 'wall', x0 + i * dx, slabY - 0.55, (z0 + z1) / 2, 0.4, 0.55, z1 - z0 - 0.3);
+      for (let j = 1; j < rows - 1; j++) lowBox(S, 'wall', (x0 + x1) / 2, slabY - 0.55, z0 + j * dz, x1 - x0 - 0.3, 0.55, 0.4);
+      // long facades: spandrel (per bay, some sills broken) + lintel band, open ribbon windows; some bays bricked or with mullions
+      for (const [zz, nz, side] of [[z0, -1, 'z0'], [z1, 1, 'z1']]) {
+        const ys = yb + (L ? 0 : 0.18);
+        for (let i = 0; i < cols - 1; i++) {
+          const bx = x0 + (i + 0.5) * dx, a = rDet(), b = rDet(), c = rDet();
+          if (a < 0.16) {                                                          // a chunk knocked out of the sill
+            const nw = 0.8 + b * 1.4, nx = bx + (c - 0.5) * (dx - nw - 1.2), lw = nx - nw / 2 - (bx - dx / 2), rw = bx + dx / 2 - (nx + nw / 2);
+            S.box('wall', bx - dx / 2 + lw / 2, ys, zz, lw, 1.0, 0.25); S.box('wall', bx + dx / 2 - rw / 2, ys, zz, rw, 1.0, 0.25);
+            S.box('wall', nx, ys, zz, nw, 0.3 + b * 0.3, 0.25);
+          } else S.box('wall', bx, ys, zz, dx, a < 0.4 ? 1.0 - (a - 0.16) * 1.1 : 1.0, 0.25);
+        }
         S.box('wall', (x0 + x1) / 2, yb + 3.9, zz, x1 - x0, fh - 3.9 - 0.35, 0.25);
         for (let i = 0; i < cols - 1; i++) {
-          const bx = x0 + (i + 0.5) * dx;
-          if (R() < 0.12) S.box('wall', bx, yb + 1.0, zz, dx - 0.6, 2.9, 0.22);                // bricked-up bay
-          else if (R() < 0.42) {
+          const bx = x0 + (i + 0.5) * dx, r1 = rFac(), r2 = rFac(), r3 = rFac(), open = FORCE[`f${L}:${side}:${i}`] === 'open';
+          if (!open && r1 < 0.12) S.box('wall', bx, yb + 0.5, zz, dx - 0.6, 3.4, 0.22);              // bricked-up bay
+          else if (!open && r2 < 0.42) {
             for (let k = 1; k < 4; k++) S.box('rust', bx - dx / 2 + k * (dx / 4), yb + 1.0, zz, 0.09, 2.9, 0.09);
             S.box('rust', bx, yb + 2.45, zz, dx - 0.6, 0.08, 0.09);
           }
-          if (L === 0 && R() < 0.45) S.spot(bx, 0.55, zz + nz * 0.15, 0, nz, dx * 0.8, 0.85);
+          if (L === 0 && r3 < 0.45) S.spot(bx, 0.55, zz + nz * 0.15, 0, nz, dx * 0.8, 0.85);
         }
       }
       // gable ends: wall with windows, ground floor gets a big door
       for (const [xx, nx] of [[x0, -1], [x1, 1]]) {
-        const holes = [];
-        for (let j = 0; j < rows - 1; j++) holes.push({ x0: j * dz + 1.0, x1: (j + 1) * dz - 1.0, y0: 1.0, y1: 3.8 });
-        if (L === 0) holes.push({ x0: dz * 1.4, x1: dz * 2.6, y0: 0, y1: 4.4 });
-        wallWithHoles(S, 'wall', xx, yb + (L ? 0 : 0.18), z0, z1 - z0, fh - 0.35 - (L ? 0 : 0.18), 0.3, holes, -Math.PI / 2);
-        if (L === 0) S.spot(xx + nx * 0.2, 1.9, z0 + dz * 0.6, nx, 0, 3.5, 1.5);
+        const gh = [];
+        for (let j = 0; j < rows - 1; j++) gh.push({ x0: j * dz + 1.0, x1: (j + 1) * dz - 1.0, y0: 1.0, y1: 3.8 });
+        if (L === 0) gh.push({ x0: dz * 1.4, x1: dz * 2.6, y0: 0, y1: 4.4 });
+        wallWithHoles(S, 'wall', xx, yb + (L ? 0 : 0.18), z0, z1 - z0, fh - 0.35 - (L ? 0 : 0.18), 0.3, gh, -Math.PI / 2);
+        if (L === 0) S.spot(xx + nx * 0.2, 0.68, z0 + dz * 0.6, nx, 0, 3.5, 0.9);
       }
-      // interior partitions with doorways
+      // interior partitions with doorways (between the column rows, not on them)
       if (L < 2) {
-        const px = x0 + dx * (3 + L * 4);
-        wallWithHoles(S, 'wall', px, yb + 0.18, z0 + 0.3, z1 - z0 - 0.6, fh - 0.55, 0.25, [{ x0: 4, x1: 6.5, y0: 0, y1: 3.2 }, { x0: 13, x1: 15.5, y0: 0, y1: 3.2 }], -Math.PI / 2);
-        S.spot(px + 0.2, 1.5, z0 + 8, 1, 0, 3.2, 1.4);
+        const px = x0 + dx * (3 + L * 4), py = L ? yb : yb + 0.18;
+        wallWithHoles(S, 'wall', px, py, z0 + 0.3, z1 - z0 - 0.6, slabY - py, 0.25, [{ x0: 6.0, x1: 8.5, y0: 0, y1: 3.2 }, { x0: 13, x1: 15.5, y0: 0, y1: 3.2 }], -Math.PI / 2);
+        S.spot(px + 0.2, 1.5, z0 + 11.05, 1, 0, 3.2, 1.4);
       }
     }
-    // parapet
-    S.box('wall', (x0 + x1) / 2, levels * fh, z0, x1 - x0, 0.9, 0.25); S.box('wall', (x0 + x1) / 2, levels * fh, z1, x1 - x0, 0.9, 0.25);
-    // rubble piles on the ground floor
-    for (let k = 0; k < 14; k++) { const s = 0.4 + R() * 0.9; S.box('slab', x0 + 3 + R() * (x1 - x0 - 6), 0.18, z0 + 2 + R() * (z1 - z0 - 4), s * 1.6, s * 0.6, s, R() * 3); }
+    // broken parapet all round
+    brokenRun(S, rDet, 'wall', x0, z0, x1, z0, levels * fh, 0.9, 0.25); brokenRun(S, rDet, 'wall', x0, z1, x1, z1, levels * fh, 0.9, 0.25);
+    brokenRun(S, rDet, 'wall', x0, z0 + 0.125, x0, z1 - 0.125, levels * fh, 0.7, 0.25); brokenRun(S, rDet, 'wall', x1, z0 + 0.125, x1, z1 - 0.125, levels * fh, 0.7, 0.25);
+    // the holes: rebar along the broken edges, a hanging fragment now and then, rubble on the first floor below
+    const piled = new Set();
+    for (const h of holes) {
+      const y = h.y + 0.17, len = h.line ? 0.45 : 0.7, n = h.line ? 1 : 2;
+      rebar(S, rDet, h.x0, h.z0, h.x1, h.z0, y, 0, 1, n, len); rebar(S, rDet, h.x0, h.z1, h.x1, h.z1, y, 0, -1, n, len);
+      rebar(S, rDet, h.x0, h.z0, h.x0, h.z1, y, 1, 0, n, len); rebar(S, rDet, h.x1, h.z0, h.x1, h.z1, y, -1, 0, n, len);
+      if (!h.line && rDet() < 0.6) { const e = Math.floor(rDet() * 4), E = [[h.x0, h.z0, h.x1, h.z0, 0, 1], [h.x0, h.z1, h.x1, h.z1, 0, -1], [h.x0, h.z0, h.x0, h.z1, 1, 0], [h.x1, h.z0, h.x1, h.z1, -1, 0]][e]; hangingChunk(S, rDet, ...E.slice(0, 4), y, E[4], E[5]); }
+      let L = h.L - 1; while (L >= 0 && kindOf[`${L}:${h.i}:${h.j}`] === 'hole') L--;
+      const key = `${L}:${h.i}:${h.j}`; if (piled.has(key)) continue; piled.add(key);
+      rubblePile(S, rRub, (h.x0 + h.x1) / 2, L < 0 ? 0.18 : (L + 1) * fh, (h.z0 + h.z1) / 2, 1.5, L < 0 ? 6 : 4);
+    }
+    // loose slab chunks on the ground floor
+    for (let k = 0; k < 10; k++) { const s = 0.4 + rRub() * 0.9; S.box('slab', x0 + 3 + rRub() * (x1 - x0 - 6), 0.18, z0 + 2 + rRub() * (z1 - z0 - 4), s * 1.6, s * 0.6, s, rRub() * 3); }
   }
 
-  // ---- conveyor gallery: sloped hollow tube from the head house east windows down to the hall roof
+  // ---- conveyor gallery: sloped hollow tube from the head house east end down to the hall roof
   {
-    const A = new THREE.Vector3(-14.3, 33.4, -6.5), B = new THREE.Vector3(12.5, 15.35, 24.5);
+    const A = new THREE.Vector3(...GAL.A), B = new THREE.Vector3(...GAL.B);
     const dir = B.clone().sub(A); const L = dir.length(); dir.normalize();
-    const zA = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+    const zA = new THREE.Vector3().crossVectors(dir, Y_UP).normalize();
     const yA = new THREE.Vector3().crossVectors(zA, dir).normalize();
     const M = new THREE.Matrix4().makeBasis(dir, yA, zA).setPosition(A);
-    const W = 3.0, H = 2.6;
+    const { W, H } = GAL;
     S.beam('slab', M, 0, L, 0.1, 0, 0.22, W);              // floor
     S.beam('wall', M, 0, L, H, 0, 0.22, W);                // roof
     for (let x = 0; x < L; x += 4) {                       // side walls in panels with window gaps
@@ -296,8 +444,7 @@ function buildSite(R) {
       S.beam('wall', M, x, seg, H / 2 + 0.05, -W / 2, H, 0.18);
       S.beam('wall', M, x, seg, H / 2 + 0.05, W / 2, H, 0.18);
     }
-    // support towers
-    for (const t of [0.35, 0.68]) {
+    for (const t of [0.35, 0.68]) {                        // support towers
       const P = A.clone().lerp(B, t);
       for (const [ox, oz] of [[-1.4, -1.4], [1.4, -1.4], [-1.4, 1.4], [1.4, 1.4]]) S.box('rust', P.x + ox, 0, P.z + oz, 0.32, P.y - 0.2, 0.32);
       for (let y = 4; y < P.y - 1; y += 5) { S.box('rust', P.x, y, P.z - 1.4, 3.1, 0.25, 0.25); S.box('rust', P.x, y, P.z + 1.4, 3.1, 0.25, 0.25); S.box('rust', P.x - 1.4, y, P.z, 0.25, 0.25, 3.1); S.box('rust', P.x + 1.4, y, P.z, 0.25, 0.25, 3.1); }
@@ -305,7 +452,7 @@ function buildSite(R) {
     }
   }
 
-  // ---- workshop ruin: 2 storeys, windows, doorways, half the roof gone
+  // ---- workshop ruin: 2 storeys, windows, doorways in line on both long walls, half the roof gone
   {
     const x0 = -64, z0 = 40, Lx = 22, Lz = 13, fh = 4.2, T = 0.35;
     S.footprints.push({ x0: x0 - 1, x1: x0 + Lx + 1, z0: z0 - 1, z1: z0 + Lz + 1 });
@@ -323,19 +470,21 @@ function buildSite(R) {
     S.box('slab', x0 + 6, fh - 0.3, z0 + Lz / 2, 12, 0.3, Lz);                 // first floor, partial
     S.box('slab', x0 + 18.5, fh - 0.3, z0 + Lz / 2, 7, 0.3, Lz * 0.45);
     S.box('slab', x0 + 5.5, 2 * fh, z0 + Lz / 2, 11, 0.3, Lz + 0.4);         // half a roof
+    rubblePile(S, rRub, x0 + 17.5, 0, z0 + 3.0, 1.5, 6);                      // under the missing roof, clear of the doors
+    brokenRun(S, rDet, 'wall', x0 + 0.2, z0 + Lz, x0 + Lx - 0.2, z0 + Lz, 2 * fh, 0.5, T);
   }
 
-  // ---- pipe rack between hall and chimney
+  // ---- pipe rack: from the chimney door to the hall's entry window, on the same straight line
   {
-    const A = new THREE.Vector3(22, 0, 11), B = new THREE.Vector3(41, 0, -33);
-    const n = 6; const yaw = Math.atan2(-(B.z - A.z), B.x - A.x);
+    const A = new THREE.Vector3(RACK.H[0], 0, RACK.H[1]), B = new THREE.Vector3(RACK.K[0], 0, RACK.K[1]);
+    const dir = B.clone().sub(A); const L = dir.length(); dir.normalize();
+    const n = Math.max(3, Math.round(L / 6.5)), yaw = Math.atan2(-dir.z, dir.x);
     for (let k = 0; k <= n; k++) {
       const P = A.clone().lerp(B, k / n);
       S.box('rust', P.x - Math.sin(yaw) * 1.6, 0, P.z - Math.cos(yaw) * 1.6, 0.35, 7, 0.35);
       S.box('rust', P.x + Math.sin(yaw) * 1.6, 0, P.z + Math.cos(yaw) * 1.6, 0.35, 7, 0.35);
       S.box('rust', P.x, 7, P.z, 0.3, 0.3, 3.6, yaw);
     }
-    const dir = B.clone().sub(A); const L = dir.length(); dir.normalize();
     for (const [off, r, y] of [[-0.9, 0.38, 7.7], [0.1, 0.28, 7.6], [0.95, 0.45, 7.8]]) {
       const g = cylGeo(r, r, L, 16, false); g.rotateZ(Math.PI / 2); g.rotateY(yaw);
       g.translate((A.x + B.x) / 2 + Math.sin(yaw) * off, y, (A.z + B.z) / 2 + Math.cos(yaw) * off); S.add('rust', g);
@@ -354,20 +503,86 @@ function buildSite(R) {
     const g = cylGeo(5.5, 5.5, 8, 36, false); g.translate(-78, 4, -48); S.add('rust', g);
     S.footprints.push({ x0: -84, x1: -72, z0: -54, z1: -42 });
   }
-  // ---- scattered concrete blocks and fallen slabs
+  // ---- scattered concrete blocks and fallen slabs (off the buildings and the tracks)
   for (let k = 0; k < 40; k++) {
-    const x = -90 + R() * 180, z = -60 + R() * 140;
-    if (S.footprints.some((f) => x > f.x0 - 2 && x < f.x1 + 2 && z > f.z0 - 2 && z < f.z1 + 2)) continue;
-    const s = 0.6 + R() * 1.4; S.box('slab', x, terrainHeight(x, z) - 0.1, z, s * 1.8, s * 0.7, s, R() * 3);
+    const x = -90 + rBlk() * 180, z = -60 + rBlk() * 140, s = 0.6 + rBlk() * 1.4, rot = rBlk() * 3;
+    if (S.footprints.some((f) => x > f.x0 - 2 && x < f.x1 + 2 && z > f.z0 - 2 && z < f.z1 + 2) || distToPaths(x, z) < 3.5) continue;
+    S.box('slab', x, terrainHeight(x, z) - 0.1, z, s * 1.8, s * 0.7, s, rot);
   }
+  S.chimney = CHIM;
+  S.lines = buildLines();
+  // take retry point: hovering beside the chimney mouth, facing down the door/rack line, silo caps in frame on the left
+  const ty = Math.atan2(-DOOR[0], -DOOR[1]) + TAKE_YAW;
+  S.takeStart = { pos: [CHIM.x - DOOR[0] * 12, CHIM.h + 5, CHIM.z - DOOR[1] * 12], yaw: ty };
   return S;
+}
+const TAKE_YAW = 0.35;   // rad left of the door line, so the caps share the first frame
+
+// ---- named lines: invisible portals, each {name, caption (*accent* word), pts, c, n, w, h} (+ u: width axis, two: either way,
+// pre: gates that must have been crossed (same way) within `within` s). A segment of flight crossing the rectangle
+// along +n scores. Two entries with the same name are one line (both directions / both portals).
+function buildLines() {
+  const lines = [], g = (c, n, w, h, u) => ({ c, n, w, h, u }), neg = (G) => ({ ...G, n: G.n.map((v) => -v) });
+  const add = (name, caption, pts, main, extra = {}) => lines.push({ name, caption, pts, ...main, ...extra });
+  const [dx, dz] = DOOR, perp = [dz, 0, -dx];
+  // chimney: in at the mouth, out of the door
+  const mouth = g([CHIM.x, CHIM.h - 3, CHIM.z], [0, -1, 0], 2.4, 2.4, [1, 0, 0]);
+  const door = g([CHIM.x + dx * (CHIM.rb + 0.15), 2.1, CHIM.z + dz * (CHIM.rb + 0.15)], [dx, 0, dz], 3.0, 4.2, perp);
+  add('CHIMNEY DIVE', 'CHIMNEY *DIVE*!', 3000, door, { pre: [mouth], within: 16 });
+  // under the pipe rack, end to end
+  const rk = g([RACK.K[0] + dx * 0.3, 3.4, RACK.K[1] + dz * 0.3], [dx, 0, dz], 2.9, 6.6, perp);
+  const rh = g([RACK.H[0] - dx * 0.3, 3.4, RACK.H[1] - dz * 0.3], [dx, 0, dz], 2.9, 6.6, perp);
+  add('UNDER THE RACK', 'UNDER THE *RACK*!', 1500, rh, { pre: [rk], within: 7 });
+  add('UNDER THE RACK', 'UNDER THE *RACK*!', 1500, neg(rk), { pre: [neg(rh)], within: 7 });
+  // the hall stack: first-floor hole -> second-floor hole -> roof slot
+  const { x0, z0, fh } = HALL, hdx = (HALL.x1 - x0) / (HALL.cols - 1), hdz = (HALL.z1 - z0) / (HALL.rows - 1);
+  const sx = x0 + 1.5 * hdx, sz = z0 + 0.5 * hdz;
+  const l1 = g([sx, fh - 0.18, sz], [0, 1, 0], hdx - 0.6, hdz - 0.6, [1, 0, 0]), slot = g([sx, 3 * fh - 0.18, sz], [0, 1, 0], 2.0, hdz, [1, 0, 0]);
+  add('TRIPLE POP', 'TRIPLE *POP*!', 2500, slot, { pre: [l1], within: 5 });
+  add('TRIPLE DROP', 'TRIPLE *DROP*!', 2500, neg(l1), { pre: [neg(slot)], within: 5 });
+  // conveyor gallery, mouth to mouth
+  {
+    const A = new THREE.Vector3(...GAL.A), B = new THREE.Vector3(...GAL.B), dir = B.clone().sub(A), L = dir.length(); dir.normalize();
+    const zA = new THREE.Vector3().crossVectors(dir, Y_UP).normalize(), yA = new THREE.Vector3().crossVectors(zA, dir).normalize();
+    const at = (s, sg) => g(A.clone().addScaledVector(dir, s).addScaledVector(yA, 1.35).toArray(), dir.clone().multiplyScalar(sg).toArray(), 2.8, 2.2, zA.toArray());
+    add('GALLERY CLIMB', 'UP THE *GALLERY*!', 2000, at(1.5, -1), { pre: [at(L - 1.5, -1)], within: 9 });
+    add('GALLERY DROP', 'DOWN THE *GALLERY*!', 1500, at(L - 1.5, 1), { pre: [at(1.5, 1)], within: 9 });
+  }
+  // stair shaft: head-house floor -> under the table
+  const sw = SHAFT.x1 - SHAFT.x0;
+  add('STAIRWELL DIVE', 'STAIRWELL *DIVE*!', 3000, g([TOWER.x, 4.9, TOWER.z], [0, -1, 0], sw, sw, [1, 0, 0]), { pre: [g([TOWER.x, SILO.top + 0.2, TOWER.z], [0, -1, 0], sw, sw, [1, 0, 0])], within: 9 });
+  // under the silo table, edge to edge (or out of the tower's ground doors)
+  const tE = g([-13.6, 2.35, -14], [1, 0, 0], 29, 4.3, [0, 0, 1]), tW = g([-54.4, 2.35, -14], [1, 0, 0], 29, 4.3, [0, 0, 1]);
+  const twE = g([TOWER.x + TOWER.w / 2 + 0.2, 2.5, TOWER.z], [1, 0, 0], 2.4, 2.6, [0, 0, 1]), twW = g([TOWER.x - TOWER.w / 2 - 0.2, 2.5, TOWER.z], [-1, 0, 0], 2.4, 2.6, [0, 0, 1]);
+  add('UNDER THE TABLE', 'UNDER THE *TABLE*!', 1500, tE, { pre: [tW, twE], within: 7 });
+  add('UNDER THE TABLE', 'UNDER THE *TABLE*!', 1500, neg(tW), { pre: [neg(tE), twW], within: 7 });
+  // the 1.6 m gap between silos 2 and 3, in either row; both rows in one go threads the tower between them
+  const gx = (SILO.x[1] + SILO.x[2]) / 2, gw = SILO.x[2] - SILO.x[1] - 2 * SILO.r;
+  const gap = (z) => g([gx, (SILO.table + SILO.top) / 2, z], [0, 0, 1], gw, SILO.top - SILO.table, [1, 0, 0]);
+  add('THE SMALL GAP', 'THE SMALL *GAP*.', 2500, gap(SILO.z[0]), { two: true });
+  add('THE SMALL GAP', 'THE SMALL *GAP*.', 2500, gap(SILO.z[1]), { two: true });
+  add('THREAD THE NEEDLE', 'THREAD THE *NEEDLE*!', 3000, gap(SILO.z[1]), { pre: [gap(SILO.z[0])], within: 4 });
+  add('THREAD THE NEEDLE', 'THREAD THE *NEEDLE*!', 3000, neg(gap(SILO.z[0])), { pre: [neg(gap(SILO.z[1]))], within: 4 });
+  // the hall's ground floor, gable door to gable door
+  const gd = (x) => g([x, 2.3, z0 + 2 * hdz], [1, 0, 0], hdz * 1.2, 4.2, [0, 0, 1]);
+  add('HALL RUN', 'HALL *RUN*!', 2000, gd(HALL.x1), { pre: [gd(x0)], within: 12 });
+  add('HALL RUN', 'HALL *RUN*!', 2000, neg(gd(x0)), { pre: [neg(gd(HALL.x1))], within: 12 });
+  // across the hall through the two open bays at the end of the track from the spawn
+  const win = (z) => g([x0 + 3.5 * hdx, 2.55, z], [0, 0, -1], hdx - 0.6, 2.7, [1, 0, 0]);
+  add('STRAIGHT THROUGH', 'STRAIGHT *THROUGH*!', 1000, win(z0), { pre: [win(HALL.z1)], within: 4 });
+  add('STRAIGHT THROUGH', 'STRAIGHT *THROUGH*!', 1000, neg(win(HALL.z1)), { pre: [neg(win(z0))], within: 4 });
+  // the workshop's two doors are in line
+  const wd = (z) => g([-53.4, 1.5, z], [0, 0, 1], 2.4, 3.0, [1, 0, 0]);
+  add('THROUGH THE WORKSHOP', 'IN AND *OUT*!', 1500, wd(53), { pre: [wd(40)], within: 4 });
+  add('THROUGH THE WORKSHOP', 'IN AND *OUT*!', 1500, neg(wd(40)), { pre: [neg(wd(53))], within: 4 });
+  return lines;
 }
 
 const PATHS = [
   [[0, 160], [0, 95], [6, 60], [18, 42], [30, 38]],
   [[6, 60], [-14, 30], [-30, 6], [-34, 2]],
   [[-14, 30], [-40, 40], [-52, 54]],
-  [[18, 42], [30, 6], [40, -24], [44, -34]],
+  [[6, 60], [-1, 38], [-1, 12], RACK.H, RACK.K],                // past the gallery tower, along the rack to the chimney door
   [[-30, 6], [-60, 0], [-80, -8], [-84, -30], [-78, -40]],
 ];
 function distToPaths(x, z) {
@@ -592,15 +807,16 @@ async function loadSky(id, renderer, onProgress) {
 
 
 // pure geometry + collision (no DOM): shared by the game and the headless physics tests
-export function buildGeometry(R = rng(7)) {
-  const site = buildSite(R);
+// R drives the decorative extras (trees, foliage, textures); the site layout has its own seeded streams (seed)
+export function buildGeometry(R = rng(7), seed = 7) {
+  const site = buildSite(seed);
 
   // terrain: detailed yard + coarse far field
   const tSize = 320, tSeg = 128;
   const terr = new THREE.PlaneGeometry(tSize, tSize, tSeg, tSeg); terr.rotateX(-Math.PI / 2); terr.translate(-5, 0, 10);
   { const p = terr.attributes.position, uv = terr.attributes.uv; for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i); p.setY(i, terrainHeight(x, z)); uv.setXY(i, x, z); } terr.computeVertexNormals(); }
   const far = new THREE.PlaneGeometry(6000, 6000, 60, 60); far.rotateX(-Math.PI / 2);
-  { const p = far.attributes.position, uv = far.attributes.uv; for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i); const d = Math.hypot(x + 5, z - 10); p.setY(i, d < 150 ? -0.6 : terrainHeight(x, z) - 0.4 + Math.min(1, (d - 150) / 400) * (Math.sin(x * 0.004) * Math.cos(z * 0.005) * 9 + Math.sin(x * 0.011 + z * 0.007) * 3)); uv.setXY(i, x, z); } far.computeVertexNormals(); }
+  { const p = far.attributes.position, uv = far.attributes.uv; for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i); const d = Math.hypot(x + 5, z - 10); p.setY(i, d < 150 ? -1.4 : terrainHeight(x, z) - 0.4 + Math.min(1, (d - 150) / 400) * (Math.sin(x * 0.004) * Math.cos(z * 0.005) * 9 + Math.sin(x * 0.011 + z * 0.007) * 3)); uv.setXY(i, x, z); } far.computeVertexNormals(); }
   // dirt tracks as soft-edged ribbons on the ground
   const pathPos = [], pathUV = [], pathCol = [], pathIdx = [];
   for (const pl of PATHS) {
@@ -639,12 +855,25 @@ export function buildGeometry(R = rng(7)) {
     merged[mat] = mergeGeometries(list.map((e) => { const g = e.g; for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k); return g; }), false);
     list.forEach((e) => e.collide && solids.push(e.g));
   }
-  const colGeo = mergeGeometries([...solids.map((g) => { const c = new THREE.BufferGeometry(); c.setAttribute('position', g.attributes.position); c.setIndex(g.index); return c; }),
-    (() => { const c = new THREE.BufferGeometry(); c.setAttribute('position', terr.attributes.position); c.setIndex(terr.index); return c; })()], false);
+  const posOnly = (g) => { const c = new THREE.BufferGeometry(); c.setAttribute('position', g.attributes.position); c.setIndex(g.index); return c; };
+  const solidGeo = mergeGeometries(solids.map(posOnly), false);
+  // collision = everything you can see: structures, the yard terrain and the far field (both terrain meshes are
+  // drawn, so the visible ground is the higher of the two; colliding with both matches it)
+  // (far triangles lying wholly over the yard tile sit under it, out of sight and reach: leaving them out keeps their
+  // 100 m bounding boxes off every query in the yard, which costs the light bake ~40 % in ray time)
+  const farCol = (() => {
+    const p = far.attributes.position, src = far.index.array, keep = [];
+    const inTile = (i) => { const x = p.getX(i), z = p.getZ(i); return x >= -165 && x <= 155 && z >= -150 && z <= 170; };
+    for (let k = 0; k < src.length; k += 3) if (!(inTile(src[k]) && inTile(src[k + 1]) && inTile(src[k + 2]))) keep.push(src[k], src[k + 1], src[k + 2]);
+    const c = new THREE.BufferGeometry(); c.setAttribute('position', p); c.setIndex(keep); return c;
+  })();
+  const colGeo = mergeGeometries([solidGeo, posOnly(terr), farCol], false);
   colGeo.computeBoundingBox();
   const bvh = new MeshBVH(colGeo);
+  // proximity / skim scoring: built structures and trunks only, so skimming the grass scores nothing
+  const skimBvh = new MeshBVH(solidGeo);
 
-  return { site, terr, far, pathG, treeSpots, merged, colGeo, bvh };
+  return { site, terr, far, pathG, treeSpots, merged, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart };
 }
 
 // ---------------------------------------------------------------- build everything
@@ -668,7 +897,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const skyP = loadSky(SKIES[sky]?.id || SKIES.sunny.id, renderer, (f) => (skyFrac = f));
 
   // geometry (CPU) while downloads run
-  const { site, terr, far, pathG, treeSpots, merged, colGeo, bvh } = buildGeometry(R);
+  const { site, terr, far, pathG, treeSpots, merged, colGeo, bvh, skimBvh } = buildGeometry(R, seed);
   prog(0.62, 'Building collision');
   await yieldUI();
 
@@ -688,7 +917,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   if (merged.brick) {
     const g = merged.brick, p = g.attributes.position, n = g.attributes.normal, ao = g.attributes.ao;
     const bo = g.attributes.bounce;
-    for (let i = 0; i < p.count; i++) { const rx = p.getX(i) - 44, rz = p.getZ(i) + 40; if (rx * n.getX(i) + rz * n.getZ(i) < 0) { ao.setX(i, ao.getX(i) * 0.3); bo.setXYZ(i, bo.getX(i) * 0.5, bo.getY(i) * 0.5, bo.getZ(i) * 0.5); } }
+    for (let i = 0; i < p.count; i++) { const rx = p.getX(i) - site.chimney.x, rz = p.getZ(i) - site.chimney.z; if (rx * n.getX(i) + rz * n.getZ(i) < 0) { ao.setX(i, ao.getX(i) * 0.3); bo.setXYZ(i, bo.getX(i) * 0.5, bo.getY(i) * 0.5, bo.getZ(i) * 0.5); } }
   }
   const farAO = new Float32Array(far.attributes.position.count).fill(1); far.setAttribute('ao', new THREE.BufferAttribute(farAO, 1));
   const zeroB = (g) => g.setAttribute('bounce', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 3), 3));
@@ -866,8 +1095,10 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   const cm = new THREE.Mesh(colGeo, new THREE.MeshBasicMaterial()); cm.frustumCulled = false; colScene.add(cm);
   prog(0.98, 'Ready');
   return {
-    scene, colliderScene: colScene, bvh, update, hdr: true,
-    spawn: new THREE.Vector3(0, terrainHeight(0, 118) + 1.4, 118), yaw: 0,
+    scene, colliderScene: colScene, bvh, skimBvh, update, hdr: true,
+    spawn: new THREE.Vector3(0, terrainHeight(0, 118) + 1.4, 118), yaw: 0,                       // first flight: the reveal
+    takeStart: { pos: new THREE.Vector3(...site.takeStart.pos), yaw: site.takeStart.yaw },      // take retries: by the chimney mouth
+    lines: site.lines,
     bounds: new THREE.Box3(new THREE.Vector3(-480, -5, -480), new THREE.Vector3(480, 260, 480)),
     envelope: { min: new THREE.Vector3(-440, -2, -440), max: new THREE.Vector3(440, 220, 440) },
   };
