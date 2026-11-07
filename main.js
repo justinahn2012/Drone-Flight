@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshBVH } from 'three-mesh-bvh';
 import { FPVCamera, LENSES, SHUTTERS } from './fpvcam.js';
 import { Drone, CRAFTS } from './flight.js';
+import { InputLog, quantize, worldHash } from './inputlog.js';
 import { Controls } from './controls.js';
 import { MotorAudio } from './audio.js';
 import { Take, defaultTakeUI } from './take.js';
@@ -508,13 +509,9 @@ const score = {
 try { score.best = +localStorage.getItem('onetake.best') || 0; } catch (e) {}
 // the take (take.js): named lines, FLOW, bank / crash / CUT
 const take = new Take();
-const _cp = {};
 // proximity to anything (terrain included): flight turbulence, audio, OLED bars. Scoring uses world.skimBvh.
-function updateProx() {
-  if (!world.bvh || drone.crashed) { world.lastDist = Infinity; return; }
-  const res = world.bvh.closestPointToPoint(drone.pos, _cp, 0, 2.0);
-  world.lastDist = res && res.distance <= 2.0 ? res.distance - drone.c.radius : Infinity;
-}
+// [E] measured inside the physics tick (drone.prox, Infinity when crashed or clear); mirrored here for audio/HUD
+function updateProx() { world.lastDist = world.bvh && !drone.crashed ? drone.prox : Infinity; }
 // "hands on": any centred stick deflected, or the (non-centring) throttle being moved
 let thrRef = 0.39, takeGame = S.game;
 function sticksActive(inp, dt) {
@@ -539,21 +536,32 @@ const tiltQ = new THREE.Quaternion();
 function defTilt(c) { return Math.round(c.camTilt * (S.mode === 'acro' ? 1 : S.mode === 'angle' ? 0.8 : 0.55)); }
 const camPose = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
 // hz: jello/vibration frequency (motor rpm), read by fpvcam as `motion.hz ?? 170`
-const motion = { vel: new THREE.Vector3(), ang: new THREE.Vector3(), vib: 1, hz: 170 };
-const _q = new THREE.Quaternion(), _v = new THREE.Vector3();
+// wash / bump (0-1, contract C4): prop-wash and impact intensity for D's 45 Hz jello band
+const motion = { vel: new THREE.Vector3(), ang: new THREE.Vector3(), vib: 1, hz: 170, wash: 0, bump: 0 };
+const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), rigP = new THREE.Vector3(), rigQ = new THREE.Quaternion();
+let cpPrev = 0, cpResets = -1;
 function rigCamera(dt) {
+  // [E] the body pose between the last two physics ticks (physAlpha = leftover accumulator / tick, see frame())
+  rigP.lerpVectors(drone.prev, drone.pos, physAlpha); rigQ.slerpQuaternions(drone.prevQ, drone.q, physAlpha);
   const tilt = (S.tilt >= 0 ? S.tilt : defTilt(drone.c)) * DEG;
   // Cine: the view also pitches with the climb/dive angle (flight.js camPitch; eases back to 0 in the other modes)
-  tiltQ.setFromAxisAngle(_v.set(1, 0, 0), tilt + drone.camPitch(dt, S.mode === 'cine'));
-  _q.copy(drone.q).multiply(tiltQ);
+  const cp = drone.camPitch(dt, S.mode === 'cine');
+  tiltQ.setFromAxisAngle(_v.set(1, 0, 0), tilt + cp);
+  _q.copy(rigQ).multiply(tiltQ);
   const tau = STAB[S.stab] || 0;
   if (tau > 0) camQ.slerp(_q, 1 - Math.exp(-dt / tau)); else camQ.copy(_q);
   camPose.quat.copy(camQ);
-  camPose.pos.copy(drone.pos).add(_v.set(0, 0.02, -0.04).applyQuaternion(drone.q));
+  camPose.pos.copy(rigP).add(_v.set(0, 0.02, -0.04).applyQuaternion(rigQ));
   motion.vel.copy(drone.vel);
-  motion.ang.copy(drone.w).applyQuaternion(drone.q);   // physical camera rotation (blur uses the raw motion)
+  motion.ang.copy(drone.w).applyQuaternion(rigQ);      // physical camera rotation (blur uses the raw motion)
+  // ...plus the pitch-follow, which turns the view about the body's x axis too (34-65 px of smear were missing on a
+  // chimney entry). No spike across a respawn.
+  if (drone.resets !== cpResets) { cpResets = drone.resets; cpPrev = cp; }
+  const cpd = dt > 0 ? (cp - cpPrev) / dt : 0; cpPrev = cp;
+  motion.ang.addScaledVector(_v.set(1, 0, 0).applyQuaternion(rigQ), cpd);
   motion.vib = drone.crashed ? 0.2 : 0.35 + 1.1 * Math.sqrt(drone.thrust / drone.tMax) + drone.wash * 3 + drone.bump * 4;
   motion.hz = drone.rpmHz;                             // ~170 Hz at hover, ~430 Hz at full throttle (rpm ~ sqrt(thrust))
+  motion.wash = drone.crashed ? 0 : drone.wash; motion.bump = drone.bump;
 }
 
 // ---------------- replay buffer + clip export
@@ -966,7 +974,22 @@ function armBack() { try { if (!history.state?.onetake) history.pushState({ onet
 
 // ---------------- main loop
 let last = performance.now(), acc30 = 0, frameN = 0, menuFrames = 0;
-const PHYS = 1 / 240;
+// [E] Fixed-step physics: whole 1/240 s ticks from an accumulator, the sticks quantised once per tick (exactly what the
+// input log stores), the render interpolated between the last two ticks by physAlpha. The flight is then a pure
+// function of (start state, input log, world): the same on any frame rate, replayable, and portable (native #1.1).
+const PHYS = 1 / 240, MAX_TICKS = 30;              // backstop only: dt is clamped to 0.1 s (24 ticks) below
+let physAcc = 0, physAlpha = 1;
+const tickInp = { thr: 0, pitch: 0, roll: 0, yaw: 0, climb: 0 };
+// input log of the current flight segment (a new one at every respawn/teleport), and the previous one
+let inputLog = null, lastInputLog = null, logResets = -1;
+function logTick(inp) {
+  if (!inputLog || drone.resets !== logResets || inputLog.full) {
+    if (inputLog && inputLog.ticks > 0) lastInputLog = inputLog;
+    inputLog = new InputLog({ seed: drone.seed, world: worldHash(world), craft: drone.key, mode: S.mode, hz: 1 / PHYS, start: drone.snapshot(), meta: { def: world.def?.id ?? null } });
+    logResets = drone.resets;
+  }
+  inputLog.record(inp, S.mode, drone);
+}
 const MANUAL = new URLSearchParams(location.search).has('manual');
 function frame(now) {
   if (!MANUAL) requestAnimationFrame(frame);
@@ -978,15 +1001,22 @@ function frame(now) {
 
   if (state === 'fly' || state === 'crash') {
     flightT += state === 'fly' ? dt : 0;
-    const steps = Math.max(1, Math.ceil(dt / PHYS)); const h = dt / steps;
-    for (let i = 0; i < steps; i++) drone.step(h, inp, S.mode, world);
+    physAcc += dt;
+    let ticks = 0;
+    while (physAcc >= PHYS && ticks < MAX_TICKS) {
+      quantize(inp, tickInp); logTick(tickInp);
+      drone.step(PHYS, tickInp, S.mode, world);
+      if (state !== 'loading') updateTake(PHYS, tickInp);
+      physAcc -= PHYS; ticks++;
+    }
+    if (ticks === MAX_TICKS) physAcc = Math.min(physAcc, PHYS);
+    physAlpha = physAcc / PHYS;
     if (drone.crashed && state === 'fly') { state = 'crash'; }
     if (world.bounds && !world.bounds.containsPoint(drone.pos)) {
       for (const e of take.fail()) takeEvent(e);      // leaving the world ends a take like a crash
       $('fade').style.opacity = 1; setTimeout(respawn, 380); state = 'loading';
     }
     updateProx();
-    if (state !== 'loading') updateTake(dt, inp);
     rigCamera(dt);
     trackSafe(dt, now / 1000);
     audioFrame(now / 1000);
@@ -1043,5 +1073,6 @@ window.__onetake = {
   // test hook (?manual): advance n frames of dtMs each and return the canvas
   step(dtMs = 16.7, n = 1, grab = true) { for (let i = 0; i < n; i++) { last = performance.now() - dtMs; frame(performance.now()); } return grab ? canvas.toDataURL('image/jpeg', 0.92) : null; },
 };
+window.__onetake.flight = { PHYS, get log() { return inputLog; }, get lastLog() { return lastInputLog; }, get alpha() { return physAlpha; } };   // [E] input logs
 if (MANUAL) { setInterval(() => { if (state === 'loading') { last = performance.now() - 16; } }, 500); }
 else requestAnimationFrame(frame);
