@@ -22,7 +22,7 @@ const QUALITY = {
 // makes acro pilots over-correct into oscillations); clips get its extra smoothing in the replay path (STAB_REPLAY,
 // Gaussian sigma in s, for the Gyroflow-style pass over the replay quaternions).
 const STAB = { off: 0, light: 0.03, heavy: 0.03 };
-const STAB_REPLAY = { off: 0, light: 0, heavy: 0.12 };
+const STAB_REPLAY = { off: 0, light: 0.06, heavy: 0.12 };
 
 // ---------------- settings
 const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'on', sound: 'on' };
