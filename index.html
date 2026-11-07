@@ -104,7 +104,7 @@ body.portrait #osd .tl{left:calc(62px + var(--sl))}
 body.nosticks .float{display:none}
 /* first-flight ghost gates */
 #ghost{position:absolute;inset:0;pointer-events:none;display:none}
-body.coach:not(.portrait):not(.sumup) #ghost{display:block}
+body.coach:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 .gg{position:absolute;width:0;height:0;opacity:.4;transition:opacity .5s}
 .gg::before{content:"";position:absolute;width:calc(var(--R,76px)*2);height:calc(var(--R,76px)*2);left:calc(var(--R,76px)*-1);top:calc(var(--R,76px)*-1);
   border-radius:28%;border:1.5px dashed rgba(255,255,255,.85);box-shadow:0 0 0 1px rgba(0,0,0,.2)}
@@ -355,6 +355,7 @@ body.dev .dev{display:revert!important}
       <div class="rows">
         <label>Overlay</label><div class="seg" data-key="hud"><button data-v="osd">OSD</button><button data-v="min">Minimal</button><button data-v="off">Clean</button></div>
         <label>Sound</label><div class="seg" data-key="sound"><button data-v="on">On</button><button data-v="off">Off</button></div>
+        <label>Clip captions</label><div class="seg" data-key="caps"><button data-v="on">On</button><button data-v="off">Clean</button></div>
         <label>Quality</label><div class="seg" data-key="quality"><button data-v="low">Low</button><button data-v="auto">Auto</button><button data-v="high">High</button></div>
         <label>Frame rate</label><div class="seg" data-key="fps"><button data-v="60">60</button><button data-v="30">30 cinematic</button></div>
       </div>

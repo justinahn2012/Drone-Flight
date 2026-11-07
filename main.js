@@ -21,7 +21,7 @@ const QUALITY = {
 const STAB = { off: 0, light: 0.03, heavy: 0.09 };
 
 // ---------------- settings
-const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'osd', sound: 'on', game: 'take' };
+const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'osd', sound: 'on', game: 'take', caps: 'on' };
 let S = { ...DEF };
 try { const saved = JSON.parse(localStorage.getItem('onetake.settings') || '{}'); if (saved.v !== 3) { delete saved.tilt; delete saved.world; saved.v = 3; } Object.assign(S, saved); } catch (e) {}
 if (!['yard', 'yard-overcast', 'url'].includes(S.world)) S.world = 'yard';   // a saved 'file' world can't reload (the file input is empty): no dead-end FLY
@@ -583,7 +583,7 @@ function saveClip() {
   const sigma = clipSigma();
   const frames = sigma > 0 ? smoothReplay(src, sigma) : src;
   const t0 = frames[0].t, caps = [];
-  for (const f of frames) if (f.cap) caps.push({ t: f.t - t0, text: f.cap.text, flow: f.cap.flow || 1 });
+  if (S.caps !== 'off') for (const f of frames) if (f.cap) caps.push({ t: f.t - t0, text: f.cap.text, flow: f.cap.flow || 1 });
   warmFonts(Math.round(comp.height * 0.085));
   const stream = comp.captureStream(30);
   const at = audio.streamDest?.stream.getAudioTracks()[0]; if (at) stream.addTrack(at);
@@ -593,7 +593,7 @@ function saveClip() {
   const rec = recorder;
   rec.ondataavailable = (e) => e.data.size && recChunks.push(e.data);
   rec.onstop = () => showClip(new Blob(recChunks, { type: rec.mimeType || mime || 'video/mp4' }), { dur: replayDur, caps: caps.length, smooth: sigma > 0 });
-  replay = { frames, caps, t0: performance.now() / 1000, prev: state, i: -1, t: 0 };
+  replay = { frames, caps, t0: performance.now() / 1000, prev: state, i: -1, t: 0, stream };
   replay.dur = frames[frames.length - 1].t - t0;
   const replayDur = replay.dur;
   state = 'replay'; controls.enabled = false; controls.cancelAll?.(); fpv.resetExposure = true;
@@ -616,6 +616,7 @@ function endReplay(cancel = false) {
   const r = replay; replay = null;
   if (cancel && recorder) { recorder.onstop = null; recorder.ondataavailable = null; recChunks = []; }
   try { recorder?.stop(); } catch (e) {}
+  r.stream?.getVideoTracks().forEach((t) => t.stop());   // the canvas track only: the audio track is shared by every clip
   comp.classList.add('hidden'); document.body.classList.remove('replaying');
   state = r.prev === 'crash' ? 'crash' : 'fly';
   if (sum.data || state === 'crash') showSummary(sum.kind || 'crash', sum.data);   // put the card back
