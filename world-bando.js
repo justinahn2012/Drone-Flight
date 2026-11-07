@@ -1237,7 +1237,8 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   float r1 = gh(bi + 7.7), r2 = gh(bi + 3.3), r3 = gh(bi + 11.1), r4 = gh(bi + 23.9), r5 = gh(bi + 5.5);
   float member = step(mod(bi.x, 2.0) + mod(bi.y, 2.0), 0.5);
   float dcam = distance(bp, uCam.xz);
-  float keep = (1.0 - smoothstep(uR * 0.7, uR, dcam)) * step(r5, mk.r) * mix(uOddK, 1.0, member) * uFade * smoothstep(0.25, 0.7, dcam);
+  // (r5 + 0.005: the fp32 hash is quantised to 1/256, so r5 == 0 happens and would keep tufts where density is 0)
+  float keep = (1.0 - smoothstep(uR * 0.7, uR, dcam)) * step(r5 + 0.005, mk.r) * mix(uOddK, 1.0, member) * uFade * smoothstep(0.25, 0.7, dcam);
   vec4 rc = uRects[int(r4 * 8.999)];
   float hh = (0.32 + 0.8 * pow(r1, 1.3)) * (0.45 + 1.1 * mk.a) * keep;
   // the clumps are ~30 cm grass: squeeze them ~2.2x horizontally so blades stay blade-thin on 0.4-1.6 m tufts
