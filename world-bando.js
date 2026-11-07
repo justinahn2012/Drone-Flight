@@ -1043,7 +1043,8 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   scene.background = sk.sky; scene.environment = sk.env;
   scene.fog = new THREE.Fog(new THREE.Color(sk.horizon.x, sk.horizon.y, sk.horizon.z), 180, 2200);
 
-  const bStats = {}; globalThis.__bandoStats = bStats;    // [B] counts for the smoke harness / integrator
+  const bStats = { ms: {} }; globalThis.__bandoStats = bStats;    // [B] counts + CPU ms per block, for the smoke harness / integrator
+  let tLap = performance.now(); const lap = (k) => { const n = performance.now(); bStats.ms[k] = Math.round(n - tLap); tLap = n; };
   // [B] ground mask (grass density, paved apron, terrain AO, grass height) shared by the ground, tracks and grass
   const gmask = buildGroundMask(site, terr);
   const maskU = { uMask: { value: gmask }, uMaskO: { value: new THREE.Vector2(MASK.x0, MASK.z0) }, uMaskS: { value: MASK.size } };
@@ -1076,6 +1077,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const farMat = mkMat('ground'); const farMesh = new THREE.Mesh(far, farMat); farMesh.receiveShadow = false; scene.add(farMesh);
   const pathMesh = new THREE.Mesh(pathG, mats.path); pathMesh.receiveShadow = true; pathMesh.renderOrder = 1; scene.add(pathMesh);
 
+  lap('mask+materials');
   // [B] graffiti: ~100 big pieces placed by a raycast pass on ground-storey walls (outside and in), in the hall, the
   // stair shaft and under the silo table, plus Site.decalSpots as hints. Each piece is a grid conformed to the surface
   // by rays (so it also wraps silos and the chimney) and is rejected over openings, edges and steps. The paint
@@ -1185,6 +1187,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
     bStats.graffiti = { pieces: placed.length, big: placed.filter((p) => p.w >= 1.7).length, m2: Math.round(placed.reduce((s, p) => s + p.w * p.h, 0)), tris: idx.length / 3, ...counts };
   }
 
+  lap('graffiti');
   // [B] grass: photographed clumps (Poly Haven grass_medium_01: 9 sub-rects of its clump strip) on trapezoid cross
   // cards, one tuft per world-anchored base cell (no swimming), straw-to-green by low-frequency noise.
   // Perf (pixel-identical): cells are stored in rings around the camera cell, so the draw is front-to-back from every
@@ -1278,6 +1281,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     };
   }
   const ringCount = (r) => { let lo = 0, hi = ringR.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ringR[m] <= r) lo = m + 1; else hi = m; } return lo; };
+  lap('grass');
   // [B] trees, wall thickets, field shrubs and saplings on slab edges: one merged mesh of leaf-card balls with the
   // photographed leaves. Normals point out of the whole crown (it shades as one mass, both card faces alike);
   // light is baked per plant with the same probe as the buildings, so nothing glows under the silo table.
@@ -1378,6 +1382,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     Object.assign(foliageStats, { trees: treeSpots.length, thickets: nBush, shrubs: nField, saplings: nSap, cards: I.length / 6 });
   }
 
+  lap('foliage');
   // [B] distant treeline ring: instanced low-poly crowns in 4 sectors (frustum-culled), fogged by the scene fog,
   // shrinking into the ground before the camera's 300 m far plane so no crown is ever cut in half
   {
@@ -1417,7 +1422,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
       qq.setFromAxisAngle(UPV, BR() * 6.28); M.compose(P.set(Math.cos(a) * r, -3 - BR() * 2, Math.sin(a) * r), qq, S.set(w, h, w)); horizonBand.setMatrixAt(i, M); tint(horizonBand, i, BR());
     }
     horizonBand.frustumCulled = false; horizonBand.castShadow = false; horizonBand.receiveShadow = false; horizonBand.renderOrder = 1; horizonBand.userData.off = bandOff; scene.add(horizonBand);
-    foliageStats.treeline = treeline.length; foliageStats.band = NB;
+    foliageStats.treeline = treeline.length; foliageStats.band = NB; lap('treeline');
   }
 
   // sun with shadows that follow the drone
