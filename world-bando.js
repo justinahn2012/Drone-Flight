@@ -22,8 +22,8 @@ export const SKIES = {
 // albedo = linear mean RGB of the final shaded material (texture x color x mean weathering): the light bake reads it.
 const MATS = {
   silo: { id: 'concrete_layers_02', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.6, 1.54, 1.51], rough: 0.95, roughMin: 0.86, w: [0.5, 0.34, 0.5, 0.35], albedo: [0.315, 0.287, 0.254] },
-  wall: { id: 'concrete_wall_006', tile: 3.0, maps: ['diff', 'nor_gl'], color: [3.19, 3.62, 4.2], rough: 0.95, roughMin: 0.86, w: [0.45, 0.36, 0.55, 0.3], albedo: [0.321, 0.280, 0.235] },
-  slab: { id: 'concrete_floor_02', tile: 4.0, maps: ['diff', 'nor_gl'], color: [1.84, 1.92, 2.5], rough: 0.95, roughMin: 0.88, w: [0.35, 0.3, 0.6, 0.45], albedo: [0.311, 0.270, 0.223] },
+  wall: { id: 'concrete_wall_006', tile: 3.0, maps: ['diff', 'nor_gl'], color: [3.06, 3.64, 4.44], rough: 0.95, roughMin: 0.86, w: [0.45, 0.36, 0.55, 0.3], albedo: [0.308, 0.281, 0.249] },
+  slab: { id: 'concrete_floor_02', tile: 4.0, maps: ['diff', 'nor_gl'], color: [1.75, 1.94, 2.72], rough: 0.95, roughMin: 0.88, w: [0.35, 0.3, 0.6, 0.45], albedo: [0.295, 0.272, 0.243] },
   brick: { id: 'factory_brick', tile: 2.2, maps: ['diff', 'nor_gl'], color: [1.23, 1.12, 1.88], rough: 0.9, roughMin: 0.8, w: [0.3, 0.3, 0.4, 0.2], albedo: [0.297, 0.171, 0.180] },
   rust: { id: 'rust_coarse_01', tile: 2.0, maps: ['diff'], color: [2.05, 3.2, 6.53], rough: 0.82, roughMin: 0.7, w: [0.25, 0.2, 0.35, 0.1], albedo: [0.245, 0.128, 0.089] },
   ground: { id: 'grass_ground', tile: 4.0, maps: ['diff'], color: [1.25, 1.35, 1.6], rough: 1, kind: 'ground', albedo: [0.190, 0.158, 0.083] },
@@ -639,7 +639,7 @@ vec3 weather(vec3 c, vec3 nw, vec3 wp, vec2 ay, float ao) {
   float side = 1.0 - smoothstep(0.45, 0.8, abs(nw.y));
   float along = abs(nw.x) > abs(nw.z) ? wp.z : wp.x;
   float ht = max(ay.y - wp.y, 0.0), hb = max(wp.y - ay.x, 0.0);
-  float L = clamp((ay.y - ay.x) * 0.3, 1.2, 9.0);
+  float L = clamp((ay.y - ay.x) * 0.45, 1.2, 16.0);
   float seed = h21(vec2(ay.x * 1.31 + ay.y * 0.77, floor(along * 0.21) + 0.5));
   c *= 0.86 + 0.28 * vn(vec2(along * 0.13 + seed * 17.0, wp.y * 0.11));
   float col = along * 1.7;
@@ -680,6 +680,11 @@ const WP_FRAG = {
     float bare = smoothstep(0.66, 0.82, vn(xz * 0.07 + 2.0) * 0.7 + vn(xz * 0.6) * 0.3);
     float cov = 1.0 - smoothstep(0.3, 0.78, vAO);                         // under slabs / inside: bare dirt
     base = mix(base, dirt, max(bare * 0.7, cov));
+    // the landscape seen from altitude: green and straw fields, and woods beyond the site (complements the treeline)
+    float big = vn(xz * 0.0045 + 11.0) * 0.7 + vn(xz * 0.017) * 0.3, rr = length(xz - vec2(-5.0, 10.0));
+    base *= mix(vec3(1.05, 0.98, 0.86), vec3(0.8, 0.96, 0.72), smoothstep(0.35, 0.7, big));
+    float wood = smoothstep(0.58, 0.7, vn(xz * 0.0065 + 3.7) * 0.75 + vn(xz * 0.04) * 0.25) * smoothstep(175.0, 240.0, rr);
+    base = mix(base, vec3(0.035, 0.05, 0.022) * (0.7 + 0.6 * vn(xz * 0.3)), wood);
     vec4 mk = texture2D(uMask, (xz - uMaskO) / uMaskS);
     float ap = smoothstep(0.42, 0.58, mk.g + (vn(xz * 0.9) - 0.5) * 0.34 + (vn(xz * 3.7) - 0.5) * 0.12);
     vec3 at = texture2D(uApron, xz * uApronRep).rgb;                     // (sampled outside any branch: mip derivatives)
@@ -941,14 +946,19 @@ export function buildGeometry(R = rng(7)) {
       ray.origin.set(x, 400, z); const h = fb.raycastFirst(ray, THREE.DoubleSide);
       let y = h ? h.point.y : 0; if (Math.abs(x + 5) < 158 && Math.abs(z - 10) < 158) y = Math.max(y, terrainHeight(x, z)); return y;
     };
+    // a belt with a ragged inner edge (125-185 m) and uneven depth, groves breaking out of it on both sides,
+    // and tall/short stands so the skyline isn't a hedge
     const belt = (a) => 0.5 + 0.5 * Math.sin(a * 3 + 1.3) * Math.cos(a * 5 - 0.4);
-    const groves = Array.from({ length: 12 }, () => { const a = LR() * 6.283, r = 250 + LR() * 150; return [-5 + Math.cos(a) * r, 10 + Math.sin(a) * r]; });
+    const inner = (a) => 150 + 22 * Math.sin(a * 4 + 0.7) + 13 * Math.sin(a * 11 - 1.9);
+    const stand = (a) => 0.75 + 0.5 * (0.5 + 0.5 * Math.sin(a * 7 + 2.1) * Math.sin(a * 2.3));
+    const groves = Array.from({ length: 16 }, (_, i) => { const a = LR() * 6.283, r = i < 5 ? 118 + LR() * 25 : 250 + LR() * 150; return [-5 + Math.cos(a) * r, 10 + Math.sin(a) * r, i < 5 ? 14 : 30]; });
     const proxy = new THREE.IcosahedronGeometry(1, 0);
     for (let k = 0; k < 780; k++) {
-      let x, z;
-      if (k < 600) { const a = LR() * Math.PI * 2, r = 150 + Math.pow(LR(), 1.5) * (35 + 95 * belt(a)); x = -5 + Math.cos(a) * r; z = 10 + Math.sin(a) * r; }
-      else { const g = groves[k % groves.length]; x = g[0] + (LR() - 0.5) * 50; z = g[1] + (LR() - 0.5) * 50; }
-      const h = 8 + Math.pow(LR(), 0.8) * 13, w = h * (0.55 + LR() * 0.35), y = groundAt(x, z) - 0.6;
+      let x, z, a;
+      if (k < 590) { a = LR() * Math.PI * 2; const r = inner(a) + Math.pow(LR(), 1.6) * (30 + 100 * belt(a)); x = -5 + Math.cos(a) * r; z = 10 + Math.sin(a) * r; }
+      else { const g = groves[k % groves.length]; x = g[0] + (LR() - 0.5) * 2 * g[2]; z = g[1] + (LR() - 0.5) * 2 * g[2]; a = Math.atan2(z - 10, x + 5); }
+      if (!clearOf(x, z, 12) || distToPaths(x, z) < 8 || Math.hypot(x, z - 118) < 25) continue;
+      const h = (7 + Math.pow(LR(), 0.8) * 13) * stand(a), w = h * (0.55 + LR() * 0.35), y = groundAt(x, z) - 0.6;
       treeline.push({ x, y, z, h, w, d: w * (0.8 + LR() * 0.4), rot: LR() * 6.283, tint: LR() });
       const c = proxy.clone(); c.scale(w * 0.42, h * 0.42, w * 0.42); c.translate(x, y + h * 0.5, z); site.colliders.push(indexify(c));
     }
