@@ -463,9 +463,9 @@ function leafCluster(diffT, alphaT, R) {
     cg.putImageData(im, 0, 0); return c;
   });
   const S = 512, out = cv(S, S), g = out.getContext('2d', { willReadFrequently: true });
-  for (let i = 0; i < 120; i++) {
-    const back = i < 45, v = back ? 1 : (R() < 0.78 ? 0 : 2), [x0, y0, x1, y1] = LEAF_RECTS[Math.floor(R() * LEAF_RECTS.length)];
-    const a = R() * 6.283, rr = Math.sqrt(R()) * S * (back ? 0.33 : 0.42), w = x1 - x0, h = y1 - y0, s = (44 + R() * 40) / Math.max(w, h);
+  for (let i = 0; i < 230; i++) {
+    const back = i < 85, v = back ? 1 : (R() < 0.78 ? 0 : 2), [x0, y0, x1, y1] = LEAF_RECTS[Math.floor(R() * LEAF_RECTS.length)];
+    const a = R() * 6.283, rr = Math.sqrt(R()) * S * (back ? 0.33 : 0.43), w = x1 - x0, h = y1 - y0, s = (28 + R() * 30) / Math.max(w, h);
     g.save(); g.translate(S / 2 + Math.cos(a) * rr, S / 2 + Math.sin(a) * rr); g.rotate(R() * 6.283); g.scale(s * (R() < 0.5 ? -1 : 1), s);
     g.drawImage(vars[v], x0, y0, w, h, -w / 2, -h / 2, w, h); g.restore();
   }
@@ -1223,10 +1223,12 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   vec4 mk = textureLod(uMask, (bp - uMaskO) / uMaskS, 0.0);
   float r1 = gh(bi + 7.7), r2 = gh(bi + 3.3), r3 = gh(bi + 11.1), r4 = gh(bi + 23.9), r5 = gh(bi + 5.5);
   float member = step(mod(bi.x, 2.0) + mod(bi.y, 2.0), 0.5);
-  float keep = (1.0 - smoothstep(uR * 0.7, uR, distance(bp, uCam.xz))) * step(r5, mk.r) * mix(uOddK, 1.0, member) * uFade;
+  float dcam = distance(bp, uCam.xz);
+  float keep = (1.0 - smoothstep(uR * 0.7, uR, dcam)) * step(r5, mk.r) * mix(uOddK, 1.0, member) * uFade * smoothstep(0.25, 0.7, dcam);
   vec4 rc = uRects[int(r4 * 8.999)];
-  float hh = (0.3 + 0.75 * pow(r1, 1.3)) * (0.45 + 1.1 * mk.a) * keep;
-  float wd = hh * (rc.z / rc.w) * (0.85 + 0.3 * r2) * uWide;
+  float hh = (0.32 + 0.8 * pow(r1, 1.3)) * (0.45 + 1.1 * mk.a) * keep;
+  // the clumps are ~30 cm grass: squeeze them ~2.2x horizontally so blades stay blade-thin on 0.4-1.6 m tufts
+  float wd = hh * (rc.z / rc.w) * 0.45 * (0.85 + 0.3 * r2) * uWide;
   vec3 gbase = vec3(bp.x, terrH(bp) - 0.04, bp.y);
   vec3 gc = gbase + vec3(0.0, hh * 0.5, 0.0); float grad = 0.62 * wd + 0.5 * hh + 0.12;
   bool cull = keep < 0.002;
