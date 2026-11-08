@@ -42,6 +42,8 @@ const MATS = {
   silo: { id: 'concrete_layers_02', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.523, 1.555, 1.576], rough: 0.95, roughMin: 0.86, w: [0.85, 0.34, 0.5, 0.35], wx: [0.28, 4.2, 0, 8], albedo: [0.300, 0.290, 0.265] },
   wall: { id: 'concrete_wall_006', tile: 3.0, maps: ['diff', 'nor_gl'], color: [2.885, 3.642, 4.584], rough: 0.95, roughMin: 0.86, w: [0.45, 0.36, 0.55, 0.3], albedo: [0.290, 0.2815, 0.2576] },
   slab: { id: 'concrete_floor_02', tile: 4.0, maps: ['diff', 'nor_gl'], color: [1.663, 1.939, 2.788], rough: 0.95, roughMin: 0.88, w: [0.35, 0.3, 0.6, 0.45], albedo: [0.280, 0.272, 0.249] },
+  // chimney coping (art r3 #4): the same brick under a lime wash, x1.5 and toward neutral; radial headers (polar UVs)
+  coping: { id: 'factory_brick', tile: 2.2, maps: ['diff', 'nor_gl'], color: [1.54, 1.8, 2.67], rough: 0.92, roughMin: 0.82, w: [0.3, 0.0, 0.3, 0.15], albedo: [0.352, 0.261, 0.243] },
   // brick: less pink (art #7), streakier, the top 8 m sooted (x0.55 at the rim)
   brick: { id: 'factory_brick', tile: 2.2, maps: ['diff', 'nor_gl'], color: [1.08, 1.0, 1.55], rough: 0.9, roughMin: 0.8, w: [0.6, 0.3, 0.4, 0.2], wx: [1.7, 0, 0.45, 8], albedo: [0.247, 0.145, 0.141] },
   rust: { id: 'rust_coarse_01', tile: 2.0, maps: ['diff'], color: [2.05, 3.2, 6.53], rough: 0.82, roughMin: 0.7, w: [0.25, 0.2, 0.35, 0.1], albedo: [0.245, 0.128, 0.089] },
@@ -220,7 +222,9 @@ function tubeGeo(rb, rt, h, th, seg, hseg, skip) {
 }
 // a closed flat ring (annulus with thickness) around the y axis: outer + inner skins, top + bottom faces, each with
 // its own vertices (hard edges). Coping, corbel courses, silo parapets.
-function ringGeo(rIn, rOut, y0, y1, seg) {
+// polar: the top face gets polar UVs in metres, u = radial (r - rIn), v = arc at the mean radius stretched to a whole
+// number of `polar` m tiles (no seam): a brick texture's courses then run radially (headers laid across the rim)
+function ringGeo(rIn, rOut, y0, y1, seg, polar = 0) {
   const pos = [], nor = [], uv = [], idx = [];
   const quad = (p, n, uvs) => { const b = pos.length / 3; p.forEach((q, k) => { pos.push(...q); nor.push(...(typeof n === 'function' ? n(k) : n)); uv.push(...uvs[k]); }); idx.push(b, b + 1, b + 2, b, b + 2, b + 3); };
   const P = (a, r, y) => [Math.sin(a) * r, y, Math.cos(a) * r];
@@ -230,7 +234,10 @@ function ringGeo(rIn, rOut, y0, y1, seg) {
     quad([P(a0, rOut, y0), P(a1, rOut, y0), P(a1, rOut, y1), P(a0, rOut, y1)], (k) => [Math.sin(A[k]), 0, Math.cos(A[k])], [[uo(a0), y0], [uo(a1), y0], [uo(a1), y1], [uo(a0), y1]]);
     quad([P(a1, rIn, y0), P(a0, rIn, y0), P(a0, rIn, y1), P(a1, rIn, y1)], (k) => [-Math.sin([a1, a0, a0, a1][k]), 0, -Math.cos([a1, a0, a0, a1][k])], [[ui(a1), y0], [ui(a0), y0], [ui(a0), y1], [ui(a1), y1]]);
     const top = [P(a0, rIn, y1), P(a0, rOut, y1), P(a1, rOut, y1), P(a1, rIn, y1)], bot = [P(a1, rIn, y0), P(a1, rOut, y0), P(a0, rOut, y0), P(a0, rIn, y0)];
-    quad(top, [0, 1, 0], top.map((q) => [q[0], q[2]]));
+    if (polar) {
+      const rm = (rIn + rOut) / 2, k = Math.max(1, Math.round((2 * Math.PI * rm) / polar)) * polar / (2 * Math.PI);
+      quad(top, [0, 1, 0], [[0, a0 * k], [rOut - rIn, a0 * k], [rOut - rIn, a1 * k], [0, a1 * k]]);
+    } else quad(top, [0, 1, 0], top.map((q) => [q[0], q[2]]));
     quad(bot, [0, -1, 0], bot.map((q) => [q[0], q[2]]));
   }
   const g = new THREE.BufferGeometry();
@@ -264,9 +271,10 @@ const TOWER = { x: -33.9, z: -14, w: 4.4, T: 0.3 };
 const SHAFT = { x0: TOWER.x - 2.05, x1: TOWER.x + 2.05, z0: TOWER.z - 2.05, z1: TOWER.z + 2.05 };   // inner faces
 const HEAD = { x0: -54, x1: -14, z0: -17.8, z1: 0 };    // head house over the south row: the north row's caps stay open
 // in line with the north row: mouth beside the caps. base: plinth top; cop / corb: coping and corbel course heights
-const CHIM = { x: -8, z: -22, h: 50, rb: 3.4, rt: 2.0, th: 0.35, base: 0.5, cop: 0.9, corb: 0.25 };
+const CHIM = { x: -8, z: -22, h: 50, rb: 3.4, rt: 2.0, th: 0.35, base: 0.5, cop: 0.45, corb: 0.25 };
 const HALL = { x0: 6, x1: 70, z0: 14, z1: 36, fh: 5, levels: 3, cols: 11, rows: 5 };
 const GAL = { A: [-14.3, 33.4, -6.5], B: [12.5, 15.35, 24.5], W: 3.0, H: 2.6 };
+const STACK = [HALL.x0 + 1.5 * (HALL.x1 - HALL.x0) / (HALL.cols - 1), HALL.z0 + 0.5 * (HALL.z1 - HALL.z0) / (HALL.rows - 1)];   // the hall's stacked holes (FORCE 0:1:0 / 1:1:0 / 2:1:0): axis x, z
 const ENTRY = [13.9, 14];       // hall window (north facade, bay 1) the chimney door + rack aim through, threading the columns
 const DOOR = (() => { const x = ENTRY[0] - CHIM.x, z = ENTRY[1] - CHIM.z, l = Math.hypot(x, z); return [x / l, z / l]; })();
 const RACK = { K: [CHIM.x + DOOR[0] * 6, CHIM.z + DOOR[1] * 6], H: [ENTRY[0] - DOOR[0] * 2.5, ENTRY[1] - DOOR[1] * 2.5] };
@@ -443,9 +451,17 @@ function buildSite(seed = 7) {
     g.translate(cx, base, cz); S.add('brick', g);
     const rIn = rt - th;                                                             // the mouth stays 1.65 m (the drop-in catch)
     const cb = ringGeo(rIn, Ro(yTop) + 0.12, yTop, yTop + corb, 40); cb.translate(cx, 0, cz); S.add('brick', cb);
-    const cp = ringGeo(rIn, rt + 0.3, h - cop, h, 40); cp.translate(cx, 0, cz); S.add('slab', cp);
+    // coping: a 0.45 m lime-washed brick cap, 0.12 m proud (was a 0.9 m concrete collar 0.3 m proud: "a mushroom cap")
+    const cp = ringGeo(rIn, rt + 0.12, h - cop, h, 40, MATS.coping.tile); cp.translate(cx, 0, cz); S.add('coping', cp);
     S.box('slab', cx, 0, cz, 8.5, base, 8.5);
-    S.box('slab', cx, base, cz, 4.2, 0.03, 4.2);                                     // inner floor: its own vertices
+    // inner floor: a 40-sided disc of r 3.07 (the bore is ~3.04 at the base), so no plinth top shows round its edge
+    // (the old 4.2 m square left the plinth's sunlit lightmap texels visible inside: a ring of bright notches)
+    { const n = 40, R = 3.07, y = base + 0.03, pos = [cx, y, cz], nor = [0, 1, 0], uv = [cx, cz], idx = [];
+      for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2, x = cx + Math.sin(a) * R, z = cz + Math.cos(a) * R; pos.push(x, y, z); nor.push(0, 1, 0); uv.push(x, z); }
+      for (let i = 0; i < n; i++) idx.push(0, 1 + i, 1 + ((i + 1) % n));
+      const fl = new THREE.BufferGeometry();
+      fl.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); fl.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+      fl.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); fl.setIndex(idx); setAY(fl, base, y); S.add('slab', fl); }
     S.footprints.push({ x0: cx - 4.5, x1: cx + 4.5, z0: cz - 4.5, z1: cz + 4.5 });
     const sa = aD + 1.05; S.spot(cx + Math.sin(sa) * 3.45, 1.6, cz + Math.cos(sa) * 3.45, Math.sin(sa), Math.cos(sa), 2.0, 1.3);
   }
@@ -627,9 +643,11 @@ function buildSite(seed = 7) {
   // ~1.1 s), push forward at the bottom and you're out of the door, under the rack and through the hall window.
   const yawTo = (dx, dz) => Math.atan2(-dx, -dz);
   S.startPoints = [
-    { name: 'Chimney', pos: [CHIM.x, CHIM.h + 2.5, CHIM.z], yaw: yawTo(DOOR[0], DOOR[1]) },
-    // under the rack's hall end, lined up on the entry window: TRIPLE POP, the roof, the gallery
-    { name: 'Hall', pos: [ENTRY[0] - DOOR[0] * 7, 2.4, ENTRY[1] - DOOR[1] * 7], yaw: yawTo(DOOR[0], DOOR[1]) },
+    // hint (take.readyHint, UX r3 #3): what the UI says while the take is ready here, until `line` has been flown `until` times
+    { name: 'Chimney', pos: [CHIM.x, CHIM.h + 2.5, CHIM.z], yaw: yawTo(DOOR[0], DOOR[1]), hint: { text: '▼ HOLD LEFT STICK · DROP IN', line: 'DROP IN', until: 3 } },
+    // inside the hall under the first hole of the stack (design r3: first beat 7.4 s from the old spot by the rack),
+    // nose towards the gallery foot: climb through TRIPLE POP, U-turn over the roof, up the gallery
+    { name: 'Hall', pos: [STACK[0], 2.4, STACK[1]], yaw: yawTo(21 - STACK[0], 28 - STACK[1]), hint: { text: '▲ HOLD LEFT STICK UP · TRIPLE POP', line: 'TRIPLE POP', until: 3 } },
     // inside the head house, facing the stair tower's east opening: INTO THE TOWER, STAIRWELL DIVE, UNDER THE TABLE
     { name: 'Head house', pos: [-20, SILO.top + 2.6, TOWER.z], yaw: yawTo(-1, 0) },
     // north of the north row, lined up on the 1.6 m gaps: THE SMALL GAP, THREAD THE NEEDLE
@@ -640,9 +658,15 @@ function buildSite(seed = 7) {
   // of the axis from top - 0.5 up to top + 8 (chimney: its rim; stairwell: the head-house floor, so a dive entering
   // the tower from the head house is caught) and let go below `bottom` (chimney: 4 m, free to turn out of the door).
   // rIn = clear radius at the top (the mouth / the well between the landings). take.js: no touchdown CUT within r below top.
+  // dir (C9): 'down' = a dive assist (above). 'up' = a climb assist, the mirror image: `bottom` is the opening (the
+  // underside of the first hole a climb goes through), a held climb is captured within r of the axis below it, steered
+  // onto the axis and let go above `top` (over the last opening); rIn = clear radius of the tightest opening (the hall
+  // roof slot is 2.0 m across x). Read without dir (round-3 flight.js) the 'up' entry is a dive assist down the same
+  // stack from over the roof slot (TRIPLE DROP), which is harmless. take.js: no CUT within r below `top` of any funnel.
   S.funnels = [
-    { name: 'chimney', c: [CHIM.x, CHIM.z], top: CHIM.h, bottom: 4, r: 3.5, rIn: CHIM.rt - CHIM.th },
-    { name: 'stairwell', c: [TOWER.x, TOWER.z], top: SILO.top + 0.4, bottom: 2, r: 3.0, rIn: (TOWER.w - 2 * TOWER.T) / 2 - 0.65 },
+    { name: 'chimney', dir: 'down', c: [CHIM.x, CHIM.z], top: CHIM.h, bottom: 4, r: 3.5, rIn: CHIM.rt - CHIM.th },
+    { name: 'stairwell', dir: 'down', c: [TOWER.x, TOWER.z], top: SILO.top + 0.4, bottom: 2, r: 3.0, rIn: (TOWER.w - 2 * TOWER.T) / 2 - 0.65 },
+    { name: 'hall stack', dir: 'up', c: [STACK[0], STACK[1]], bottom: HALL.fh - 0.35, top: 3 * HALL.fh + 0.5, r: 2.5, rIn: 1.0 },
   ];
   return S;
 }
@@ -674,7 +698,8 @@ function buildLines() {
   const { x0, z0, fh } = HALL, hdx = (HALL.x1 - x0) / (HALL.cols - 1), hdz = (HALL.z1 - z0) / (HALL.rows - 1);
   const sx = x0 + 1.5 * hdx, sz = z0 + 0.5 * hdz;
   const l1 = g([sx, fh - 0.18, sz], [0, 1, 0], hdx - 0.6, hdz - 0.6, [1, 0, 0]), slot = g([sx, 3 * fh - 0.18, sz], [0, 1, 0], 2.0, hdz, [1, 0, 0]);
-  add('TRIPLE POP', 'TRIPLE *POP*!', 2500, slot, { pre: [l1], within: 5 });
+  // via (take.nextHint): from outside, the arrow goes to the rack's entry window first (inside the hall: the hole)
+  add('TRIPLE POP', 'TRIPLE *POP*!', 2500, slot, { pre: [l1], within: 5, via: [{ p: [ENTRY[0], 2.5, ENTRY[1] - 3], unless: [HALL.x0, HALL.x1, 0, 3 * fh + 0.5, z0, HALL.z1] }] });
   add('TRIPLE DROP', 'TRIPLE *DROP*!', 2500, neg(l1), { pre: [neg(slot)], within: 5 });
   // conveyor gallery, mouth to mouth
   {
@@ -691,7 +716,9 @@ function buildLines() {
   add('INTO THE TOWER', 'INTO THE *TOWER*!', 500, g([TOWER.x + TOWER.w / 2, 34.5, TOWER.z], [-1, 0, 0], 2.3, 2.5, [0, 0, 1]), { micro: true });
   // stair shaft: head-house floor -> under the table
   const sw = SHAFT.x1 - SHAFT.x0;
-  add('STAIRWELL DIVE', 'STAIRWELL *DIVE*!', 3000, g([TOWER.x, 4.9, TOWER.z], [0, -1, 0], sw, sw, [1, 0, 0]), { pre: [g([TOWER.x, SILO.top + 0.2, TOWER.z], [0, -1, 0], sw, sw, [1, 0, 0])], within: 9 });
+  add('STAIRWELL DIVE', 'STAIRWELL *DIVE*!', 3000, g([TOWER.x, 4.9, TOWER.z], [0, -1, 0], sw, sw, [1, 0, 0]), { pre: [g([TOWER.x, SILO.top + 0.2, TOWER.z], [0, -1, 0], sw, sw, [1, 0, 0])], within: 9,
+    // via: from outside, over the head-house roof's hole above the shaft (inside the head house: straight to the shaft)
+    via: [{ p: [TOWER.x, SILO.top + 8.3, TOWER.z], unless: [HEAD.x0, HEAD.x1, SILO.top - 0.5, SILO.top + 5.8, HEAD.z0, HEAD.z1] }] });
   // under the silo table, edge to edge (or out of the tower's ground doors)
   const tE = g([-13.6, 2.35, -14], [1, 0, 0], 29, 4.3, [0, 0, 1]), tW = g([-54.4, 2.35, -14], [1, 0, 0], 29, 4.3, [0, 0, 1]);
   const twE = g([TOWER.x + TOWER.w / 2 + 0.2, 2.5, TOWER.z], [1, 0, 0], 2.4, 2.6, [0, 0, 1]), twW = g([TOWER.x - TOWER.w / 2 - 0.2, 2.5, TOWER.z], [-1, 0, 0], 2.4, 2.6, [0, 0, 1]);
@@ -710,14 +737,20 @@ function buildLines() {
   add('SILO CARVE', 'SILO *CARVE*!', 500, { c: [(SILO.x[0] + SILO.x[3]) / 2, (SILO.table + sTop) / 2, SILO.z[0]] },
     { micro: true, carve: { kind: 'orbit', axes: SILO.x.map((x) => [x, SILO.z[0]]), r0: SILO.r + 2, r1: SILO.r + 2, in0: SILO.r, in1: SILO.r, y0: SILO.table, y1: sTop + 2, sweep: Math.PI } });
   add('CHIMNEY CARVE', 'CHIMNEY *CARVE*!', 500, { c: [CHIM.x, 12, CHIM.z] },
-    { micro: true, carve: { kind: 'orbit', axes: [[CHIM.x, CHIM.z]], r0: CHIM.rb + 3.5, r1: CHIM.rt + 3.8, in0: CHIM.rb, in1: CHIM.rt, y0: CHIM.base, y1: CHIM.h + 1, sweep: 2.62 } });
+    { micro: true, carve: { kind: 'orbit', axes: [[CHIM.x, CHIM.z]], r0: CHIM.rb + 5.0, r1: CHIM.rt + 5.0, in0: CHIM.rb, in1: CHIM.rt, y0: CHIM.base, y1: CHIM.h + 1, sweep: 2.27 } });
+  // along the north row's north faces, silo 4's front to silo 3's (either way), within 3.6 m of the faces: the beat
+  // between CHIMNEY CARVE and THE SMALL GAP (design r3 #2: that stretch was 8-9 s with no beat)
+  { const fz = SILO.z[0] - SILO.r, nr = (x, s) => g([x, (SILO.table + SILO.top) / 2, fz - 1.8], [s, 0, 0], 3.6, SILO.top - SILO.table, [0, 0, 1]);
+    add('NORTH ROW', 'THE NORTH *ROW*!', 500, nr(SILO.x[2], -1), { micro: true, pre: [nr(SILO.x[3], -1)], within: 5 });
+    add('NORTH ROW', 'THE NORTH *ROW*!', 500, nr(SILO.x[3], 1), { micro: true, pre: [nr(SILO.x[2], 1)], within: 5 }); }
   // the hall's ground floor, gable door to gable door
   const gd = (x) => g([x, 2.3, z0 + 2 * hdz], [1, 0, 0], hdz * 1.2, 4.2, [0, 0, 1]);
   add('HALL RUN', 'HALL *RUN*!', 2000, gd(HALL.x1), { pre: [gd(x0)], within: 12 });
   add('HALL RUN', 'HALL *RUN*!', 2000, neg(gd(x0)), { pre: [neg(gd(HALL.x1))], within: 12 });
   // across the hall through the two open bays at the end of the track from the spawn
   const win = (z) => g([x0 + 3.5 * hdx, 2.55, z], [0, 0, -1], hdx - 0.6, 2.7, [1, 0, 0]);
-  add('STRAIGHT THROUGH', 'STRAIGHT *THROUGH*!', 1000, win(z0), { pre: [win(HALL.z1)], within: 4 });
+  // first: the line the first-flight toast names ("follow the track into the hall's open bay"), hinted until any is flown
+  add('STRAIGHT THROUGH', 'STRAIGHT *THROUGH*!', 1000, win(z0), { pre: [win(HALL.z1)], within: 4, first: true });
   add('STRAIGHT THROUGH', 'STRAIGHT *THROUGH*!', 1000, neg(win(HALL.z1)), { pre: [neg(win(z0))], within: 4 });
   // the workshop's two doors are in line
   const wd = (z) => g([-53.4, 1.5, z], [0, 0, 1], 2.4, 3.0, [1, 0, 0]);
@@ -2383,8 +2416,10 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
 
   // textures (stream in parallel with the sky)
   const tl = new THREE.TextureLoader(); tl.setCrossOrigin('anonymous');
-  let texDone = 0; const texTotal = Object.values(MATS).reduce((s, m) => s + (m.maps?.length || 0), 0);
-  const loadTex = (url, srgb) => new Promise((res) => tl.load(url, (t) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; if (srgb) t.colorSpace = THREE.SRGBColorSpace; texDone++; res(t); }, undefined, () => { texDone++; res(null); }));
+  // one load per URL (the coping shares the brick's maps: same texture objects, same tile, no extra GPU memory)
+  const texURLs = new Set(Object.values(MATS).flatMap((m) => (m.maps || []).map((map) => texURL(m, map))));
+  let texDone = 0; const texTotal = texURLs.size, texByURL = {};
+  const loadTex = (url, srgb) => (texByURL[url] ||= new Promise((res) => tl.load(url, (t) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; if (srgb) t.colorSpace = THREE.SRGBColorSpace; texDone++; res(t); }, undefined, () => { texDone++; res(null); })));
   const texJobs = {};
   for (const [k, m] of Object.entries(MATS)) {
     const maps = m.maps || [];
@@ -3009,7 +3044,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     scene, colliderScene: colScene, depthScene, bvh, skimBvh, update, hdr: true, stats: bStats,      // [B] depthScene: contract C2
     spawn: new THREE.Vector3(0, terrainHeight(0, 118) + 1.4, 118), yaw: 0,                       // first flight: the reveal
     takeStart: { pos: new THREE.Vector3(...site.takeStart.pos), yaw: site.takeStart.yaw },      // take retries: over the chimney mouth
-    startPoints: site.startPoints.map((s) => ({ name: s.name, pos: new THREE.Vector3(...s.pos), yaw: s.yaw })),   // START AT (C1)
+    startPoints: site.startPoints.map((s) => ({ name: s.name, pos: new THREE.Vector3(...s.pos), yaw: s.yaw, ...(s.hint ? { hint: s.hint } : {}) })),   // START AT (C1)
     funnels: site.funnels,                                                                      // dive assist axes (C1, stream E)
     lines: site.lines,
     bounds: new THREE.Box3(new THREE.Vector3(-480, -5, -480), new THREE.Vector3(480, 260, 480)),
