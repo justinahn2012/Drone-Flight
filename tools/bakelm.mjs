@@ -289,14 +289,22 @@ async function main() {
   for (const G of lay.geos) parts.push([0, G.g.attributes.position.array, G.g.attributes.normal.array, G.g.attributes.uv2.array, G.g.index.array]);
   parts.push([0, geo.terr.attributes.position.array, geo.terr.attributes.normal.array, geo.terr.attributes.uv2.array, geo.terr.index.array]);
   { // the collider's tail after the solids + terrain: the far field and the treeline proxies
-    let solidTris = 0; for (const list of Object.values(geo.site.parts)) for (const e of list) if (e.collide) solidTris += e.g.index.count / 3;
-    const ci = geo.colGeo.index.array, cp = geo.colGeo.attributes.position.array, start = (solidTris + geo.terr.index.count / 3) * 3;
+    // MeshBVH reorders colGeo.index (built without `indirect`), so the tail is found by VERTEX index, never by
+    // triangle position (that picked up a spatial chunk of the hall as shadowless 'leaf': panel round 3, lighting #1)
+    let solidV = 0; for (const list of Object.values(geo.site.parts)) for (const e of list) if (e.collide) solidV += e.g.attributes.position.count;
+    const ci = geo.colGeo.index.array, cp = geo.colGeo.attributes.position.array, vStart = solidV + geo.terr.attributes.position.count;
     const far = [], prox = [];
-    for (let k = start; k < ci.length; k += 3) {
+    let inSite = 0;
+    for (let k = 0; k < ci.length; k += 3) {
       const a = ci[k], b = ci[k + 1], c = ci[k + 2];
+      if (a < vStart) continue;
+      const cx = (cp[a * 3] + cp[b * 3] + cp[c * 3]) / 3, cz = (cp[a * 3 + 2] + cp[b * 3 + 2] + cp[c * 3 + 2]) / 3;
+      if (Math.abs(cx) < 95 && Math.abs(cz) < 65) inSite++;
       const ux = cp[b * 3] - cp[a * 3], uz = cp[b * 3 + 2] - cp[a * 3 + 2], vx = cp[c * 3] - cp[a * 3], vz = cp[c * 3 + 2] - cp[a * 3 + 2];
       (Math.abs(ux * vz - uz * vx) / 2 > 500 ? far : prox).push(a, b, c);
     }
+    if (inSite) throw new Error(`far-field/proxy selection has ${inSite} triangles inside the site: collider tail mis-selected`);
+    log(`collider tail: ${far.length / 3} far-field + ${prox.length / 3} proxy triangles, 0 inside the site`);
     parts.push([1, cp, null, null, Uint32Array.from(far)], [2, cp, null, null, Uint32Array.from(prox)]);
   }
   let NVg = 0, NT = 0; for (const p of parts) { NVg += p[1].length / 3; NT += p[4].length / 3; }

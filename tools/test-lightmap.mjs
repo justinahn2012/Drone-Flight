@@ -37,6 +37,7 @@ const sun = (k) => new THREE.Vector3(...(j?.skies?.[k]?.sunDir || wb.SKIES[k].su
 if (!j) console.log('note: no lm.json in the repo root (run node tools/bakelm.mjs)');
 else {
   const m = wb.lmMatch(j, geo, 'sunny', sun('sunny'));
+  if (!m.ok && !process.argv.includes('--allow-stale')) fails++;   // a stale lightmap = a ~10 s phone load: fail unless explicitly allowed
   console.log(`${m.ok ? 'ok  ' : 'STALE'} committed lm.json (${j.mode}, ${j.date}) vs this geometry: ${m.ok ? 'matches, the game uses the lightmaps' : m.why + ' -> the game bakes per vertex until node tools/bakelm.mjs is re-run'}`);
 }
 // mismatch -> fallback (against a synthetic lm.json for this exact geometry)
