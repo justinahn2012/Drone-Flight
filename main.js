@@ -782,6 +782,7 @@ function saveClip(kind = 'last', from = null) {
   replay = { clip: C, k: -1, i: -1, t: 0, dur: C.dur, wall0: performance.now() / 1000, prev: state, stream, vt, st: null, W,
     letterbox: fpv.look.letterbox, targetMs: fpv.targetMs };
   renderer.setSize(W, W, false); fpv.resize(W, W); fpv.look.letterbox = 0; fpv.targetMs = 1000 / CLIP_FPS; fpv.resetExposure = true;
+  const r0 = replay; r0.stopTm = setTimeout(() => { if (replay === r0) endReplay(); }, Math.round((C.dur + 1.5 / CLIP_FPS) * 1000));   // ends on time even if frames run slow
   state = 'replay'; controls.enabled = false; controls.cancelAll?.();
   $('crashBar').classList.add('hidden'); $('banner').classList.add('hidden');
   comp.classList.remove('hidden'); fitComp(true); document.body.classList.add('replaying');
@@ -824,7 +825,7 @@ function replayPose(f) {
 }
 function endReplay(cancel = false) {
   if (!replay) return;
-  const r = replay; replay = null;
+  const r = replay; replay = null; clearTimeout(r.stopTm);
   if (cancel && recorder) { recorder.onstop = null; recorder.ondataavailable = null; recChunks = []; }
   try { recorder?.stop(); } catch (e) {}
   r.stream?.getVideoTracks().forEach((t) => t.stop());   // the canvas track only: the audio track is shared by every clip
@@ -963,7 +964,7 @@ function showClip(blob, info = {}) {
   $('clipShare').textContent = canShare ? 'SAVE VIDEO' : 'DOWNLOAD';
   a.classList.toggle('hidden', !canShare);
   const nc = info.caps?.length || 0;
-  $('clipMeta').textContent = `${fmtS(info.dur || 0)} · ${info.W}×${info.H} · 30p${info.sigma > 0 ? ' · stabilised' : ''}${nc ? ` · ${nc} caption${nc > 1 ? 's' : ''}` : ''}`;
+  $('clipMeta').textContent = `${fmtS(Math.round(info.dur || 0))} · ${info.W}×${info.H} · 30p${info.sigma > 0 ? ' · stabilised' : ''}${nc ? ` · ${nc} caption${nc > 1 ? 's' : ''}` : ''}`;
   syncCuts();
   pauseForClip();
   $('clip').classList.remove('hidden'); comp.classList.add('hidden'); fitComp(false);
