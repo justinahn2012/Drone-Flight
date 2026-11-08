@@ -153,19 +153,20 @@ export class Take {
   // [P2-F1] the tuning in force (TAKE_TUNING merged with world.tuning at the last update / lineList): the UI reads its
   // stars, bankT and cutT from here (TAKE_TUNING is bando's)
   get tuning() { return this._T; }
-  // [P2-F1 UX #2] the line in progress: its pre-gate crossed the right way and its window (`within`) still open, the most
-  // recently armed one: {name, caption, left (s to its main gate), within (s), frac (0..1 of the window used), repeat
-  // (already flown this take)} or null. The OSD shows "HONGIK-RO · 0:18". With tuning.armHold the bank timer waits.
+  // [P2-F1 UX #2] the line in progress: its pre-gate crossed the right way and its window (`within`) still open; a named
+  // line before a micro (a street's segments arm and fire under its named line), then the most recently armed:
+  // {name, caption, left (s to its main gate), within (s), frac (0..1 of the window used), repeat (already flown this
+  // take), micro} or null. The OSD shows "HONGIK-RO · 0:18". With tuning.armHold the bank timer waits while any is armed.
   get armed() {
     let best = null;
     for (const [k, r] of this._pre) {
       const L = this._lines[(k / 8) | 0]; if (!L || (!L.l.two && r.s !== 1)) continue;
-      const within = L.l.within ?? 6, left = within - (this._now - r.t);
-      if (left > 0 && (!best || r.t > best.t)) best = { t: r.t, L, within, left };
+      const within = L.l.within ?? 6, left = within - (this._now - r.t), named = !L.l.micro;
+      if (left > 0 && (!best || (named && !best.named) || (named === best.named && r.t > best.t))) best = { t: r.t, L, within, left, named };
     }
     if (!best || this._state === 'done') return null;
     const l = best.L.l;
-    return { name: l.name, caption: l.caption || l.name, left: +best.left.toFixed(2), within: best.within, frac: +Math.min(1, 1 - best.left / best.within).toFixed(3), repeat: this._done.has(l.name) };
+    return { name: l.name, caption: l.caption || l.name, left: +best.left.toFixed(2), within: best.within, frac: +Math.min(1, 1 - best.left / best.within).toFixed(3), repeat: this._done.has(l.name), micro: !!l.micro };
   }
   _armedAny() {
     for (const [k, r] of this._pre) { const L = this._lines[(k / 8) | 0]; if (L && (L.l.two || r.s === 1) && this._now - r.t < (L.l.within ?? 6)) return true; }
