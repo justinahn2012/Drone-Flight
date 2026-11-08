@@ -9,15 +9,17 @@
 <meta name="apple-mobile-web-app-title" content="One Take">
 <meta name="theme-color" content="#000000">
 <title>One Take — FPV</title>
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<!-- Montserrat 900 = the reference Short's caption face; its woff2 only downloads once a caption is drawn -->
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700;800&family=JetBrains+Mono:wght@400;600&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+<!-- Montserrat 900 = the reference Short's caption face; its woff2 only downloads once a caption is drawn. Barlow 500 = menu body text -->
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@500&family=Barlow+Condensed:wght@500;700;800&family=JetBrains+Mono:wght@400;600&family=Montserrat:wght@900&display=swap" rel="stylesheet">
 <style>
 :root{
   --bg:#07080a; --ink:#f2efe9; --mute:#8c8a86; --line:#2a2c31; --panel:#111316;
   --rec:#ff3b30; --amber:#ffb020; --acc:#E75211; --oled:#9fe7ff; --vh:100%;
-  --cond:'Barlow Condensed',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+  --cond:'Barlow Condensed','Avenir Next Condensed','HelveticaNeue-CondensedBold',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+  --body:'Barlow',system-ui,-apple-system,sans-serif;
   --cap:'Montserrat','Barlow Condensed',system-ui,sans-serif;
   /* HD-OSD hard keyline (Betaflight/DJI/Walksnail style) */
   --key:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 0 3px rgba(0,0,0,.55);
@@ -49,14 +51,46 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 #osd .bl{left:calc(14px + var(--sl));bottom:calc(10px + var(--sb))}
 #osd .bc{left:50%;bottom:calc(10px + var(--sb));transform:translateX(-50%)}
 #osd .br{right:calc(14px + var(--sr));bottom:calc(10px + var(--sb))}
-#osd .tl{left:calc(112px + var(--sl));top:calc(19px + var(--st))}
+#osd .tl{left:calc(162px + var(--sl));top:calc(19px + var(--st))}
 #osd small{font-size:.72em;opacity:.85}
+/* OSD glyphs (Betaflight HD / Walksnail style): white line art with the same hard black keyline as the text */
+.ic{display:inline-block;width:1em;height:1em;vertical-align:-.16em;margin-right:.16em;overflow:visible}
+.ic.n{width:.66em}
+.ic .kb,.ic .kw{fill:none;stroke-linecap:round;stroke-linejoin:round}
+.ic .kb{stroke:#000;stroke-width:3.6}
+.ic .kw{stroke:#fff;stroke-width:1.6}
+.ic .f{fill:#fff;stroke:none}
+.ic .fk{fill:#fff;stroke:#000;stroke-width:1.4;paint-order:stroke}
 #score{font:700 30px/1 var(--cond);letter-spacing:.02em;font-feature-settings:"tnum"}
 #best{font-size:calc(var(--cell)*.78);opacity:.9}
 #takeTag{display:none;align-items:center;gap:6px}
 #takeTag b{width:9px;height:9px;border-radius:50%;background:#fff;box-shadow:0 0 0 1px #000}
 #takeTag.live b{background:var(--rec);animation:blink 1s steps(2) infinite}
 #takeTag.on{display:flex}
+/* CUT countdown: the dot becomes a ring that drains to the CUT (C: take.cutIn) */
+#takeTag .ring{display:none;width:1.1em;height:1.1em;transform:rotate(-90deg);overflow:visible}
+#takeTag .ring circle{fill:none}
+#takeTag .ring .kb{stroke:#000;stroke-width:5}
+#takeTag .ring .tk{stroke:rgba(255,255,255,.28);stroke-width:2.6}
+#takeTag .ring .kw{stroke:#fff;stroke-width:2.6;stroke-dasharray:47.12;stroke-dashoffset:0}
+#takeTag.cut b{display:none}
+#takeTag.cut .ring{display:block}
+/* the countdown also shows over Clean and portrait (no silent CUT) */
+body.nohud.cutting #osd,body.portrait.cutting #osd{display:block}
+body.nohud.cutting #osd .o:not(.tl),body.portrait.cutting #osd .o:not(.tl){display:none}
+/* next line: home-arrow to the nearest unflown line (until 3 lines have ever been flown) */
+#osd .tn{left:50%;top:calc(14px + var(--st) + var(--cell)*1.3);transform:translateX(-50%);font-size:calc(var(--cell)*.86)}
+#oNext{display:none;align-items:center;gap:.35em}
+#oNext.on{display:flex}
+#oNextA{width:1.2em;height:1.2em;margin:0;overflow:visible;transition:transform .12s}
+#oNext .d{opacity:.9}
+/* near a line (< 25 m, in view): a chevron over its first gate, projected through the lens. OSD only, never in clips */
+#oChev{left:0;top:0;display:none;flex-direction:column;align-items:center;gap:1px;will-change:transform;font-size:calc(var(--cell)*.78)}
+#oChev.on{display:flex}
+#oChev svg{width:26px;height:15px;overflow:visible}
+#oChev .kb,#oChev .kw{fill:none;stroke-linecap:round;stroke-linejoin:round}
+#oChev .kb{stroke:#000;stroke-width:5.4}
+#oChev .kw{stroke:#fff;stroke-width:2.6}
 #oThr{display:none;width:10px;background:rgba(0,0,0,.35);height:clamp(90px,34vh,150px);border:1.5px solid #fff;box-shadow:0 0 0 1px #000,inset 0 0 0 1px #000;position:absolute}
 #oThr i{position:absolute;left:0;right:0;bottom:0;background:#fff}
 #oThr u{position:absolute;left:-6px;right:-6px;height:2px;background:var(--acc);box-shadow:0 0 0 1px #000}
@@ -66,16 +100,24 @@ body.hud-min #osd .o:not(.tr):not(.tl){display:none}
 body.nohud #osd, body.nohud #live{display:none}
 body.portrait #osd{display:none}
 
-#live{position:absolute;left:50%;bottom:calc(9% + var(--sb));transform:translateX(-50%);font:600 var(--cell) var(--mono);color:#fff;
-  text-shadow:var(--key);opacity:0;transition:opacity .2s;white-space:nowrap}
-#live.show{opacity:.7}
+/* lower third, bottom up: OSD clock, live FLOW chain + bank drain bar, line caption. Nothing overlaps, and the chain
+   stays up under captions so you can see the bank timer. Portrait: the view ends above the radio, so no --sb. */
+#live{position:absolute;left:50%;bottom:calc(var(--sb) + 10px + var(--cell)*1.15 + 14px);transform:translateX(-50%);font:600 var(--cell) var(--mono);color:#fff;
+  text-shadow:var(--key);opacity:0;transition:opacity .2s;white-space:nowrap;min-width:9em;text-align:center}
+#live.show{opacity:.86}
+#live i{display:block;height:2px;margin:4px auto 0;background:#fff;box-shadow:0 0 0 1px #000;transform-origin:50% 50%;transform:scaleX(0)}
+#live i.low{background:var(--acc)}
+#live i.hold{background:#fff;box-shadow:0 0 0 1px #000,0 0 6px 1px rgba(255,255,255,.75)}
 #live em,#pop em{font-style:normal;color:var(--acc)}
 /* line captions: Shorts style, lower third */
-#pop{position:absolute;left:50%;bottom:calc(9% + var(--sb));transform:translateX(-50%);text-align:center;opacity:0;width:max-content;max-width:94%}
+#pop{position:absolute;left:50%;bottom:calc(var(--sb) + 10px + var(--cell)*2.15 + 30px);transform:translateX(-50%);text-align:center;opacity:0;width:max-content;max-width:94%}
+body.portrait #live{bottom:14px}
+body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 #pop .cap{font:900 clamp(26px,min(7.6vh,7.2vw),46px)/1.06 var(--cap);color:#fff;text-shadow:var(--stroke);letter-spacing:.005em;text-transform:uppercase}
 #pop .emo{display:block;font-size:1.25em;line-height:1.05;text-shadow:none}
 #pop .sub{margin-top:6px;font:600 var(--cell) var(--mono);color:#fff;text-shadow:var(--key);letter-spacing:.04em}
 #pop.score .cap{display:none}
+#pop .sub b{font-weight:600;color:var(--amber)}
 #pop.show{animation:popA var(--popDur,1.3s) cubic-bezier(.2,.8,.2,1) forwards}
 @keyframes popA{0%{transform:translateX(-50%) scale(1.25);opacity:0}12%{transform:translateX(-50%) scale(1);opacity:1}80%{opacity:1}100%{transform:translateX(-50%) scale(1);opacity:0}}
 /* warnings: Betaflight-style blinking centre text */
@@ -87,48 +129,68 @@ body.portrait #osd{display:none}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 @keyframes blink{50%{opacity:.15}}
 
-#btnMenu,#btnReset{position:absolute;top:calc(8px + var(--st));width:44px;height:44px;border-radius:11px;background:rgba(0,0,0,.32);
+#btnMenu,#btnReset,#btnClip{position:absolute;top:calc(8px + var(--st));width:44px;height:44px;border-radius:11px;background:rgba(0,0,0,.32);
   backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:grid;place-items:center;pointer-events:auto;opacity:.8}
 #btnMenu{left:calc(8px + var(--sl))}
 #btnReset{left:calc(58px + var(--sl))}
+#btnClip{left:calc(108px + var(--sl))}
 #btnMenu span{display:block;width:16px;height:2px;background:#fff;box-shadow:0 5px 0 #fff,0 -5px 0 #fff}
-#btnReset svg{width:20px;height:20px}
-body.portrait #btnReset{display:none}
+#btnReset svg,#btnClip svg{width:20px;height:20px}
+body.portrait #btnReset,body.portrait #btnClip{display:none}
 body.portrait #osd .tl{left:calc(62px + var(--sl))}
 
 /* floating sticks (landscape). controls.js sets --R (px) on .float */
 .float{position:absolute;left:0;top:0;width:0;height:0;opacity:0;pointer-events:none;transition:opacity .2s}
 .float::before{content:"";position:absolute;width:calc(var(--R,60px)*2);height:calc(var(--R,60px)*2);left:calc(var(--R,60px)*-1);top:calc(var(--R,60px)*-1);
-  border-radius:28%;border:1.5px solid rgba(255,255,255,.28);box-shadow:0 0 0 1px rgba(0,0,0,.28),inset 0 0 0 1px rgba(0,0,0,.18)}
+  border-radius:16%;border:1.5px solid rgba(255,255,255,.28);box-shadow:0 0 0 1px rgba(0,0,0,.28),inset 0 0 0 1px rgba(0,0,0,.18)}
 .float i{position:absolute;width:44px;height:44px;left:-22px;top:-22px;border-radius:50%;background:rgba(255,255,255,.18);border:1.5px solid rgba(255,255,255,.45);box-shadow:0 0 0 1px rgba(0,0,0,.25)}
 body.nosticks .float{display:none}
 /* first-flight ghost gates */
 #ghost{position:absolute;inset:0;pointer-events:none;display:none}
-body.coach:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
-.gg{position:absolute;width:0;height:0;opacity:.4;transition:opacity .5s}
+body.coaching:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
+/* labels at full opacity (legible keyline text); only the outlines are ghosted */
+.gg{position:absolute;width:0;height:0;opacity:1;transition:opacity .5s}
 .gg::before{content:"";position:absolute;width:calc(var(--R,76px)*2);height:calc(var(--R,76px)*2);left:calc(var(--R,76px)*-1);top:calc(var(--R,76px)*-1);
-  border-radius:28%;border:1.5px dashed rgba(255,255,255,.85);box-shadow:0 0 0 1px rgba(0,0,0,.2)}
-.gg::after{content:"";position:absolute;width:40px;height:40px;left:-20px;top:-20px;border-radius:50%;border:1.5px solid rgba(255,255,255,.7)}
+  border-radius:16%;border:1.5px dashed rgba(255,255,255,.85);box-shadow:0 0 0 1px rgba(0,0,0,.2);opacity:.45}
+.gg::after{content:"";position:absolute;width:40px;height:40px;left:-20px;top:-20px;border-radius:50%;border:1.5px solid rgba(255,255,255,.7);opacity:.45}
 .gg span{position:absolute;top:calc(var(--R,76px) + 8px);left:0;transform:translateX(-50%);font:600 12px var(--mono);letter-spacing:.08em;white-space:nowrap;color:#fff;text-shadow:var(--key)}
 .gg.done,.gg.held{opacity:0}
 #gL{left:23%;top:62%} #gR{left:77%;top:62%}
 
 /* crash / cut summary card (Betaflight post-flight STATS) */
 #banner{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;width:min(440px,calc(100% - 32px))}
-#banner .card{background:rgba(0,0,0,.52);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.1);
-  border-radius:8px;padding:14px 20px 16px;text-shadow:0 1px 2px rgba(0,0,0,.5)}
+/* the card takes its own touches (class ui): a stray tap on it never retries and never throws away the take's clip */
+#banner .card{background:rgba(8,9,11,.70);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.1);
+  border-radius:8px;padding:14px 20px 16px;text-shadow:0 1px 2px rgba(0,0,0,.5);pointer-events:auto}
+.bhead{display:flex;align-items:center;justify-content:space-between;gap:12px}
 #bTitle{margin:0;font:800 36px/1 var(--cond);letter-spacing:.06em}
 #bTitle.cut{color:#fff}
 #bTitle.crash{color:#fff}
 #bTitle em{font-style:normal;color:var(--acc)}
 .bsub{margin-top:5px;font:600 12px var(--mono);color:#d8d5cf;letter-spacing:.04em}
 .stats{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px 12px;margin-top:12px;font:600 15px var(--mono);font-feature-settings:"tnum"}
-.stats span{color:#a3a09a;font-size:12px;letter-spacing:.08em;align-self:center}
+.stats span{color:#c6c3bc;font-size:12px;letter-spacing:.08em;align-self:center}
 .stats b{font-weight:600;color:#fff;text-align:right;white-space:nowrap}
-.stats b em{font-style:normal;color:var(--acc)}
-.blines{margin-top:8px;font:600 12px var(--mono);color:#cfccc6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stats b em,.blines em{font-style:normal;color:#fff;background:var(--acc);padding:0 .3em;border-radius:3px;text-shadow:none}
+.blines{margin-top:8px;font:600 12px var(--mono);color:#e2dfd9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.blines em{font-size:10px;letter-spacing:.06em;vertical-align:1px}
+.bnext{margin-top:6px;font:500 14px/1.35 var(--body);color:#c6c3bc}
+.bnext b{font:700 15px var(--cond);letter-spacing:.04em;color:#fff}
+.bnext:empty{display:none}
+/* 3-star targets per take */
+.stars{display:inline-flex;align-items:center;gap:3px;flex:none}
+.stars svg{width:20px;height:20px;overflow:visible}
+.stars path{fill:none;stroke:#8c8a86;stroke-width:1.3;stroke-linejoin:round}
+.stars .on path{fill:var(--amber);stroke:#000;stroke-width:1.2;paint-order:stroke}
+.stars small{margin-left:5px;font:600 11px var(--mono);letter-spacing:.06em;color:#c6c3bc}
+/* summary up: the OSD steps back (tag stays), no stick rings */
+body.sumup #osd .o:not(.tl){opacity:.25}
+body.sumup .float{display:none}
+/* chain / caption / warning sit where the card is: gone at once (no fade bleeding through the scrim) */
+body.sumup #live,body.sumup #pop,body.sumup #warn{visibility:hidden;transition:none}
 #crashBar{display:flex;gap:10px;margin-top:14px}
-#crashBar .pill{flex:1;pointer-events:auto}
+#crashBar .pill{flex:1;pointer-events:auto;-webkit-backdrop-filter:none;backdrop-filter:none}
+#crashBar .pill:not(.hot){background:rgba(255,255,255,.08)}
 .pill{min-height:48px;padding:10px 18px;border-radius:999px;background:rgba(10,10,12,.72);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
   border:1px solid rgba(255,255,255,.16);font-weight:700;font-size:17px;letter-spacing:.08em;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;color:var(--ink)}
 .pill.hot{background:var(--ink);color:#000;border-color:var(--ink)}
@@ -144,7 +206,7 @@ body.coach:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 #recCancel{min-height:44px;padding:0 16px;border-radius:999px;background:rgba(255,255,255,.14);font:600 13px var(--mono);letter-spacing:.08em}
 body.replaying #recBar{display:flex}
 body.replaying #osd, body.replaying #pop, body.replaying #live, body.replaying #warn, body.replaying #ghost,
-body.replaying #btnMenu, body.replaying #btnReset, body.replaying .float{display:none}
+body.replaying #btnMenu, body.replaying #btnReset, body.replaying #btnClip, body.replaying .float{display:none}
 
 /* ---------- Radio (portrait) ---------- */
 #radio{position:absolute;left:0;right:0;bottom:0;display:none;padding:10px 12px calc(14px + var(--sb));
@@ -156,7 +218,7 @@ body.portrait #radio{display:grid;grid-template-columns:1fr 1fr;grid-template-ro
 /* --radioH is set by layout(); controls.js sets --R (px, stick throw) on .well */
 .well{position:relative;width:min(calc(50vw - 18px),calc(var(--radioH,420px) - 150px),260px);aspect-ratio:1;border-radius:24%;margin-bottom:18px;
   background:linear-gradient(160deg,#050506,#1b1c20);box-shadow:inset 0 3px 10px #000, inset 0 -1px 0 #2c2e33, 0 1px 0 #3a3c42}
-.well::before{content:"";position:absolute;inset:calc(50% - var(--R,32%));border-radius:28%;border:1px solid #33363c;
+.well::before{content:"";position:absolute;inset:calc(50% - var(--R,32%));border-radius:16%;border:1px solid #33363c;
   background:radial-gradient(circle,#202227 0 30%,#141518 31% 100%)}
 .well::after{content:"";position:absolute;inset:12%;pointer-events:none;
   background:linear-gradient(transparent,#34373d,transparent) center/1px 100% no-repeat,linear-gradient(90deg,transparent,#34373d,transparent) center/100% 1px no-repeat}
@@ -184,13 +246,45 @@ body.portrait #radio{display:grid;grid-template-columns:1fr 1fr;grid-template-ro
 #menu{position:fixed;inset:0;z-index:10;overflow:auto;touch-action:pan-y;-webkit-overflow-scrolling:touch;
   background:linear-gradient(180deg,rgba(7,8,10,.80),rgba(7,8,10,.94) 60%);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
   padding:calc(22px + var(--st)) calc(20px + var(--sr)) 0 calc(20px + var(--sl))}
-.wrap{max-width:860px;margin:0 auto;padding-bottom:calc(18px + var(--sb))}
+/* first menu: a still of the site under the type (paused: the frozen live frame under the blur instead) */
+body:not(.paused) #menu{background:linear-gradient(180deg,rgba(7,8,10,.5),rgba(7,8,10,.94) 60%),url(hero.jpg) center/cover no-repeat #07080a;
+  -webkit-backdrop-filter:none;backdrop-filter:none}
+.wrap{max-width:860px;margin:0 auto;padding-bottom:calc(18px + var(--sb));display:flex;flex-direction:column}
+/* order: header block, (paused: START AT + LINES first), then world/game/flight, lines, FLY, settings */
+.wrap>*{order:2}
+.wrap>.head{order:0}
+body.paused #linesSec{order:1}
 .brand{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.strip{display:flex;align-items:center;gap:6px 12px;flex-wrap:wrap;margin-top:8px;font:600 12px var(--mono);letter-spacing:.16em;color:#d6d3cd;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.strip b{font-weight:600;color:#fff}
+.strip i{font-style:normal;opacity:.5}
+.strip .stars svg{width:14px;height:14px}
+.a2hs{display:flex;align-items:center;gap:10px;margin-top:10px;padding:2px 2px 2px 12px;border-radius:10px;max-width:520px;
+  background:rgba(17,19,22,.82);border:1px solid var(--line);font:500 15px/1.3 var(--body);color:#c6c3bc}
+.a2hs svg{flex:none;width:20px;height:20px}
+.a2hs b{font-weight:500;color:var(--ink)}
+.a2hs button{flex:none;margin-left:auto;width:44px;height:44px;font:400 24px/1 var(--body);color:#8c8a86}
+#starts button{color:var(--ink)}
+#starts button.on{color:#000}
+.lines{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:6px}
+.ln{position:relative;min-height:46px;padding:7px 10px 7px 32px;border-radius:9px;background:rgba(17,19,22,.82);border:1px solid var(--line)}
+.ln svg{position:absolute;left:10px;top:10px;width:14px;height:14px}
+.ln svg rect{fill:none;stroke:#55575d;stroke-width:1.5}
+.ln svg path{display:none;fill:none;stroke:#000;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.ln b{display:block;font:700 15px/1.15 var(--cond);letter-spacing:.04em;color:#9a978f}
+.ln small{display:block;margin-top:1px;font:500 12px/1.3 var(--body);color:#86837d}
+.ln.on b{color:var(--ink)}
+.ln.on small{font:600 11px/1.4 var(--mono);letter-spacing:.06em;color:var(--amber)}
+.ln.on svg rect{fill:var(--ink);stroke:var(--ink)}
+.ln.on svg path{display:block}
+.ln.next{border-color:var(--acc)}
+.ln.next b::after{content:"NEXT";margin-left:7px;padding:1px 5px;border-radius:3px;background:var(--acc);color:#fff;font:600 10px var(--mono);letter-spacing:.08em;vertical-align:2px}
 .brand h1{margin:0;font-weight:800;font-size:clamp(44px,min(13vw,15vh),104px);line-height:.86;letter-spacing:-.01em}
 .brand .tag{font-family:var(--mono);font-size:12px;padding:3px 7px;border:1px solid var(--rec);color:var(--rec);border-radius:4px;letter-spacing:.14em}
 .brand .paused{display:none;font:600 12px var(--mono);letter-spacing:.16em;color:var(--ink);opacity:.8}
 body.paused .brand .paused{display:inline}
-.lede{margin:10px 0 8px;font-family:var(--mono);font-size:12px;color:var(--mute);max-width:520px;line-height:1.6}
+.lede{margin:10px 0 4px;max-width:520px}
+.lede,.hint{font:500 15px/1.42 var(--body);color:#a29f99}
 .sec{font-family:var(--mono);font-size:12px;letter-spacing:.16em;color:var(--mute);margin:16px 0 8px;text-transform:uppercase}
 .cols{display:grid;grid-template-columns:minmax(0,1fr);gap:0 28px}
 @media (min-width:640px){.cols{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
@@ -202,14 +296,21 @@ body.paused .brand .paused{display:inline}
 #worlds{display:grid;gap:8px}
 .seg{display:inline-flex;padding:3px;border-radius:11px;background:var(--panel);border:1px solid var(--line);flex-wrap:wrap}
 .world .seg{background:#0b0c0e}
-.seg button{min-height:44px;padding:10px 14px;border-radius:8px;font-size:16px;font-weight:600;letter-spacing:.03em;color:#a3a09a}
+.seg button{min-height:44px;padding:10px 14px;border-radius:8px;font-size:16px;font-weight:700;letter-spacing:.03em;color:#a3a09a}
 .seg button.on{background:var(--ink);color:#000}
-.hint{font-family:var(--mono);font-size:12px;color:var(--mute);margin-top:7px;line-height:1.5;max-width:560px}
+.hint{margin-top:7px;max-width:560px}
+.hint b{font-weight:500;color:var(--ink)}
+/* sticky FLY bar: the fade runs the full width (border-image outset is ink overflow, so no scrollbar) */
 .cta{position:sticky;bottom:0;z-index:2;display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px -4px 0;
-  padding:14px 4px calc(12px + var(--sb));background:linear-gradient(rgba(7,8,10,0),rgba(7,8,10,.96) 32%)}
+  padding:14px 4px calc(12px + var(--sb));background:none;border-image:linear-gradient(rgba(7,8,10,0),rgba(7,8,10,.96) 32%) fill 0//0 100vw}
 .hotbtn{min-height:54px;padding:12px 34px;border-radius:999px;background:var(--rec);color:#fff;font-weight:800;font-size:24px;letter-spacing:.12em;
   box-shadow:0 8px 30px rgba(255,59,48,.35)}
-.ghost{min-height:48px;padding:11px 18px;border-radius:999px;border:1px solid #3a3c42;font-weight:600;font-size:17px;color:var(--ink);background:rgba(7,8,10,.6)}
+.ghost{min-height:48px;padding:11px 18px;border-radius:999px;border:1px solid #3a3c42;font-weight:700;font-size:17px;color:var(--ink);background:rgba(7,8,10,.6)}
+@media (max-width:480px){
+  body.paused .cta{display:grid;grid-template-columns:1fr 1fr}
+  body.paused .cta .hotbtn{grid-column:1/-1}
+  .brand .paused{order:3;flex-basis:100%}
+}
 .rows{display:grid;grid-template-columns:auto 1fr;gap:10px 16px;align-items:center}
 .rows label{font-family:var(--mono);font-size:12px;color:var(--mute);letter-spacing:.06em}
 input[type=range]{width:min(260px,100%);accent-color:var(--ink);height:32px}
@@ -278,26 +379,29 @@ body.dev .dev{display:revert!important}
     <canvas id="comp" class="hidden"></canvas>
     <div id="hud">
       <div id="osd">
-        <div class="o tl" id="takeTag"><b></b><span id="takeTxt">TAKE</span></div>
-        <div class="o tc" id="oLQ">LQ 100</div>
+        <div class="o tl" id="takeTag"><b></b><svg class="ring" viewBox="0 0 20 20" aria-hidden="true"><circle class="kb" cx="10" cy="10" r="7.5"/><circle class="tk" cx="10" cy="10" r="7.5"/><circle class="kw" id="cutArc" cx="10" cy="10" r="7.5"/></svg><span id="takeTxt">READY</span></div>
+        <div class="o tc" id="oLQ"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><g class="kb"><path d="M8 7v7.6M5.2 14.6h5.6M5 3a4.4 4.4 0 0 0 0 6.2M11 3a4.4 4.4 0 0 1 0 6.2"/></g><g class="kw"><path d="M8 7v7.6M5.2 14.6h5.6M5 3a4.4 4.4 0 0 0 0 6.2M11 3a4.4 4.4 0 0 1 0 6.2"/></g><circle class="fk" cx="8" cy="6.1" r="1.5"/></svg>LQ <span id="oLQv">100</span></div>
+        <div class="o tn" id="oNext"><svg id="oNextA" class="ic" viewBox="0 0 16 16" aria-hidden="true"><path class="fk" style="stroke-width:1.6" d="M8 1.6l5.4 11.6L8 10.4l-5.4 2.8z"/></svg><span id="oNextN"></span><span class="d" id="oNextD"></span></div>
         <div class="o tr"><div id="score">0</div><div id="best"></div></div>
-        <div class="o rm" id="oAlt">0.0<small>M</small></div>
+        <div class="o rm"><svg class="ic n" viewBox="0 0 10 16" aria-hidden="true"><g class="kb"><path d="M5 12.6V3.2M1.9 6.3L5 3.2l3.1 3.1M1.2 14.8h7.6"/></g><g class="kw"><path d="M5 12.6V3.2M1.9 6.3L5 3.2l3.1 3.1M1.2 14.8h7.6"/></g></svg><span id="oAlt">0.0</span><small>M</small></div>
         <div class="o lm" id="oThr"><i></i><u></u></div>
-        <div class="o bl"><div id="oMode">CINE</div><div id="oVolt">16.8<small>V</small></div></div>
-        <div class="o bc" id="tmr">00:00</div>
-        <div class="o br" id="spd">0 <small>KM/H</small></div>
+        <div class="o bl"><div id="oMode">CINE</div><div><svg class="ic n" id="oBat" viewBox="0 0 11 16" aria-hidden="true"><g class="kb"><path d="M4 1.3h3M1.6 2.7h7.8v12.1H1.6z"/></g><g class="kw"><path d="M4 1.3h3M1.6 2.7h7.8v12.1H1.6z"/></g><rect class="f" x="3.6" y="11.6" width="3.8" height="1.3"/><rect class="f" x="3.6" y="9.85" width="3.8" height="1.3"/><rect class="f" x="3.6" y="8.1" width="3.8" height="1.3"/><rect class="f" x="3.6" y="6.35" width="3.8" height="1.3"/><rect class="f" x="3.6" y="4.6" width="3.8" height="1.3"/></svg><span id="oVolt">25.2</span><small>V</small></div></div>
+        <div class="o bc"><svg class="ic" viewBox="0 0 14 16" aria-hidden="true"><g class="kb"><path d="M7 15a5.3 5.3 0 1 0 0-10.6A5.3 5.3 0 0 0 7 15zM7 9.7V7.2M5.4 1.6h3.2M7 1.6v2.6"/></g><g class="kw"><path d="M7 15a5.3 5.3 0 1 0 0-10.6A5.3 5.3 0 0 0 7 15zM7 9.7V7.2M5.4 1.6h3.2M7 1.6v2.6"/></g></svg><span id="tmr">00:00</span></div>
+        <div class="o br"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><g class="kb"><path d="M2.4 13a6.2 6.2 0 1 1 11.2 0M8 10.6l3.2-3.8"/></g><g class="kw"><path d="M2.4 13a6.2 6.2 0 1 1 11.2 0M8 10.6l3.2-3.8"/></g></svg><span id="spd">0</span> <small>KM/H</small></div>
+        <div class="o" id="oChev"><span id="oChevD"></span><svg viewBox="0 0 26 15" aria-hidden="true"><path class="kb" d="M3 3l10 9 10-9"/><path class="kw" d="M3 3l10 9 10-9"/></svg></div>
       </div>
       <div id="ghost"><div class="gg" id="gL"><span id="gLt">CLIMB · TURN</span></div><div class="gg" id="gR"><span id="gRt">SPEED · CARVE</span></div></div>
-      <div id="live"></div>
+      <div id="live"><span id="liveT"></span><i id="drain"></i></div>
       <div id="pop"><div class="cap"></div><div class="sub"></div></div>
       <div id="warn"></div>
       <div id="toast"></div>
       <div id="recBar" class="ui"><b></b><span id="recT">REPLAY 0:00 / 0:00</span><span class="prog"><i id="recP"></i></span><button id="recCancel" class="ui">CANCEL</button></div>
-      <div id="banner" class="hidden"><div class="card">
-        <h2 id="bTitle">CRASHED</h2>
+      <div id="banner" class="hidden"><div class="card ui">
+        <div class="bhead"><h2 id="bTitle">CRASHED</h2><div class="stars" id="bStars"></div></div>
         <div class="bsub" id="bSub"></div>
         <div class="stats" id="bStats"></div>
         <div class="blines" id="bLines"></div>
+        <div class="bnext" id="bNext"></div>
         <div id="crashBar" class="hidden">
           <button class="pill hot ui" id="cReset">RETRY</button>
           <button class="pill ui" id="cClip">CLIP</button>
@@ -309,6 +413,7 @@ body.dev .dev{display:revert!important}
     <div class="float" id="fR"><i></i></div>
     <button id="btnMenu" class="ui" aria-label="Menu"><span></span></button>
     <button id="btnReset" class="ui" aria-label="Reset (hold: back to start)"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5"/></svg></button>
+    <button id="btnClip" class="ui" aria-label="Clip"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round"><rect x="2.5" y="6.5" width="13" height="11" rx="2.2"/><path d="M15.5 10.3l5.5-3.1v9.6l-5.5-3.1z"/><circle cx="9" cy="12" r="2.3" fill="#ff3b30" stroke="none"/></svg></button>
   </div>
   <div id="radio">
     <div class="well" id="wL"><div class="top" id="tL"></div><div class="wlabel" id="lblL">CLIMB · TURN</div></div>
@@ -326,8 +431,15 @@ body.dev .dev{display:revert!important}
 
 <div id="menu" class="ui">
   <div class="wrap">
-    <div class="brand"><h1>ONE TAKE</h1><span class="tag">FPV</span><span class="paused">PAUSED</span></div>
-    <p class="lede">An abandoned industrial site, wide open. Silos, a chimney you can dive, a factory hall full of holes. Seen through a real camera — shutter, lens, exposure, noise. Fly the named lines in one take.</p>
+    <div class="brand head"><h1>ONE TAKE</h1><span class="tag">FPV</span><span class="paused">PAUSED</span></div>
+    <div class="strip head" id="mStrip"></div>
+    <p class="lede head">An abandoned industrial site, wide open. Silos, a chimney you can dive, a factory hall full of holes. Seen through a real camera — shutter, lens, exposure, noise. Fly the named lines in one take.</p>
+    <div class="a2hs head hidden ui" id="a2hs"><svg viewBox="0 0 24 24" fill="none" stroke="#f2efe9" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 9.5H6.5v10h11v-10h-2M12 3.5v11M8.8 6.7L12 3.5l3.2 3.2"/></svg><span><b>Full screen:</b> Share ▸ Add to Home Screen</span><button id="a2hsX" aria-label="Dismiss">×</button></div>
+    <div id="startSec" class="head hidden">
+      <div class="sec">Start at</div>
+      <div class="seg" id="starts"></div>
+      <div class="hint">Practice one part of the site: retries start there too. Hold RESET to go back to the spawn.</div>
+    </div>
 
     <div class="cols">
       <div>
@@ -355,6 +467,11 @@ body.dev .dev{display:revert!important}
       </div>
     </div>
 
+    <div id="linesSec">
+      <div class="sec">Lines <span id="lnCount"></span></div>
+      <div class="lines" id="lnGrid"></div>
+    </div>
+
     <div class="cta">
       <button id="fly" class="hotbtn">FLY</button>
       <button class="hotbtn hidden" id="resume">RESUME</button>
@@ -365,11 +482,12 @@ body.dev .dev{display:revert!important}
       <div class="sec">Display &amp; sound</div>
       <div class="rows">
         <label>Overlay</label><div class="seg" data-key="hud"><button data-v="osd">OSD</button><button data-v="min">Minimal</button><button data-v="off">Clean</button></div>
-        <label>Sound</label><div class="seg" data-key="sound"><button data-v="on">On</button><button data-v="off">Off</button></div>
+        <label>Sound</label><div class="seg" data-key="sound"><button data-v="on">On</button><button data-v="mix">Mix with music</button><button data-v="off">Off</button></div>
         <label>Clip captions</label><div class="seg" data-key="caps"><button data-v="on">On</button><button data-v="off">Clean</button></div>
         <label>Quality</label><div class="seg" data-key="quality"><button data-v="low">Low</button><button data-v="auto">Auto</button><button data-v="high">High</button></div>
         <label>Frame rate</label><div class="seg" data-key="fps"><button data-v="60">60</button><button data-v="30">30 cinematic</button></div>
       </div>
+      <div class="hint">Sound: <b>On</b> plays even with the silent switch on, and pauses your music. <b>Mix with music</b> keeps your music playing; the silent switch then mutes the game.</div>
       <div class="sec">Advanced · camera &amp; craft</div>
       <div class="rows">
         <label>Shutter</label><div class="seg" data-key="shutter"><button data-v="nd16">1/60 (ref)</button><button data-v="nd8">1/120</button><button data-v="none">No ND</button></div>

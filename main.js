@@ -8,6 +8,7 @@ import { InputLog, quantize, worldHash } from './inputlog.js';
 import { Controls } from './controls.js';
 import { MotorAudio } from './audio.js';
 import { Take, defaultTakeUI } from './take.js';
+import * as TakeLib from './take.js';   // F1: TAKE_TUNING (cutT/bankT/stars) for the HUD, read live; a namespace import never fails on a missing name
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
@@ -35,6 +36,7 @@ try { const saved = JSON.parse(localStorage.getItem('onetake.settings') || '{}')
 if (!['yard', 'yard-overcast', 'url'].includes(S.world)) S.world = 'yard';   // a saved 'file' world can't reload (the file input is empty): no dead-end FLY
 if (S.hud === 'on') S.hud = 'osd';                                            // overlay is now OSD | Minimal | Clean
 if (!['take', 'free'].includes(S.game)) S.game = 'take';
+if (!['on', 'mix', 'off'].includes(S.sound)) S.sound = 'on';                 // C6: On | Mix with music | Off
 const save = () => { try { localStorage.setItem('onetake.settings', JSON.stringify(S)); } catch (e) {} };
 const params = new URLSearchParams(location.search);
 const DEV = params.has('dev');                        // developer items (own-world splats, splat density) only under ?dev
@@ -93,7 +95,9 @@ function layout() {
   canvas.style.width = W + 'px'; canvas.style.height = vh + 'px';
   fpv.resize(w, h);
   menuFrames = 0;
+  viewW = W; viewH = vh;   // CSS px of #view: the OSD chevron projects into it
 }
+let viewW = 1, viewH = 1;
 window.addEventListener('resize', layout);
 window.addEventListener('orientationchange', () => { controls.cancelAll?.(); setTimeout(layout, 250); });   // stale touches = instant full stick
 
@@ -102,9 +106,14 @@ const MODE_HINT = {
   angle: 'Self-levelling with manual throttle. Left stick up/down is throttle; the orange tick on the OSD bar marks hover.',
   acro: 'Expert · best with a gamepad or USB radio. Sticks command rotation rates (Betaflight Actual 200 · 720 · 0.55). No self-levelling.',
 };
+// take rules for the copy, read live from C's TAKE_TUNING (cutT 3.0 / bankT 5.0 at integration)
+const TT = () => TakeLib.TAKE_TUNING || {};
+const secs = (v, d) => { const x = +v > 0 ? +v : d; return (Math.round(x * 10) / 10).toString(); };
+// C: CUT = 3 s hands-off hover, or 0.6 s touched down (TAKE_TUNING.cutT / landT)
+const cutRule = () => `let go and hover for ${secs(TT().cutT, 3)} s, or touch down for ${secs(TT().landT, 0.6)} s,`;
 const GAME_HINT = {
-  take: 'One take: fly through named lines to build FLOW. 5 s without a line banks it; a crash loses what isn\'t banked. Hover hands-off for 1.5 s to CUT.',
-  free: 'No clock, no take. Crash and you fly on from where you last flew clear.',
+  take: () => `One take: fly through named lines to build FLOW. ${secs(TT().bankT, 5)} s without a line banks it; a crash loses what isn't banked. To CUT, ${cutRule().replace(/,$/, '')}.`,
+  free: () => 'No clock, no take. Lines still caption. Crash and you fly on from where you last flew clear.',
 };
 const STICK_LBL = { cine: ['CLIMB · TURN', 'SPEED · CARVE'], angle: ['THROTTLE · YAW', 'PITCH · ROLL'], acro: ['THROTTLE · YAW', 'PITCH · ROLL'] };
 function applySettings() {
@@ -126,7 +135,8 @@ function applySettings() {
   const [ll, rl] = STICK_LBL[S.mode] || STICK_LBL.cine;
   $('lblL').textContent = ll; $('lblR').textContent = rl; $('gLt').textContent = ll; $('gRt').textContent = rl;
   $('modeHint').textContent = MODE_HINT[S.mode];
-  $('gameHint').textContent = GAME_HINT[S.game] || '';
+  $('gameHint').textContent = GAME_HINT[S.game]?.() || '';
+  if (S.sound === 'mix' && !audio.setMode) audio.on = true;   // C6 'mix': F2's audio.setMode runs the ambient session; alone, it just plays
   const craftKey = craftFor(world.def);
   if (drone.key !== craftKey) { drone.setCraft(craftKey); }
   audio.setCraft?.(craftKey);
@@ -166,12 +176,12 @@ $('yardCard').addEventListener('click', (e) => {
   if (S.world !== 'yard' && S.world !== 'yard-overcast') { S.world = 'yard'; buildWorlds(); syncSegs(); $('custom').classList.remove('open'); save(); }
 });
 function syncSegs() {
-  document.querySelectorAll('.seg').forEach((seg) => {
+  document.querySelectorAll('.seg[data-key]').forEach((seg) => {
     const key = seg.dataset.key;
     seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', String(S[key]) === b.dataset.v));
   });
 }
-document.querySelectorAll('.seg').forEach((seg) => {
+document.querySelectorAll('.seg[data-key]').forEach((seg) => {   // settings segments only (START AT is a .seg without data-key)
   seg.addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     const key = seg.dataset.key; const prev = S[key];
@@ -227,6 +237,8 @@ function openMenu() {
   $('fly').className = paused ? 'ghost' : 'hotbtn';
   $('fly').textContent = paused ? 'Restart' : 'FLY';
   $('resume').parentNode.insertBefore(paused ? $('resume') : $('fly'), paused ? $('fly') : $('resume'));
+  renderProgress();
+  $('menu').scrollTop = 0;   // paused: START AT + LINES are what you see first
   controls.enabled = false;
   controls.cancelAll?.();
   menuFrames = 0;
@@ -261,7 +273,7 @@ async function startFlight(fresh) {
   document.body.classList.remove('paused');
   controls.enabled = true;
   if (state !== 'crash') state = 'fly';
-  coachStart();
+  coachStart(fresh);
 }
 
 // ---------------- loading
@@ -270,11 +282,22 @@ const STICK_COACH = {
   angle: [['LEFT THUMB', 'throttle · yaw'], ['RIGHT THUMB', 'pitch · roll'], ['LET GO', 'self-levels · you hold throttle']],
   acro: [['LEFT THUMB', 'throttle · yaw'], ['RIGHT THUMB', 'pitch · roll rates'], ['NO SELF-LEVEL', 'expert · gamepad or radio']],
 };
+// shown in this order, one per load (the CUT rule comes second, not 1-in-5 at random)
 const LOAD_TIPS = {
-  take: ['<b>Lines</b> are named gaps, holes and dives. Each one adds FLOW; 5 s without one banks the chain.', '<b>CUT</b>: hover hands-off for 1.5 s to end the take and keep everything.', 'A crash loses the <b>unbanked</b> chain. Bank it or push on: your call.'],
-  free: ['<b>Free fly</b>: no clock. Crash and you fly on from where you last flew clear.'],
-  any: ['<b>CLIP</b> turns your last 60 s into a stabilised, captioned video for your camera roll.', '<b>RESET</b> goes back to your last clear spot; hold it to go back to the start.'],
+  take: () => [
+    '<b>Lines</b> are named gaps, holes and dives. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(TT().bankT, 5) + ' s without a line banks it.',
+    `<b>CUT</b>: ${cutRule()} to end the take and keep everything. The ring by REC counts it down; touch a stick to cancel.`,
+    'A crash loses the <b>unbanked</b> chain. The bar under FLOW shows when it banks. Bank it or push on: your call.',
+    '<b>RESET</b> restarts the take at the chimney, or where you chose to START AT on the pause menu; hold it to go back to the spawn.',
+  ],
+  free: () => [
+    '<b>Free fly</b>: no clock. Lines still caption. Crash and you fly on from where you last flew clear.',
+    '<b>RESET</b> goes back to your last clear spot; hold it to go back to the spawn.',
+  ],
+  any: () => ['<b>CLIP</b> saves the last 20 s, the full take, or a captioned 9:16 <b>SHORT</b> of your lines to your camera roll.'],
 };
+let loadN = 0;
+try { loadN = +localStorage.getItem('onetake.loads') || 0; } catch (e) {}
 function setLoad(title, frac, text) {
   const L = $('loading');
   if (L.classList.contains('hidden')) {
@@ -283,8 +306,9 @@ function setLoad(title, frac, text) {
     const portrait = document.body.classList.contains('portrait');
     $('ldSticks').innerHTML = (STICK_COACH[S.mode] || STICK_COACH.cine).map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('') +
       (portrait ? '<dt>PORTRAIT</dt><dd>use the radio gimbals below</dd>' : '');
-    const tips = [...(LOAD_TIPS[S.game] || []), ...LOAD_TIPS.any];
-    $('ldTip').innerHTML = tips[Math.floor(Math.random() * tips.length)];
+    const tips = [...(LOAD_TIPS[S.game]?.() || []), ...LOAD_TIPS.any()];
+    $('ldTip').innerHTML = tips[loadN % tips.length];
+    loadN++; try { localStorage.setItem('onetake.loads', String(loadN)); } catch (e) {}
   }
   if (title) $('ldTitle').textContent = title;
   if (frac !== null) $('ldBar').style.width = Math.round(frac * 100) + '%';
@@ -1057,6 +1081,9 @@ function pop(text, kind = 'score') {
   setPop('score', '', text, 1.2);
 }
 function showLine(text, subHTML = '', flow = 1) {
+  if (/^\+0(?!\d)/.test(subHTML)) subHTML = '';   // free fly: lines caption with pts 0, so no "+0" sub-line
+  else if (subHTML && lineTag) subHTML += lineTag;  // C: a line flown with no contact since the last one (×1.25)
+  lineTag = '';
   setPop('line', (flow >= 6 ? '<span class="emo">😮</span>' : '') + accentHTML(text), subHTML, CAP_DUR);
 }
 function setPop(kind, capHTML, subHTML, dur) {
@@ -1065,7 +1092,7 @@ function setPop(kind, capHTML, subHTML, dur) {
   p.className = kind; p.style.setProperty('--popDur', dur + 's');
   void p.offsetWidth; p.classList.add('show');
   clearTimeout(popTm); popTm = setTimeout(() => { p.classList.remove('show'); popKind = ''; }, dur * 1000);
-  $('live').classList.remove('show');
+  // the live chain + drain bar stay up under the caption (design #1): it sits below it now, so no hiding
 }
 let warnTm = 0, toastTm = 0;
 function warn(text, secs = 1.6) {
@@ -1078,6 +1105,7 @@ function toast(text, secs = 1.8) {
 }
 
 function updateHud(dt) {
+  hudFast();
   hudT += dt; if (hudT < 0.1) return; hudT = 0;
   if (state === 'replay' && replay) {
     $('recT').textContent = `REPLAY ${fmtS(replay.t)} / ${fmtS(replay.dur)}`;
@@ -1087,39 +1115,248 @@ function updateHud(dt) {
   const v = scoreView();
   const spd = drone.vel.length(), kmh = Math.round(spd * 3.6), time = v.time ?? flightT;
   thrS += ((drone.thrust / drone.tMax || 0) - thrS) * 0.3;
-  // --- HD OSD (landscape)
+  // --- HD OSD (landscape): the glyphs are static markup, only the value spans change
   $('score').textContent = fmtN(v.total);
   $('best').textContent = v.best ? `BEST ${fmtN(Math.max(v.best, v.total))}` : '';
-  $('spd').innerHTML = `${kmh} <small>KM/H</small>`;
+  $('spd').textContent = kmh;
   $('tmr').textContent = fmt(time);
-  $('oAlt').innerHTML = `${Math.max(0, drone.pos.y).toFixed(1)}<small>M</small>`;
-  $('oVolt').innerHTML = `${Math.max(13.6, 16.8 - 0.9 * thrS - 0.25 * flightT / 60).toFixed(1)}<small>V</small>`;
+  $('oAlt').textContent = Math.max(0, drone.pos.y).toFixed(1);
+  // 6S pack (the 2026 5" freestyle norm): 25.2 V full, sags under throttle, ~0.45 V/min. The glyph fills in 5 steps
+  // from the resting voltage, so it doesn't flicker with every punch.
+  $('oVolt').textContent = Math.max(21.0, 25.2 - 1.4 * thrS - 0.45 * flightT / 60).toFixed(1);
+  const lvl = Math.max(1, Math.min(5, Math.ceil(5 * (Math.max(21.0, 25.2 - 0.45 * flightT / 60) - 21.0) / 4.2)));
+  if (lvl !== batLvl) { batLvl = lvl; $('oBat').querySelectorAll('rect').forEach((r, i) => { r.style.opacity = i < lvl ? '1' : '0'; }); }
   $('oMode').textContent = { cine: 'CINE', angle: 'ANGL', acro: 'ACRO' }[S.mode];
   lqS += ((100 - 4 * room.roof - 9 * room.tube - (Math.random() < 0.1 ? 2 : 0)) - lqS) * 0.25;
-  $('oLQ').textContent = `LQ ${Math.round(Math.min(100, lqS))}`;
+  $('oLQv').textContent = Math.round(Math.min(100, lqS));
   if (S.mode !== 'cine') {
     $('oThr').querySelector('i').style.height = (controls.thr * 100).toFixed(1) + '%';
     $('oThr').querySelector('u').style.bottom = (Math.sqrt(1 / drone.c.twr) * 100).toFixed(1) + '%';
   }
-  const tag = $('takeTag'), ts = v.take ? v.state : null;
-  tag.className = 'o tl' + (ts ? ' on' : '') + (ts === 'live' ? ' live' : '');
-  if (ts) $('takeTxt').textContent = ts === 'live' ? `TAKE ${fmt(time)}` : ts === 'done' ? 'CUT' : 'READY';
-  // live chain at the caption spot (0.7), only while no caption is up
+  const ts = v.take && S.game !== 'free' ? v.state : null;   // the take tag itself is per frame (hudFast): REC / CUT countdown / CRASHED / CUT
+  // live chain under the caption spot, with the bank drain bar (hudFast)
   const L = $('live');
-  if (v.unbanked > 0 && popKind !== 'line' && state === 'fly' && !summaryUp()) {
-    L.innerHTML = `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ` <em>×${v.flow}</em>` : ''} · ${fmtN(v.unbanked)}`; L.classList.add('show');
+  if (v.unbanked > 0 && state === 'fly' && !summaryUp()) {
+    $('liveT').innerHTML = `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ` <em>×${v.flow}</em>` : ''} · ${fmtN(v.unbanked)}`; L.classList.add('show');
   } else L.classList.remove('show');
   if (drone.limitHit > 0 && performance.now() - lastLimitToast > 2500) { lastLimitToast = performance.now(); warn(drone.pos.y >= (world.envelope?.max.y ?? 1e9) - 0.01 ? 'CEILING' : 'WORLD EDGE'); }
+  // --- next line: Betaflight-style home arrow (8 steps) + name + distance, until 3 lines have ever been flown.
+  // The chevron over the gate (< 25 m) is per frame in hudFast and shows for any unflown line.
+  nextNow = state === 'fly' && !summaryUp() && ts !== 'done' && !drone.crashed ? nextLine() : null;
+  const nx = nextNow, guide = !!nx && flownCount() < 3, dir = nx ? octant(nx) : 0;
+  if (guide) {
+    $('oNextA').style.transform = `rotate(${dir * 45}deg)`;
+    $('oNextN').textContent = nx.name;
+    $('oNextD').textContent = `${Math.round(nx.dist)}M${elevTxt(nx)}`;
+  }
+  $('oNext').classList.toggle('on', guide);
   // --- radio OLED (portrait)
   $('oMd').textContent = { cine: 'CINE', angle: 'ANGLE', acro: 'ACRO' }[S.mode]; $('oT').textContent = fmt(time); $('oS').textContent = `${kmh} KM/H`;
   const bars = world.lastDist < 3 ? Math.max(0, Math.min(4, Math.round(4 - world.lastDist / 0.5))) : 0;
   $('oPx').querySelectorAll('i').forEach((el, i) => el.classList.toggle('on', i < bars));
   $('oSc').textContent = fmtN(v.total);
-  $('oSt').textContent = drone.crashed ? 'CRASHED' : drone.limitHit > 0 ? 'LIMIT' :
+  $('oSt').textContent = drone.crashed ? 'CRASHED' : cutLeft > 0 ? (cutLand ? 'LANDED · CUT…' : `CUT ${Math.ceil(cutLeft)}…`) : drone.limitHit > 0 ? 'LIMIT' :
     v.unbanked > 0 ? `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ' x' + v.flow : ''} +${fmtN(v.unbanked)}` :
-    ts === 'live' ? '● TAKE' : ts === 'ready' ? 'READY · FLY A LINE' : ts === 'done' ? 'CUT' :
+    guide ? `${HOME_ARROWS[dir]} ${nx.name} ${Math.round(nx.dist)}M` :
+    ts === 'live' ? '● REC' : ts === 'ready' ? 'READY · FLY A LINE' : ts === 'done' ? (crashedTake() ? 'CRASHED' : 'CUT') :
     S.mode !== 'cine' ? `THR ${Math.round(controls.thr * 100)}%  BEST ${fmtN(v.best)}` : `BEST ${fmtN(v.best)}`;
 }
+
+// ---------------- per-frame HUD: take tag (REC / CUT countdown / CRASHED), bank drain bar, near-line chevron, LOW POWER
+const CUT_RING = 2 * Math.PI * 7.5;                               // #cutArc circumference (r 7.5)
+const HOME_ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];     // OLED home arrow, clockwise from the nose
+let cutLeft = 0, cutLand = false, tagKey = '', nextNow = null, lowPow = false, batLvl = 0, drainK = -2, chevOn = false, chevD = -1;
+const crashedTake = () => drone.crashed || sum.kind === 'crash' || pendingSum?.type === 'crash';
+function hudFast() {
+  const t = curTake(), ts = t && S.game !== 'free' ? t.state : null;   // free fly: no take, no tag
+  // CUT countdown, decision 10. C: take.cutIn = s until the CUT while the ring shows (after cutShow 1 s of hands-off
+  // hover, or at once on a touchdown), else 0; take.cutFrac = ring fill 0..1; take.cutKind 'hover' | 'land'.
+  // Any stick cancels it (C resets the hover). Without C: the round-2 hover timer, ring from 1 s.
+  const cutT = +TT().cutT || 3, from = Math.max(0.3, cutT - 1);
+  let ci = 0, frac = 0;
+  if (t && ts === 'live' && state === 'fly') {
+    if (typeof t.cutIn === 'number') { if (t.cutIn > 0) { ci = t.cutIn; frac = typeof t.cutFrac === 'number' ? t.cutFrac : 1 - ci / from; } }
+    else { const c = t._hover > 0 && (t.total || 0) + (t.unbanked || 0) > 0 ? cutT - t._hover : 0; if (c > 0 && c <= from) { ci = c; frac = 1 - c / from; } }
+  }
+  cutLeft = ci; cutLand = !!ci && t.cutKind === 'land';
+  const txt = !ts ? '' : ci ? (cutLand ? 'LANDED' : `CUT ${Math.ceil(ci)}`) : crashedTake() ? 'CRASHED' : ts === 'live' ? 'REC' : ts === 'done' ? 'CUT' : 'READY';
+  const cls = 'o tl' + (ts ? ' on' : '') + (ts === 'live' && !ci ? ' live' : '') + (ci ? ' cut' : '');
+  if (cls + txt !== tagKey) {
+    tagKey = cls + txt; $('takeTag').className = cls; $('takeTxt').textContent = txt;
+    document.body.classList.toggle('cutting', !!ci);
+  }
+  if (ci) $('cutArc').style.strokeDashoffset = (CUT_RING * Math.max(0, Math.min(1, frac))).toFixed(2);   // drains as it fills
+  // bank drain bar under the live chain: bankIn / bankT. C's take.holding (hugging structure keeps the chain alive) glows it.
+  const L = $('live'), d = $('drain');
+  const k = L.classList.contains('show') && t && typeof t.bankIn === 'number' ? Math.max(0, Math.min(1, t.bankIn / (+TT().bankT || 5))) : -1;
+  if (k !== drainK) {
+    if ((k < 0) !== (drainK < 0)) d.style.display = k < 0 ? 'none' : '';
+    drainK = k;
+    if (k >= 0) { d.style.transform = `scaleX(${k.toFixed(3)})`; d.classList.toggle('low', t.bankIn < 1.5); }
+  }
+  if (k >= 0) d.classList.toggle('hold', !!t.holding);
+  // chevron over the next never-flown line's first gate (C: hint.fresh), projected through the lens. OSD only, never in clips.
+  const nx = nextNow;
+  let on = false;
+  if (nx && nx.pos && nx.fresh !== false && state === 'fly' && nx.dist < 27) {
+    const p = projectView(nx.pos);
+    if (p && p.d < 25) {
+      on = true;
+      $('oChev').style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px) translate(-50%,calc(-100% - 4px))`;
+      const dm = Math.round(p.d); if (dm !== chevD) { chevD = dm; $('oChevD').textContent = `${dm}M`; }
+    }
+  }
+  if (on !== chevOn) { chevOn = on; $('oChev').classList.toggle('on', on); }
+  // iOS Low Power Mode pins rAF at 30 Hz; fpvcam notices and sets autoMs 33.3 (UX #6)
+  if (state === 'fly') { const lp = (fpv.autoMs || 0) > 30; if (lp && !lowPow) toast('LOW POWER · 30 FPS', 3); lowPow = lp; }
+}
+// world point -> CSS px in #view through the fpvcam lens (inverse of the output pass: th = atan(r k / F) / k), or null
+const _iq = new THREE.Quaternion(), _pv = new THREE.Vector3();
+function projectView(p) {
+  const L = fpv.lens; if (!L) return null;
+  _pv.set(p.x, p.y, p.z).sub(camPose.pos).applyQuaternion(_iq.copy(camPose.quat).invert());
+  const len = _pv.length(); if (len < 0.3 || _pv.z > -0.05) return null;
+  const th = Math.acos(Math.min(1, -_pv.z / len)); if (th > L.thc) return null;
+  const r = L.k > 0.999 ? L.F * Math.tan(th) : L.F * Math.tan(L.k * th) / L.k;
+  const h = Math.hypot(_pv.x, _pv.y), s = h > 1e-6 ? r / h : 0;
+  const u = 0.5 + _pv.x * s / (2 * L.hw), v = 0.5 + _pv.y * s / (2 * L.hh);
+  if (u < 0.03 || u > 0.97 || v < 0.06 || v > 0.94) return null;
+  return { x: u * viewW, y: (1 - v) * viewH, d: len };
+}
+// bearing of a world point relative to the view's heading, + = right. YXZ yaw ignores pitch, so it stays put while
+// you look up at the sky or straight down a shaft.
+const _eu = new THREE.Euler();
+function relBearing(p) {
+  const yaw = _eu.setFromQuaternion(camPose.quat, 'YXZ').y, fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+  const tx = p.x - camPose.pos.x, tz = p.z - camPose.pos.z;
+  return Math.atan2(-tx * fz + tz * fx, tx * fx + tz * fz);
+}
+const octant = (h) => { const b = h.pos ? relBearing(h.pos) : +h.bearing || 0; return ((Math.round(b / (Math.PI / 4)) % 8) + 8) % 8; };
+const elevTxt = (h) => { const dy = h.pos ? h.pos.y - camPose.pos.y : (+h.elev || 0) * (h.dist || 0); return Math.abs(dy) >= 5 ? ` ${dy > 0 ? '▲' : '▼'}${Math.round(Math.abs(dy))}` : ''; };
+
+// ---------------- line progress: LINES checklist, best FLOW per line, stars.
+// C (take.js) keeps the record (localStorage onetake.lines) and serves it as take.lineList(world)
+// [{name, micro, flown, n, bestFlow, ...}] and take.progress(world). The UI also keeps a copy from the take events
+// (onetake.ui.progress) so it works on its own; both are read (union), so nothing is lost either way.
+const LINE_HINT = {
+  'CHIMNEY DIVE': 'in at the top of the chimney, out of its door', 'DROP IN': 'into the chimney mouth',
+  'UNDER THE RACK': 'under the pipe rack, end to end', 'TRIPLE POP': 'up through the hall\'s three stacked holes',
+  'TRIPLE DROP': 'down the hall\'s three stacked holes', 'GALLERY CLIMB': 'up inside the conveyor gallery',
+  'GALLERY DROP': 'down inside the conveyor gallery', 'STAIRWELL DIVE': 'down the head-house stair shaft',
+  'UNDER THE TABLE': 'under the silo table, edge to edge', 'THE SMALL GAP': 'the 1.6 m gap between two silos',
+  'THREAD THE NEEDLE': 'both silo gaps in one go', 'HALL RUN': 'the hall\'s ground floor, door to door',
+  'STRAIGHT THROUGH': 'across the hall, open bay to open bay', 'THROUGH THE WORKSHOP': 'in one workshop door, out the other',
+};
+const DEFAULT_LINES = ['CHIMNEY DIVE', 'UNDER THE RACK', 'TRIPLE POP', 'TRIPLE DROP', 'GALLERY CLIMB', 'GALLERY DROP', 'STAIRWELL DIVE',
+  'UNDER THE TABLE', 'THE SMALL GAP', 'THREAD THE NEEDLE', 'HALL RUN', 'STRAIGHT THROUGH', 'THROUGH THE WORKSHOP'];   // menu before the first load
+const STAR = 'M8 1.2l2.1 4.4 4.8.6-3.5 3.3.9 4.8L8 11.9l-4.3 2.4.9-4.8L1.1 6.2l4.8-.6z';
+const uiProg = { lines: {} };           // NAME -> { n: times flown, f: best FLOW (0 = only in free fly) }
+try { const p = JSON.parse(localStorage.getItem('onetake.ui.progress') || 'null'); if (p && p.lines && typeof p.lines === 'object') uiProg.lines = p.lines; } catch (e) {}
+const saveUiProg = () => { try { localStorage.setItem('onetake.ui.progress', JSON.stringify(uiProg)); } catch (e) {} };
+// C's list (needs the world's lines), else null
+function cLines() {
+  const t = curTake(); if (typeof t?.lineList !== 'function' || !Array.isArray(world.lines) || !world.lines.length) return null;
+  try { const L = t.lineList(world); return Array.isArray(L) ? L : null; } catch (e) { return null; }
+}
+// C's store before a world is loaded (first menu): {NAME: {n, flow, pts}}
+function cStore() { try { const o = JSON.parse(localStorage.getItem('onetake.lines') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } }
+const newLines = new Set();             // first time ever, this take: NEW on the card
+let lineTag = '';                       // CLEAN tag for the next caption's sub-line (showLine)
+function noteLine(e) {
+  const name = e.name; if (!name) return;
+  const c = cLines()?.find((l) => l.name === name), r = uiProg.lines[name];
+  if (e.type === 'line' && (c ? c.n <= 1 : !r)) newLines.add(name);   // C counts the line before dispatching it
+  uiProg.lines[name] = { n: (r?.n || 0) + 1, f: Math.max(r?.f || 0, e.free ? 0 : e.flow || 1) };
+  saveUiProg();
+}
+// 500-pt micro-lines (C: DROP IN, roof U-turn, SILO CARVE...: l.micro) are beats, not checklist lines
+const isMicro = (l) => !!l.micro || (typeof l.pts === 'number' && l.pts > 0 && l.pts < 1000);
+let baseCache = null, baseSrc = null;
+function baseLines() {                  // checklist names in world order (cached for the menu before the next load)
+  if (Array.isArray(world.lines) && world.lines.length) {
+    if (baseSrc !== world.lines) {
+      baseSrc = world.lines; const m = new Set();
+      for (const l of world.lines) if (l && l.name && !isMicro(l)) m.add(l.name);
+      baseCache = [...m];
+      try { localStorage.setItem('onetake.ui.lineList', JSON.stringify(baseCache)); } catch (e) {}
+    }
+    return baseCache;
+  }
+  if (!baseCache) {
+    let names = null; try { names = JSON.parse(localStorage.getItem('onetake.ui.lineList') || 'null'); } catch (e) {}
+    baseCache = Array.isArray(names) && names.length ? names : DEFAULT_LINES;
+  }
+  return baseCache;
+}
+// [{name, hint, flown, f (best FLOW)}]
+function lineList() {
+  const C = cLines(), m = C ? new Map(C.map((l) => [l.name, { n: l.n || (l.flown ? 1 : 0), f: l.bestFlow || 0 }])) : null;
+  const S0 = m ? null : !Array.isArray(world.lines) ? cStore() : null;
+  return baseLines().map((name) => {
+    const c = m ? m.get(name) : S0?.[name] ? { n: +S0[name].n || 0, f: +S0[name].flow || 0 } : null, r = uiProg.lines[name];
+    return { name, hint: LINE_HINT[name] || '', flown: !!(c?.n || r), f: Math.max(c?.f || 0, r?.f || 0) };
+  });
+}
+const flownCount = () => lineList().filter((l) => l.flown).length;
+const hintFor = (name) => LINE_HINT[name] || '';
+// the nearest never-flown line's first gate. C: take.nextHint(drone, world) -> {name, caption, pos:[x,y,z], dist, bearing
+// (rad from the nose, + right), elev, fresh} or null. The arrow uses pos against the view (so it follows the camera).
+function nearestGate(name) {
+  let best = null, bd = Infinity;
+  for (const l of world.lines || []) {
+    if (!l || (name ? l.name !== name : isMicro(l) || uiProg.lines[l.name])) continue;
+    const g = l.pre?.[0]?.c || l.c; if (!g) continue;
+    const d = Math.hypot(g[0] - camPose.pos.x, g[1] - camPose.pos.y, g[2] - camPose.pos.z);
+    if (d < bd) { bd = d; best = { name: l.name, pos: new THREE.Vector3(g[0], g[1], g[2]), dist: d, fresh: true }; }
+  }
+  return best;
+}
+function nextLine() {
+  if (!Array.isArray(world.lines) || !world.lines.length) return null;
+  const t = curTake();
+  if (typeof t?.nextHint === 'function') {
+    let h = null; try { h = t.nextHint(drone, world); } catch (e) {}
+    if (!h || !h.name) return null;
+    const c = h.pos || h.c, fresh = h.fresh !== false;
+    if (c) { const pos = Array.isArray(c) ? new THREE.Vector3(c[0], c[1], c[2]) : new THREE.Vector3(c.x, c.y, c.z); return { name: h.name, pos, dist: pos.distanceTo(camPose.pos), fresh }; }
+    const g = nearestGate(h.name); if (g) { g.fresh = fresh; return g; }
+    return { name: h.name, pos: null, dist: +h.dist || 0, bearing: +h.bearing || 0, elev: +h.elev || 0, fresh };
+  }
+  return nearestGate(null);
+}
+// 3-star targets per take (design #3: 40k / 80k / 130k = C's TAKE_TUNING.stars)
+function starTargets() { const s = TT().stars; return Array.isArray(s) && s.length ? s : [40000, 80000, 130000]; }
+const starCount = (total) => starTargets().filter((v) => total >= v).length;
+const starsHTML = (n, of) => Array.from({ length: of }, (_, i) => `<svg viewBox="0 0 16 16"${i < n ? ' class="on"' : ''} aria-hidden="true"><path d="${STAR}"/></svg>`).join('');
+const kfmt = (v) => (v >= 1000 ? Math.round(v / 1000) + 'K' : String(v));
+// menu: BEST + stars (of the best take) + LINES strip, the LINES checklist, START AT (paused)
+function renderProgress() {
+  const L = lineList(), fl = L.filter((l) => l.flown).length, best = scoreView().best || 0;
+  $('mStrip').innerHTML = `<span>BEST <b>${best ? fmtN(best) : '—'}</b></span><i>·</i><span class="stars">${starsHTML(starCount(best), starTargets().length)}</span><i>·</i><span>LINES <b>${fl}/${L.length}</b></span>`;
+  const nx = loadedId ? nextLine() : null;
+  $('lnCount').textContent = `${fl}/${L.length}`;
+  $('lnGrid').innerHTML = L.map((l) => {
+    const next = !l.flown && nx?.name === l.name;
+    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.hint;
+    return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}</small></div>`;
+  }).join('');
+  // START AT (C: world.startPoints [{name, pos, yaw}] + respawn(false, name)); hidden until C provides them. C keeps the
+  // choice for retries in its module-level `startAt`; the active one is lit. Hold RESET (back to the spawn) clears it.
+  const sp = Array.isArray(world.startPoints) && loadedId ? world.startPoints.filter((s) => s && s.name) : [];
+  const cur = typeof startAt === 'string' ? startAt.toLowerCase() : '';
+  $('startSec').classList.toggle('hidden', !sp.length || !document.body.classList.contains('paused'));
+  $('starts').innerHTML = sp.map((s) => `<button data-n="${esc(s.name)}"${s.name.toLowerCase() === cur ? ' class="on"' : ''}>${esc(s.name)}</button>`).join('');
+}
+$('starts').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) goStartAt(b.dataset.n); });
+// (not `startAt`: that name is C's sticky START AT choice in respawn)
+function goStartAt(name) {
+  if (!loadedId || state !== 'menu' || !name) return;
+  respawn(false, name); prevState = 'fly';
+  startFlight(false);
+  toast(`START AT ${String(name).toUpperCase()}`);
+}
+// F1 test hooks (uishots), kept off window.__onetake so that shared object stays merge-clean
+window.__onetakeUI = { uiProg, lineList, nextLine, renderProgress, goStartAt, projectView, get hint() { return nextNow; } };
 
 // ---------------- take events (contract #3), summary card, recovery
 // main.js dispatch (C): (typeof onTakeEvent === 'function' ? onTakeEvent : (e) => defaultTakeUI(e, pop))(e)
@@ -1130,6 +1367,10 @@ function onTakeEvent(e) {
   if (!e || !e.type) return;
   clipEvent(e);                                          // F2: take start / line t0 for clips (caption() stamps at t0)
   const now = performance.now() / 1000;
+  // F1: line progress / NEW badges, CLEAN on the caption, SCRAPE warning (C: scrape {impact, flow, lost})
+  if (e.type === 'start') newLines.clear();
+  if (e.type === 'line' || e.type === 'repeat') { noteLine(e); lineTag = e.clean && !e.free ? ' · <b>CLEAN</b>' : ''; }
+  if (e.type === 'scrape' && e.lost) warn(`SCRAPE · FLOW ×${e.flow || 1}`, 1.2);
   switch (e.type) {
     case 'start':
       hideSummary(); sum.kind = sum.data = null; pendingSum = null; clipEndT = null;
@@ -1162,12 +1403,19 @@ function showSummary(kind, e) {
   const lines = Array.isArray(st.lines) ? st.lines.map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean) : null;
   sum.kind = kind; sum.data = e || null;
   const T = $('bTitle'); T.className = kind; T.innerHTML = kind === 'cut' ? 'CUT<em>.</em>' : 'CRASHED';
-  $('bSub').textContent = kind === 'cut' ? 'That\'s a take · touch a stick for a new one' : isTake ? 'Take over · touch a stick to retry' : 'Touch a stick to fly on';
+  const lost = kind === 'crash' && e?.lost > 0 ? `Chain lost −${fmtN(e.lost)}` : 'Take over';   // the CHAIN LOST warning hides under the card
+  const cutHow = e?.how === 'land' ? 'Landed · that\'s a take' : 'That\'s a take';   // C: cut.how 'hover' | 'land'
+  $('bSub').textContent = kind === 'cut' ? `${cutHow} · touch a stick for a new one` : isTake ? `${lost} · touch a stick to retry` : 'Touch a stick to fly on';
   const row = (k, val) => `<span>${k}</span><b>${val}</b>`;
   $('bStats').innerHTML = row('MAX SPEED', `${Math.round(maxSp * 3.6)} KM/H`) + row('FLY TIME', fmt(time)) +
     row('SCORE', fmtN(total)) + row('BEST', newBest ? `<em>NEW</em> ${fmtN(best)}` : fmtN(best)) +
     row('MAX FLOW', `×${mf || 1}`) + (lines ? row('LINES', String(lines.length)) : '');
-  $('bLines').textContent = lines && lines.length ? [...new Set(lines)].join(' · ') : '';
+  // stars for this take + the next target; this take's lines (NEW = first time ever); the checklist and what to fly next
+  const tg = starTargets(), ns = typeof e?.stars === 'number' ? e.stars : starCount(total), nextT = tg.find((s) => total < s);
+  $('bStars').innerHTML = isTake ? starsHTML(ns, tg.length) + (nextT ? `<small>NEXT ${kfmt(nextT)}</small>` : '') : '';
+  $('bLines').innerHTML = lines && lines.length ? [...new Set(lines)].map((n) => esc(n) + (newLines.has(n) ? ' <em>NEW</em>' : '')).join(' · ') : '';
+  const LL = lineList(), nx = nextLine(), nh = nx ? hintFor(nx.name) : '';
+  $('bNext').innerHTML = LL.length ? `LINES <b>${flownCount()}/${LL.length}</b>` + (nx ? ` · next: <b>${esc(nx.name)}</b>${nh ? ` – ${esc(nh)}` : ''}` : '') : '';
   $('cReset').textContent = isTake ? 'RETRY' : 'FLY ON';
   $('banner').classList.remove('hidden'); $('crashBar').classList.remove('hidden'); $('live').classList.remove('show');
   document.body.classList.add('sumup');
@@ -1208,10 +1456,17 @@ function flyOnTouch(e) { if (!e.target?.closest?.('button, .ui, input, select, a
 // ---------------- onboarding: ghost gates until each stick has been held 1 s; rotate tip in portrait
 const coach = { on: false, held: { L: 0, R: 0 } };
 try { coach.done = localStorage.getItem('onetake.coached') === '1'; } catch (e) { coach.done = false; }
-let rotateTipped = false;
-function coachStart() {
-  coach.on = !coach.done; document.body.classList.toggle('coach', coach.on);
-  if (!rotateTipped && document.body.classList.contains('portrait')) { rotateTipped = true; setTimeout(() => toast('Full screen: turn off Rotation Lock and turn sideways.', 4.5), 900); }
+let rotateTipped = false, firstTipped = false;
+// body.coaching (not .coach: that's the loading card's stick-diagram box, whose rule made the page ~50 px too tall)
+function coachStart(fresh) {
+  coach.on = !coach.done; document.body.classList.toggle('coaching', coach.on);
+  const portrait = document.body.classList.contains('portrait');
+  if (!rotateTipped && portrait) { rotateTipped = true; setTimeout(() => toast('ROTATE FOR FULL SCREEN', 2.5), 900); }
+  // first flight ever, from the spawn: where the first line is (UX #2). The OSD arrow takes over from there.
+  if (fresh && !firstTipped && S.game !== 'free' && !flownCount()) {
+    firstTipped = true;
+    setTimeout(() => { if (state === 'fly') toast('FIRST LINE: FOLLOW THE TRACK INTO THE HALL\'S OPEN BAY · STAY LOW', 4.5); }, portrait ? 3600 : 1200);
+  }
 }
 function coachFrame(dt) {
   if (!coach.on) return;
@@ -1222,7 +1477,7 @@ function coachFrame(dt) {
     const g = $('g' + s); g.classList.toggle('held', touching[s]); g.classList.toggle('done', coach.held[s] >= 1);
   }
   if ((coach.held.L >= 1 && coach.held.R >= 1) || controls.padActive || controls.keys?.size) {
-    coach.on = false; coach.done = true; document.body.classList.remove('coach');
+    coach.on = false; coach.done = true; document.body.classList.remove('coaching');
     try { localStorage.setItem('onetake.coached', '1'); } catch (e) {}
   }
 }
@@ -1349,6 +1604,14 @@ buildWorlds();
 layout();
 applySettings();
 syncSegs();
+renderProgress();
+// iOS Safari can't hide its bars (no Fullscreen API on iPhone); the Home Screen app has none and no swipe-back.
+// navigator.standalone is false only in iOS WebKit browsers outside the Home Screen. Dismissal is remembered.
+{
+  let off = false; try { off = localStorage.getItem('onetake.a2hs') === '1'; } catch (e) {}
+  $('a2hs').classList.toggle('hidden', !(navigator.standalone === false || params.has('a2hs')) || off);
+  $('a2hsX').onclick = () => { $('a2hs').classList.add('hidden'); try { localStorage.setItem('onetake.a2hs', '1'); } catch (e) {} };
+}
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) return;
   if (state === 'replay') { endReplay(true); toast('CLIP CANCELLED'); }   // rAF stops in the background: the recording would be junk
