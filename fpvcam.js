@@ -765,6 +765,7 @@ export class FPVCamera {
     for (const t of [this.colorRT, this.colorRT1, this.blurRT, this.depthRT, this.aoRT, this.aoRT2]) t?.dispose();
     this.colorRT = rt(cw, ch, { mips: true, type, depth: true, samples });
     this.colorRT.resolveDepthBuffer = false;    // the resolve only needs colour
+    if (samples > 0 && this.r?.initRenderTarget) { const r = this.r, gl = r.getContext(), p = (r.initRenderTarget(this.colorRT), r.properties.get(this.colorRT)); if (p.__webglDepthbuffer && !Array.isArray(p.__webglFramebuffer)) { r.state.bindFramebuffer(gl.FRAMEBUFFER, p.__webglFramebuffer); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, null); r.state.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteRenderbuffer(p.__webglDepthbuffer); p.__webglDepthbuffer = undefined; } }   // [P5] perf #4: drop the resolve target's single-sample depth (three allocates it; never written or read with resolveDepthBuffer false; ~6 MB)
     // hard smears (blurScale < 0.9) hide edges anyway: draw those frames without MSAA (~2 ms of sample store + resolve)
     this.colorRT1 = samples > 0 ? rt(cw, ch, { mips: true, type, depth: true }) : null;
     this.blurRT = rt(cw, ch, { type });

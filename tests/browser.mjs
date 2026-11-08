@@ -1,0 +1,141 @@
+// tests/browser.mjs: the CI browser job (round 5, P5; native #2). Headless Chromium on SwiftShader (no GPU) loads the
+// real game with ?perf and fails on anything a node test can't see:
+//   1. any page error or console error while loading and flying (GLSL compile/link errors land here: three logs them
+//      with console.error), and the load must reach the flying state;
+//   2. the ?perf probe runs its segments (cruise, skim, carve, hover) and returns finite numbers;
+//   3. coverage: every mesh in world.scene has an export entry in world.json (tests/coverage.js), and every world.glb
+//      mesh is drawn;
+//   4. the graffiti atlas came from the Worker and uploaded in strips (perf #1);
+//   5. three golden stills (spawn, hall, chimney): luma p50 / p95 within tolerance of tests/golden.json.
+// Usage (repo root; needs `node tools/export-world.mjs --out exports` first):
+//   node tests/browser.mjs [--exports exports] [--out browser-out] [--update] [--frames 3] [--size 480x270]
+// --update rewrites tests/golden.json from this run (do it after an intentional look change; the commit shows it).
+// Env: CHROME=/path/to/chrome (else Playwright's own Chromium: npx playwright install chromium),
+//      ONETAKE_PH_DIR=dir of Poly Haven files (else fetched from dl.polyhaven.org), ONETAKE_TIMEOUT=s (default 900).
+import { createServer } from 'node:http';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { resolve, dirname, join, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const a = process.argv.slice(2), opt = (k, d) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : d; };
+const EXPORTS = resolve(ROOT, opt('--exports', 'exports')), OUT = resolve(ROOT, opt('--out', 'browser-out'));
+const UPDATE = a.includes('--update'), FRAMES = +opt('--frames', 1), [W, H] = opt('--size', '320x180').split('x').map(Number);
+const TIMEOUT = 1000 * +(process.env.ONETAKE_TIMEOUT || 900), PH_DIR = process.env.ONETAKE_PH_DIR;
+const GOLDEN = join(ROOT, 'tests', 'golden.json');
+// smoke.py poses: tp(x, y, z, yawDeg, pitchDeg) and a velocity held for the 10 settle frames
+const SHOTS = {
+  spawn: ['o.tp(0,1.3,118,0,(4)-o.drone.c.camTilt)', [0, 0, -5]],
+  hall: ['o.tp(10,2.4,22.2,-90,(-4)-o.drone.c.camTilt)', [10, 0, 0]],
+  chimney: ['o.tp(-8,38,-22,0,-88)', [0, -12, 0]],
+};
+const ALLOW = [/favicon\.ico/];   // console errors that are not failures
+
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.bin': 'application/octet-stream', '.otil': 'application/octet-stream', '.css': 'text/css', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
+const serveFile = (res, f) => { res.writeHead(200, { 'content-type': MIME[extname(f)] || 'application/octet-stream', 'cache-control': 'no-store' }); res.end(readFileSync(f)); };
+const server = createServer((req, res) => {
+  const u = decodeURIComponent(req.url.split('?')[0]);
+  const f = u.startsWith('/__exports/') ? join(EXPORTS, u.slice(11)) : join(ROOT, u === '/' ? 'index.html' : u);
+  if (!f.startsWith(ROOT) && !f.startsWith(EXPORTS)) { res.writeHead(403); res.end(); return; }
+  if (existsSync(f) && statSync(f).isFile()) serveFile(res, f); else { res.writeHead(404); res.end(); }
+});
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const PORT = server.address().port, BASE = `http://127.0.0.1:${PORT}`;
+
+// CDN modules from node_modules when present (CI: ci/node_modules = the import map's versions), else the network
+const NM = join(ROOT, 'node_modules');
+const CDN = [['https://cdn.jsdelivr.net/npm/three@0.180.0/', join(NM, 'three')], ['https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.1/', join(NM, 'three-mesh-bvh')]];
+
+let fails = 0;
+const ok = (c, msg) => { console.log(`${c ? 'ok  ' : 'FAIL'} ${msg}`); if (!c) fails++; return !!c; };
+const errors = [];
+mkdirSync(OUT, { recursive: true });
+const t0 = Date.now(), sec = () => ((Date.now() - t0) / 1000).toFixed(0) + ' s';
+
+const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME || undefined,
+  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
+try {
+  const page = await browser.newPage({ viewport: { width: W, height: H } });
+  page.setDefaultTimeout(TIMEOUT);
+  page.on('console', (m) => { if (m.type() === 'error' && !ALLOW.some((r) => r.test(m.text()))) errors.push(`[console.error] ${m.text().slice(0, 800)}`); });
+  page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
+  page.on('requestfailed', (r) => { if (!/fonts\.g/.test(r.url())) errors.push(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`); });
+  page.on('response', (r) => { if (r.status() >= 400 && !ALLOW.some((x) => x.test(r.url()))) errors.push(`[http ${r.status()}] ${r.url()}`); });
+  await page.route('**/*', async (route) => {
+    const u = route.request().url();
+    for (const [pre, dir] of CDN) if (u.startsWith(pre)) { const f = join(dir, u.slice(pre.length).split('?')[0]); if (existsSync(f)) return route.fulfill({ path: f, contentType: 'text/javascript', headers: { 'access-control-allow-origin': '*' } }); }
+    if (PH_DIR && u.includes('dl.polyhaven.org')) { const f = join(PH_DIR, u.split('?')[0].split('/').pop()); if (existsSync(f)) return route.fulfill({ path: f, headers: { 'access-control-allow-origin': '*' } }); }
+    if (/fonts\.(googleapis|gstatic)\.com/.test(u)) return route.fulfill({ status: 200, body: '', contentType: 'text/css' });
+    return route.continue();
+  });
+  await page.addInitScript(() => localStorage.setItem('onetake.settings', JSON.stringify({ world: 'yard', quality: 'auto', v: 3, mode: 'cine', hud: 'off' })));
+
+  // ---- 1 + 2. load with ?perf, run the segments
+  await page.goto(`${BASE}/index.html?perf=${FRAMES}&soak=0`);
+  const ready = await page.waitForFunction(() => window.__onetake?.perfReady === true || /failed/.test(document.getElementById('perfProbe')?.textContent || ''), null, { timeout: TIMEOUT, polling: 1000 }).then(() => true, () => false);
+  const probeText = await page.evaluate(() => document.getElementById('perfProbe')?.textContent || '(no probe overlay)');
+  if (!ready || !(await page.evaluate(() => window.__onetake?.perfReady === true))) {
+    ok(false, `world did not load (${sec()}): ${probeText}\n     ${errors.join('\n     ')}`);
+    throw new Error('load failed');
+  }
+  ok(await page.evaluate(() => window.__onetake.state === 'fly' || window.__onetake.state === 'crash'), `world loaded, flying (${sec()})`);
+  const perf = await page.evaluate(() => window.__onetake.perfRun(0));
+  const segOk = perf.scales.length === 2 && perf.scales.every((s) => perf.segments.every((n) => Number.isFinite(s.seg[n]?.p90) && Number.isFinite(s.seg[n]?.gpuP50)));
+  ok(segOk && perf.segments.length === 4, `?perf segments ${perf.segments.join(', ')} at ${perf.scales.map((s) => s.scale).join(' / ')} (${sec()}); hover ${JSON.stringify(perf.hover)}`);
+  writeFileSync(join(OUT, 'perf.json'), JSON.stringify(perf, null, 1));
+
+  // ---- 3. coverage
+  if (ok(existsSync(join(EXPORTS, 'world.json')), `exports present (${EXPORTS})`)) {
+    const cov = await page.evaluate(async () => {
+      const { coverage } = await import('/tests/coverage.js');
+      const w = await (await fetch('/__exports/world.json')).json();
+      return coverage(window.__onetake.world.scene, w);
+    });
+    writeFileSync(join(OUT, 'coverage.json'), JSON.stringify(cov, null, 1));
+    ok(!cov.uncovered.length, `every scene mesh has an export entry (${cov.meshes} meshes: ${JSON.stringify(cov.byRule)})` + (cov.uncovered.length ? `\n     uncovered: ${JSON.stringify(cov.uncovered)}` : ''));
+    ok(!cov.undrawnExports.length, `every world.glb mesh is drawn` + (cov.undrawnExports.length ? `: not drawn ${cov.undrawnExports.join(', ')}` : ''));
+    if (cov.pending.length) console.log(`::warning::coverage pending (exporter waits on a contract): ${cov.pending.join(', ')} (${cov.pendingMeshes} meshes)`);
+  }
+
+  // ---- 4. graffiti from the worker
+  const gu = await page.evaluate(async () => { const s = window.__onetake.world?.stats || window.__bandoStats || {}; for (let i = 0; i < 60 && !(s.graffitiUpload?.path && s.graffitiUpload.path !== 'pending'); i++) await new Promise((r) => setTimeout(r, 500)); return s.graffitiUpload || null; });
+  ok(gu?.path === 'worker', `graffiti atlas drawn in the Worker, uploaded in strips: ${JSON.stringify(gu)}`);
+
+  // ---- 5. golden stills
+  const golden = existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, 'utf8')) : { shots: {} }, now = {};
+  for (const [name, [tp, vel]] of Object.entries(SHOTS)) {
+    const r = await page.evaluate(async ({ tp, vel }) => {
+      const o = window.__onetake; o.S.mode = 'acro'; o.applySettings(); o.fpv.setQualityRange?.(1, 1); o.fpv.scale = 1; o.controls.thr = 0.39;
+      new Function('o', tp)(o);
+      let url = null;
+      for (let i = 0; i < 10; i++) { if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39; url = o.step(33, 1, i === 9); await new Promise((r) => setTimeout(r, 20)); }
+      const img = new Image(); img.src = url; await img.decode();
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height).data, h = new Uint32Array(256);
+      for (let i = 0; i < d.length; i += 4) h[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
+      const n = d.length / 4, pct = (p) => { let s = 0; for (let k = 0; k < 256; k++) { s += h[k]; if (s >= p * n) return k; } return 255; };
+      return { url, p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
+    }, { tp, vel });
+    writeFileSync(join(OUT, `${name}.jpg`), Buffer.from(r.url.split(',')[1], 'base64'));
+    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip };
+    const g = golden.shots[name];
+    if (UPDATE || !g) console.log(`  still ${name}: p5 ${r.p5} p50 ${r.p50} p95 ${r.p95} clip ${r.clip}${g ? '' : ' (no golden yet)'}`);
+    else ok(Math.abs(r.p50 - g.p50) <= g.tol.p50 && Math.abs(r.p95 - g.p95) <= g.tol.p95,
+      `still ${name}: p50 ${r.p50} (golden ${g.p50} ± ${g.tol.p50}), p95 ${r.p95} (golden ${g.p95} ± ${g.tol.p95})`);
+  }
+  if (UPDATE) {
+    const tol = { p50: 8, p95: 10 };
+    writeFileSync(GOLDEN, JSON.stringify({ note: 'tests/browser.mjs golden stills (SwiftShader, ' + `${W}x${H}, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update after an intentional look change.`,
+      shots: Object.fromEntries(Object.entries(now).map(([k, v]) => [k, { ...v, tol: golden.shots[k]?.tol || tol }])) }, null, 1) + '\n');
+    console.log(`wrote ${GOLDEN}`);
+  }
+  ok(!errors.length, `no page / console / shader / request errors` + (errors.length ? `:\n     ${errors.join('\n     ')}` : ''));
+} catch (e) {
+  if (e.message !== 'load failed') { ok(false, `browser job threw: ${e.message}`); if (errors.length) console.log('     ' + errors.join('\n     ')); }
+} finally {
+  await browser.close();
+  server.close();
+}
+console.log(fails ? `${fails} FAILED (${sec()})` : `all passed (${sec()})`);
+process.exit(fails ? 1 : 0);

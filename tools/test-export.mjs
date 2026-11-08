@@ -8,7 +8,9 @@
 // 3. checks world.json (lines, takeStart, SKIES, instances, hashes, file sha256) and the GLB container layout;
 // 4. writes a synthetic mesh with uv + uv2, an interleaved attribute and a uint32 index (what A1's lightmap UVs will
 //    look like) and checks it round-trips with names restored;
-// 5. checks camera.json's lens table against FPVCamera.computeLens().
+// 5. checks camera.json's lens table against FPVCamera.computeLens();
+// 6. [P5] round-4+ world: ground masks, veg.* copies, instances.veg (contract C11 once world-bando.js has it), no
+//    undrawn mesh in world.glb, TEX_MEAN complete (no warnings), the coverage rules tests/browser.mjs applies.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -19,6 +21,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GeoHash, HASH_ALGO, meshHash, setHash } from './geohash.mjs';
 import { GLBWriter, readGLB } from './glb.mjs';
+import { undrawnMerged, COVERAGE } from './export-world.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 let fails = 0, checks = 0;
@@ -36,14 +39,15 @@ try {
   ok(run(['tools/export-world.mjs', '--out', B, '--quiet']).status === 0, 'export-world (second run) exits 0');
   ok(run(['tools/camera-profile.mjs', '--out', A, '--quiet']).status === 0, 'camera-profile exits 0');
   ok(run(['tools/camera-profile.mjs', '--out', B, '--quiet']).status === 0, 'camera-profile (second run) exits 0');
-  for (const f of ['world.glb', 'collider.glb', 'world.json', 'camera.json', 'graffiti.png']) ok(existsSync(join(A, f)) && sha(readFileSync(join(A, f))) === sha(readFileSync(join(B, f))), `${f} byte-identical across runs`);
+  for (const f of ['world.glb', 'collider.glb', 'world.json', 'camera.json', 'graffiti.png', 'groundmask.png', 'groundmask2.png', 'veg.json', 'veg.bin']) ok(existsSync(join(A, f)) && sha(readFileSync(join(A, f))) === sha(readFileSync(join(B, f))), `${f} byte-identical across runs`);
   ok(run(['tools/export-world.mjs', '--out', A, '--check', '--quiet']).status === 0, 'export-world --check passes on a fresh export');
   const tCli = performance.now();
 
   // ------------------------------------------------------------ 2. GLB vs buildGeometry
   const { buildGeometry, SKIES } = await import(pathToFileURL(join(ROOT, 'world-bando.js')).href);
   const geo = buildGeometry();
-  const expected = [...Object.keys(geo.merged).sort().map((k) => [k, geo.merged[k]]), ['terrain', geo.terr], ['far', geo.far], ['path', geo.pathG]];
+  const wbSrc = readFileSync(join(ROOT, 'world-bando.js'), 'utf8'), skip = undrawnMerged(wbSrc);
+  const expected = [...Object.keys(geo.merged).sort().filter((k) => !skip.includes(k)).map((k) => [k, geo.merged[k]]), ['terrain', geo.terr], ['far', geo.far], ['path', geo.pathG]];
   const world = JSON.parse(readFileSync(join(A, 'world.json'), 'utf8'));
   const loader = new GLTFLoader();
   const GLTF2THREE = { POSITION: 'position', NORMAL: 'normal', TANGENT: 'tangent', TEXCOORD_0: 'uv', TEXCOORD_1: 'uv1', TEXCOORD_2: 'uv2', TEXCOORD_3: 'uv3', COLOR_0: 'color' };
@@ -109,7 +113,32 @@ try {
   eq(world.instances.treelineCrown.data.length, geo.treeline.length * world.instances.treelineCrown.layout.length, 'treeline instance table size');
   eq(world.instances.tree.count, geo.treeSpots.length, 'tree instance count');
   eq(world.warnings, [], 'no export warnings');
-  for (const f of ['world.glb', 'collider.glb']) { const b = readFileSync(join(A, f)); eq([world.files[f].bytes, world.files[f].sha256], [b.byteLength, sha(b)], `world.json files.${f}`); }
+  for (const f of Object.keys(world.files)) { const b = readFileSync(join(A, f)); eq([world.files[f].bytes, world.files[f].sha256], [b.byteLength, sha(b)], `world.json files.${f}`); }
+
+  // ------------------------------------------------------------ 6. [P5] the round-4+ world
+  for (const k of skip) ok(!world.meshes.some((m) => m.name === k) && world.notDrawn?.meshes.includes(k), `undrawn mesh ${k} left out of world.glb, listed in notDrawn`);
+  const gm = world.groundMasks;
+  if (ok(gm && gm.N > 0 && gm.size > 0, 'groundMasks present')) for (const f of ['groundmask.png', 'groundmask2.png']) {
+    const b = readFileSync(join(A, f));
+    ok(b.readUInt32BE(0) === 0x89504e47 && b.readUInt32BE(16) === gm.N && b.readUInt32BE(20) === gm.N && b[25] === 6, `${f}: PNG ${gm.N}x${gm.N} RGBA`);
+  }
+  const man = JSON.parse(readFileSync(join(ROOT, 'veg.json'), 'utf8'));
+  for (const f of ['veg.json', 'veg.bin', man.atlas.file, man.atlas.alpha]) ok(world.files[f] && sha(readFileSync(join(A, f))) === sha(readFileSync(join(ROOT, f))), `${f} copied into the export unchanged`);
+  const V = world.instances.veg;
+  if (typeof geo.vegInstances === 'function' || /vegInstances/.test(wbSrc)) {
+    ok(V && V.count > 0 && !V.status, `instances.veg exported from geo.vegInstances() (count ${V?.count}, ${V?.status || 'ok'})`);
+    if (V?.count) {
+      eq(V.data.length, V.count * V.layout.length, 'instances.veg table size');
+      ok(V.layout[0] === 'type' && V.fields.matrix === 16, 'instances.veg rows: type + a 4x4 matrix');
+      ok(V.data.every((x) => x !== null && Number.isFinite(x)), 'instances.veg: every field finite');
+      for (const t of V.types) ok(man.types[t], `instances.veg type ${t} is a veg.json type`);
+      const list = await geo.vegInstances(man), again = await buildGeometry().vegInstances(man);
+      eq(JSON.stringify(list.map((e) => Object.values(e).map((v) => v?.isVector3 ? v.toArray() : v))), JSON.stringify(again.map((e) => Object.values(e).map((v) => v?.isVector3 ? v.toArray() : v))), 'geo.vegInstances() deterministic (two builds)');
+    }
+  } else ok(V?.status === 'pending' && world.runtimeOnly.veg, 'instances.veg pending (no geo.vegInstances on this branch), listed in runtimeOnly');
+  eq(world.coverage, JSON.parse(JSON.stringify(COVERAGE)), 'coverage rules');
+  ok(world.grass?.tiers?.auto && world.grass.cell > 0, 'grass params (tiers, cell)');
+  for (const [k, m] of Object.entries(world.materials)) if (m.id && m.maps?.includes('diff')) ok(m.texMean?.length === 3, `materials.${k}.texMean (TEX_MEAN ${m.id})`);
   for (const f of ['world.glb', 'collider.glb']) {
     const { json } = readGLB(readFileSync(join(A, f)));
     ok(json.bufferViews.every((v) => v.byteOffset % 4 === 0), `${f}: bufferViews 4-byte aligned`);

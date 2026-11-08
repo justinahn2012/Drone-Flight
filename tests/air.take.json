@@ -1,0 +1,14 @@
+{
+ "log": "air.otil",
+ "world": "3f6d098a1aba293d",
+ "takeJs": "549c46828df68dbd",
+ "sticks": "main.js sticksActive, no touches; thrRef starts at the first tick",
+ "events": [
+  {
+   "tick": 0,
+   "type": "start"
+  }
+ ],
+ "total": 0,
+ "state": "live"
+}

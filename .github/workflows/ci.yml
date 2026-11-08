@@ -1,4 +1,7 @@
 # One Take FPV: node tests on every push (native #1.2, perf "stale lightmap = fail"). About 1-2 min; capped at 10.
+# Round 5 (P5, native #2): a second job loads the real game in headless Chromium on SwiftShader (no GPU) and fails on any
+# page / console / shader error, runs the ?perf segments, checks every drawn mesh has an export entry and compares
+# three golden stills (tests/browser.mjs, tests/golden.json). Its screenshots + perf/coverage JSON are an artifact.
 # The site itself stays a static, build-free deploy. The npm dependencies live in ci/ (not at the root), so
 # Cloudflare Pages finds no package.json and never npm-installs on deploy. Nothing here writes to the site root.
 # Exports (world.glb, collider.glb, world.json, camera.json, graffiti.png) are NOT committed. Each run builds them into
@@ -31,7 +34,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/chk"
           for f in *.js; do cp "$f" "$RUNNER_TEMP/chk/$f.mjs"; node --check "$RUNNER_TEMP/chk/$f.mjs"; done
           for f in tools/*.mjs tests/*.mjs; do node --check "$f"; done
-      - name: Replay input logs (determinism; a stale scripted log fails)
+      - name: Replay input logs (determinism + Take parity; a stale scripted log fails)
         run: node tests/replay.mjs --strict
       - name: Lightmaps match the geometry (stale = fail)
         run: node tools/test-lightmap.mjs
@@ -50,3 +53,35 @@ jobs:
           name: exports
           path: exports/
           retention-days: 30
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ci/package-lock.json
+      - name: Install three + three-mesh-bvh + playwright
+        run: |
+          npm ci --prefix ci --ignore-scripts --no-audit --no-fund
+          ln -s ci/node_modules node_modules
+      - name: Cache Playwright's Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('ci/package-lock.json') }}
+      - name: Install Chromium (+ system libraries)
+        run: npx playwright install --with-deps chromium
+      - name: Build exports (coverage reads world.json)
+        run: node tools/export-world.mjs --out exports
+      - name: Game in headless Chromium (SwiftShader)
+        run: node tests/browser.mjs --exports exports --out browser-out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser
+          path: browser-out/
+          retention-days: 14

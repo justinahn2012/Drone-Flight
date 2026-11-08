@@ -49,7 +49,8 @@ textures bottom-left-origin (`MTKTextureLoader.Option.origin: .bottomLeft`) or s
 **world.glb** (glTF 2.0 binary, from tools/glb.mjs). It is deterministic and passes the Khronos validator with
 0 errors and 0 warnings.
 - One node and one single-primitive mesh per render mesh, in canonical order. First the merged site meshes, sorted by
-  material key (`bark brick rust silo slab wall`), then `terrain`, `far` and `path`.
+  material key (`brick rust silo slab wall`), then `terrain`, `far` and `path`. Round 5: merged meshes the game never
+  draws (the legacy `bark` trunks, kept by buildGeometry for the collider/bake) are left out and listed in `notDrawn`.
 - **Attributes:** `POSITION`, `NORMAL`, `TEXCOORD_0` (`uv`, planar world metres; divide by `MATS[mat].tile`) and
   `_AY` (`aY` = the bottom and top world height of the element, for weathering). `path` also has `COLOR_0`, where
   alpha is the edge fade.
@@ -84,10 +85,24 @@ A triangle belongs to the range that holds its first vertex. Build your own BVH;
 - `materials`: MATS plus URLs
 - `paths`: dirt-track polylines
 - `site`: footprints, chimney, decal hints
-- `instances.treelineCrown`: layout `x y z rotY sx sy sz tint`, M = T·Ry·S
-- `instances.tree`: layout `x y z h r`
+- `instances.treelineCrown`: layout `x y z rotY w h d tint`; prototype veg.json types A/B `lods[3]` (the rule and the
+  scale formula are in the entry)
+- `instances.tree`: layout `x y z h r` (the spots; the drawn trees are `instances.veg`)
+- `instances.veg` (round 5, contract C11): `geo.vegInstances()` as a flat table: `types`, `layout` (`type` index, then
+  every numeric field of the entries in order: `matrix0..15` column-major, `tint0..2`, `ao`, ...), `byType`,
+  `prototypes` (veg.json H / crown / lods per type) and `data`. Until world-bando.js has `vegInstances` it says
+  `status: "pending"` and the plants are listed in `runtimeOnly`.
+- `groundMasks` (round 5): `groundmask.png` (R grass density, G apron, B terrain AO, A grass height/2 m) and
+  `groundmask2.png` (R track distance/8 m, G dry, B flowers, A lush), 512² over x0 −165, z0 −150, 320 m; PNG row j is
+  z = z0 + (j + 0.5)·0.625, i.e. load top-left origin. B is 1 with the committed lightmaps (it is the per-vertex
+  bake's terrain AO only on that fallback).
+- `grass`: the per-quality blade tiers (`GQS`) and the base cell; with the masks that is all the shader needs.
+- `materials[k].texMean`: the mean linear colour of the diffuse map (TEX_MEAN, tools/texmean.py).
+- `coverage`: which export entry covers each class of mesh the game draws (applied to the live scene by CI).
 - `lightmap`: A1's lm.json when present
-- `runtimeOnly`: what is still generated at load
+- `runtimeOnly`: what is still generated at load (grass, graffiti placement, the light fallback)
+- `files`: also `groundmask*.png` and the vegetation assets copied unchanged (`veg.json`, `veg.bin`, `veg_atlas.jpg`,
+  `veg_atlas_a.png`, `veg_bark_*.jpg`; veg.json `meshes[name]` gives attribute and index ranges into veg.bin)
 - `warnings`: must be empty
 
 Hash `mm3x2/1` (geohash.js at the root; tools/geohash.mjs re-exports it):
@@ -127,7 +142,8 @@ and changing them means re-recording. A log replays only on the collider it was 
 **graffiti.png** (round 4): the 2048×4096 graffiti atlas (4×16 cells of 512×256; cell k's type is `GTYPE(k)`; piece,
 throw, tags, buff), RGBA8 with straight alpha and sRGB, rows top-down. `world.json` `textures.graffiti` describes it.
 The game draws the same pixels at load with `raster2d.js`, a pure-JS Canvas2D subset with Hershey stroke fonts and
-no system fonts, so the port ships the PNG. Placement (the decal grids) is still runtime-only.
+no system fonts, so the port ships the PNG. Placement (the decal grids) is still runtime-only. Round 5: the drawing
+code is `graffiti.js` (no three.js); the browser runs it in `graffiti-worker.js` and uploads the result in 16 strips.
 
 **Golden dumps (stream D, `fpv.renderGolden()`):** per-stage float outputs of the camera passes for fixed inputs.
 
@@ -161,7 +177,7 @@ in round 3; check the names after merge.
 | G1 | Swift loads world.glb / collider.glb | world.json | counts, bounds and `mm3x2/1` hashes equal | XCTest, CPU only | M1 |
 | G2 | lens solve | camera.json `lensSolve.table` | \|Δ\| ≤ 1e-9 | XCTest | M1 |
 | G3 | flight replay | committed input logs (E) | position within 1 mm and attitude within 1e-4 rad at every 240-tick snapshot; same crash tick | XCTest | M1 |
-| G4 | take replay | same logs, web event list | identical events (type, name, pts, flow, total) | XCTest | M1 |
+| G4 | take replay | same logs, `tests/<log>.take.json` (round 5: committed, asserted by `tests/replay.mjs`) | identical events (type, name, pts, flow, total; floats ±1e-6) | XCTest | M1 |
 | G5 | camera passes | `fpv.renderGolden()` dumps | per stage, max abs error ≤ 2e-3 linear (≤ 1 LSB at the 8-bit output), grain off | Metal device | M1–M2 |
 | G6 | reference frames | web smoke shots (spawn, silo, hall, chimney, takestart), exposure locked | SSIM and luma percentiles (p5/p50/p95) within thresholds set from the first M1 frames | Metal device | M2 |
 
@@ -184,19 +200,32 @@ The Swift build takes them from the artifact of the commit it builds, or regener
 
 The web job runs on ubuntu with node 22, in about 1–2 minutes (10-minute cap):
 - `node --check` on .mjs copies of the runtime modules
-- `tests/replay.mjs --strict` (a stale scripted log fails, a stale browser log warns)
+- `tests/replay.mjs --strict` (a stale scripted log fails, a stale browser log warns; round 5: each scripted log's
+  Take events must equal `tests/<log>.take.json`. The Take is ticked after every `drone.step` with main.js
+  `sticksActive()` on the logged inputs, no touches, `thrRef` = the first tick's throttle. After an intentional
+  take.js change: `node tests/replay.mjs --record-take`)
 - `tools/test-lightmap.mjs` (a stale lightmap fails, from r4/A-bakefix)
 - `tests/take.mjs` at 60 and 240 Hz, when present (C4)
 - `tests/stress-lite.mjs` (0 pass-throughs)
-- `tools/test-export.mjs`
+- `tools/test-export.mjs` (round 5: masks, veg.* copies, `instances.veg` once C11 lands, TEX_MEAN complete)
 - the export
+
+A second job, **browser** (round 5), runs `tests/browser.mjs`: Playwright's Chromium on SwiftShader loads the game
+with `?perf`, fails on any page/console/shader/request error, runs the four perf segments, applies world.json
+`coverage` to the live scene (tests/coverage.js: a drawn mesh with no export entry fails, so does a world.glb mesh the
+game doesn't draw) and compares three stills (spawn, hall, chimney) with `tests/golden.json` (luma p50 ±8, p95 ±10).
+Screenshots and perf/coverage JSON are the `browser` artifact. After an intentional look change:
+`node tests/browser.mjs --update` and commit tests/golden.json.
 
 three and three-mesh-bvh come from `ci/package.json`, pinned to the import map; keep the two in step. The file sits in
 `ci/` so the site root has no package.json, because Cloudflare Pages would npm-install on every deploy. CI links
 `ci/node_modules` to `node_modules`. To run locally: `npm ci --prefix ci && ln -s ci/node_modules node_modules`.
 
-**`?perf`** (perf.js) puts real frame times from the phone next to these numbers. It runs 120 frames at render
-scale 1.0 and 120 at 1.2, each synced by a 1-px readPixels, and shows p50/p90 and a suggested `QUALITY.auto.max`.
+**`?perf`** (perf.js) puts real frame times from the phone next to these numbers. Round 5: four segments (cruise;
+skim at 1.5 m over the meadow; a 120°/s carve; hover 2 m outside the biggest crown in reach) at render scale 1.0 and
+1.2, 120 timed frames each, every frame synced by a 1-px readPixels; per segment p50/p90, cpu and gpu ≈ total − cpu.
+Then a 3-minute soak cycling the segments at 1.0, reporting first-30-s and last-30-s p50/p90 and the throttle ratio
+(QUICK skips the soak). Suggested `QUALITY.auto.max` = the largest scale whose worst segment p90 ≤ 14.2 ms.
 
 ## 5. Milestones
 
