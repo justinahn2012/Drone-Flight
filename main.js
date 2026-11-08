@@ -1143,7 +1143,8 @@ async function recordLive(C, b, kind) {
     if (r0.ab) {                                                 // the clip's own sound, started with the recorder
       const ctx = audio.ctx, s = ctx.createBufferSource(); s.buffer = r0.ab; s.connect(r0.dest);
       if (audio.spk) s.connect(audio.spk);                       // heard as the game would be (Sound Off: silent)
-      r0.src = s; r0.clk = ctx.state === 'running'; r0.a0 = ctx.currentTime; s.start();
+      r0.src = s; r0.clk = ctx.state === 'running'; r0.a0 = ctx.currentTime; r0.wall0 = performance.now() / 1000; s.start();
+      if (window.__onetakeClipDebug) r0.dbg = [];
     }
   });
 }
@@ -1152,7 +1153,12 @@ async function recordLive(C, b, kind) {
 function replayFrame() {
   const r = replay, C = r.clip;
   if (!r.armed) return null;
-  const el = r.clk ? audio.ctx.currentTime - r.a0 : performance.now() / 1000 - r.wall0;   // the audio clock when it runs
+  // the audio clock while it runs and keeps up; if it stalls (suspended, or a device that doesn't advance it) by more
+  // than 0.25 s against the wall clock, the wall clock takes over so the video never freezes
+  const wall = performance.now() / 1000 - r.wall0;
+  let el = wall;
+  if (r.clk) { const ac = audio.ctx.state === 'running' ? audio.ctx.currentTime - r.a0 : -1; if (ac >= 0 && ac > wall - 0.25) el = ac; else r.clk = false; }
+  if (r.dbg && r.dbg.length < 400) r.dbg.push([+wall.toFixed(3), +(audio.ctx ? audio.ctx.currentTime - r.a0 : -1).toFixed(3), r.clk ? 1 : 0, r.k]);
   const due = Math.floor(el * CLIP_FPS + 1e-6);
   if (due <= r.k) return null;
   const T = due / CLIP_FPS;
@@ -1188,6 +1194,7 @@ function endReplay(cancel = false) {
   if (!replay) return;
   const r = replay; replay = null; clearTimeout(r.stopTm);
   if (r.src) { try { r.src.stop(); } catch (e) {} try { r.src.disconnect(); } catch (e) {} }
+  if (r.dbg) window.__onetakeClipDbg = r.dbg;
   if (cancel && recorder) { recorder.onstop = null; recorder.ondataavailable = null; recChunks = []; }
   try { if (recorder?.state !== 'inactive') recorder?.stop(); } catch (e) {}
   r.stream?.getVideoTracks().forEach((t) => t.stop());   // the canvas track only: the audio track is shared by every clip
@@ -1312,7 +1319,7 @@ function pauseForClip() {
   clipOpen = true; controls.enabled = false; controls.cancelAll?.();
   document.body.classList.add('clipopen');                                         // ui #1: no dimmed OSD through the modal
   audio.update(drone.motors, 0, 0, drone.crashed, true, ax);                      // fade the live game sound out
-  setTimeout(() => { if (clipOpen && state !== 'replay' && !hqJob?.needCtx) audio.idle?.(); }, 250);
+  setTimeout(() => { if (clipOpen && state !== 'replay' && !hqJob) audio.idle?.(); }, 250);
 }
 let clipCanShare = false;
 function showClip(blob, info = {}, quiet = false) {
