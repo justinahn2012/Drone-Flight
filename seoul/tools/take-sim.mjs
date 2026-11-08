@@ -79,7 +79,7 @@ const lineGates = (name, k = 0) => { const e = entries(name)[k]; return e ? [...
 const ROUTES = {
   short: [['street', 'WALKING STREET', 0]],
   loop: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['street', 'BAR ALLEY', 0]],
-  long: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'THE GAP', 0], ['street', 'CLUB STREET', 0]],
+  long: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'SIGN STACK', 0], ['line', 'ROOFLINE', 1]],
 };
 // a pilot: cruise m/s, thumb noise (stick OU sigma), line choice spread (share of the gate half-size), reaction lookahead m
 const PILOTS = {

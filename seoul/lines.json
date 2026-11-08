@@ -8,8 +8,8 @@
    28000,
    45000
   ],
-  "bankT": 6,
-  "holdZone": 2.5,
+  "bankT": 10,
+  "holdZone": 1.5,
   "armHold": true,
   "firstR": 60,
   "pace": [
@@ -70,8 +70,8 @@
      28000,
      45000
     ],
-    "bankT": 6,
-    "holdZone": 2.5,
+    "bankT": 10,
+    "holdZone": 1.5,
     "armHold": true,
     "firstR": 60,
     "pace": [

@@ -365,7 +365,7 @@ const startPoints = [
 // ---- [P2-F1 design #1] the level's take tuning, merged over take.js TAKE_TUNING (bando keeps its own): stars fitted from
 // noisy-pilot sims (seoul/tools/take-sim.mjs), the chain held while a line is armed (UX #2), the bank timer and the hold
 // zone sized for 6-10 m streets, PACE scaled to a 1 km map, the first-line guide only near the spawn (design #4)
-const tuning = { stars: [12000, 28000, 45000], bankT: 6.0, holdZone: 2.5, armHold: true, firstR: 60, pace: [120, 300, 1.5], microFlow: 0 };
+const tuning = { stars: [12000, 28000, 45000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [120, 300, 1.5], microFlow: 0 };
 // a copy on the `first` line for world loaders that pass lines[] only (take.js reads either)
 const firstLine = lines.find((l) => l.first); if (firstLine) firstLine.tuning = tuning;
 const out = { version: 2, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', tuning, lines, funnels, startPoints,
