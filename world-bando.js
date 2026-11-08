@@ -643,11 +643,12 @@ function buildSite(seed = 7) {
   // ~1.1 s), push forward at the bottom and you're out of the door, under the rack and through the hall window.
   const yawTo = (dx, dz) => Math.atan2(-dx, -dz);
   S.startPoints = [
-    // hint (take.readyHint, UX r3 #3): what the UI says while the take is ready here, until `line` has been flown `until` times
-    { name: 'Chimney', pos: [CHIM.x, CHIM.h + 2.5, CHIM.z], yaw: yawTo(DOOR[0], DOOR[1]), hint: { text: '▼ HOLD LEFT STICK · DROP IN', line: 'DROP IN', until: 3 } },
+    // hint (take.readyHint, UX r3 #3): what the UI says while the take is ready here, until `line` has been flown `until`
+  // times; next: the line take.nextHint points at from here
+    { name: 'Chimney', pos: [CHIM.x, CHIM.h + 2.5, CHIM.z], yaw: yawTo(DOOR[0], DOOR[1]), hint: { text: '▼ HOLD LEFT STICK · DROP IN', line: 'DROP IN', until: 3, next: 'CHIMNEY DIVE' } },
     // inside the hall under the first hole of the stack (design r3: first beat 7.4 s from the old spot by the rack),
     // nose towards the gallery foot: climb through TRIPLE POP, U-turn over the roof, up the gallery
-    { name: 'Hall', pos: [STACK[0], 2.4, STACK[1]], yaw: yawTo(21 - STACK[0], 28 - STACK[1]), hint: { text: '▲ HOLD LEFT STICK UP · TRIPLE POP', line: 'TRIPLE POP', until: 3 } },
+    { name: 'Hall', pos: [STACK[0], 2.4, STACK[1]], yaw: yawTo(21 - STACK[0], 28 - STACK[1]), hint: { text: '▲ HOLD LEFT STICK UP · TRIPLE POP', line: 'TRIPLE POP', until: 3, next: 'TRIPLE POP' } },
     // inside the head house, facing the stair tower's east opening: INTO THE TOWER, STAIRWELL DIVE, UNDER THE TABLE
     { name: 'Head house', pos: [-20, SILO.top + 2.6, TOWER.z], yaw: yawTo(-1, 0) },
     // north of the north row, lined up on the 1.6 m gaps: THE SMALL GAP, THREAD THE NEEDLE

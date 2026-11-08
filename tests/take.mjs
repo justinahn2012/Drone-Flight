@@ -356,7 +356,7 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     { name: 'SHAFT', pts: 1000, c: [0, -30, 40], n: [0, -1, 0], w: 4, h: 4, pre: [vgate], within: 10, via: [{ p: [0, 10, 40], unless: [-5, 5, -40, 0, 30, 50] }] },
     { name: 'FAR', pts: 1000, first: true, c: [200, 2, 0], n: [0, 0, 1], w: 4, h: 4 },
     { name: 'NEAR', pts: 1000, c: [0, 2, 5], n: [0, 0, 1], w: 4, h: 4 },
-  ], startPoints: [{ name: 'Top', pos: [0, 12, 40], hint: { text: '▼ HOLD LEFT STICK · DROP IN', line: 'SHAFT', until: 3 } }] };
+  ], startPoints: [{ name: 'Top', pos: [0, 12, 40], hint: { text: '▼ HOLD LEFT STICK · DROP IN', line: 'SHAFT', until: 3, next: 'SHAFT' } }] };
   const tk = new Take(), d = mk();
   d.pos = { x: 0, y: 2, z: -20 }; d.heading = Math.PI;
   let h = tk.nextHint(d, w3);
@@ -371,6 +371,9 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
   const e = []; tk.update(DT, d, w3, true); d.pos = { x: 0.5, y: 1, z: 40 }; e.push(...tk.update(DT, d, w3, true));
   h = tk.nextHint(d, w3); ok(h.inProgress && h.stage === 'main' && near(h.pos[1], -30) && h.vert === 'down', 'past the pre-gate: the main gate below');
   d.pos = { x: 6, y: -10, z: 40 }; h = tk.nextHint(d, w3); ok(h.inProgress && h.vert === 'down', 'in progress: steep counts as down');
+  { resetProgress(); const t5 = new Take(), d5 = mk(); d5.pos = { x: 0, y: 12, z: 40.5 };
+    const h5 = t5.nextHint(d5, w3); ok(h5.name === 'SHAFT' && h5.vert === 'down', `at a start with hint.next: that line, not the first-flight line (${h5.name})`);
+    d5.pos = { x: 0, y: 2, z: -20 }; ok(t5.nextHint(d5, w3).name === 'FAR', 'away from it: the first-flight line'); }
   // readyHint
   const t2 = new Take(), d2 = mk(); d2.pos = { x: 0, y: 12, z: 40.5 };
   let r = t2.readyHint(d2, w3); ok(r && r.text.startsWith('▼') && r.n === 0 && r.start === 'Top', 'readyHint at the start');

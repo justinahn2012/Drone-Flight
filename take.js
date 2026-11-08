@@ -377,6 +377,7 @@ export class Take {
   // show a down / up triangle instead of the arrow), stage ('via' | 'gate' | 'main'), inProgress} or null.
   // Which line, in order:
   //   1. a line in progress: its pre-gate was crossed the right way (within its `within`) -> its main gate (stage 'main')
+  //   1b. within 6 m of a world.startPoints entry whose hint names `next`: that line (the arrow agrees with the hint)
   //   2. on a profile that has never flown a named line, the line flagged `first` in world.lines (the one the
   //      onboarding toast names)
   //   3. the nearest line never flown, else the nearest not yet flown this take (route length through its via)
@@ -410,6 +411,13 @@ export class Take {
         if (r && now - r.t <= (L.l.within ?? 6) && (L.l.two || r.s === 1) && (!pick || r.t > pick.t)) pick = { L, tgt: L.main.c, stage: 'main', fresh: el === 1, t: r.t, prog: true };
       });
     });
+ // 1b. at a START AT point whose hint names a line to fly from there (hint.next), within 6 m: that line
+    if (!pick) for (const sp of world?.startPoints || []) {
+      const nx = sp.hint?.next, q = sp.pos; if (!nx || !q || !eligible(nx)) continue;
+      if (Math.hypot(p.x - (q.x ?? q[0]), p.y - (q.y ?? q[1]), p.z - (q.z ?? q[2])) > 6) continue;
+      const L = this._lines.find((x) => x.l.name === nx); if (!L) continue;
+      const [tgt, stage] = aim(L, L.pre.length ? L.pre[0] : L.main); pick = { L, tgt, stage, fresh: eligible(nx) === 1 }; break;
+    }
     // 2. the first line of a new profile
     if (!pick && !this._names?.some((l) => !l.micro && PROG[l.name]?.n)) {
       const L = this._lines.find((x) => x.l.first && !x.l.micro);
