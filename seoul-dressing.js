@@ -832,6 +832,29 @@ export function geometry(layout, opts = {}) {
       if (placedAny) occRect(F, -half, half, -depth / 2, depth / 2);
     }
   }
+  // ---- street-food carts (노점) along the walking street edges: steel cart, tarp canopy, bare bulbs, lit menu band
+  {
+    const R = rng('carts' + seed); let n = 0;
+    const menus = ['떡볶이 · 순대', '호떡', '어묵 · 꼬치', '타코야끼', '닭꼬치', '와플 · 츄러스', '군고구마', '계란빵'];
+    for (const st of M.streets.filter((x) => x.kind === 'walking')) for (let s = 6 + R() * 6; s < st.len - 6 && n < 12; s += 14 + R() * 10) {
+      const q = M.at(st, s), sd = R() < 0.5 ? 1 : -1, nx = -q.tz * sd, nz = q.tx * sd;
+      const d = M.freeRay(q.x, q.z, nx, nz, 12); if (!isFinite(d) || d < 3.2) continue;
+      const off = d - 1.0, x = q.x + nx * off, z = q.z + nz * off;           // backed against the shop side, 1 m off the facades
+      if (!inCore(x, z) || !occFree(x, z, 1.3) || gates.some((g) => Math.hypot(g.c[0] - x, g.c[2] - z) < 5)) continue;
+      const F = frameH([x, 0, z], -nz, nx);                                  // local +z = -n: the counter faces the street
+      const tarp = [srgb(0xc8261e), srgb(0x1f5fbf), srgb(0xe8a417), srgb(0x2a8a4a)][Math.floor(R() * 4)], id = n;
+      if (item(() => {
+        set('dr_galv'); boxMM(F, -0.8, 0.25, -0.45, 0.8, 0.95, 0.45); set('dr_prop', { c: [0.02, 0.02, 0.02] }); for (const xx of [-0.55, 0.55]) cyl(F, [xx, 0.2, 0], 'z', 0.2, 0.92, 6);
+        set('dr_steel'); for (const xx of [-0.78, 0.78]) for (const zz of [-0.43, 0.43]) boxMM(F, xx - 0.02, 0.95, zz - 0.02, xx + 0.02, 2.05, zz + 0.02, ['ny']);
+        set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: NI([1.0, 0.62, 0.3], 40) }); boxMM(F, -0.95, 2.05, -0.6, 0.95, 2.12, 0.62);
+        boxMM(F, -0.95, 1.85, 0.6, 0.95, 2.12, 0.62);                           // valance over the counter
+        set('dr_glow', { em: NI(srgb(0xffb46b), 1500), col: false }); for (const xx of [-0.45, 0.1, 0.55]) boxMM(F, xx - 0.03, 1.88, 0.15 - 0.03, xx + 0.03, 1.95, 0.15 + 0.03);
+        set('dr_glow', { em: NI([1.0, 0.7, 0.4], 160), col: false }); boxMM(F, -0.7, 0.55, 0.451, 0.7, 0.85, 0.455);   // lit counter front (menu)
+        labels.push({ id: 'cart:' + id, kind: 'tent', pos: r3(W(F, 0, 1.985, 0.625)), normal: r3(D(F, 0, 0, 1)), w: 1.8, h: 0.24, nits: 70, lines: [menus[id % menus.length]] });
+        emit({ id: 'dress:cart:' + id, kind: 'tent', pos: W(F, 0, 1.6, 0.4), normal: D(F, 0, 0, 1), w: 1.6, h: 1.1, rgb: [1.0, 0.62, 0.3], nits: 110 });
+      }, { margin: 0.35 })) { occAdd(x, z, 1.2); n++; facts.carts = n; }
+    }
+  }
   // tent: frame F (x along the kerb, +z away from it, toward the customers), tarp box with a ridge, the vinyl front (+z) lit
   function tent(F, xo, w, d, R, idx) {
     const eave = 2.15, ridge = 2.7, hz = d / 2, hx = w / 2 - 0.05;
