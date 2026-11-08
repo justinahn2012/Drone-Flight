@@ -686,7 +686,7 @@ function makeCanvas(w, h) {
 
 export function build(layout, ctx = {}) {
   const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  const nit = { value: ctx.nitScale ?? NIT_SCALE };
+  const nit = { value: ctx.nitScale ?? ctx.NIT ?? NIT_SCALE };   // S1 passes ctx.NIT (scene radiance per cd/m^2)
   const uTime = { value: 0 };
   const { specs, screens } = generateSigns(layout, ctx);
   const group = new THREE.Group(); group.name = 'seoul-signs';
