@@ -90,7 +90,7 @@ A triangle belongs to the range that holds its first vertex. Build your own BVH;
 - `runtimeOnly`: what is still generated at load
 - `warnings`: must be empty
 
-Hash `mm3x2/1` (tools/geohash.mjs):
+Hash `mm3x2/1` (geohash.js at the root; tools/geohash.mjs re-exports it):
 - Two MurmurHash3-x86_32 body lanes over a uint32 word stream, seeds `0x9747b28c` and `0x2f0f5d1b`.
 - Floats are hashed as their bit patterns; integers as their value.
 - Each mesh hashes as: name, vertex count, then each attribute in sorted name order (name, itemSize, data), then the index.
@@ -109,7 +109,7 @@ Hash `mm3x2/1` (tools/geohash.mjs):
 
 **Lightmaps (stream A1):** `lm_sunny.png`, `lm_overcast.png` (RGBM/RGBE) and `lm.json` (geometry hash, sky ids,
 rotY, scale), sampled with the lightmap TEXCOORD. They are valid only while the lm.json hash matches the geometry.
-**Integration:** A1 should compute that hash with `tools/geohash.mjs`, so that `lm.json` and `world.json` agree.
+**Integration:** A1 should compute that hash with `geohash.js`, so that `lm.json` and `world.json` agree.
 
 **Input log (stream E, inputlog.js):**
 - header: seed, world hash, craft, mode, tick rate, start snapshot
@@ -117,7 +117,17 @@ rotY, scale), sampled with the lightmap TEXCOORD. They are valid only while the 
 - a full `Drone.snapshot()` every 240 ticks
 - size: about 144 KB/min
 
-The header's world hash should be `world.json` `hash.world`. A log replays only on the geometry it was recorded on.
+The header's world hash is `world.json` `hash.collider` (round 4): `mm3x2/1` over the collider mesh exactly as
+collider.glb stores it (`setHash('collider', [['collider', colGeo]])`, positions + index in three-mesh-bvh order). Open
+air (no collider) is `setHash('collider', [])`. Funnels and the envelope are not hashed: they come from `world.json`,
+and changing them means re-recording. A log replays only on the collider it was recorded on;
+`node tests/replay.mjs --record` re-records the scripted logs. A browser log is re-recorded in the game
+(`__onetake.flight.lastLog.toBytes()`).
+
+**graffiti.png** (round 4): the 2048×4096 graffiti atlas (4×16 cells of 512×256; cell k's type is `GTYPE(k)`; piece,
+throw, tags, buff), RGBA8 with straight alpha and sRGB, rows top-down. `world.json` `textures.graffiti` describes it.
+The game draws the same pixels at load with `raster2d.js`, a pure-JS Canvas2D subset with Hershey stroke fonts and
+no system fonts, so the port ships the PNG. Placement (the decal grids) is still runtime-only.
 
 **Golden dumps (stream D, `fpv.renderGolden()`):** per-stage float outputs of the camera passes for fixed inputs.
 
@@ -158,8 +168,35 @@ in round 3; check the names after merge.
 - **G1–G4** are pure CPU and run on the CI macOS runner.
 - **G5–G6** need a Metal GPU. M0 checks whether the CI runner provides one; otherwise they run on a device (a
   self-hosted Mac or a TestFlight test build).
-- **CI order:** `node tools/export-world.mjs --check` (fails if the committed export is stale) → G0 → the Xcode build
-  → G1–G6.
+- **CI order:** the web job (below) → its `exports` artifact → G0 → the Xcode build → G1–G6.
+
+### Exports and CI (round 4)
+**Decision: exports are not committed.** `.github/workflows/ci.yml` builds them on every push into `exports/`
+(git-ignored) and uploads them as the run's `exports` artifact, kept 30 days: world.glb, collider.glb, world.json,
+camera.json and graffiti.png. Reasons:
+- They add 8 MB per geometry change to a repo that Justin syncs from his phone.
+- They go stale whenever a stream merges, and a CI artifact always matches its commit.
+- They stay out of the deployed site root.
+
+The Swift build takes them from the artifact of the commit it builds, or regenerates them with
+`node tools/export-world.mjs --out exports && node tools/camera-profile.mjs --out exports`.
+`--check` is for a local `--out` directory only.
+
+The web job runs on ubuntu with node 22, in about 1–2 minutes (10-minute cap):
+- `node --check` on .mjs copies of the runtime modules
+- `tests/replay.mjs --strict` (a stale scripted log fails, a stale browser log warns)
+- `tools/test-lightmap.mjs` (a stale lightmap fails, from r4/A-bakefix)
+- `tests/take.mjs` at 60 and 240 Hz, when present (C4)
+- `tests/stress-lite.mjs` (0 pass-throughs)
+- `tools/test-export.mjs`
+- the export
+
+three and three-mesh-bvh come from `ci/package.json`, pinned to the import map; keep the two in step. The file sits in
+`ci/` so the site root has no package.json, because Cloudflare Pages would npm-install on every deploy. CI links
+`ci/node_modules` to `node_modules`. To run locally: `npm ci --prefix ci && ln -s ci/node_modules node_modules`.
+
+**`?perf`** (perf.js) puts real frame times from the phone next to these numbers. It runs 120 frames at render
+scale 1.0 and 120 at 1.2, each synced by a 1-px readPixels, and shows p50/p90 and a suggested `QUALITY.auto.max`.
 
 ## 5. Milestones
 
@@ -180,6 +217,7 @@ EdgeTX radios; use Bluetooth / ELRS backpack, and model input as raw channels.
   probes but no textures, so export-world can then write their instances and the port stops re-deriving them.
 - Have `buildBando` load `world.glb` + `lm_*.png` when the hash matches (faster load), with today's build as the
   fallback.
-- Bake the canvas atlases (graffiti, leaf cluster), the ground mask and the 1k JPGs to KTX2/ASTC.
+- Bake the atlases (graffiti.png, leaf cluster), the ground mask and the 1k JPGs to KTX2/ASTC. The leaf / grass
+  canvas atlases (V1/V2) still use Canvas2D; raster2d.js can draw them the same way.
 - Dump the expanded GLSL of every world and camera program next to `renderGolden()`, so the MSL port has exact
   sources.
