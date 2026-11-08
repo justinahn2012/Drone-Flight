@@ -738,11 +738,12 @@ function buildLines() {
     { micro: true, carve: { kind: 'orbit', axes: SILO.x.map((x) => [x, SILO.z[0]]), r0: SILO.r + 2, r1: SILO.r + 2, in0: SILO.r, in1: SILO.r, y0: SILO.table, y1: sTop + 2, sweep: Math.PI } });
   add('CHIMNEY CARVE', 'CHIMNEY *CARVE*!', 500, { c: [CHIM.x, 12, CHIM.z] },
     { micro: true, carve: { kind: 'orbit', axes: [[CHIM.x, CHIM.z]], r0: CHIM.rb + 5.0, r1: CHIM.rt + 5.0, in0: CHIM.rb, in1: CHIM.rt, y0: CHIM.base, y1: CHIM.h + 1, sweep: 2.27 } });
-  // along the north row's north faces, silo 4's front to silo 3's (either way), within 3.6 m of the faces: the beat
-  // between CHIMNEY CARVE and THE SMALL GAP (design r3 #2: that stretch was 8-9 s with no beat)
-  { const fz = SILO.z[0] - SILO.r, nr = (x, s) => g([x, (SILO.table + SILO.top) / 2, fz - 1.8], [s, 0, 0], 3.6, SILO.top - SILO.table, [0, 0, 1]);
-    add('NORTH ROW', 'THE NORTH *ROW*!', 500, nr(SILO.x[2], -1), { micro: true, pre: [nr(SILO.x[3], -1)], within: 5 });
-    add('NORTH ROW', 'THE NORTH *ROW*!', 500, nr(SILO.x[3], 1), { micro: true, pre: [nr(SILO.x[2], 1)], within: 5 }); }
+  // along the north row's north faces, across silo 4's face to the 1.0 m gap between silos 3 and 4 (either way), within
+  // 3.6 m of the faces: the beat between CHIMNEY CARVE and THE SMALL GAP (design r3 #2: that stretch was 8-9 s, no beat)
+  { const fz = SILO.z[0] - SILO.r, xg = (SILO.x[2] + SILO.x[3]) / 2, xe = SILO.x[3] + 2.5;
+    const nr = (x, s) => g([x, (SILO.table + SILO.top) / 2, fz - 1.8], [s, 0, 0], 3.6, SILO.top - SILO.table, [0, 0, 1]);
+    add('NORTH ROW', 'THE NORTH *ROW*!', 500, nr(xg, -1), { micro: true, pre: [nr(xe, -1)], within: 5 });
+    add('NORTH ROW', 'THE NORTH *ROW*!', 500, nr(xe, 1), { micro: true, pre: [nr(xg, 1)], within: 5 }); }
   // the hall's ground floor, gable door to gable door
   const gd = (x) => g([x, 2.3, z0 + 2 * hdz], [1, 0, 0], hdz * 1.2, 4.2, [0, 0, 1]);
   add('HALL RUN', 'HALL *RUN*!', 2000, gd(HALL.x1), { pre: [gd(x0)], within: 12 });
