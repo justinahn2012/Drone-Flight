@@ -293,6 +293,16 @@ vec3 cityHaze(vec3 col, vec3 pv){
 }
 `;
 const WET_HEAD = /* glsl */`
+uniform vec4 uCityCar[${12}];     // contact: centre x, z, heading x, z
+uniform vec4 uCityCarS[${12}];    // half width, half length, -, -
+float cityContact(vec3 wp){       // soft footprint occlusion under the nearest vehicles (lighting #5)
+  float o = 1.0;
+  for (int i = 0; i < ${12}; i++) { vec4 c = uCityCar[i], s = uCityCarS[i]; if (s.x <= 0.0) break;
+    vec2 d = wp.xz - c.xy; vec2 q = abs(vec2(d.x * c.w - d.y * c.z, dot(d, c.zw))) - s.xy;
+    float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+    o *= 1.0 - 0.8 * (1.0 - smoothstep(-0.35, 0.9, sd)); }
+  return o;
+}
 uniform sampler2D tCityMirror;
 uniform mat4 uCityMirrorVP;
 uniform float uCityWet;
@@ -494,6 +504,8 @@ export function attach(world, emitters = [], ctx = {}) {
   for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) { const h = HF.at(x0 + (cx + 0.5) * cell, z0 + (cz + 0.5) * cell); for (let k = 0; k < NL; k++) if (h > YS[k]) inner[(cz * gw + cx) * NL + k] = 1; }
   const tA = new Float32Array(NP * 3), tBv = new Float32Array(NP * 3), Eg = new Float32Array(NC * 3);
   const PROBE_H = YS;
+  // the hot loops live in their own closures (fresh JIT feedback per attach: a second visit to the level stays fast)
+  const { pairs, occl } = (function binPass() {
   let pairs = 0, occl = 0;
   for (let i = 0; i < stat.length; i++) {
     const m = metas[i], r = m.range + (m.hl > 0 ? m.a : 0);
@@ -531,6 +543,8 @@ export function attach(world, emitters = [], ctx = {}) {
       }
     }
   }
+  return { pairs, occl };
+  })();
   // write the grid (sorted by score) and the residual: total minus each cell's top-K (those are evaluated per fragment)
   const rA = tA.slice(), rB = tBv.slice();
   let used = 0, full = 0, cellsUsed = 0;
@@ -589,6 +603,7 @@ export function attach(world, emitters = [], ctx = {}) {
   const skyLum = lumaOf(skyL);
   const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4), ok = new Uint8Array(NP);
   const oo = new Float32Array(NL), cc = new Float32Array(NL);
+  (function assemble() {
   for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) {
     const c = cz * gw + cx; let any = false; for (let k = 0; k < NL; k++) if (!inner[c * NL + k]) any = true;
     if (!any) continue;
@@ -597,7 +612,7 @@ export function attach(world, emitters = [], ctx = {}) {
     for (let k = 0; k < NL; k++) {
       const p = c * NL + k; if (inner[p]) continue;
       const q = p * 3;
-      const ta = [tA[q], tA[q + 1], tA[q + 2]], tal = lumaOf(ta);
+      const ta0 = tA[q], ta1 = tA[q + 1], ta2 = tA[q + 2], tal = LUMA[0] * ta0 + LUMA[1] * ta1 + LUMA[2] * ta2;
       let a0 = Math.max(0, rA[q]), a1 = Math.max(0, rA[q + 1]), a2 = Math.max(0, rA[q + 2]);
       let bx = rB[q], by = rB[q + 1], bz = rB[q + 2];
       // ground bounce: a lower hemisphere at pi L = rho Eg
@@ -605,7 +620,7 @@ export function attach(world, emitters = [], ctx = {}) {
       a0 += g0 / 2; a1 += g1 / 2; a2 += g2 / 2; by -= gl / 2;
       // wall bounce: the canyon walls at pi L = rho_w x their irradiance (the probe's, toward its brighter side)
       const bh = Math.hypot(tBv[q], tBv[q + 2]), ew = tal > 0 ? 1 + bh / tal : 0, wk = 0.5 * cc[k] * VOLUME.rhoWall * ew;
-      a0 += wk * ta[0]; a1 += wk * ta[1]; a2 += wk * ta[2];
+      a0 += wk * ta0; a1 += wk * ta1; a2 += wk * ta2;
       // sky: an upper hemisphere through the horizon
       a0 += oo[k] * skyL[0] / 2; a1 += oo[k] * skyL[1] / 2; a2 += oo[k] * skyL[2] / 2; by += oo[k] * skyLum / 2;
       const al = Math.max(1e-7, LUMA[0] * a0 + LUMA[1] * a1 + LUMA[2] * a2);
@@ -616,6 +631,7 @@ export function attach(world, emitters = [], ctx = {}) {
       ok[p] = 1;
     }
   }
+  })();
   // interior probes: average of filled 8-neighbours, a few passes (facade fragments interpolate toward them)
   { const addP = new Int32Array(NP), addV = new Float32Array(NP * 8);
     for (let pass = 0; pass < 8; pass++) {
@@ -661,6 +677,7 @@ export function attach(world, emitters = [], ctx = {}) {
     uCityHaze: { value: new THREE.Vector4(ctx.haze?.density ?? HAZE.density, ctx.haze?.height ?? HAZE.height, ctx.haze?.scatter ?? HAZE.scatter, ctx.haze?.max ?? HAZE.max) },
     uCitySkyGlow: { value: new THREE.Vector3(...NIGHT_SKY.horizon.map((v) => v * NS * 0.6)) },
     uCityAO: aoU?.uAO || { value: blackTex }, uCityAOOn: aoU?.uAOOn || { value: 0 }, uCityAOScale: aoU?.uAOScale || { value: new THREE.Vector2(1, 1) },
+    uCityCar: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uCityCarS: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) },
     tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
@@ -679,8 +696,9 @@ export function attach(world, emitters = [], ctx = {}) {
         .replace('#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${CITY_HEAD}${wet ? WET_HEAD : ''}`)
         .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>
   cityLights(geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
+  ${wet ? `float cityCC = cityContact(cityWorldPos(geometryPosition)); reflectedLight.directDiffuse *= mix(1.0, cityCC, 0.75); reflectedLight.directSpecular *= mix(1.0, cityCC, 0.75);` : 'float cityCC = 1.0;'}
   #if defined( RE_IndirectDiffuse )
-  irradiance += cityIrradiance(cityWorldPos(geometryPosition), normalize(transpose(mat3(viewMatrix)) * geometryNormal));
+  irradiance += cityIrradiance(cityWorldPos(geometryPosition), normalize(transpose(mat3(viewMatrix)) * geometryNormal)) * cityCC;
   #endif`)
         .replace('#include <opaque_fragment>', `#include <opaque_fragment>\n  gl_FragColor.rgb = cityHaze(gl_FragColor.rgb, -vViewPosition);`);
       if (wet) {
@@ -708,13 +726,16 @@ export function attach(world, emitters = [], ctx = {}) {
   }
 
   // ------------------------------------------------------------------------------------- city culling (perf #3)
-  const cull = { on: ctx.cull !== false && !!scene, cell: ctx.cullCell || 96, meshes: 0, from: 0, vertsBefore: 0, vertsAfter: 0, col: 0, ms: 0 };
+  const cull = { on: ctx.cull !== false && !!scene, cell: ctx.cullCell || 96, meshes: 0, from: 0, vertsBefore: 0, vertsAfter: 0, col: 0, ms: 0, freed: 0 };
   if (cull.on) {
     const tc0 = now(), olds = [];
     for (const o of [...scene.children]) {
       if (!o.isMesh || o.isInstancedMesh || !/^seoul:/.test(o.name || '') || !o.geometry?.getAttribute?.('position')) continue;
       if (o.geometry.groups?.length > 1 || Array.isArray(o.material)) continue;
       const sp = splitCells(o.geometry, cull.cell); if (!sp) continue;
+      if (renderer && ctx.freeArrays !== false && sp.parts.length) {   // perf #4: drop the CPU copy once the GPU has it
+        const g0 = sp.parts[0].geometry; for (const a of [...Object.values(g0.attributes), g0.index]) a?.onUpload?.(function () { this.array = new this.array.constructor(0); cull.freed += 1; });
+      }
       cull.from++; cull.vertsBefore += sp.srcVertices; cull.vertsAfter += sp.vertices;
       for (const p of sp.parts) {
         const m = new THREE.Mesh(p.geometry, o.material);
@@ -1050,7 +1071,11 @@ export function attach(world, emitters = [], ctx = {}) {
   const nMov = mov.length, movKey = new Float32Array(Math.max(1, nMov)), movOrd = new Int32Array(Math.max(1, nMov));
   const dS = new Float32Array(DW * DW * KD), dI = new Uint16Array(DW * DW * KD), dN = new Uint8Array(DW * DW);
   const movMeta = mov.map(() => null), cardOn = new Uint8Array(Math.max(1, nMov)).fill(1);
-  const uStats = { ms: 0, dyn: 0 };
+  const uStats = { ms: 0, dyn: 0, contact: 0 };
+  // vehicles for contact shadows: G's head/tail emitter pairs ('<id>:head' / '<id>:tail')
+  const cars = []; { const byId = new Map(); for (const e of mov) { const m = /^(.*):(head|tail)$/.exec(e.id || ''); if (!m) continue; const r = byId.get(m[1]) || {}; r[m[2]] = e; byId.set(m[1], r); }
+    for (const r of byId.values()) if (r.head && r.tail) cars.push(r); }
+  const carD = new Float32Array(Math.max(1, cars.length)), carI = new Int32Array(Math.max(1, cars.length));
   let lastCam = null;
   function update(t, camPos, cam) {
     const t0 = now();
@@ -1131,6 +1156,17 @@ export function attach(world, emitters = [], ctx = {}) {
       uStats.dyn = nd;
     }
     if (nAnim || nMov) aRad.needsUpdate = true;
+    // contact shadows: the 12 nearest vehicles within 45 m
+    if (cars.length) {
+      let nc = 0;
+      for (let i = 0; i < cars.length; i++) { const h = cars[i].head, t = cars[i].tail; if (!(h.nits > 0) && !(t.nits > 0)) continue; const dx = (h.pos[0] + t.pos[0]) / 2 - cp.x, dz = (h.pos[2] + t.pos[2]) / 2 - cp.z, d2 = dx * dx + dz * dz; if (d2 < 45 * 45) { carD[nc] = d2; carI[nc++] = i; } }
+      const nk = Math.min(12, nc), CA = U.uCityCar.value, CS = U.uCityCarS.value;
+      for (let a = 0; a < nk; a++) { let bi = a; for (let b = a + 1; b < nc; b++) if (carD[b] < carD[bi]) bi = b; const td = carD[a]; carD[a] = carD[bi]; carD[bi] = td; const ti = carI[a]; carI[a] = carI[bi]; carI[bi] = ti;
+        const { head: h, tail: t } = cars[carI[a]], lx = h.pos[0] - t.pos[0], lz = h.pos[2] - t.pos[2], L = Math.hypot(lx, lz) || 1;
+        CA[a].set((h.pos[0] + t.pos[0]) / 2, (h.pos[2] + t.pos[2]) / 2, lx / L, lz / L); CS[a].set((h.w || 1.4) / 0.8 / 2, L / 2 + 0.1, 0, 0); }
+      for (let a = nk; a < 12; a++) CS[a].x = 0;
+      uStats.contact = nk;
+    }
     updateAir(camPos || null, cam || null);
     uStats.ms = uStats.ms * 0.9 + (now() - t0) * 0.1;
   }
@@ -1144,13 +1180,11 @@ export function attach(world, emitters = [], ctx = {}) {
     materials: nMat, wetMaterials: nWet, mirror: mirror.on, cull: { meshes: cull.meshes, from: cull.from, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
     pools: !!pool.mesh, airlight: air.n, update: uStats,
   };
-  function exportData() {   // native #2: the light model as data (H: tools/export-seoul-data.mjs)
+  function exportData() {   // native #2: the model (exportParams) + this level's grid and baked volume
     return {
-      version: 2, NITS: NS, SOURCE_TYPES, NIGHT_SKY, HAZE: { ...HAZE, density: U.uCityHaze.value.x }, AIRLIGHT, VOLUME, HEADLIGHT,
-      lobes: { street: { omega: OM.street, glsl: 'cityStreet' }, beam: { omega: OM.beam, glsl: 'cityBeam' }, lambert: 'mix(max(ce,0), 0.55+0.45ce, omni)' },
+      ...exportParams(), HAZE: { ...HAZE, density: U.uCityHaze.value.x }, NITS: NS,
       grid: { x0, z0, cell, gw, gh, K, Kd: KD, Nd: Q.Nd, window: DW, eMin: E_MIN },
-      record: '2 x RGBA32UI: [pos.xyz f32, half(area, omni)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe:2 | colourIdx:14 | flickerHz*10:8 | depth*255:8]',
-      shader: { head: CITY_HEAD },
+      volume: { dims: [gw, gh, NL], heights: YS, A: VA, B: VB },   // Float32Array [cz][cx][layer][4]
     };
   }
   // CPU probe (tests, diagnostics): irradiance in lux at a point for a world normal, split into the per-fragment grid
@@ -1191,5 +1225,23 @@ export function attach(world, emitters = [], ctx = {}) {
   return ctl;
 }
 
-export const seoulLight = { attach, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, VOLUME, HEADLIGHT, AIRLIGHT, emitterRadiance, heightField, splitCells };
+// native #2: the light model as data, without a scene (H: tools/export-seoul-data.mjs -> light.json). The per-level grid
+// (bounds, K, the baked volume) comes from a live controller's exportData().
+export function exportParams() {
+  const OM = omega();
+  return {
+    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, VOLUME, HEADLIGHT, QUALITY, cell: 4, window: DW, eMin: E_MIN,
+    lobes: {
+      lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni); ce = dot(lamp->point, normal)' },
+      street: { id: 1, omega: OM.street, f: 'min(1/cos^3, 30) x (1 - smoothstep(0.8 tc, 1.15 tc, tan)); tc = 3.1 along the road, 1.75 forward, 0.7 back', flux: 'lumens' },
+      beam: { id: 2, omega: OM.beam, f: 'exp(-(th/0.42)^2) exp(-((tv+0.035)/sv)^2) (1 - smoothstep(-0.02, 0.015, tv)); sv 0.05 up, 0.16 down', flux: 'beam.lumens (1400) x min(1, nits/20000)' },
+    },
+    geometry: 'point: E = I fe / (d^2 + A/pi); line (long faces, |w-h| > 0.5 m): representative point, E = I fe (atan((a-x)/r) + atan((a+x)/r)) / (2 a r), r^2 = perp^2 + hs^2/pi',
+    record: '2 x RGBA32UI: [pos.xyz f32, half(area, signed half length)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe 2 | colour idx 14 | flicker hz x4 6 | depth x15 4 | omni x63 6]',
+    volume: 'probes at cell centres x VOLUME.heights; A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + sky openness; E(n) = A.rgb max(0, 1 + B.n) x SSAO',
+    glsl: CITY_HEAD,
+  };
+}
+
+export const seoulLight = { attach, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, VOLUME, HEADLIGHT, AIRLIGHT, emitterRadiance, heightField, splitCells, exportParams };
 export default seoulLight;
