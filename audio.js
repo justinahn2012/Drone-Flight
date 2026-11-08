@@ -1,8 +1,9 @@
 // audio.js — onboard-camera FPV audio: rotor-harmonic motors, broadband prop rasp, turbulence FM, prop-wash flutter,
 // mic wind (two capsules), wall-reflection comb, room reverb / tube flutter, impacts, scrapes, crash, "GoPro" chain.
-// Sound panel drop-ins (review/panel/sound, review/panel2/sound/audio_fix.js), integrated by streams F and F2.
-//   start(), update(motors, speed, wash, crashed, mute, x?), thud(v), hit(v), kick(force?), idle(), setCraft(key),
-//   setMode('on' | 'mix' | 'off'), snap(), streamDest, on.   x = { dist, hall, tube, tubeD, scrape }
+// Sound panel drop-ins (review/panel/sound, panel2/sound/audio_fix.js, panel3r/sound/audio_fix3b.js), streams F, F2, F24.
+//   start(), update(motors, speed, wash, crashed, mute, x?, at?), thud(v, at?), hit(v, at?), kick(force?), idle(),
+//   setCraft(key), setMode('on' | 'mix' | 'off'), snap(), streamDest, on.   x = { dist, hall, tube, tubeD, scrape, grass }
+//   startOffline(ctx): the same graph on an OfflineAudioContext (HQ clip export); then pass `at` (s) to update/hit/thud.
 // No recorded layer: no genuinely CC0 onboard 5" recording could be found (see the F2 report), so the realism comes
 // from synthesis plus the camera's own behaviour (auto-gain ride, two-capsule wind, AGC/limiter, noise floor).
 const CRAFT = {
@@ -37,6 +38,12 @@ function rotorWave(ctx, B) {
     pk = Math.max(pk, Math.abs(x)); ms += x * x;
   }
   return { wave: ctx.createPeriodicWave(re, im), ms: ms / M / (pk * pk || 1) };   // random phases: lower crest factor
+}
+// pulse train (duty d) for the grass-strike gate: one blade tip per period
+function pulseWave(ctx, d = 0.22, N = 16) {
+  const re = new Float32Array(N + 1), im = new Float32Array(N + 1);
+  for (let n = 1; n <= N; n++) re[n] = (2 / (n * Math.PI)) * Math.sin(n * Math.PI * d) * (1 - n / (N + 2));
+  return ctx.createPeriodicWave(re, im);
 }
 function noiseBuf(ctx, secs, smoothHz = 0) {
   const sr = ctx.sampleRate, n = Math.floor(sr * secs), b = ctx.createBuffer(1, n, sr), d = b.getChannelData(0);
@@ -90,6 +97,12 @@ export class MotorAudio {
     const ctx = this.ctx = new AC({ latencyHint: 'interactive' });                               // native rate (48k)
     const sil = ctx.createBufferSource(); sil.buffer = ctx.createBuffer(1, 1, ctx.sampleRate); sil.connect(ctx.destination); sil.start(0);
     ctx.resume?.();
+    this._build(ctx, true);
+  }
+  // HQ clip export: the same chain on an OfflineAudioContext, straight into its destination (no speaker, no stream).
+  // Drive it with explicit times: update(..., at), hit(v, at), thud(v, at), then ctx.startRendering().
+  startOffline(ctx) { this.ctx = ctx; this.offline = true; this.on = true; this._build(ctx, false); return this; }
+  _build(ctx, live) {
     const G = (v = 1) => { const g = ctx.createGain(); g.gain.value = v; return g; };
     const F = (type, f, q, gain = 0) =>   // NB lowpass/highpass Q is in dB (-3 = Butterworth); bandpass/peaking Q is linear
       { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; b.gain.value = gain; return b; };
@@ -108,8 +121,10 @@ export class MotorAudio {
     this.bus = G(1); this.rideG = G(1);
     this.bus.connect(hpf); hpf.connect(box); box.connect(pres); pres.connect(lpf); lpf.connect(this.rideG); this.rideG.connect(shp);
     shp.connect(agc); agc.connect(lim); lim.connect(out); out.connect(this.master);
-    this.spk = G(0); this.master.connect(this.spk); this.spk.connect(ctx.destination);   // speaker mute is separate from the clip feed
-    this.streamDest = ctx.createMediaStreamDestination(); this.master.connect(this.streamDest);
+    if (live) {
+      this.spk = G(0); this.master.connect(this.spk); this.spk.connect(ctx.destination);   // speaker mute is separate from the clip feed
+      this.streamDest = ctx.createMediaStreamDestination(); this.master.connect(this.streamDest);
+    } else this.master.connect(ctx.destination);
 
     const white = noiseBuf(ctx, 4), lfo = noiseBuf(ctx, 8, 14), lfoF = noiseBuf(ctx, 8, 30);
     // ---- motors: one PeriodicWave oscillator each (shaft rate), audio-rate turbulence FM
@@ -142,7 +157,7 @@ export class MotorAudio {
     gust.connect(this.gustD); this.gustD.connect(this.gustAM.gain);
     this.rush = [F('bandpass', 800, 0.7), F('bandpass', 800, 0.7)]; this.rushG = G(0);
     [wnL, wnR].forEach((wn, ch) => {
-      const lp = F('lowpass', 240, -3), pb = P(ch ? 0.85 : -0.85), pr = P(ch ? 0.6 : -0.6);
+      const lp = F('lowpass', 320, -3), pb = P(ch ? 0.85 : -0.85), pr = P(ch ? 0.6 : -0.6);
       wn.connect(lp); lp.connect(pb); pb.connect(this.gustAM);
       wn.connect(this.rush[ch]); this.rush[ch].connect(pr); pr.connect(this.rushG);
     });
@@ -161,31 +176,47 @@ export class MotorAudio {
     this.tubeD = ctx.createDelay(0.06); this.tubeD.delayTime.value = 0.0175; const tfb = G(0.62), tlp = F('lowpass', 3500, -3);
     this.am.connect(this.tubeS); this.tubeS.connect(this.tubeD); this.tubeD.connect(tlp); tlp.connect(tfb); tfb.connect(this.tubeD); tlp.connect(this.bus);
 
+    // ---- grass strikes (C7): blade tips chopping grass. Band noise gated by a narrow pulse at blade-pass rate (one
+    // strike per blade), a low thrash under it, both scaled by how deep the props are in it; update() sags the RPM.
+    const gn = src(white, 1.29), gfl = src(lfo, 2.3);
+    this.grassF = F('bandpass', 1900, 0.7); this.grassAM = G(0.3); this.grassFl = G(1); this.grassG = G(0); this.grassLo = G(0);
+    this.chopO = ctx.createOscillator(); this.chopO.setPeriodicWave(pulseWave(ctx)); this.chopO.frequency.value = 600;
+    const cdp = G(0.85); this.chopO.connect(cdp); cdp.connect(this.grassAM.gain); this.chopO.start();
+    const fld = G(0.45); gfl.connect(fld); fld.connect(this.grassFl.gain);                  // clump density flutter
+    gn.connect(this.grassF); this.grassF.connect(this.grassAM); this.grassAM.connect(this.grassFl); this.grassFl.connect(this.grassG); this.grassG.connect(this.motorBus);
+    const glp = F('lowpass', 420, -3); gn.connect(glp); glp.connect(this.grassLo); this.grassLo.connect(this.bus);
+
     this.white = white;
-    ctx.onstatechange = () => { this.state = ctx.state; };
+    if (live) ctx.onstatechange = () => { this.state = ctx.state; };
   }
   // resume after iOS 'interrupted'/'suspended' (call call/Siri/lock); must run inside a gesture.
   // force: run even with Sound Off (clip export needs samples; the speaker stays muted)
   kick(force) { const c = this.ctx; if (c && (this.on || force) && c.state !== 'running') { const p = c.resume?.(); p?.catch?.(() => {}); } }
   idle() { const c = this.ctx; if (c && c.state === 'running') c.suspend?.(); }   // menu / sound off: zero CPU
 
-  update(motors, speed, wash, crashed, mute, x = {}) {
-    if (!this.ctx || this.ctx.state !== 'running') return;
-    const t = this.ctx.currentTime, C = this.craft, dt = Math.min(0.1, t - (this.lastT ?? t)); this.lastT = t;
+  _ok() { return !!this.ctx && (this.offline || this.ctx.state === 'running'); }
+  update(motors, speed, wash, crashed, mute, x = {}, at) {
+    if (!this._ok()) return;
+    const t = at ?? this.ctx.currentTime, C = this.craft, dt = Math.max(0, Math.min(0.1, t - (this.lastT ?? t))); this.lastT = t;
     const k = this._snap ? 0.02 : 1; this._snap = false;
     const S = (p, v, tau) => p.setTargetAtTime(v, t, tau * k);
-    S(this.master.gain, mute ? 0 : 1, 0.06); S(this.spk.gain, mute || !this.on ? 0 : MODES[this.mode].spk, 0.06);
-    this.spin = crashed ? (k < 1 ? 0 : this.spin * Math.exp(-dt / 0.35)) : 1;   // spool-down glide after a crash
-    const near = clamp(1 - (x.dist ?? Infinity) / 1.5), hall = x.hall || 0, tube = x.tube || 0;
-    const jit = 0.008 + 0.012 * clamp(speed / 25) + 0.05 * wash + 0.02 * near;   // fractional RPM jitter (PID + turbulence)
-    const cr = crashed ? this.spin * this.spin : 1;
+    S(this.master.gain, mute ? 0 : 1, 0.06); if (this.spk) S(this.spk.gain, mute || !this.on ? 0 : MODES[this.mode].spk, 0.06);
+    // spool-down glide after a crash; re-arm (respawn) spools up over ~0.3 s and the camera's gain ride starts from
+    // unity instead of the post-crash hush (it held x1.7 and the restart played +3.5 dB hot for 0.25 s)
+    if (!crashed && this._cr && k === 1) this.ride = 1;
+    this._cr = crashed;
+    this.spin = crashed ? (k < 1 ? 0 : this.spin * Math.exp(-dt / 0.35)) : (k < 1 ? 1 : Math.min(1, this.spin + dt / 0.3));
+    const near = clamp(1 - (x.dist ?? Infinity) / 1.5), hall = x.hall || 0, tube = x.tube || 0, gr0 = crashed ? 0 : clamp(+x.grass || 0);
+    const jit = 0.008 + 0.012 * clamp(speed / 25) + 0.05 * wash + 0.02 * near + 0.03 * gr0;
+    const sag = 1 - 0.04 * gr0;                                                    // grass loads the props: 3-5 % RPM sag   // fractional RPM jitter (PID + turbulence)
+    const cr = this.spin * this.spin;
     const aL = Math.exp(-dt / 0.3), aN = Math.sqrt(1 - aL * aL) * 0.1;          // per-motor level flutter: ~±1 dB, 0.3 s
     let bpf = 0, rs = 0, pm = 0;
     this.motors.forEach((m, i) => {
       this.drift[i] += (-this.drift[i] * 0.02) + (Math.random() - 0.5) * 0.0006;  // slow OU trim drift ±0.3 %
       this.lvlD[i] = this.lvlD[i] * aL + gauss() * aN;                             // prop/ESC asymmetry, turbulence ingestion
-      const rpm = Math.max(C.idle, crashed ? 0 : motors[i]) * this.spin;
-      const hz = C.maxHz * rpm * m.det * (1 + this.drift[i]);
+      const rpm = (crashed ? C.idle : Math.max(C.idle, motors[i])) * this.spin;
+      const hz = C.maxHz * rpm * m.det * (1 + this.drift[i]) * sag;
       S(m.o.frequency, hz, 0.012);                                                 // physics already has spool lag
       S(m.fm.gain, hz * jit, 0.05);
       const lvl = 0.07 * Math.pow(rpm / C.hover, 1.6) * cr * (1 + this.lvlD[i]);  // ~+13 dB hover->full
@@ -196,10 +227,12 @@ export class MotorAudio {
     const fr = clamp(3.2 * bpf, 1500, 7000), rg = 0.12 * Math.pow(rs / C.hover, 2.5) * cr;   // tip-speed^5 power
     S(this.raspO.frequency, Math.max(20, bpf), 0.012); S(this.raspF.frequency, fr, 0.03); S(this.raspG.gain, rg, 0.015);
     S(this.amDepth.gain, 0.35 * wash, 0.05);
+    const gk = gr0 * Math.pow(clamp(rs / C.hover, 0, 2.5), 1.2) * cr, gg = 0.38 * gk, gl = 0.2 * gk;
+    S(this.chopO.frequency, Math.max(20, bpf), 0.012); S(this.grassG.gain, gg, 0.03); S(this.grassLo.gain, gl, 0.03);
     const d = clamp((x.dist ?? 9) + 0.12, 0.05, 2.1);                     // mic-to-surface; lastDist is Infinity past 2 m
     S(this.refl.delayTime, 2 * d / 343, 0.04);                            // moving image source = the only doppler onboard
     S(this.reflG.gain, 0.65 * clamp(1 - d / 2.0), 0.04);
-    const v = clamp((speed - 2) / 25), gb = 0.9 * v * v, gr = 0.22 * v * v + 0.35 * near * clamp(speed / 15), fw = 600 + 45 * speed;
+    const v = clamp((speed - 2) / 25), gb = 0.9 * Math.pow(v, 1.2), gr = 0.15 * v * v + 0.35 * near * clamp(speed / 15), fw = 600 + 45 * speed;
     S(this.buffetG.gain, gb, 0.1); S(this.gustD.gain, 0.5 * v, 0.2);
     S(this.rushG.gain, gr, 0.08); this.rush.forEach((f) => S(f.frequency, fw, 0.1));
     const s = clamp((x.scrape || 0) / 8);
@@ -216,17 +249,17 @@ export class MotorAudio {
     // Up over ~1.2 s, down in ~0.12 s; a punch-out after a dive briefly overdrives the mic stage, as on a real camera.
     const ny = this.ctx.sampleRate / 2;
     const P = pm * this.waveMs + rg * rg * (fr / 0.55 / ny) * 0.354 / 3 + 2 * gb * gb * (240 / ny) * (1 + 0.25 * v * v) / 3 * 0.5 +
-      2 * gr * gr * (fw / 0.7 / ny) / 3 * 0.5 + ga * ga * (1800 / ny) / 3;
+      2 * gr * gr * (fw / 0.7 / ny) / 3 * 0.5 + ga * ga * (1800 / ny) / 3 + gg * gg * (2700 / ny) / 3 * 0.35 + gl * gl * (420 / ny) / 3;
     this.rideEst = Math.sqrt(P);
-    const want = clamp(RIDE_REF / Math.max(1e-6, this.rideEst), 1, RIDE_MAX);
+    const want = !crashed && this.spin < 1 ? 1 : clamp(RIDE_REF / Math.max(1e-6, this.rideEst), 1, RIDE_MAX);   // no ride during a re-arm spool-up
     this.ride = k < 1 ? want : this.ride + (want - this.ride) * (1 - Math.exp(-dt / (want > this.ride ? 1.2 : 0.12)));
     S(this.rideG.gain, this.ride, 0.03);
   }
 
   // non-crash touch: frame "tock" (carbon modes) + prop-tip chatter at blade-pass rate. v = impact speed, m/s
-  hit(v) {
-    if (!this.ctx || this.ctx.state !== 'running') return;
-    const ctx = this.ctx, t = ctx.currentTime, a = clamp(v / 10, 0.05, 1);
+  hit(v, at) {
+    if (!this._ok()) return;
+    const ctx = this.ctx, t = at ?? ctx.currentTime, a = clamp(v / 10, 0.05, 1);
     for (const [f, dec, g] of [[740, 0.09, 0.5], [1630, 0.06, 0.4], [2950, 0.04, 0.3]]) {
       const o = ctx.createOscillator(), e = ctx.createGain(); o.frequency.value = f * (0.97 + Math.random() * 0.06);
       e.gain.setValueAtTime(g * a, t); e.gain.exponentialRampToValueAtTime(0.0005, t + dec);
@@ -239,12 +272,12 @@ export class MotorAudio {
     n.connect(bp); bp.connect(cg); cg.connect(e); e.connect(this.bus); n.start(t, Math.random() * 3); n.stop(t + dur + 0.02); chop.start(t); chop.stop(t + dur + 0.02);
   }
   // crash: hard hit + body crunch with speaker-audible harmonics + tumbling debris ticks; motors spool down in update()
-  thud(v) {
-    if (!this.ctx || this.ctx.state !== 'running') return;
-    const ctx = this.ctx, t = ctx.currentTime, a = clamp(v / 10, 0.4, 1);
-    if (t - (this.thudAt ?? -9) < 0.15) return;            // one crash = one thud (main.js may trigger it from two places)
+  thud(v, at) {
+    if (!this._ok()) return;
+    const ctx = this.ctx, t = at ?? ctx.currentTime, a = clamp(v / 10, 0.4, 1);
+    if (Math.abs(t - (this.thudAt ?? -9)) < 0.15) return;  // one crash = one thud (main.js may trigger it from two places)
     this.thudAt = t;
-    this.hit(8);
+    this.hit(8, at);
     for (const [f0, f1, g] of [[150, 55, 0.8], [300, 110, 0.35]]) {      // 2nd partial so phone speakers carry it
       const o = ctx.createOscillator(), e = ctx.createGain(); o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + 0.16);
       e.gain.setValueAtTime(g * a, t); e.gain.exponentialRampToValueAtTime(0.001, t + 0.28); o.connect(e); e.connect(this.bus); o.start(t); o.stop(t + 0.3);
@@ -252,6 +285,9 @@ export class MotorAudio {
     const n = ctx.createBufferSource(); n.buffer = this.white; const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1100; bp.Q.value = 0.5;
     const e = ctx.createGain(); e.gain.setValueAtTime(0.7 * a, t); e.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
     n.connect(bp); bp.connect(e); e.connect(this.bus); n.start(t, Math.random() * 3); n.stop(t + 0.25);
-    for (let k = 1; k <= 4; k++) setTimeout(() => this.hit(4 / k), 90 * k + Math.random() * 80);   // tumble
+    for (let k = 1; k <= 4; k++) {                                         // tumble
+      const d = (90 * k + Math.random() * 80) / 1000;
+      if (at != null) this.hit(4 / k, t + d); else setTimeout(() => this.hit(4 / k), d * 1000);
+    }
   }
 }

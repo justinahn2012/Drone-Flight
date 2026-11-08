@@ -7,6 +7,7 @@ import { Drone, CRAFTS } from './flight.js';
 import { InputLog, quantize, worldHash } from './inputlog.js';
 import { Controls } from './controls.js';
 import { MotorAudio } from './audio.js';
+import { renderHQ, hqSupport } from './clipexport.js';   // F24: HQ offline clips (WebCodecs + mp4-muxer)
 import { Take, defaultTakeUI } from './take.js';
 import * as TakeLib from './take.js';   // F1: TAKE_TUNING (cutT/bankT/stars) for the HUD, read live; a namespace import never fails on a missing name
 
@@ -218,10 +219,10 @@ press($('btnReset'), doReset, doStart);
 press($('rMode'), () => toast('HOLD TO SWITCH CINE / ANGLE'), () => {
   S.mode = S.mode === 'cine' ? 'angle' : 'cine'; applySettings(); controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); toast(S.mode === 'cine' ? 'CINE ASSIST' : 'ANGLE');
 }, 500);
-$('rClip').onclick = () => saveClip();
+$('rClip').onclick = () => openClip();
 $('cReset').onclick = () => respawn();
-$('cClip').onclick = () => saveClip();
-$('btnClip')?.addEventListener('click', () => saveClip());   // F1's in-flight landscape CLIP, if present
+$('cClip').onclick = () => openClip();
+$('btnClip')?.addEventListener('click', () => openClip());   // F1's in-flight landscape CLIP, if present
 $('recCancel').onclick = () => { if (replay) { endReplay(true); toast('CLIP CANCELLED'); } };
 controls.onButton = (b) => { if (b === 'reset' && (state === 'fly' || state === 'crash')) respawn(false); if (b === 'menu') state === 'menu' ? startFlight(false) : openMenu(); };
 
@@ -347,6 +348,7 @@ function clearWorld() {
   }
   world.scene = null; world.bvh = null; world.colliderScene = null; world.bounds = null; world.envelope = null; world.update = null;
   world.skimBvh = null; world.lines = null; world.takeStart = null; world.startPoints = null; world.funnels = null;
+  world.grassAt = null;                                                                    // [F24] C7
 }
 
 async function loadProcWorld(def) {
@@ -355,6 +357,7 @@ async function loadProcWorld(def) {
   clearWorld();
   Object.assign(world, { scene: w.scene, colliderScene: w.colliderScene, bvh: w.bvh, bounds: w.bounds, envelope: w.envelope, update: w.update, hdr: true });
   Object.assign(world, { skimBvh: w.skimBvh, lines: w.lines, takeStart: w.takeStart, startPoints: w.startPoints, funnels: w.funnels });   // C: the take (C1)
+  world.grassAt = typeof w.grassAt === 'function' ? w.grassAt : null;                     // [F24] C7 (V2, optional): grass height (m) at x, z
   world.spawn.copy(w.spawn); world.yaw = w.yaw;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);
@@ -661,7 +664,9 @@ function pushReplay(t) {
   if (!cur.w) cur.w = world.scene || world.mesh;
   for (const k in motion) if (typeof motion[k] === 'number') mo[k] = motion[k];   // vib, hz (+ E's wash/bump for jello)
   F.push({ t, p: camPose.pos.clone(), q: camPose.quat.clone(), v: motion.vel.clone(), w: motion.ang.clone(), mo, m: drone.motors.slice(), s: drone.vel.length(), wash: drone.wash, c: drone.crashed,
-    hit: hitNow, thud: thudNow, ax: { ...ax }, cap: capNow, st: stickPos() });
+    hit: hitNow, thud: thudNow, ax: { ...ax }, cap: capNow, st: stickPos(),
+    // F24: where this frame sits in the input log (HQ re-sim): tick count run in it + the render's physAlpha
+    L: inputLog && drone.resets === logResets ? inputLog : null, k: inputLog ? inputLog.ticks : 0, a: physAlpha });
   if (startNow) { cur.startT = t; startNow = false; }
   if (markNow) { cur.marks.push({ t0: markNow.t0 ?? t, t }); markNow = null; }
   thudNow = 0; capNow = null;
@@ -673,7 +678,14 @@ function pushReplay(t) {
 }
 // take events (onTakeEvent calls this first): the take start for FULL TAKE, lines for captions and SHORT windows
 function clipEvent(e) {
-  if (e.type === 'start') startNow = true;
+  if (e.type === 'start') {
+    // UX #4: a new take right after a CUT ("touch a stick for a new one") keeps the CUT take as the previous clip
+    if (cur.startT != null) {
+      const F = cur.frames, t1 = F.length ? F[F.length - 1].t : 0, run = F.filter((f) => f.t >= t1 - 1.2).map((f) => ({ ...f, cap: null }));
+      rotateClip(); cur.frames.push(...run);                   // the run-up (FULL TAKE starts 1 s before the take)
+    }
+    startNow = true;
+  }
   capEv = e.type === 'line' || e.type === 'repeat' ? e : null;
 }
 // seconds from the line's pre-gate crossing to now. C1: line/repeat events carry {t0, ago, t} (t0, t on the take's
@@ -821,31 +833,160 @@ function buildClip(b, kind) {
   const F = b.frames, i0 = Math.max(0, lowerT(F, wins[0][0] - 0.5)), i1 = Math.min(F.length, lowerT(F, wins[wins.length - 1][1] + 0.5) + 1);
   const src = F.slice(i0, i1), st = clipSigma(src, wins);
   const sm = st.sigma > 0 ? smoothReplay(src, st.sigma) : src;
-  const f = [], ot = [], seg = [], caps = []; let T = 0, sg = -1, prevT = 0;
+  const f = [], raw = [], ot = [], seg = [], caps = []; let T = 0, sg = -1, prevT = 0;   // raw: f unstabilised (HQ re-sim)
   for (const [a, e] of wins) {
     let first = true;
     for (let j = lowerT(sm, a); j < sm.length && sm[j].t <= e; j++) {
       const fr = sm[j];
       if (first || fr.t - prevT > 0.25) { if (f.length) T += 1 / CLIP_FPS; sg++; first = false; }   // hard cut (or a pause in the take)
       else T += Math.min(0.1, fr.t - prevT);                       // hitches collapse like the sim's dt clamp
-      prevT = fr.t; f.push(fr); ot.push(T); seg.push(sg);
+      prevT = fr.t; f.push(fr); raw.push(src[j]); ot.push(T); seg.push(sg);
       if (fr.cap && S.caps !== 'off') caps.push({ t: T, seg: sg, text: fr.cap.text, flow: fr.cap.flow || 1 });
     }
   }
   if (f.length < 15) return null;
-  return { kind, f, ot, seg, caps, dur: T, sigma: st.sigma, jit: st.jit, raw: st.raw, cuts: sg };
+  return { kind, f, raw, ot, seg, caps, dur: T, sigma: st.sigma, jit: st.jit, rawJit: st.raw, cuts: sg };
 }
-function saveClip(kind = 'last', from = null) {
-  if (state === 'replay' || clipOpen) return;
-  if (!window.MediaRecorder || !comp.captureStream) { toast('THIS BROWSER CAN\'T RECORD CLIPS'); return; }
+// ---- clip modal first (UX #4): CLIP pauses and opens the modal with the cuts and their lengths; MAKE CLIP renders the
+// chosen one once. SHORT is the default when the take has one of at least clipCfg.shortMin s (shorter: hidden).
+// Output (PLAN4 decision 8): SHORT/LAST/FULL as a full-bleed 1080x1920 frame through the lens (default) or the radio
+// layout (square picture over the sticks). HQ: offline re-render from the input log, 8 sub-frames per 1/60 s shutter,
+// WebCodecs + mp4-muxer (clipexport.js); without WebCodecs (or if it fails) the real-time MediaRecorder path.
+const clipCfg = { shortMin: 8, sub: 8, hqScale: 1.0 };   // hqScale: render scale of the HQ scene pass (tests lower it)
+const clipPrefs = { lay: 'full', hq: true };
+try { const p = JSON.parse(localStorage.getItem('onetake.clip') || '{}'); if (p.lay === 'radio' || p.lay === 'full') clipPrefs.lay = p.lay; if (typeof p.hq === 'boolean') clipPrefs.hq = p.hq; } catch (e) {}
+const saveClipPrefs = () => { try { localStorage.setItem('onetake.clip', JSON.stringify(clipPrefs)); } catch (e) {} };
+let clipSel = 'last', clipDone = null, hqJob = null, hqOK;    // hqOK: undefined until hqSupport() answers, then {..} | null
+const CUT_NAME = { short: 'SHORT', last: 'LAST 20 S', full: 'FULL TAKE' };
+const CUT_HINT = { short: 'The lines, hard cuts between', last: 'The last 20 seconds', full: 'The whole take, from the run-up' };
+const shortOK = (b) => { const w = clipPlan(b, 'short'); return !!w && planDur(w) >= clipCfg.shortMin; };
+const tiltFor = (mode) => (S.tilt >= 0 ? S.tilt : Math.round(drone.c.camTilt * (mode === 'acro' ? 1 : mode === 'angle' ? 0.8 : 0.55))) * DEG;
+function openClip(from = null) {
+  if (state === 'replay' || clipOpen || hqJob) return;
   const b = from || clipSource(); if (!b) { toast('FLY FIRST'); return; }
+  clipBuf = b; clipSel = shortOK(b) ? 'short' : 'last';
+  if (!clipPlan(b, clipSel)) { toast('FLY FIRST'); return; }
+  clipDone = null; audio.kick?.(true);                          // inside the tap: a live fallback needs the context
+  pauseForClip(); setPhase('choose');
+  $('clip').classList.remove('hidden'); comp.classList.add('hidden'); fitComp(false);
+  hqSupport().then((s) => { hqOK = s; syncCuts(); });
+}
+function setPhase(p) {
+  const el = $('clip'); el.dataset.phase = p;
+  const done = p === 'done', busy = p === 'render';
+  $('clipShare').classList.toggle('hidden', !done); $('clipSave').classList.toggle('hidden', !done || !clipCanShare);
+  $('clipClose').textContent = busy ? 'CANCEL' : 'CLOSE';
+  if (!done) $('clipVid').pause();
+  syncCuts();
+}
+function syncCuts() {
+  const b = clipBuf, busy = $('clip').dataset.phase === 'render';
+  $('clipCuts').querySelectorAll('button[data-cut]').forEach((el) => {
+    const k = el.dataset.cut, w = b ? clipPlan(b, k) : null, d = Math.round(planDur(w));
+    el.classList.toggle('hidden', k === 'short' && !(b && shortOK(b)) && clipSel !== 'short');
+    el.disabled = !w || busy; el.classList.toggle('on', k === clipSel);
+    el.textContent = k === 'last' ? (w && d < CLIP_LAST - 0.5 ? `LAST ${fmtS(d)}` : CUT_NAME.last) : CUT_NAME[k] + (w ? ` ${fmtS(d)}` : '');
+  });
+  $('clipOpts').querySelectorAll('button[data-lay]').forEach((el) => { el.classList.toggle('on', el.dataset.lay === clipPrefs.lay); el.disabled = busy; });
+  const hq = $('clipHQ'); hq.classList.toggle('hidden', hqOK === null); hq.classList.toggle('on', clipPrefs.hq); hq.disabled = busy;
+  const same = clipDone && clipDone.kind === clipSel && clipDone.lay === clipPrefs.lay && clipDone.hq === useHQ();
+  $('clipMake').classList.toggle('hidden', busy || !!same);
+  const w = b ? clipPlan(b, clipSel) : null;
+  $('clipPickN').textContent = CUT_NAME[clipSel]; $('clipPickD').textContent = w ? fmtS(Math.round(planDur(w))) : '';
+  $('clipPickH').textContent = CUT_HINT[clipSel] + (clipSel === 'short' && w ? ` · ${w.length} part${w.length > 1 ? 's' : ''}` : '');
+  if ($('clip').dataset.phase === 'choose') $('clipMeta').textContent = `${clipPrefs.lay === 'full' ? '1080×1920 full frame' : '1080×1920 with sticks'} · ${useHQ() ? `HQ · real motion blur (${clipCfg.sub} sub-frames)` : hqOK === null ? 'recorded live (no WebCodecs here)' : 'recorded live'}`;
+}
+const useHQ = () => clipPrefs.hq && hqOK !== null;
+// render a cut now (MAKE CLIP; also the programmatic API). HQ when on and supported, else the live recorder.
+function saveClip(kind = 'last', from = null) {
+  if (state === 'replay' || hqJob) return;
+  const b = from || clipBuf || clipSource(); if (!b) { toast('FLY FIRST'); return; }
   const C = buildClip(b, kind);
   if (!C) { toast(kind === 'short' ? 'NO LINES IN THIS TAKE YET' : 'FLY FIRST'); return; }
   audio.kick?.(true);                                         // inside the tap: clip audio even with Sound Off
-  const mime = pickMime(), big = !mime.includes('42E01F');    // baseline L3.1 tops out at 720p
-  const W = big ? 1080 : 720, H = big ? 1920 : 1280;
-  comp.width = W; comp.height = H; clipLay = clipLayout(W, H); radioBg = makeRadioBg(clipLay);
+  clipBuf = b; clipKind = kind; clipSel = kind;
+  if (clipPrefs.hq && hqOK !== null && window.VideoEncoder) makeHQ(C, b, kind);
+  else recordLive(C, b, kind);
+}
+// 9:16 layouts. cap: the box whose bottom edge carries the caption: the reference's square picture (~57 % down the
+// frame), so a full-bleed Short keeps the caption where the reference has it, clear of the Shorts UI at the bottom.
+function clipLayout(W, H, lay = 'radio') {
+  const top = Math.round(H * 0.034), u = W / 1080, sq = { x: 0, y: top, w: W, h: W };
+  if (lay === 'full') return { W, H, u, full: true, pic: { x: 0, y: 0, w: W, h: H }, cap: sq };
+  const rad = { x: 0, y: top + W, w: W, h: H - top - W }, cy = rad.y + rad.h * 0.47, well = Math.round(330 * u);
+  return { W, H, u, pic: sq, cap: sq, rad, well, wells: [[W * 0.255, cy], [W * 0.745, cy]], scr: { x: W / 2 - 84 * u, y: rad.y + 70 * u, w: 168 * u, h: 104 * u } };
+}
+function prepComp(W, H, lay) {
+  comp.width = W; comp.height = H; clipLay = clipLayout(W, H, lay); radioBg = lay === 'radio' ? makeRadioBg(clipLay) : null;
   warmFonts(Math.round(W * 0.08));
+  return clipLay.pic;
+}
+const capLabel = (C) => C.caps.length ? ` · ${C.caps.length} caption${C.caps.length > 1 ? 's' : ''}` : '';
+// ---- HQ: offline, re-simulated, sub-frame accumulated, WebCodecs
+async function makeHQ(C, b, kind) {
+  const job = hqJob = { cancel: false }, lay = clipPrefs.lay;
+  if (!clipOpen) pauseForClip();
+  $('clip').classList.remove('hidden'); setPhase('render'); hqProgress(0, 0);
+  const sup = hqOK === undefined ? (hqOK = await hqSupport()) : hqOK;
+  if (job.cancel) { hqJob = null; setPhase(clipDone ? 'done' : 'choose'); return; }
+  if (!sup) { hqJob = null; recordLive(C, b, kind); return; }
+  const W = 1080, H = 1920, pic = prepComp(W, H, lay), N = Math.max(1, clipCfg.sub | 0), lk = fpv.look;
+  const keep = { shutter: lk.shutter, grain: lk.grain, letterbox: lk.letterbox, scale: fpv.scale };
+  renderer.setSize(pic.w, pic.h, false); fpv.resize(pic.w, pic.h); lk.letterbox = 0;
+  lk.shutter = keep.shutter / N;                                // each sub-frame smears its slice of the shutter
+  lk.grain = keep.grain * Math.sqrt(N);                         // grain is per sub-frame: N of them average to 1/sqrt(N)
+  fpv.scale = Math.min(fpv.maxScale, clipCfg.hqScale ?? 1);
+  const pv = $('clipPrev'), pg = pv.getContext('2d'), t0 = performance.now();
+  const mo0 = { ...motion };
+  const renderSub = (s) => {
+    const a = C.f[s.i], n = C.f[s.i + 1], nb = n && C.seg[s.i + 1] === C.seg[s.i] ? n : null;
+    const u = nb ? Math.max(0, Math.min(1, (s.T - C.ot[s.i]) / Math.max(1e-6, C.ot[s.i + 1] - C.ot[s.i]))) : 0;
+    for (const k in a.mo) motion[k] = a.mo[k] + (((nb?.mo[k]) ?? a.mo[k]) - a.mo[k]) * u;
+    camPose.pos.copy(s.p); camPose.quat.copy(s.q); motion.vel.copy(s.vel); motion.ang.copy(s.ang);
+    if (s.reset) fpv.resetExposure = true;                     // start / hard cut: no AE drift across it
+    world.update?.(camPose.pos, s.dt, camPose.quat);
+    fpv.render(world, camPose, motion, s.dt);
+  };
+  const composite = (k, T, i) => {
+    const a = C.f[i], n = C.f[i + 1], st = clipLay.full ? null : n && C.seg[i + 1] === C.seg[i] ? a.st.map((v, j) => v + (n.st[j] - v) * Math.max(0, Math.min(1, (T - C.ot[i]) / Math.max(1e-6, C.ot[i + 1] - C.ot[i])))) : a.st;
+    const c = drawComp(C, T, i, st);
+    if (k % 3 === 0) pg.drawImage(comp, 0, 0, pv.width, pv.height);
+    return c;
+  };
+  let res = null, err = null;
+  try {
+    res = await renderHQ({ C, world, renderer, fpv, comp, size: [pic.w, pic.h], sub: N, shutter: keep.shutter, tiltFor, makeAudio: (actx) => clipAudio(actx, C),
+      renderSub, composite, onProgress: (f) => hqProgress(f, (performance.now() - t0) / 1000), cancelled: () => job.cancel });
+  } catch (e) { err = e; console.warn('HQ clip failed', e); }
+  finally {
+    Object.assign(lk, { shutter: keep.shutter, grain: keep.grain, letterbox: keep.letterbox }); fpv.scale = keep.scale;
+    Object.assign(motion, mo0); layout(); fpv.resetExposure = true; hqJob = null;
+  }
+  if (err) { hqOK = null; toast('HQ FAILED · RECORDING LIVE', 2.5); setPhase('choose'); recordLive(C, b, kind); return; }
+  if (!res) { setPhase(clipDone ? 'done' : 'choose'); return; }   // cancelled
+  showClip(res.blob, { dur: Math.floor(C.dur * CLIP_FPS + 1e-6) / CLIP_FPS + 1 / CLIP_FPS, caps: C.caps.map((c) => [c.t, c.text]), sigma: C.sigma, jit: C.jit, raw: C.rawJit, W, H, kind, lay, hq: res.stats, fixed: true });
+}
+function hqProgress(f, secs) {
+  $('clipProgB').style.width = (100 * f).toFixed(1) + '%';
+  const left = f > 0.03 ? secs * (1 - f) / f : 0;
+  $('clipMeta').textContent = `RENDERING ${Math.round(100 * f)}%${left > 1 ? ` · ${fmtS(Math.round(left))} LEFT` : ''}`;
+}
+// the clip's sound, re-synthesised on an OfflineAudioContext along the output timeline (hits, crash, rooms, grass)
+function clipAudio(actx, C) {
+  const a = new MotorAudio(); a.setCraft(drone.key); a.startOffline(actx);
+  for (let i = 0; i < C.f.length; i++) {
+    const fr = C.f[i], at = C.ot[i];
+    if (i === 0 || C.seg[i] !== C.seg[i - 1]) a.snap();
+    if (i > 0) { if (fr.hit) a.hit(fr.hit, at); if (fr.thud) a.thud(fr.thud, at); }
+    a.update(fr.m, fr.s, fr.wash, fr.c, false, fr.ax, at);
+  }
+  return a;
+}
+// ---- live (fallback): the replay plays in real time into MediaRecorder
+function recordLive(C, b, kind) {
+  if (!window.MediaRecorder || !comp.captureStream) { toast('THIS BROWSER CAN\'T RECORD CLIPS'); setPhase(clipDone ? 'done' : 'choose'); return; }
+  const lay = clipPrefs.lay, mime = pickMime(), big = !mime.includes('42E01F');    // baseline L3.1 tops out at 720p
+  const W = big ? 1080 : 720, H = big ? 1920 : 1280, pic = prepComp(W, H, lay);
   let stream = comp.captureStream(0), vt = stream.getVideoTracks()[0];
   if (!vt || typeof vt.requestFrame !== 'function') { stream.getTracks().forEach((t) => t.stop()); stream = comp.captureStream(CLIP_FPS); vt = null; }
   const at = audio.streamDest?.stream.getAudioTracks()[0]; if (at) stream.addTrack(at);
@@ -854,23 +995,31 @@ function saveClip(kind = 'last', from = null) {
   recChunks = [];
   const rec = recorder;
   rec.ondataavailable = (e) => e.data.size && recChunks.push(e.data);
-  rec.onstop = () => showClip(new Blob(recChunks, { type: rec.mimeType || mime || 'video/mp4' }), { dur: C.dur, caps: C.caps.map((c) => [c.t, c.text]), sigma: C.sigma, jit: C.jit, raw: C.raw, W, H, kind, fixed: !!vt });
+  rec.onstop = () => showClip(new Blob(recChunks, { type: rec.mimeType || mime || 'video/mp4' }), { dur: C.dur, caps: C.caps.map((c) => [c.t, c.text]), sigma: C.sigma, jit: C.jit, raw: C.rawJit, W, H, kind, lay, fixed: !!vt });
   clipBuf = b; clipKind = kind;
-  // the replay renders square at the clip width (endReplay -> layout() restores the live size)
-  replay = { clip: C, k: -1, i: -1, t: 0, dur: C.dur, wall0: performance.now() / 1000, prev: state, stream, vt, st: null, W,
+  $('clip').classList.add('hidden'); clipOpen = false;         // the composite plays on screen while it records
+  replay = { clip: C, k: -1, i: -1, t: 0, dur: C.dur, wall0: 0, armed: false, prev: state, stream, vt, st: null, W, RW: pic.w, RH: pic.h,
     letterbox: fpv.look.letterbox, targetMs: fpv.targetMs };
-  renderer.setSize(W, W, false); fpv.resize(W, W); fpv.look.letterbox = 0; fpv.targetMs = 1000 / CLIP_FPS; fpv.resetExposure = true;
-  const r0 = replay; r0.stopTm = setTimeout(() => { if (replay === r0) endReplay(); }, Math.round((C.dur + 1.5 / CLIP_FPS) * 1000));   // ends on time even if frames run slow
+  renderer.setSize(pic.w, pic.h, false); fpv.resize(pic.w, pic.h); fpv.look.letterbox = 0; fpv.targetMs = 1000 / CLIP_FPS; fpv.resetExposure = true;
   state = 'replay'; controls.enabled = false; controls.cancelAll?.();
   $('crashBar').classList.add('hidden'); $('banner').classList.add('hidden');
   comp.classList.remove('hidden'); fitComp(true); document.body.classList.add('replaying');
   $('recT').textContent = `REPLAY 0:00 / ${fmtS(C.dur)}`; $('recP').style.width = '0%';
-  rec.start(250);
+  // sound panel r3 #6: the modal suspended the context; start the clock and the recorder only once it runs again
+  // (or after 300 ms), so the clip doesn't open with a gap or an audio offset
+  const r0 = replay, res = audio.ctx?.state === 'running' ? Promise.resolve() : Promise.resolve(audio.ctx?.resume?.()).catch(() => {});
+  Promise.race([res, new Promise((ok) => setTimeout(ok, 300))]).then(() => {
+    if (replay !== r0) return;
+    r0.armed = true; r0.wall0 = performance.now() / 1000;
+    r0.stopTm = setTimeout(() => { if (replay === r0) endReplay(); }, Math.round((C.dur + 1.5 / CLIP_FPS) * 1000));   // ends on time even if frames run slow
+    try { rec.start(250); } catch (e) { endReplay(true); toast('THIS BROWSER CAN\'T RECORD CLIPS'); }
+  });
 }
 // next 30p output frame, paced by the wall clock: null when none is due (nothing to render this rAF). A slow device
 // skips output frames instead of stretching time, so the video stays in sync with the real-time audio.
 function replayFrame() {
   const r = replay, C = r.clip;
+  if (!r.armed) return null;
   const due = Math.floor((performance.now() / 1000 - r.wall0) * CLIP_FPS + 1e-6);
   if (due <= r.k) return null;
   const T = due / CLIP_FPS;
@@ -891,7 +1040,7 @@ function replayFrame() {
 // replay pose at the output frame: positions/rates lerped, the view slerped between the two recorded frames
 function replayPose(f) {
   const { a, b, u } = f;
-  if (canvas.width !== replay.W || canvas.height !== replay.W) { renderer.setSize(replay.W, replay.W, false); fpv.resize(replay.W, replay.W); fitComp(true); }   // a rotate mid-replay
+  if (canvas.width !== replay.RW || canvas.height !== replay.RH) { renderer.setSize(replay.RW, replay.RH, false); fpv.resize(replay.RW, replay.RH); fitComp(true); }   // a rotate mid-replay
   if (b) {
     camPose.pos.copy(a.p).lerp(b.p, u); camPose.quat.copy(a.q).slerp(b.q, u); motion.vel.copy(a.v).lerp(b.v, u); motion.ang.copy(a.w).lerp(b.w, u);
     for (const k in a.mo) motion[k] = a.mo[k] + ((b.mo[k] ?? a.mo[k]) - a.mo[k]) * u;
@@ -905,7 +1054,7 @@ function endReplay(cancel = false) {
   if (!replay) return;
   const r = replay; replay = null; clearTimeout(r.stopTm);
   if (cancel && recorder) { recorder.onstop = null; recorder.ondataavailable = null; recChunks = []; }
-  try { recorder?.stop(); } catch (e) {}
+  try { if (recorder?.state !== 'inactive') recorder?.stop(); } catch (e) {}
   r.stream?.getVideoTracks().forEach((t) => t.stop());   // the canvas track only: the audio track is shared by every clip
   document.body.classList.remove('replaying');
   fpv.look.letterbox = r.letterbox; fpv.targetMs = r.targetMs; layout();
@@ -917,13 +1066,7 @@ function endReplay(cancel = false) {
   pauseForClip();
   clearTimeout(clipWait); clipWait = setTimeout(() => { if ($('clip').classList.contains('hidden')) closeClip(); }, 6000);
 }
-// ---- 9:16 composite: FPV picture (square) on top, the radio's sticks below, the caption on the picture's bottom edge
 let clipLay = null, radioBg = null;
-function clipLayout(W, H) {
-  const top = Math.round(H * 0.034), u = W / 1080, rad = { x: 0, y: top + W, w: W, h: H - top - W };
-  const cy = rad.y + rad.h * 0.47, well = Math.round(330 * u);
-  return { W, H, u, pic: { x: 0, y: top, w: W, h: W }, rad, well, wells: [[W * 0.255, cy], [W * 0.745, cy]], scr: { x: W / 2 - 84 * u, y: rad.y + 70 * u, w: 168 * u, h: 104 * u } };
-}
 const rrect = (g, x, y, w, h, r) => { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); };
 // the static part: black bands, a graphite radio face (as under the reference's stick cam), gimbal wells, the screen bezel
 function makeRadioBg(L) {
@@ -965,14 +1108,21 @@ function drawSticks(g, L, st, t) {
   g.font = `700 ${Math.round(34 * u)}px ui-monospace, Menlo, monospace`;
   g.fillText(fmt(t), S2.x + S2.w / 2, S2.y + S2.h * 0.68);
 }
+// one output frame of the composite: the rendered picture (full bleed, or square over the radio), sticks, caption.
+// Returns the index of the caption drawn (-1: none). Captions never carry across a hard cut.
+function drawComp(C, T, i, st) {
+  const L = clipLay, g = cctx;
+  if (L.full) g.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, L.W, L.H);   // WebGL frame (still valid in this task)
+  else { g.drawImage(radioBg, 0, 0); g.drawImage(canvas, 0, 0, canvas.width, canvas.height, L.pic.x, L.pic.y, L.pic.w, L.pic.h); drawSticks(g, L, st || [0, 0, 0, 0], T); }
+  let ci = -1;
+  for (let k = 0; k < C.caps.length; k++) { if (C.caps[k].t <= T + 1e-6) ci = k; else break; }
+  const cap = C.caps[ci];
+  if (cap && cap.seg === C.seg[i] && T - cap.t <= CAP_DUR) { drawCaption(g, L.cap, cap.text, cap.flow, T - cap.t); return ci; }
+  return -1;
+}
 function compFrame() {
-  const L = clipLay, g = cctx, r = replay, C = r.clip;
-  g.drawImage(radioBg, 0, 0);
-  g.drawImage(canvas, 0, 0, canvas.width, canvas.height, L.pic.x, L.pic.y, L.pic.w, L.pic.h);   // WebGL frame (still valid in this task)
-  drawSticks(g, L, r.st || [0, 0, 0, 0], r.t);
-  let cap = null;
-  for (const c of C.caps) { if (c.t <= r.t + 1e-6) cap = c; else break; }
-  if (cap && cap.seg === C.seg[r.i]) drawCaption(g, L.pic, cap.text, cap.flow, r.t - cap.t);   // never across a hard cut
+  const r = replay;
+  drawComp(r.clip, r.t, r.i, r.st);
   r.vt?.requestFrame?.();
 }
 // the composite on screen while it renders: 9:16 fitted in the view, black around it
@@ -1028,6 +1178,7 @@ function pauseForClip() {
   audio.update(drone.motors, 0, 0, drone.crashed, true, ax);                      // fade the live game sound out
   setTimeout(() => { if (clipOpen && state !== 'replay') audio.idle?.(); }, 250);
 }
+let clipCanShare = false;
 function showClip(blob, info = {}) {
   clearTimeout(clipWait);
   if (clipURL) URL.revokeObjectURL(clipURL);
@@ -1037,41 +1188,39 @@ function showClip(blob, info = {}) {
   v.muted = false; v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });   // with its sound where autoplay allows
   const a = $('clipSave'); a.href = clipURL; a.download = `onetake-${Date.now()}.${ext}`;
   const file = new File([blob], a.download, { type: blob.type });
-  const canShare = !!navigator.canShare?.({ files: [file] });
+  clipCanShare = !!navigator.canShare?.({ files: [file] });
   // the share sheet is the primary save on iOS ("Save Video" -> Photos); <a download> only reaches Files
-  $('clipShare').textContent = canShare ? 'SAVE VIDEO' : 'DOWNLOAD';
-  a.classList.toggle('hidden', !canShare);
+  $('clipShare').textContent = clipCanShare ? 'SAVE VIDEO' : 'DOWNLOAD';
   const nc = info.caps?.length || 0;
-  $('clipMeta').textContent = `${fmtS(Math.round(info.dur || 0))} · ${info.W}×${info.H} · 30p${info.sigma > 0 ? ' · stabilised' : ''}${nc ? ` · ${nc} caption${nc > 1 ? 's' : ''}` : ''}`;
-  syncCuts();
+  $('clipMeta').textContent = `${fmtS(Math.round(info.dur || 0))} · ${info.W}×${info.H} · 30p${info.hq ? ` · HQ ${info.hq.sub}× shutter` : ''}${info.sigma > 0 ? ' · stabilised' : ''}${nc ? ` · ${nc} caption${nc > 1 ? 's' : ''}` : ''}`;
+  clipDone = { kind: info.kind, lay: info.lay, hq: !!info.hq }; clipSel = info.kind || clipSel;
   pauseForClip();
   $('clip').classList.remove('hidden'); comp.classList.add('hidden'); fitComp(false);
+  setPhase('done');
   $('clipShare').onclick = async () => {
-    if (canShare) { try { await navigator.share({ files: [file], title: 'One Take' }); } catch (e) {} }
+    if (clipCanShare) { try { await navigator.share({ files: [file], title: 'One Take' }); } catch (e) {} }
     else a.click();
   };
 }
-const CUT_NAME = { short: 'SHORT', last: 'LAST 20 S', full: 'FULL TAKE' };
-function syncCuts() {
-  const b = clipBuf;
-  $('clipCuts').querySelectorAll('button[data-cut]').forEach((el) => {
-    const k = el.dataset.cut, w = b ? clipPlan(b, k) : null;
-    el.disabled = !w; el.classList.toggle('on', k === clipKind);
-    el.textContent = CUT_NAME[k] + (w && k !== 'last' ? ` ${fmtS(planDur(w))}` : '');
-  });
-}
 function closeClip() {
   clearTimeout(clipWait);
+  if (hqJob) hqJob.cancel = true;
   $('clip').classList.add('hidden'); $('clipVid').pause(); comp.classList.add('hidden'); fitComp(false);
   if (!clipOpen) return;
   clipOpen = false;
   if (state === 'fly' || state === 'crash') controls.enabled = true;
   audio.kick?.();                                              // inside the CLOSE tap
 }
-$('clipClose').onclick = () => closeClip();
+$('clipClose').onclick = () => { if (hqJob) { hqJob.cancel = true; return; } closeClip(); };   // rendering: CANCEL back to the cuts
+$('clipMake').onclick = () => saveClip(clipSel, clipBuf);
 $('clipCuts').addEventListener('click', (e) => {
-  const el = e.target.closest('button[data-cut]'); if (!el || el.disabled || el.dataset.cut === clipKind) return;
-  const b = clipBuf; closeClip(); saveClip(el.dataset.cut, b);
+  const el = e.target.closest('button[data-cut]'); if (!el || el.disabled) return;
+  clipSel = el.dataset.cut; syncCuts();
+});
+$('clipOpts').addEventListener('click', (e) => {
+  const el = e.target.closest('button'); if (!el || el.disabled) return;
+  if (el.dataset.lay) clipPrefs.lay = el.dataset.lay; else if (el.id === 'clipHQ') clipPrefs.hq = !clipPrefs.hq;
+  saveClipPrefs(); syncCuts();
 });
 
 // ---------------- HUD: HD-OSD, captions (pop), warnings, toasts
@@ -1514,36 +1663,48 @@ function coachFrame(dt) {
 }
 
 // ---------------- audio glue (sound panel main-glue2.js): rooms, proximity, impacts, scrapes
-// Room probe: 10 BVH rays (60 m), 2 per frame -> hall convolver / tube flutter. The hall isn't killed by windows
-// (roof^2 * (0.55 + 0.45 * share of walls hit)); the tube needs a shaft (walls close all round: chimney, stair shaft)
-// or a low narrow corridor (the conveyor gallery), so column bays no longer read as a tube.
+// Room probe (sound panel main-glue3.js): 11 BVH rays (60 m), 2 per frame -> hall convolver / tube flutter. The hall
+// isn't killed by windows (roof^2 * (0.55 + 0.45 * share of walls hit)); the tube needs a shaft (walls close all round:
+// chimney, stair shaft) or a low corridor: under 3.4 m floor to ceiling (the 11th ray, straight down) with half the
+// horizontal rays within 5 m, so a window gap in the conveyor gallery no longer flips it to the hall's tail.
 // Impacts: every change of drone.lastImpact (true m/s, uncapped: taps and crashes no longer sound alike).
-// Scrapes: proximity contact (world.lastDist < 5 cm), which holds across the physics substeps (contactN only shows
-// the last one, so 99 % of scrapes were 1-frame ticks). No flight.js change.
-const room = { i: 0, up: [0, 0, 0, 0], ud: [60, 60, 60, 60], h: [60, 60, 60, 60, 60, 60], hall: 0, tube: 0, tubeD: 3, roof: 0 };
+// Scrapes: proximity contact (world.lastDist < 5 cm), which holds across the physics substeps.
+// Grass strikes (C7): world.grassAt(x, z) = grass height (m) over the ground, if the world has it; depth from a ray down.
+const room = { i: 0, up: [0, 0, 0, 0], ud: [60, 60, 60, 60], h: [60, 60, 60, 60, 60, 60], dd: 1, hall: 0, tube: 0, tubeD: 3, roof: 0 };
 const _rr = new THREE.Ray(), c01 = (x) => Math.max(0, Math.min(1, x));
 const RD = [[0, 1, 0], [0.707, 0.707, 0], [-0.354, 0.707, 0.612], [-0.354, 0.707, -0.612]];
 for (let k = 0; k < 6; k++) RD.push([Math.cos(k * Math.PI / 3), 0, Math.sin(k * Math.PI / 3)]);
+RD.push([0, -1, 0]);                                                                     // [10] floor: room height
 function probeRoom() {
   if (!world.bvh) { room.hall = room.tube = room.roof = 0; return; }
   for (let k = 0; k < 2; k++) {
-    const j = room.i++ % 10, d = RD[j];
+    const j = room.i++ % 11, d = RD[j];
     _rr.origin.copy(drone.pos); _rr.direction.set(d[0], d[1], d[2]);
-    const hit = world.bvh.raycastFirst(_rr, THREE.DoubleSide, 0, 60);
-    if (j < 4) { room.up[j] = hit ? 1 : 0; room.ud[j] = hit ? hit.distance : 60; } else room.h[j - 4] = hit ? hit.distance : 60;
+    const hit = world.bvh.raycastFirst(_rr, THREE.DoubleSide, 0, 60), dist = hit ? hit.distance : 60;
+    if (j === 10) room.dd = dist;
+    else if (j < 4) { room.up[j] = hit ? 1 : 0; room.ud[j] = dist; } else room.h[j - 4] = dist;
   }
   const u = room.up, h = room.h, roof = Math.max((2 * u[0] + u[1] + u[2] + u[3]) / 5, 0.9 * (u[1] + u[2] + u[3]) / 3);   // chimney top is open
   const hs = h.slice().sort((a, b) => a - b), hHit = hs.filter((v) => v < 60).length / 6, mean = Math.min(40, hs.reduce((a, b) => a + b, 0) / 6);
   const wmin = Math.min(h[0] + h[3], h[1] + h[4], h[2] + h[5]);                      // narrowest wall-to-wall width (opposite rays)
   const shaft = c01((5 - hs[4]) / 2);                                                  // walls close all round
-  const corridor = c01((3.5 - room.ud[0]) / 1.5) * c01((5 - wmin) / 2);                // low ceiling + narrow
+  const corridor = c01((3.4 - room.ud[0] - room.dd) / 0.6) * c01((5 - hs[2]) / 2);     // < 3.4 m tall, half the walls < 5 m (gallery 2.5 m; hall floors 3.9-4.6 m)
   room.roof = roof;
   room.tube = roof * Math.max(shaft, corridor);
   room.hall = roof * roof * (0.55 + 0.45 * hHit) * c01((mean - 3) / 9) * (1 - room.tube);
   room.tubeD = Math.max(1.2, shaft >= corridor ? (hs[0] + hs[1] + hs[2]) / 3 : wmin / 2);
 }
+// props in grass: 0 (clear) .. 1 (12 cm deep). Props sit ~4 cm under the body centre.
+function grassDepth() {
+  const g = world.grassAt; if (typeof g !== 'function' || drone.crashed || !world.bvh) return 0;
+  let gh = 0; try { gh = +g.call(world, drone.pos.x, drone.pos.z) || 0; } catch (e) { return 0; }
+  if (!(gh > 0.02)) return 0;
+  _rr.origin.copy(drone.pos); _rr.direction.set(0, -1, 0);
+  const hit = world.bvh.raycastFirst(_rr, THREE.DoubleSide, 0, gh + 0.3);
+  return hit ? c01((gh + 0.04 - hit.distance) / 0.12) : 0;
+}
 let lastLI = 0, hitNow = 0, thudNow = 0, wasCrashed = false;
-const ax = { dist: Infinity, hall: 0, tube: 0, tubeD: 3, scrape: 0 };
+const ax = { dist: Infinity, hall: 0, tube: 0, tubeD: 3, scrape: 0, grass: 0 };
 function audioFrame(now) {
   probeRoom();
   hitNow = 0;
@@ -1555,6 +1716,7 @@ function audioFrame(now) {
   wasCrashed = drone.crashed;
   ax.dist = world.lastDist; ax.hall = room.hall; ax.tube = room.tube; ax.tubeD = room.tubeD;
   ax.scrape = world.lastDist < 0.05 && !drone.crashed ? drone.vel.length() : 0;
+  ax.grass = grassDepth();
 }
 
 // ---------------- iOS lifecycle: swipe-back guard
@@ -1663,7 +1825,7 @@ window.addEventListener('popstate', () => {
 });
 window.__onetake = {
   S, drone, fpv, world, controls, renderer, take, freeTake, get spark() { return spark; }, startFlight, respawn, applySettings, get state() { return state; },
-  ui: { onTakeEvent, pop, warn, toast, showSummary, hideSummary, saveClip, endReplay, openMenu, bindTake, scoreView, smoothReplay, splitAccent, get replay() { return replay; }, room, audio,
+  ui: { onTakeEvent, pop, warn, toast, showSummary, hideSummary, saveClip, openClip, clipCfg, clipPrefs, get clipPhase() { return $('clip').dataset.phase; }, get hqJob() { return hqJob; }, endReplay, openMenu, bindTake, scoreView, smoothReplay, splitAccent, get replay() { return replay; }, room, audio,
     replayBuf, get frames() { return cur.frames; }, get prevBuf() { return prevBuf; }, get curBuf() { return cur; }, clipSource, clipPlan, buildClip, clipJitter, closeClip, get clipOpen() { return clipOpen; }, get lastClip() { return lastClip; } },
   tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; },
   // test hook (?manual): advance n frames of dtMs each and return the canvas
