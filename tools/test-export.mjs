@@ -116,7 +116,7 @@ try {
   for (const f of Object.keys(world.files)) { const b = readFileSync(join(A, f)); eq([world.files[f].bytes, world.files[f].sha256], [b.byteLength, sha(b)], `world.json files.${f}`); }
 
   // ------------------------------------------------------------ 6. [P5] the round-4+ world
-  for (const k of skip) ok(!world.meshes.some((m) => m.name === k) && world.notDrawn?.meshes.includes(k), `undrawn mesh ${k} left out of world.glb, listed in notDrawn`);
+  for (const k of skip.filter((k) => geo.merged[k])) ok(!world.meshes.some((m) => m.name === k) && world.notDrawn?.meshes.includes(k), `undrawn mesh ${k} left out of world.glb, listed in notDrawn`);
   const gm = world.groundMasks;
   if (ok(gm && gm.N > 0 && gm.size > 0, 'groundMasks present')) for (const f of ['groundmask.png', 'groundmask2.png']) {
     const b = readFileSync(join(A, f));

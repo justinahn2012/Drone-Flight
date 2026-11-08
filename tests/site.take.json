@@ -1,7 +1,7 @@
 {
  "log": "site.otil",
- "world": "37cde404c8be75e8",
- "takeJs": "549c46828df68dbd",
+ "world": "072c1271c555b181",
+ "takeJs": "87690af823f9cf82",
  "sticks": "main.js sticksActive, no touches; thrRef starts at the first tick",
  "events": [
   {
@@ -22,35 +22,46 @@
    "t": 1.72
   },
   {
-   "tick": 987,
+   "tick": 1003,
    "type": "skim",
-   "pts": 39
+   "pts": 40
   },
   {
-   "tick": 1973,
+   "tick": 1060,
+   "type": "line",
+   "name": "HALFWAY",
+   "caption": "*HALFWAY*!",
+   "pts": 1250,
+   "flow": 2,
+   "clean": true,
+   "micro": true,
+   "t0": 3.92,
+   "ago": 0,
+   "t": 3.92
+  },
+  {
+   "tick": 1997,
    "type": "scrape",
-   "impact": 5.36,
+   "impact": 5.45,
+   "flow": 2,
+   "lost": 1
+  },
+  {
+   "tick": 2095,
+   "type": "skim",
+   "pts": 15
+  },
+  {
+   "tick": 2639,
+   "type": "scrape",
+   "impact": 8.16,
    "flow": 1,
    "lost": 1
   },
   {
-   "tick": 2632,
+   "tick": 3272,
    "type": "scrape",
-   "impact": 8.04,
-   "flow": 1,
-   "lost": 0
-  },
-  {
-   "tick": 3301,
-   "type": "scrape",
-   "impact": 5.39,
-   "flow": 1,
-   "lost": 0
-  },
-  {
-   "tick": 3936,
-   "type": "scrape",
-   "impact": 2.88,
+   "impact": 5.53,
    "flow": 1,
    "lost": 0
   }

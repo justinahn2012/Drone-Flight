@@ -59,7 +59,7 @@ export function stringify(v, ind = '') {
     const n = ind + '  '; return '[\n' + v.map((x) => n + stringify(x, n)).join(',\n') + '\n' + ind + ']';
   }
   if (v && typeof v === 'object') {
-    const ks = Object.keys(v); if (!ks.length) return '{}';
+    const ks = Object.keys(v).filter((k) => v[k] !== undefined);   // like JSON.stringify: undefined keys are dropped if (!ks.length) return '{}';
     const n = ind + '  '; return '{\n' + ks.map((k) => n + JSON.stringify(k) + ': ' + stringify(v[k], n)).join(',\n') + '\n' + ind + '}';
   }
   return JSON.stringify(v);
