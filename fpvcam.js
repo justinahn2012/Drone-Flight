@@ -463,7 +463,9 @@ void main(){
   vec2 sp = px * uSharpPx;
   float Ln = dot(tex(sG + vec2(sp.x, 0.0)) + tex(sG - vec2(sp.x, 0.0)) + tex(sG + vec2(0.0, sp.y)) + tex(sG - vec2(0.0, sp.y)), LUMA) * 0.25;
   float Lc = dot(c, LUMA);
-  c = uHdr > 0.5 ? max(c + (Lc - Ln) * uSharp * 0.8, 0.0) : clamp(c + (Lc - Ln) * uSharp, 0.0, 1.0);
+  // [L5] HDR: as a luma ratio held to 0.6..1.6 (ui 12d): an interior exposed for concrete puts the sky through a slab
+  // hole 5+ EV over it, and the additive mask drove the 2 px ring round every hole to 0 (black-rimmed white blotches)
+  c = uHdr > 0.5 ? c * clamp(1.0 + (Lc - Ln) * uSharp * 0.8 / max(Lc, 1e-6), 0.6, 1.6) : clamp(c + (Lc - Ln) * uSharp, 0.0, 1.0);
 
   vec3 lin = uHdr > 0.5 ? c : srgb2lin(c);
   vec4 X = texelFetch(tExp, ivec2(0), 0);
@@ -551,9 +553,12 @@ export const GRADES = {
   //   chromaPx: 4:2:0-like chroma average over +-chromaPx OUTPUT px (0 = off);
   //   mbRecon: McGuire-style reconstruction at silhouettes (TileMax/NeighborMax, soft depth compare, no depth jitter);
   //   lensMask: early-Z mask over the render area the lens never shows (inset by the frame's blur reach).
-  hdr: { wb: [1.036, 0.994, 0.956], wbShade: [1.125, 0.978, 0.845], evBias: -0.30, lift: 0, clipEv: 3.0, con: 1.3, toe: 0.012, veil: 0.05, shadowSat: 0.6,
+  // Round 5 [L5]: shadowSat 0.6 -> 0.85 (its luma window 0.01-0.16 is exactly shade: 0.6 greyed the sky-blue out of it,
+  //   silo shade R/B 0.97 vs ref 0.79); pinEv [0.5, 1.5] -> [0.8, 1.8] (lighting #1: the toe/contrast relax starts later,
+  //   rim at 3 m ~48 -> ~40 per D4; the bore walls get their level from the portal-sampled bake instead).
+  hdr: { wb: [1.036, 0.994, 0.956], wbShade: [1.125, 0.978, 0.845], evBias: -0.30, lift: 0, clipEv: 3.0, con: 1.3, toe: 0.012, veil: 0.05, shadowSat: 0.85,
     skySel: 1, greenSel: 0, skyBoost: 0.35, skyRot: -0.40, skyDark: 0.04, bloom: 0.15, bloomCap: 2, grain: 0.005, grainEv: [1, 0.15], grainPx: 2, meterLens: 1,
-    sharpen: 0.3, sharpPx: 2, recon: 0.6, chromaPx: 0.5, hlEv: null, hlFrac: 0.04, hlGain: 0.5, hlMax: 1, pinEv: [0.5, 1.5], pinToe: 1, pinCon: 1, mbRecon: 1, lensMask: 1 },
+    sharpen: 0.3, sharpPx: 2, recon: 0.6, chromaPx: 0.5, hlEv: null, hlFrac: 0.04, hlGain: 0.5, hlMax: 1, pinEv: [0.8, 1.8], pinToe: 1, pinCon: 1, mbRecon: 1, lensMask: 1 },
 };
 const TAU = Math.PI * 2;
 const JELLO_RATIO = [1, 1.077, 0.93], JELLO_AXIS = [1, 0.8, 0.5];

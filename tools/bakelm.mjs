@@ -111,6 +111,35 @@ function makeTracer(S) {
   }
   return { closest, any, R };
 }
+// [L5] portals (lmBakeInputs.portals): { kind: 'disc', c, n, r } or { kind: 'rect', c, n, ex, ey } (half-extent
+// vectors), each with sel { x, z, r, y0, y1 } = the texels that use it (horizontal distance to (x, z) < r, y0 < y < y1)
+function portalOf(q) {
+  const n = q.n.map((v) => v / Math.hypot(...q.n)), o = { ...q, n };
+  if (q.kind === 'disc') {
+    const t = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0], e1 = [n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]], l = Math.hypot(...e1);
+    o.e1 = e1.map((v) => v / l); o.e2 = [n[1] * o.e1[2] - n[2] * o.e1[1], n[2] * o.e1[0] - n[0] * o.e1[2], n[0] * o.e1[1] - n[1] * o.e1[0]]; o.area = PI * q.r * q.r;
+  } else {
+    o.hx = Math.hypot(...q.ex); o.hy = Math.hypot(...q.ey); o.ux = q.ex.map((v) => v / o.hx); o.uy = q.ey.map((v) => v / o.hy); o.area = 4 * o.hx * o.hy;
+  }
+  return o;
+}
+function portalSel(Ps, SP, i) {   // the portals texel i uses, or null
+  const x = SP[i * 3], y = SP[i * 3 + 1], z = SP[i * 3 + 2]; let out = null;
+  for (const q of Ps) { const s = q.sel; if (y > s.y0 && y < s.y1 && (x - s.x) ** 2 + (z - s.z) ** 2 < s.r * s.r) (out || (out = [])).push(q); }
+  return out;
+}
+function firstPortal(P, ox, oy, oz, dx, dy, dz) {   // index in P of the first aperture the ray crosses, or -1
+  let best = -1, bt = Infinity;
+  for (let j = 0; j < P.length; j++) {
+    const q = P[j], dn = dx * q.n[0] + dy * q.n[1] + dz * q.n[2]; if (dn > -1e-9 && dn < 1e-9) continue;
+    const t = ((q.c[0] - ox) * q.n[0] + (q.c[1] - oy) * q.n[1] + (q.c[2] - oz) * q.n[2]) / dn; if (!(t > 1e-5) || t >= bt) continue;
+    const rx = ox + dx * t - q.c[0], ry = oy + dy * t - q.c[1], rz = oz + dz * t - q.c[2];
+    const inside = q.kind === 'disc' ? rx * rx + ry * ry + rz * rz < q.r * q.r
+      : Math.abs(rx * q.ux[0] + ry * q.ux[1] + rz * q.ux[2]) < q.hx && Math.abs(rx * q.uy[0] + ry * q.uy[1] + rz * q.uy[2]) < q.hy;
+    if (inside) { best = j; bt = t; }
+  }
+  return best;
+}
 const hash32 = (x) => { x ^= x >>> 16; x = Math.imul(x, 0x7feb352d); x ^= x >>> 15; x = Math.imul(x, 0x846ca68b); x ^= x >>> 16; return x >>> 0; };
 
 // per-texel work (workers). C = constants, S = shared arrays.
@@ -150,10 +179,58 @@ function makeWorker(S, C) {
     OVO[i] = one(C.Lo, C.oShadow)[0];
     return C.oShadow ? 8 : 4;
   }
+  // [L5] one ray: RS[0..2] sunny / RS[3..5] overcast contribution (pi x radiance: the env table, a texel's radiosity, a
+  // proxy's estimate), RT = distance to the hit (Infinity when it escapes). Returns 0 escaped, 1 front hit, 2 back face
+  // of a far/proxy surface, 3 back face of a lightmapped one. The hash state `hs` is shared with the caller's sequence.
+  const RS = new Float64Array(6); let RT = 0, hs = 0;
+  function shade(ox, oy, oz, dx, dy, dz) {
+    // [A4] vegetation proxies (TK 3): a front-face hit stops the ray with the proxy's opacity, a back-face hit (the
+    // texel sits inside a crown or shrub hull) with half of it; otherwise the ray goes on through (<= 6 crossings)
+    let hit = false, vegBack = false, trav = 0, qx = ox, qy = oy, qz = oz;
+    for (let pass = 0; pass < 6; pass++) {
+      if (!tr.closest(qx, qy, qz, dx, dy, dz, 1e5)) break;
+      const tt = R.tri;
+      if (TK[tt] !== 3) { hit = true; break; }
+      const fdot = dx * TFo[tt * 3] + dy * TFo[tt * 3 + 1] + dz * TFo[tt * 3 + 2];
+      hs = hash32(hs + 0x632be5ab);
+      if (hs / 4294967296 < TOp[tt] * (fdot > 0 ? 0.5 : 1)) { hit = true; vegBack = fdot > 0; break; }
+      trav += R.t + 1e-3; qx += dx * (R.t + 1e-3); qy += dy * (R.t + 1e-3); qz += dz * (R.t + 1e-3);
+    }
+    if (!hit) {
+      const es = envIdx(C.crs, C.srs, dx, dy, dz), eo = sameRot ? es : envIdx(C.cro, C.sro, dx, dy, dz);
+      RS[0] = ENVS[es]; RS[1] = ENVS[es + 1]; RS[2] = ENVS[es + 2]; RS[3] = ENVO[eo]; RS[4] = ENVO[eo + 1]; RS[5] = ENVO[eo + 2];
+      RT = Infinity; return 0;
+    }
+    RT = R.t + trav;
+    const t = R.tri, fx = TFo[t * 3], fy = TFo[t * 3 + 1], fz = TFo[t * 3 + 2];
+    if (TK[t] === 3) {   // inside: shaded sky only; outside: the proxy's own estimate (as the treeline's, its albedo x occ)
+      const a = t * 3, oc = TOcc[t] * (vegBack ? 0.5 : 1), cs = vegBack ? 0 : Math.max(0, fx * C.Ls[0] + fy * C.Ls[1] + fz * C.Ls[2]), co = vegBack ? 0 : Math.max(0, fx * C.Lo[0] + fy * C.Lo[1] + fz * C.Lo[2]), sk = vegBack ? 0.5 : 0.5 + 0.5 * fy;
+      RS[0] = TAlb[a] * oc * (C.SUNs[0] * cs + C.SKYs[0] * sk); RS[1] = TAlb[a + 1] * oc * (C.SUNs[1] * cs + C.SKYs[1] * sk); RS[2] = TAlb[a + 2] * oc * (C.SUNs[2] * cs + C.SKYs[2] * sk);
+      RS[3] = TAlb[a] * oc * (C.SUNo[0] * co + C.SKYo[0] * sk); RS[4] = TAlb[a + 1] * oc * (C.SUNo[1] * co + C.SKYo[1] * sk); RS[5] = TAlb[a + 2] * oc * (C.SUNo[2] * co + C.SKYo[2] * sk);
+      return 1;
+    }
+    if (dx * fx + dy * fy + dz * fz > 0) return TK[t] === 0 ? 3 : 2;
+    if (TK[t] === 0) {
+      const b = t * 6, w1 = R.u, w2 = R.v;
+      let tx = Math.floor(TU[b] + w1 * (TU[b + 2] - TU[b]) + w2 * (TU[b + 4] - TU[b])), ty = Math.floor(TU[b + 1] + w1 * (TU[b + 3] - TU[b + 1]) + w2 * (TU[b + 5] - TU[b + 1]));
+      if (tx < 0) tx = 0; if (tx >= W) tx = W - 1; if (ty < 0) ty = 0; if (ty >= H) ty = H - 1;
+      const q = (ty * W + tx) * 3;
+      RS[0] = BS[q]; RS[1] = BS[q + 1]; RS[2] = BS[q + 2]; RS[3] = BO[q]; RS[4] = BO[q + 1]; RS[5] = BO[q + 2];
+    } else {   // far field / treeline proxies: open and sunlit, estimated
+      const a = TK[t] === 1 ? C.aFar : C.aLeaf, occ = TK[t] === 1 ? 1 : 0.6;
+      const cs = Math.max(0, fx * C.Ls[0] + fy * C.Ls[1] + fz * C.Ls[2]), co = Math.max(0, fx * C.Lo[0] + fy * C.Lo[1] + fz * C.Lo[2]), sk = 0.5 + 0.5 * fy;
+      RS[0] = a[0] * occ * (C.SUNs[0] * cs + C.SKYs[0] * sk); RS[1] = a[1] * occ * (C.SUNs[1] * cs + C.SKYs[1] * sk); RS[2] = a[2] * occ * (C.SUNs[2] * cs + C.SKYs[2] * sk);
+      RS[3] = a[0] * occ * (C.SUNo[0] * co + C.SKYo[0] * sk); RS[4] = a[1] * occ * (C.SUNo[1] * co + C.SKYo[1] * sk); RS[5] = a[2] * occ * (C.SUNo[2] * co + C.SKYo[2] * sk);
+    }
+    return 1;
+  }
   function gather(i, rays, nu, nv, seed, eps) {
     const px = SP[i * 3], py = SP[i * 3 + 1], pz = SP[i * 3 + 2], nx = SN[i * 3], ny = SN[i * 3 + 1], nz = SN[i * 3 + 2], gx = SG[i * 3], gy = SG[i * 3 + 1], gz = SG[i * 3 + 2];
     frame(nx, ny, nz, F);
     const ox = px + gx * eps, oy = py + gy * eps, oz = pz + gz * eps, maxD = SD[i];
+    // [L5] portals: a texel inside the chimney splits its hemisphere into the directions through an aperture (the
+    // first one each crosses), estimated by sampling points on that aperture (area measure), and the rest (cosine)
+    const P = C.portals.length ? portalSel(C.portals, SP, i) : null;
     let s0 = 0, s1 = 0, s2 = 0, o0 = 0, o1 = 0, o2 = 0, open = 0, back = 0;
     let h = hash32((i * 9781 + seed * 6271 + 1) >>> 0);
     for (let k = 0; k < rays; k++) {
@@ -162,50 +239,39 @@ function makeWorker(S, C) {
       let dx = F[0] * lx + F[3] * ly + nx * lz, dy = F[1] * lx + F[4] * ly + ny * lz, dz = F[2] * lx + F[5] * ly + nz * lz;
       const dg = dx * gx + dy * gy + dz * gz;
       if (dg < 1e-3) { dx -= (dg - 1e-3) * 2 * gx; dy -= (dg - 1e-3) * 2 * gy; dz -= (dg - 1e-3) * 2 * gz; const l = Math.hypot(dx, dy, dz); dx /= l; dy /= l; dz /= l; }
-      // [A4] vegetation proxies (TK 3): a front-face hit stops the ray with the proxy's opacity, a back-face hit (the
-      // texel sits inside a crown or shrub hull) with half of it; otherwise the ray goes on through (<= 6 crossings)
-      let hit = false, vegBack = false, trav = 0, qx = ox, qy = oy, qz = oz;
-      for (let pass = 0; pass < 6; pass++) {
-        if (!tr.closest(qx, qy, qz, dx, dy, dz, 1e5)) break;
-        const tt = R.tri;
-        if (TK[tt] !== 3) { hit = true; break; }
-        const fdot = dx * TFo[tt * 3] + dy * TFo[tt * 3 + 1] + dz * TFo[tt * 3 + 2];
-        h = hash32(h + 0x632be5ab);
-        if (h / 4294967296 < TOp[tt] * (fdot > 0 ? 0.5 : 1)) { hit = true; vegBack = fdot > 0; break; }
-        trav += R.t + 1e-3; qx += dx * (R.t + 1e-3); qy += dy * (R.t + 1e-3); qz += dz * (R.t + 1e-3);
-      }
-      if (!hit) {
-        open++;
-        const es = envIdx(C.crs, C.srs, dx, dy, dz), eo = sameRot ? es : envIdx(C.cro, C.sro, dx, dy, dz);
-        s0 += ENVS[es]; s1 += ENVS[es + 1]; s2 += ENVS[es + 2]; o0 += ENVO[eo]; o1 += ENVO[eo + 1]; o2 += ENVO[eo + 2];
-        continue;
-      }
-      if (R.t + trav > maxD) open++;
-      const t = R.tri, fx = TFo[t * 3], fy = TFo[t * 3 + 1], fz = TFo[t * 3 + 2];
-      if (TK[t] === 3) {   // inside: shaded sky only; outside: the proxy's own estimate (as the treeline's, its albedo x occ)
-        const a = t * 3, oc = TOcc[t] * (vegBack ? 0.5 : 1), cs = vegBack ? 0 : Math.max(0, fx * C.Ls[0] + fy * C.Ls[1] + fz * C.Ls[2]), co = vegBack ? 0 : Math.max(0, fx * C.Lo[0] + fy * C.Lo[1] + fz * C.Lo[2]), sk = vegBack ? 0.5 : 0.5 + 0.5 * fy;
-        s0 += TAlb[a] * oc * (C.SUNs[0] * cs + C.SKYs[0] * sk); s1 += TAlb[a + 1] * oc * (C.SUNs[1] * cs + C.SKYs[1] * sk); s2 += TAlb[a + 2] * oc * (C.SUNs[2] * cs + C.SKYs[2] * sk);
-        o0 += TAlb[a] * oc * (C.SUNo[0] * co + C.SKYo[0] * sk); o1 += TAlb[a + 1] * oc * (C.SUNo[1] * co + C.SKYo[1] * sk); o2 += TAlb[a + 2] * oc * (C.SUNo[2] * co + C.SKYo[2] * sk);
-        continue;
-      }
-      if (dx * fx + dy * fy + dz * fz > 0) { if (TK[t] === 0) back++; continue; }
-      if (TK[t] === 0) {
-        const b = t * 6, w1 = R.u, w2 = R.v;
-        let tx = Math.floor(TU[b] + w1 * (TU[b + 2] - TU[b]) + w2 * (TU[b + 4] - TU[b])), ty = Math.floor(TU[b + 1] + w1 * (TU[b + 3] - TU[b + 1]) + w2 * (TU[b + 5] - TU[b + 1]));
-        if (tx < 0) tx = 0; if (tx >= W) tx = W - 1; if (ty < 0) ty = 0; if (ty >= H) ty = H - 1;
-        const q = (ty * W + tx) * 3;
-        s0 += BS[q]; s1 += BS[q + 1]; s2 += BS[q + 2]; o0 += BO[q]; o1 += BO[q + 1]; o2 += BO[q + 2];
-      } else {   // far field / treeline proxies: open and sunlit, estimated
-        const a = TK[t] === 1 ? C.aFar : C.aLeaf, occ = TK[t] === 1 ? 1 : 0.6;
-        const cs = Math.max(0, fx * C.Ls[0] + fy * C.Ls[1] + fz * C.Ls[2]), co = Math.max(0, fx * C.Lo[0] + fy * C.Lo[1] + fz * C.Lo[2]), sk = 0.5 + 0.5 * fy;
-        s0 += a[0] * occ * (C.SUNs[0] * cs + C.SKYs[0] * sk); s1 += a[1] * occ * (C.SUNs[1] * cs + C.SKYs[1] * sk); s2 += a[2] * occ * (C.SUNs[2] * cs + C.SKYs[2] * sk);
-        o0 += a[0] * occ * (C.SUNo[0] * co + C.SKYo[0] * sk); o1 += a[1] * occ * (C.SUNo[1] * co + C.SKYo[1] * sk); o2 += a[2] * occ * (C.SUNo[2] * co + C.SKYo[2] * sk);
-      }
+      hs = h; const code = shade(ox, oy, oz, dx, dy, dz); h = hs;
+      if (code === 0 || RT > maxD) open++;
+      if (code === 3) back++;
+      if (code > 1) continue;
+      if (P && firstPortal(P, ox, oy, oz, dx, dy, dz) >= 0) continue;   // that direction is its portal's estimate
+      s0 += RS[0]; s1 += RS[1]; s2 += RS[2]; o0 += RS[3]; o1 += RS[4]; o2 += RS[5];
     }
     const iv = 1 / rays;
-    OS[i * 3] = s0 * iv; OS[i * 3 + 1] = s1 * iv; OS[i * 3 + 2] = s2 * iv; OO[i * 3] = o0 * iv; OO[i * 3 + 1] = o1 * iv; OO[i * 3 + 2] = o2 * iv;
+    s0 *= iv; s1 *= iv; s2 *= iv; o0 *= iv; o1 *= iv; o2 *= iv;
+    if (P) {
+      const pr = C.portalRays, pu = Math.max(1, Math.floor(Math.sqrt(pr))), pv = Math.ceil(pr / pu), pn = pu * pv;
+      for (let j = 0; j < P.length; j++) {
+        const q = P[j];
+        for (let k = 0; k < pn; k++) {
+          h = hash32(h + 0x9e3779b9); const a1 = ((k % pu) + h / 4294967296) / pu; h = hash32(h + 0x9e3779b9); const a2 = (((k / pu) | 0) + h / 4294967296) / pv;
+          let qx, qy, qz;
+          if (q.kind === 'disc') { const rr = q.r * Math.sqrt(a1), ph = 2 * PI * a2, cu = rr * Math.cos(ph), cv = rr * Math.sin(ph); qx = q.c[0] + q.e1[0] * cu + q.e2[0] * cv; qy = q.c[1] + q.e1[1] * cu + q.e2[1] * cv; qz = q.c[2] + q.e1[2] * cu + q.e2[2] * cv; }
+          else { const cu = 2 * a1 - 1, cv = 2 * a2 - 1; qx = q.c[0] + q.ex[0] * cu + q.ey[0] * cv; qy = q.c[1] + q.ex[1] * cu + q.ey[1] * cv; qz = q.c[2] + q.ex[2] * cu + q.ey[2] * cv; }
+          let dx = qx - ox, dy = qy - oy, dz = qz - oz; const d2 = dx * dx + dy * dy + dz * dz, d = Math.sqrt(d2); if (d < 1e-4) continue;
+          dx /= d; dy /= d; dz /= d;
+          const cs = dx * nx + dy * ny + dz * nz; if (cs <= 0 || dx * gx + dy * gy + dz * gz < 1e-3) continue;
+          const cp = Math.abs(dx * q.n[0] + dy * q.n[1] + dz * q.n[2]); if (cp < 1e-6) continue;
+          if (firstPortal(P, ox, oy, oz, dx, dy, dz) !== j) continue;   // another aperture owns this direction
+          hs = h; const code = shade(ox, oy, oz, dx, dy, dz); h = hs;
+          if (code > 1) continue;
+          const w = cs * cp * q.area / (PI * d2 * pn);
+          s0 += RS[0] * w; s1 += RS[1] * w; s2 += RS[2] * w; o0 += RS[3] * w; o1 += RS[4] * w; o2 += RS[5] * w;
+        }
+      }
+    }
+    OS[i * 3] = s0; OS[i * 3 + 1] = s1; OS[i * 3 + 2] = s2; OO[i * 3] = o0; OO[i * 3 + 1] = o1; OO[i * 3 + 2] = o2;
     OA[i] = open * iv; OB[i] = back * iv;
-    return rays;
+    return rays + (P ? P.length * C.portalRays : 0);
   }
   return { sun, gather, tracer: tr, envIdx };
 }
@@ -288,7 +354,7 @@ async function main() {
     }
     const Ei = Math.max(...E), skyLum = 0.2126 * skyE[0] + 0.7152 * skyE[1] + 0.0722 * skyE[2];
     const sunColor = Ei > 1e-2 ? E.map((v) => v / Ei) : [1, 1, 1], sunI = Math.min(16, Math.max(Ei > 1e-2 ? Ei : 0, (def.sunRatio || 0) * skyLum * envI));
-    const gA = IN.ground, gR = [0, 1, 2].map((c) => (gA[c] * (sunI * Math.max(0, L.y) * sunColor[c] + skyE[c] * envI)) / PI);   // ground radiance
+    const gA = IN.groundBounce || IN.ground, gR = [0, 1, 2].map((c) => (gA[c] * (sunI * Math.max(0, L.y) * sunColor[c] + skyE[c] * envI)) / PI);   // ground radiance
     // pi * radiance table, 256 x 128, box-filtered; below the horizon -> the lit ground (as the PMREM source)
     const EW = 256, EH = 128, tab = new Float32Array(EW * EH * 3), fx = Wh / EW, fy = Hh / EH;
     for (let ty = 0; ty < EH; ty++) for (let tx = 0; tx < EW; tx++) {
@@ -388,9 +454,12 @@ async function main() {
     W, H, EW: SKY.sunny.EW, EH: SKY.sunny.EH, texel: lay.texel, eps: 0.004,
     Ls: SKY.sunny.sunDir, Lo: SKY.overcast.sunDir, oShadow: SKY.overcast.shadows,
     crs: Math.cos(SKY.sunny.rotY), srs: Math.sin(SKY.sunny.rotY), cro: Math.cos(SKY.overcast.rotY), sro: Math.sin(SKY.overcast.rotY),
-    SUNs: SKY.sunny.SUN, SUNo: SKY.overcast.SUN, SKYs: SKY.sunny.skyB, SKYo: SKY.overcast.skyB, aFar: IN.ground, aLeaf: IN.leaf,
+    SUNs: SKY.sunny.SUN, SUNo: SKY.overcast.SUN, SKYs: SKY.sunny.skyB, SKYo: SKY.overcast.skyB, aFar: IN.groundBounce || IN.ground, aLeaf: IN.leaf,
     hasVeg: vegTris > 0,
+    // [L5] portals (lmBakeInputs.portals): importance-sampled apertures for the texels each one selects
+    portals: (IN.portals || []).map((q) => portalOf(q)), portalRays: quick ? 48 : 192,
   };
+  if (C.portals.length) { let n = 0; for (let i = 0; i < smp.NS; i++) if (portalSel(C.portals, smp.SP, i)) n++; log(`portals: ${C.portals.length} (${C.portals.map((q) => q.kind).join(', ')}), ${n} texels sample them (${C.portalRays} rays each)`); }
 
   if (verifyOnly) { await verify({ THREE, wb, geo, lay, S, C, SKY, smp, OUT, log, W, H }); return; }
   if (has('--bench')) {   // single-thread kernel throughput in rays per cpu-second (load-independent), every 97th texel
@@ -631,7 +700,8 @@ function makeSamples(lay, geo, IN, W, H, SAB) {
       let nl = Math.hypot(nX, nY, nZ); if (nl < 1e-6) { nX = fx; nY = fy; nZ = fz; nl = 1; } nX /= nl; nY /= nl; nZ /= nl;
       if (fx * nX + fy * nY + fz * nZ < 0) { fx = -fx; fy = -fy; fz = -fz; }
       SN[s * 3] = nX; SN[s * 3 + 1] = nY; SN[s * 3 + 2] = nZ; SG[s * 3] = fx; SG[s * 3 + 1] = fy; SG[s * 3 + 2] = fz;
-      const alb = G.terr ? IN.terrainAlbedo(SP[s * 3], SP[s * 3 + 2]) : IN.albedo[G.key];
+      let alb = G.terr ? IN.terrainAlbedo(SP[s * 3], SP[s * 3 + 2]) : IN.albedo[G.key];
+      if (G.terr && alb === IN.ground && IN.groundBounce) alb = IN.groundBounce;   // [L5] desaturated meadow bounce
       SALB[s * 3] = alb[0]; SALB[s * 3 + 1] = alb[1]; SALB[s * 3 + 2] = alb[2];
       SD[s] = G.terr ? 24 : 40; SCH[s] = cid;
       const px = ch.ox + 1 + (ch.rot ? j : i), py = ch.oy + 1 + (ch.rot ? i : j);
