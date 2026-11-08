@@ -98,7 +98,7 @@ try {
   const perf = await page.evaluate(() => window.__onetake.perfRun(0));
   const segOk = perf.scales.length === 2 && perf.scales.every((s) => perf.segments.every((n) => Number.isFinite(s.seg[n]?.p90) && Number.isFinite(s.seg[n]?.gpuP50)));
   ok(segOk && (BANDO ? perf.segments.length === 4 : perf.segments.length >= 3 && !perf.segments.includes('hover')), `?perf segments ${perf.segments.join(', ')} at ${perf.scales.map((s) => s.scale).join(' / ')} (${sec()}); ` +
-    (BANDO ? `hover ${JSON.stringify(perf.hover)}` : `world.update p50 ${perf.scales[0].segments ?? perf.segments.map((n) => `${n} ${perf.scales[0].seg[n]?.updP50?.toFixed(1)}`).join(', ')} ms`));
+    (BANDO ? `hover ${JSON.stringify(perf.hover)}` : `world.update p50 ${perf.segments.map((n) => `${n} ${perf.scales[0].seg[n]?.updP50?.toFixed(1)}`).join(', ')} ms`));
   writeFileSync(join(OUT, 'perf.json'), JSON.stringify(perf, null, 1));
 
   // ---- 3. coverage

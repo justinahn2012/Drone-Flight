@@ -304,7 +304,8 @@ tools/export-world.mjs makes the same calls `buildSeoul` makes (layout.json, lin
   diffuse Basis ETC1S (sRGB), normal maps UASTC + zstd (linear), mipmapped, **rows pre-flipped** so sampling at uv with no
   flip equals three's TextureLoader (flipY) on the JPG; transcode to ASTC 4x4 on device. 8.5 MB for 18 maps (the JPGs were
   10.5 MB, fetched at runtime); GPU ~1.4 MB per map instead of 5.6. Re-encode after C adds a map:
-  `KTX2_NODE_MODULES=... node tools/export-seoul-data.mjs --vendor-textures` (`--textures` in CI fails until it is done).
+  `KTX2_NODE_MODULES=... node tools/export-seoul-data.mjs --vendor-textures` (until then a `notes` entry and the JPG URL;
+  a vendored file whose sha256 differs from textures.json is a warning, so `--strict` fails).
   Browser side (C / D): `KTX2Loader` (three/addons, transcoder from the same CDN path as three) with
   `setTranscoderPath(.../examples/jsm/libs/basis/)` and `detectSupport(renderer)`, `seoul/tex/<id>_<map>.ktx2`, the JPG
   URL as the fallback.

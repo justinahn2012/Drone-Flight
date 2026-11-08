@@ -4,7 +4,7 @@
 //   walk    the WALKING STREET line at 6 m/s, at gate height, along the street's centreline (layout L1), not the chord
 //   canyon  SCREEN CANYON at 8 m/s (the LED screens, the most dynamic emitters)
 //   club    CLUB STREET at 6 m/s (signs, crowds, cables)
-//   high    60 m over the block centre at 10 m/s, looking 25 deg down (the whole city in frame, far LODs)
+//   high    60 m (or 15 m over the tallest roof) over the block centre at 10 m/s, looking 25 deg down (far LODs)
 // A segment ping-pongs along its path (pose(o, t) at any t), like perf.js's own. Missing line -> that segment is left out.
 const DEG = Math.PI / 180;
 const yawTo = (dx, dz) => Math.atan2(-dx, -dz);
@@ -57,7 +57,9 @@ export async function levelSegments(o) {
   for (const sg of cfg.segments) {
     if (sg.high) {
       const b = o.world.bounds, cx = b ? (b.min.x + b.max.x) / 2 : 0, cz = b ? (b.min.z + b.max.z) / 2 : 0, half = b ? Math.min(150, (b.max.x - b.min.x) / 3) : 100;
-      out[sg.name] = pathSegment([[cx - half, sg.high, cz], [cx + half, sg.high, cz]], sg.v, sg.pitch);
+      // 60 m, or 15 m over the tallest roof (a few Hongdae towers pass 60 m; the path must stay in open air)
+      const top = Math.max(0, ...(layout?.lots || []).map((l) => (l.floors || 0) * (l.floorH || 3.2) + 4)), y = Math.max(sg.high, top + 15);
+      out[sg.name] = pathSegment([[cx - half, y, cz], [cx + half, y, cz]], sg.v, sg.pitch);
       continue;
     }
     const l = lines.find((x) => x.name === sg.line && x.pre?.length) || lines.find((x) => x.name === sg.line);

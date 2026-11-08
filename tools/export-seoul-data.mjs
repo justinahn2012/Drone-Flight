@@ -60,8 +60,9 @@ export function textureManifest(root, MATS) {
     if (sha256(b) !== e.sha256) problems.push(`${TEX_DIR}/${f}: sha256 differs from textures.json (re-run --vendor-textures)`);
     files[f] = b;
   }
-  for (const [f, n] of need) if (!manifest.files?.[f]) problems.push(`${f} (${n.mats.join(', ')}) not vendored: run --vendor-textures`);
-  return { manifest, files, problems, need };
+  const missing = [];   // a map SEOUL_MATS gained since the last vendoring: the game still has its JPG URL, so a note
+  for (const [f, n] of need) if (!manifest.files?.[f]) missing.push(`${f} (${n.mats.join(', ')}) not vendored yet: KTX2_NODE_MODULES=... node tools/export-seoul-data.mjs --vendor-textures`);
+  return { manifest, files, problems, missing, need };
 }
 
 async function loadEncoder() {
@@ -441,6 +442,7 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
   // ---- textures (native #4)
   const tm = textureManifest(root, ws.SEOUL_MATS);
   for (const p of tm.problems) warn(`textures: ${p}`);
+  for (const p of tm.missing || []) note(`textures: ${p}`);
   const textures = { dir: 'tex/', manifest: tm.manifest ? 'tex/textures.json' : null, files: {} };
   for (const [f, b] of Object.entries(tm.files)) { files['tex/' + f] = b; const e = tm.manifest.files[f]; textures.files[f] = { id: e.id, map: e.map, mats: e.mats, size: e.size, codec: e.codec, colorSpace: e.colorSpace, mips: e.mips }; }
   if (tm.manifest) { files['tex/textures.json'] = readFileSync(join(root, TEX_DIR, 'textures.json')); textures.orientation = tm.manifest.orientation; textures.transcode = tm.manifest.transcode; textures.license = tm.manifest.license; }
@@ -464,7 +466,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   else if (a.includes('--textures')) done((async () => {
     const { SEOUL_MATS } = await import(pathToFileURL(join(ROOT, 'world-seoul.js')).href);
     const t = textureManifest(ROOT, SEOUL_MATS);
-    console.log(t.problems.length ? t.problems.map((p) => 'FAIL ' + p).join('\n') : `ok   ${Object.keys(t.files).length} KTX2 maps match textures.json and cover SEOUL_MATS (${(Object.values(t.files).reduce((s, b) => s + b.length, 0) / 1e6).toFixed(2)} MB)`);
+    for (const m of t.missing || []) console.log('note ' + m);
+    console.log(t.problems.length ? t.problems.map((p) => 'FAIL ' + p).join('\n') : `ok   ${Object.keys(t.files).length} KTX2 maps match textures.json${t.missing?.length ? '' : ' and cover SEOUL_MATS'} (${(Object.values(t.files).reduce((s, b) => s + b.length, 0) / 1e6).toFixed(2)} MB)`);
     return { ok: !t.problems.length };
   })());
   else done((async () => {   // data only = exportLevel's data files (same code path), written to --out
