@@ -437,7 +437,8 @@ const NIGHT_FINAL_BODY = /* glsl */`
     // 1) split-tone: upper shadows toward cyan (205 deg), the deepest toward blue-violet (255 deg); +0.06 chroma at uRetro 1
     float ws = 1.0 - smoothstep(0.35 * Lt, 0.8 * Lt, lab.x);
     float hS = mix(4.45, 3.58, smoothstep(0.0, 0.6 * Lt, lab.x));
-    lab.yz += vec2(cos(hS), sin(hS)) * (0.06 * uRetro * ws * (0.35 + 0.65 * smoothstep(0.0, 0.3 * Lt, lab.x)));
+    lab.yz += vec2(cos(hS), sin(hS)) * (0.06 * uRetro * ws * (0.2 + 0.8 * smoothstep(0.0, 0.3 * Lt, lab.x)));
+    lab.x -= 0.25 * 0.06 * uRetro * ws * smoothstep(0.0, 0.3 * Lt, lab.x);        // hold the shadows' luma: the tint, not a lift
     // 2) magenta roll-off: +1..+3 EV over the target shoulders into white through pink-magenta (330 deg); clipped cores stay white
     float evo = log2(max(dot(e, LUMA), 1e-6) / 0.24);
     float wc = 1.0 - smoothstep(0.92, 1.0, min(t.r, min(t.g, t.b)));
@@ -495,7 +496,7 @@ void main(){
   for (int y = 0; y < 12; y++) for (int x = 0; x < 16; x++) {
     vec2 uv = (vec2(float(x), float(y)) + 0.5) / vec2(16.0, 12.0);
     float L = max(texture(tSmall, uv).a, 0.0);
-    aAll += L;
+    aAll += min(L, 4.0 * uClipL * exp2(-prevEv));   // veil: the glare of what the lens passes (a blown face caps, not its nits)
     L = min(L, uClipL * exp2(-prevEv));            // the sensor saturates: a blown face reads as clip, not as its nits
     Ls[y * 16 + x] = L;
     hist[int(clamp(floor(log2(L + 1e-7) + 18.0), 0.0, 23.0))] += 1.0;
@@ -735,7 +736,7 @@ export const GRADES = {
   //   noise: [shot sigma at mid-grey, read sigma, chroma share] in linear at full analog gain; noiseRGB: chroma noise per channel; noiseSpan: analog gain stops
   //   (base ISO ends at evMax - noiseSpan); ae: [tau darken s, tau brighten s, zeta, deadband EV]; aeReject: brightest tap share
   //   the meter ignores; evMin..evMax: 6 stops.
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.94, 1.0, 1.08], wbShade: null, evBias: -1.5, lift: 0, clipEv: 2.2, con: 1.2, toe: 0.05,
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.94, 1.0, 1.08], wbShade: null, evBias: -2.0, lift: 0, clipEv: 2.2, con: 1.2, toe: 0.08,
     veil: 0.03, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0, bloom: 0.025, bloomCap: 24, bloomKnee: 0.5, halo: 0.035, haloR: 1, haloTint: [1.0, 0.62, 0.45],
     core: 1, grain: 0, grainEv: [0, 0], grainPx: 2, noise: [0.010, 0.0011, 1.6], noiseRGB: [1.1, 0.8, 1.5], noiseSpan: 6, meterLens: 1, sharpen: 0.22, sharpPx: 2,
     recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,

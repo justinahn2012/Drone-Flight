@@ -213,6 +213,9 @@ export function attach(world, emitters = [], ctx = {}) {
     tex.needsUpdate = true;
     return { cells: best.filter(Boolean).length, mean: used / Math.max(1, best.filter(Boolean).length), full };
   }
+  // S1's base hemisphere light (a stand-in for the city spill) gives way to the grid: keep ~1.5 lux of sky glow
+  const base = scene.userData.seoul?.baseLight;
+  if (base?.isLight && ctx.keepBaseLight !== true) base.intensity *= ctx.baseLightScale ?? 0.25;
   const t0 = (globalThis.performance || Date).now();
   const binStats = bin(stat, meta, tG, K4);
   const binMs = (globalThis.performance || Date).now() - t0;
@@ -267,7 +270,7 @@ export function attach(world, emitters = [], ctx = {}) {
   scene.traverse((o) => {
     if (!o.isMesh) return;
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
-      const wet = !!(m?.userData?.wet || o.userData.ground);
+      const wet = !!(m?.userData?.wet || o.userData.ground || (ctx.wetNames ?? /road|asphalt|ground|street|lane/i).test(o.name || ''));
       if (wet && m) m.userData.wet = m.userData.wet ?? 1;
       if (patchMaterial(m, { wet })) { nMat++; if (wet) nWet++; }
     }
