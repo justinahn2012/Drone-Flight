@@ -772,7 +772,7 @@ function graffitiAtlas(R) {
         arrow(l.x, l.y - sz * 0.1, dir, sz * (0.55 + R() * 0.4), 10 + R() * 8, R() < 0.6 ? c1 : c2);
       }
       const dk = R() < 0.5 ? '#141418' : c3;
-      each(L, (ch) => { g.fillStyle = dk; g.strokeStyle = dk; g.lineWidth = 22; for (let d = 12; d > 0; d -= 3) { g.strokeText(ch, d, d); g.fillText(ch, d, d); } });
+      each(L, (ch) => { g.fillStyle = dk; g.strokeStyle = dk; g.lineWidth = 22; for (let d = 12; d > 0; d -= 4) { g.strokeText(ch, d, d); g.fillText(ch, d, d); } });
       const ow = 7 + 2 * (6 + R() * 4);                                      // outline: 6-10 px outside the fill's 7 px stroke
       each(L, (ch) => { g.lineWidth = ow; g.strokeStyle = INK; g.strokeText(ch, 0, 0); });
       each(L, (ch) => {
@@ -989,7 +989,7 @@ const WP_FRAG = {
     // (from ~140-175 m out), so the gaps between the crown cards show woodland floor, not a yellow plain
     float big = vn(xz * 0.0045 + 11.0) * 0.7 + vn(xz * 0.017) * 0.3, rr = length(xz - vec2(-5.0, 10.0));
     base *= mix(vec3(1.05, 0.98, 0.86), vec3(0.8, 0.96, 0.72), smoothstep(0.35, 0.7, big));
-    float wood = smoothstep(0.38, 0.5, vn(xz * 0.0065 + 3.7) * 0.75 + vn(xz * 0.04) * 0.25) * smoothstep(140.0, 175.0, rr);
+    float wood = smoothstep(0.3, 0.42, vn(xz * 0.0065 + 3.7) * 0.75 + vn(xz * 0.04) * 0.25) * smoothstep(140.0, 175.0, rr);
     base = mix(base, vec3(0.05, 0.07, 0.031) * (0.62 + 0.38 * vn(xz * 0.13) + 0.3 * vn(xz * 0.5)), wood);
     float ap = smoothstep(0.42, 0.58, mk.g + (vn(xz * 0.9) - 0.5) * 0.34 + (vn(xz * 3.7) - 0.5) * 0.12);
     // asphalt: each ~5 m cell (wavy borders) turned by a random quarter turn and offset, so its one long crack never
@@ -1885,7 +1885,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
     // H: a hit point on a wall, hn: its normal. Fit the piece into the free span around H (bands under ribbon
     // windows get wide, low pieces up to 3.2:1), then try smaller; tag-sized pieces go on narrow piers.
     const covered = (H, n) => { U.crossVectors(UP, n).normalize(); for (const p of placed) { const dv = H.clone().sub(p.c); if (p.n.dot(n) > 0.7 && Math.abs(dv.dot(n)) < 0.5 && Math.abs(dv.dot(U)) < p.w * 0.5 + 0.3 && Math.abs(dv.y) < p.h * 0.5 + 0.2) return true; } return false; };
-    const place = (H, hn, wMin, wMax) => {
+    const place = (H, hn, wMin, wMax, minW = 0.6) => {
       const n = hn.clone().setY(0); if (n.lengthSq() < 0.5) return false; n.normalize();
       if (covered(H, n)) return false;
       U.crossVectors(UP, n).normalize();
@@ -1893,9 +1893,9 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
       const su = span(C0, n, Ua, 4.2), C = C0.clone().addScaledVector(Ua, (su[0] + su[1]) / 2);
       const spanV = sv[1] - sv[0] - 0.12, spanU = su[1] - su[0] - 0.15;
       let w = Math.min(wMin + GR() * (wMax - wMin), spanU);
-      for (let t = 0; t < 3 && w >= 0.6; t++, w *= 0.75) {
-        const h = Math.min(w * 0.5, spanV); if (h < w * 0.31) w = h / 0.31;
-        if (w < 0.6 || h < 0.3) return false;
+      for (let t = 0; t < 3 && w >= minW; t++, w *= 0.8) {
+        const h = Math.min(w * (0.5 + 0.1 * GR()), spanV); if (h < w * 0.31) w = h / 0.31;
+        if (w < minW || h < 0.3) return false;
         const kind = w < 1.7 ? 'tags' : kindPref();
         if (tryPiece(C, n, w, h, kind)) return true;
       }
@@ -1911,11 +1911,11 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
       const w = Math.min(spanU, 0.4 + GR() * 0.6), h = w * (0.45 + GR() * 0.25);
       return tryPiece(H.clone().addScaledVector(Ua, (su[0] + su[1]) / 2), n, w, h, 'tags');
     };
-    const shoot = (o, d, maxD, minD, wMin, wMax, tag = false) => {
+    const shoot = (o, d, maxD, minD, wMin, wMax, tag = false, minW = Math.min(1.7, wMin * 0.5)) => {
       const hit = cast(o, d, maxD); if (!hit || hit.distance < minD) return false;
       const hn = hit.face.normal.clone(); if (hn.dot(d) > 0) hn.negate(); if (Math.abs(hn.y) > 0.3) return false;
       if (tag === true) return placeTag(hit.point, hn);
-      return place(hit.point, hn, wMin, wMax) || (tag === 'both' && GR() < 0.3 && placeTag(hit.point, hn));
+      return place(hit.point, hn, wMin, wMax, minW) || (tag === 'both' && GR() < 0.3 && placeTag(hit.point, hn));
     };
     const hdir = () => { const a = GR() * 6.283; return new THREE.Vector3(Math.cos(a), 0, Math.sin(a)); };
     const zone = (quota, tries, gen) => { let n = 0; for (let t = 0; t < tries && n < quota; t++) if (gen()) n++; return n; };
@@ -1930,13 +1930,13 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
       return shoot(new THREE.Vector3(x, terrainHeight(x, z) + yLo + GR() * (yHi - yLo), z), d, off + 12, 0.5, wMin, wMax);
     };
     counts.outside = zone(105, 1500, ring(0.6, 3.2, 3.5, 8));
-    counts.upper = zone(28, 450, ring(6.2, 11, 3, 6));
+    counts.upper = zone(45, 700, ring(6.2, 11, 3, 6.5));
     const inBox = (x0, x1, z0, z1, ys, minD, wMin = 2.2, wMax = 5.5, tag = false, dir = hdir) => () => shoot(new THREE.Vector3(x0 + GR() * (x1 - x0), ys(), z0 + GR() * (z1 - z0)), dir(), 25, minD, wMin, wMax, tag);
     const hall = site.footprints.find((f) => f.x1 - f.x0 > 50) || bigF[0];
     const hx0 = hall.x0 + 2, hx1 = hall.x1 - 2, hz0 = hall.z0 + 2, hz1 = hall.z1 - 2;
     // half the rays run along the hall (onto the partitions and gables), half anywhere (spandrels, bricked-up bays)
     const hallDir = () => { if (GR() < 0.5) return hdir(); const a = (GR() < 0.5 ? 0 : Math.PI) + (GR() - 0.5) * 0.6; return new THREE.Vector3(Math.cos(a), 0, Math.sin(a)); };
-    counts.hall = zone(70, 700, inBox(hx0, hx1, hz0, hz1, () => 0.18 + 0.3 + GR() * 3.6, 1.0, 2, 6, 'both', hallDir));    // ground storey, densest
+    counts.hall = zone(80, 900, inBox(hx0, hx1, hz0, hz1, () => 0.18 + 0.3 + GR() * 3.6, 1.0, 2.4, 7, 'both', hallDir));    // ground storey, densest
     counts.hallUp = zone(24, 260, inBox(hx0, hx1, hz0, hz1, () => (GR() < 0.6 ? 5 : 10) + 0.3 + GR() * 3.6, 1.0, 2, 5, 'both', hallDir));
     counts.hallCols = zone(24, 300, inBox(hx0, hx1, hz0, hz1, () => 0.18 + 0.8 + GR() * 1.4, 0.4, 0, 0, true));        // column tags
     counts.table = zone(14, 200, inBox(-53, -15, -27, -1, () => 1.3 + GR() * 1.8, 1.0, 2.2, 5, 'both'));
