@@ -61,29 +61,40 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .ic .kw{stroke:#fff;stroke-width:1.6}
 .ic .f{fill:#fff;stroke:none}
 .ic .fk{fill:#fff;stroke:#000;stroke-width:1.4;paint-order:stroke}
-#score{font:700 30px/1 var(--cond);letter-spacing:.02em;font-feature-settings:"tnum"}
-#best{font-size:calc(var(--cell)*.78);opacity:.9}
+/* the score in the OSD's own mono face (UI #4, UX #5): ~26 px at the phone's cell; BEST lives on the cards only */
+#score{font:600 calc(var(--cell)*1.45)/1 var(--mono);letter-spacing:0}
 #takeTag{display:none;align-items:center;gap:6px}
 #takeTag b{width:9px;height:9px;border-radius:50%;background:#fff;box-shadow:0 0 0 1px #000}
 #takeTag.live b{background:var(--rec);animation:blink 1s steps(2) infinite}
 #takeTag.on{display:flex}
-/* CUT countdown: the dot becomes a ring that drains to the CUT (C: take.cutIn) */
-#takeTag .ring{display:none;width:1.1em;height:1.1em;transform:rotate(-90deg);overflow:visible}
-#takeTag .ring circle{fill:none}
-#takeTag .ring .kb{stroke:#000;stroke-width:5}
-#takeTag .ring .tk{stroke:rgba(255,255,255,.28);stroke-width:2.6}
-#takeTag .ring .kw{stroke:#fff;stroke-width:2.6;stroke-dasharray:47.12;stroke-dashoffset:0}
-#takeTag.cut b{display:none}
-#takeTag.cut .ring{display:block}
-/* the countdown also shows over Clean and portrait (no silent CUT) */
+/* ready at the retry start (UX #3): how to begin, on a second line under the tag (clear of LQ on the top row) */
+#takeHint{display:none;position:absolute;left:0;top:calc(100% + 5px);font-size:calc(var(--cell)*.86)}
+#takeTag.hint #takeHint{display:block}
+/* CUT countdown (design #3, decision 9): a 64 px ring at the centre of the view, draining to the CUT (C: take.cutIn /
+   cutFrac / cutKind). The white arc carries its own keyline; the drained part is a dark track that still reads over sky. */
+#osd .cc{left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;display:none}
+body.cutting #osd .cc{display:block}
+#cutC svg{position:absolute;inset:0;width:64px;height:64px;transform:rotate(-90deg);overflow:visible}
+#cutC circle{fill:none;stroke-linecap:round;stroke-dasharray:175.93;stroke-dashoffset:0}
+#cutC .tk{stroke:rgba(0,0,0,.45);stroke-width:3.4;stroke-dasharray:none}
+#cutC .kb{stroke:#000;stroke-width:6}
+#cutC .kw{stroke:#fff;stroke-width:3.4}
+#cutN{position:absolute;inset:0;display:grid;place-items:center;font-size:calc(var(--cell)*1.45);line-height:1}
+#cutL{position:absolute;left:50%;top:100%;margin-top:7px;transform:translateX(-50%);font-size:calc(var(--cell)*.78);letter-spacing:.08em}
+/* the countdown also shows over Clean and portrait (no silent CUT): the ring alone */
 body.nohud.cutting #osd,body.portrait.cutting #osd{display:block}
-body.nohud.cutting #osd .o:not(.tl),body.portrait.cutting #osd .o:not(.tl){display:none}
+body.nohud.cutting #osd .o:not(.cc),body.portrait.cutting #osd .o:not(.cc){display:none}
 /* next line: home-arrow to the nearest unflown line (until 3 lines have ever been flown) */
 #osd .tn{left:50%;top:calc(14px + var(--st) + var(--cell)*1.3);transform:translateX(-50%);font-size:calc(var(--cell)*.86)}
 #oNext{display:none;align-items:center;gap:.35em}
 #oNext.on{display:flex}
-#oNextA{width:1.2em;height:1.2em;margin:0;overflow:visible;transition:transform .12s}
+#oNextA,#oNextV{width:1.2em;height:1.2em;margin:0;overflow:visible;transition:transform .12s}
 #oNext .d{opacity:.9}
+/* target under / over you (< 3 m across): a drop glyph (▼ onto a line, ▲ under a ceiling) instead of the arrow, which
+   would spin on the axis and, pointing down, would read as "behind you" */
+#oNextV{display:none}
+#oNext.v #oNextA{display:none}
+#oNext.v #oNextV{display:block}
 /* near a line (< 25 m, in view): a chevron over its first gate, projected through the lens. OSD only, never in clips */
 #oChev{left:0;top:0;display:none;flex-direction:column;align-items:center;gap:1px;will-change:transform;font-size:calc(var(--cell)*.78)}
 #oChev.on{display:flex}
@@ -96,7 +107,7 @@ body.nohud.cutting #osd .o:not(.tl),body.portrait.cutting #osd .o:not(.tl){displ
 #oThr u{position:absolute;left:-6px;right:-6px;height:2px;background:var(--acc);box-shadow:0 0 0 1px #000}
 body.thr #oThr{display:block}
 /* overlay levels: OSD (all) | Minimal (score + captions) | Clean (captions only) */
-body.hud-min #osd .o:not(.tr):not(.tl){display:none}
+body.hud-min #osd .o:not(.tr):not(.tl):not(.cc){display:none}
 body.nohud #osd, body.nohud #live{display:none}
 body.portrait #osd{display:none}
 
@@ -109,6 +120,12 @@ body.portrait #osd{display:none}
 #live i.low{background:var(--acc)}
 #live i.hold{background:#fff;box-shadow:0 0 0 1px #000,0 0 6px 1px rgba(255,255,255,.75)}
 #live em,#pop em{font-style:normal;color:var(--acc)}
+/* ×N is its own persistent node (UI #2): it pops when FLOW goes up instead of restarting with every 0.1 s refresh */
+#live em{display:inline-block}
+#liveX{margin-left:.6em}
+#liveX:empty{display:none}
+#live em.up{animation:up .45s cubic-bezier(.2,.8,.2,1)}
+@keyframes up{0%{transform:scale(1.7)}}
 /* line captions: Shorts style, lower third */
 #pop{position:absolute;left:50%;bottom:calc(var(--sb) + 10px + var(--cell)*2.15 + 30px);transform:translateX(-50%);text-align:center;opacity:0;width:max-content;max-width:94%}
 body.portrait #live{bottom:14px}
@@ -123,19 +140,20 @@ body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 /* warnings: Betaflight-style blinking centre text */
 #warn{position:absolute;left:50%;top:30%;transform:translateX(-50%);font:600 16px var(--mono);letter-spacing:.1em;color:#fff;text-shadow:var(--key);opacity:0;white-space:nowrap}
 #warn.show{opacity:1;animation:blink .5s steps(2) infinite}
-/* info toasts */
-#toast{position:absolute;left:50%;top:calc(17% + var(--st));transform:translate(-50%,-6px);padding:9px 14px;border-radius:8px;background:rgba(0,0,0,.6);
+/* info toasts: keyline OSD text, no box (UI #1) */
+#toast{position:absolute;left:50%;top:calc(17% + var(--st));transform:translate(-50%,-6px);padding:0 12px;background:none;text-shadow:var(--key);
   font:600 13px/1.4 var(--mono);letter-spacing:.06em;color:#fff;opacity:0;transition:opacity .2s,transform .2s;max-width:86%;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 @keyframes blink{50%{opacity:.15}}
 
-#btnMenu,#btnReset,#btnClip{position:absolute;top:calc(8px + var(--st));width:44px;height:44px;border-radius:11px;background:rgba(0,0,0,.32);
-  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:grid;place-items:center;pointer-events:auto;opacity:.8}
+/* no plates on the live view (UI #1): keylined OSD glyphs (white 2.2 px, keyline 1.4 px at 22 px), a dark press state */
+#btnMenu,#btnReset,#btnClip{position:absolute;top:calc(8px + var(--st));width:44px;height:44px;border-radius:11px;display:grid;place-items:center;pointer-events:auto}
+#btnMenu,#btnReset,#btnClip{background:none;-webkit-backdrop-filter:none;backdrop-filter:none;opacity:1}
+#btnMenu:active,#btnReset:active,#btnClip:active{background:rgba(0,0,0,.35)}
 #btnMenu{left:calc(8px + var(--sl))}
 #btnReset{left:calc(58px + var(--sl))}
 #btnClip{left:calc(108px + var(--sl))}
-#btnMenu span{display:block;width:16px;height:2px;background:#fff;box-shadow:0 5px 0 #fff,0 -5px 0 #fff}
-#btnReset svg,#btnClip svg{width:20px;height:20px}
+#btnMenu .ic,#btnReset .ic,#btnClip .ic{display:block;width:22px;height:22px;margin:0;vertical-align:0}
 body.portrait #btnReset,body.portrait #btnClip{display:none}
 body.portrait #osd .tl{left:calc(62px + var(--sl))}
 
@@ -172,6 +190,8 @@ body.coaching:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 .stats span{color:#c6c3bc;font-size:12px;letter-spacing:.08em;align-self:center}
 .stats b{font-weight:600;color:#fff;text-align:right;white-space:nowrap}
 .stats b em,.blines em{font-style:normal;color:#fff;background:var(--acc);padding:0 .3em;border-radius:3px;text-shadow:none}
+/* NEW / NEXT badges: white on #C9450C is 4.8:1 (the accent gave 3.7:1) */
+.stats b em,.blines em,.ln.next b::after{background:#C9450C}
 .blines{margin-top:8px;font:600 12px var(--mono);color:#e2dfd9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .blines em{font-size:10px;letter-spacing:.06em;vertical-align:1px}
 .bnext{margin-top:6px;font:500 14px/1.35 var(--body);color:#c6c3bc}
@@ -262,7 +282,11 @@ body.paused #linesSec{order:1}
 .a2hs{display:flex;align-items:center;gap:10px;margin-top:10px;padding:2px 2px 2px 12px;border-radius:10px;max-width:520px;
   background:rgba(17,19,22,.82);border:1px solid var(--line);font:500 15px/1.3 var(--body);color:#c6c3bc}
 .a2hs svg{flex:none;width:20px;height:20px}
-.a2hs b{font-weight:500;color:var(--ink)}
+.a2hs span{padding:7px 0}
+.a2hs b{display:block;font:600 11px/1.6 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink)}
+.a2hs small{display:block;margin-top:3px;font:500 13px/1.35 var(--body);color:#a29f99}
+/* paused: no intro text or Add-to-Home-Screen line above START AT */
+body.paused .lede,body.paused .a2hs{display:none}
 .a2hs button{flex:none;margin-left:auto;width:44px;height:44px;font:400 24px/1 var(--body);color:#8c8a86}
 #starts button{color:var(--ink)}
 #starts button.on{color:#000}
@@ -290,7 +314,7 @@ body.paused .brand .paused{display:inline}
 @media (min-width:640px){.cols{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 .world{display:block;width:100%;text-align:left;padding:14px 14px 12px;border-radius:12px;background:var(--panel);border:1px solid var(--line);transition:border-color .2s, background .2s}
 .world b{display:block;font-size:22px;font-weight:700;letter-spacing:.01em}
-.world small{display:block;margin:4px 0 10px;font-family:var(--mono);font-size:12px;color:var(--mute);line-height:1.45}
+.world small{display:block;margin:4px 0 10px;font:500 14px/1.4 var(--body);color:#a29f99}
 .world.on{border-color:#6c6a66;background:#15171a}
 .world.custom{border-style:dashed;margin-top:8px}
 #worlds{display:grid;gap:8px}
@@ -313,6 +337,7 @@ body.paused .brand .paused{display:inline}
 }
 .rows{display:grid;grid-template-columns:auto 1fr;gap:10px 16px;align-items:center}
 .rows label{font-family:var(--mono);font-size:12px;color:var(--mute);letter-spacing:.06em}
+.rows>.seg{justify-self:start}
 input[type=range]{width:min(260px,100%);accent-color:var(--ink);height:32px}
 .foot{margin-top:22px;font-family:var(--mono);font-size:11px;color:#85827c;line-height:1.6}
 .dev{display:none!important}
@@ -341,7 +366,7 @@ body.dev .dev{display:revert!important}
 .coach dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font:600 12px var(--mono);letter-spacing:.04em}
 .coach dt{color:#fff}
 .coach dd{margin:0;color:var(--mute)}
-#ldTip{margin-top:12px;font:12px/1.5 var(--mono);color:var(--mute)}
+#ldTip{margin-top:12px;font:500 15px/1.42 var(--body);color:#a29f99}
 #ldTip b{color:var(--ink);font-weight:600}
 @media (max-width:420px){.coach{flex-direction:column;align-items:flex-start}}
 #clip{position:fixed;inset:0;z-index:30;display:grid;place-items:center;background:rgba(0,0,0,.88);padding:calc(16px + var(--st)) calc(16px + var(--sr)) calc(16px + var(--sb)) calc(16px + var(--sl))}
@@ -359,6 +384,15 @@ body.dev .dev{display:revert!important}
   #clip video{height:calc(100vh - 32px - var(--st) - var(--sb));max-height:none;margin:0}
   #clip .row,#clip .cuts{justify-content:flex-start;margin-top:10px}
   #clip .meta{margin-top:10px}
+}
+/* F14 (UI #3): the cut pills stay on one row (339 px); landscape: a wider column and the actions as a 2-column grid
+   (SAVE VIDEO across the top), so neither row wraps. F24 owns the rest of the modal. */
+#clip .cuts{flex-wrap:nowrap}
+#clip .cuts .pill{padding:0 10px;letter-spacing:.04em}
+@media (orientation:landscape) and (max-height:500px){
+  #clip .box{grid-template-columns:auto minmax(0,380px)}
+  #clip .row{display:grid;grid-template-columns:1fr 1fr}
+  #clipShare{grid-column:1/-1}
 }
 </style>
 <script type="importmap">
@@ -379,10 +413,11 @@ body.dev .dev{display:revert!important}
     <canvas id="comp" class="hidden"></canvas>
     <div id="hud">
       <div id="osd">
-        <div class="o tl" id="takeTag"><b></b><svg class="ring" viewBox="0 0 20 20" aria-hidden="true"><circle class="kb" cx="10" cy="10" r="7.5"/><circle class="tk" cx="10" cy="10" r="7.5"/><circle class="kw" id="cutArc" cx="10" cy="10" r="7.5"/></svg><span id="takeTxt">READY</span></div>
+        <div class="o tl" id="takeTag"><b></b><span id="takeTxt">READY</span><span id="takeHint"></span></div>
+        <div class="o cc" id="cutC"><svg viewBox="0 0 64 64" aria-hidden="true"><circle class="tk" cx="32" cy="32" r="28"/><circle class="kb" id="cutArcK" cx="32" cy="32" r="28"/><circle class="kw" id="cutArc" cx="32" cy="32" r="28"/></svg><span id="cutN"></span><span id="cutL">CUT</span></div>
         <div class="o tc" id="oLQ"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><g class="kb"><path d="M8 7v7.6M5.2 14.6h5.6M5 3a4.4 4.4 0 0 0 0 6.2M11 3a4.4 4.4 0 0 1 0 6.2"/></g><g class="kw"><path d="M8 7v7.6M5.2 14.6h5.6M5 3a4.4 4.4 0 0 0 0 6.2M11 3a4.4 4.4 0 0 1 0 6.2"/></g><circle class="fk" cx="8" cy="6.1" r="1.5"/></svg>LQ <span id="oLQv">100</span></div>
-        <div class="o tn" id="oNext"><svg id="oNextA" class="ic" viewBox="0 0 16 16" aria-hidden="true"><path class="fk" style="stroke-width:1.6" d="M8 1.6l5.4 11.6L8 10.4l-5.4 2.8z"/></svg><span id="oNextN"></span><span class="d" id="oNextD"></span></div>
-        <div class="o tr"><div id="score">0</div><div id="best"></div></div>
+        <div class="o tn" id="oNext"><svg id="oNextA" class="ic" viewBox="0 0 16 16" aria-hidden="true"><path class="fk" style="stroke-width:1.6" d="M8 1.6l5.4 11.6L8 10.4l-5.4 2.8z"/></svg><svg id="oNextV" class="ic" viewBox="0 0 16 16" aria-hidden="true"><path class="fk" style="stroke-width:1.6" d="M2.6 2.6h10.8L8 10.6z"/><g class="kb"><path d="M2.8 14h10.4"/></g><g class="kw"><path d="M2.8 14h10.4"/></g></svg><span id="oNextN"></span><span class="d" id="oNextD"></span></div>
+        <div class="o tr"><div id="score">0</div></div>
         <div class="o rm"><svg class="ic n" viewBox="0 0 10 16" aria-hidden="true"><g class="kb"><path d="M5 12.6V3.2M1.9 6.3L5 3.2l3.1 3.1M1.2 14.8h7.6"/></g><g class="kw"><path d="M5 12.6V3.2M1.9 6.3L5 3.2l3.1 3.1M1.2 14.8h7.6"/></g></svg><span id="oAlt">0.0</span><small>M</small></div>
         <div class="o lm" id="oThr"><i></i><u></u></div>
         <div class="o bl"><div id="oMode">CINE</div><div><svg class="ic n" id="oBat" viewBox="0 0 11 16" aria-hidden="true"><g class="kb"><path d="M4 1.3h3M1.6 2.7h7.8v12.1H1.6z"/></g><g class="kw"><path d="M4 1.3h3M1.6 2.7h7.8v12.1H1.6z"/></g><rect class="f" x="3.6" y="11.6" width="3.8" height="1.3"/><rect class="f" x="3.6" y="9.85" width="3.8" height="1.3"/><rect class="f" x="3.6" y="8.1" width="3.8" height="1.3"/><rect class="f" x="3.6" y="6.35" width="3.8" height="1.3"/><rect class="f" x="3.6" y="4.6" width="3.8" height="1.3"/></svg><span id="oVolt">25.2</span><small>V</small></div></div>
@@ -391,7 +426,7 @@ body.dev .dev{display:revert!important}
         <div class="o" id="oChev"><span id="oChevD"></span><svg viewBox="0 0 26 15" aria-hidden="true"><path class="kb" d="M3 3l10 9 10-9"/><path class="kw" d="M3 3l10 9 10-9"/></svg></div>
       </div>
       <div id="ghost"><div class="gg" id="gL"><span id="gLt">CLIMB · TURN</span></div><div class="gg" id="gR"><span id="gRt">SPEED · CARVE</span></div></div>
-      <div id="live"><span id="liveT"></span><i id="drain"></i></div>
+      <div id="live"><span id="liveT"><span id="liveK">FLOW</span><em id="liveX"></em> · <span id="liveU"></span></span><i id="drain"></i></div>
       <div id="pop"><div class="cap"></div><div class="sub"></div></div>
       <div id="warn"></div>
       <div id="toast"></div>
@@ -411,9 +446,9 @@ body.dev .dev{display:revert!important}
     <div id="fade"></div>
     <div class="float" id="fL"><i></i></div>
     <div class="float" id="fR"><i></i></div>
-    <button id="btnMenu" class="ui" aria-label="Menu"><span></span></button>
-    <button id="btnReset" class="ui" aria-label="Reset (hold: back to start)"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5"/></svg></button>
-    <button id="btnClip" class="ui" aria-label="Clip"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round"><rect x="2.5" y="6.5" width="13" height="11" rx="2.2"/><path d="M15.5 10.3l5.5-3.1v9.6l-5.5-3.1z"/><circle cx="9" cy="12" r="2.3" fill="#ff3b30" stroke="none"/></svg></button>
+    <button id="btnMenu" class="ui" aria-label="Menu"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><g class="kb"><path d="M2.4 3.8h11.2M2.4 8h11.2M2.4 12.2h11.2"/></g><g class="kw"><path d="M2.4 3.8h11.2M2.4 8h11.2M2.4 12.2h11.2"/></g></svg></button>
+    <button id="btnReset" class="ui" aria-label="Reset (hold: back to start)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><g class="kb"><path d="M2.7 8a5.3 5.3 0 1 0 1.6-3.8M2.7 2.4v3.1h3.1"/></g><g class="kw"><path d="M2.7 8a5.3 5.3 0 1 0 1.6-3.8M2.7 2.4v3.1h3.1"/></g></svg></button>
+    <button id="btnClip" class="ui" aria-label="Clip"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><g class="kb"><path d="M3 4.4h6a1.4 1.4 0 0 1 1.4 1.4v4.4A1.4 1.4 0 0 1 9 11.6H3a1.4 1.4 0 0 1-1.4-1.4V5.8A1.4 1.4 0 0 1 3 4.4zM10.4 7l4-2.2v6.4l-4-2.2"/></g><g class="kw"><path d="M3 4.4h6a1.4 1.4 0 0 1 1.4 1.4v4.4A1.4 1.4 0 0 1 9 11.6H3a1.4 1.4 0 0 1-1.4-1.4V5.8A1.4 1.4 0 0 1 3 4.4zM10.4 7l4-2.2v6.4l-4-2.2"/></g></svg></button>
   </div>
   <div id="radio">
     <div class="well" id="wL"><div class="top" id="tL"></div><div class="wlabel" id="lblL">CLIMB · TURN</div></div>
@@ -434,7 +469,7 @@ body.dev .dev{display:revert!important}
     <div class="brand head"><h1>ONE TAKE</h1><span class="tag">FPV</span><span class="paused">PAUSED</span></div>
     <div class="strip head" id="mStrip"></div>
     <p class="lede head">An abandoned industrial site, wide open. Silos, a chimney you can dive, a factory hall full of holes. Seen through a real camera — shutter, lens, exposure, noise. Fly the named lines in one take.</p>
-    <div class="a2hs head hidden ui" id="a2hs"><svg viewBox="0 0 24 24" fill="none" stroke="#f2efe9" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 9.5H6.5v10h11v-10h-2M12 3.5v11M8.8 6.7L12 3.5l3.2 3.2"/></svg><span><b>Full screen:</b> Share ▸ Add to Home Screen</span><button id="a2hsX" aria-label="Dismiss">×</button></div>
+    <div class="a2hs head hidden ui" id="a2hs"><svg viewBox="0 0 24 24" fill="none" stroke="#f2efe9" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 9.5H6.5v10h11v-10h-2M12 3.5v11M8.8 6.7L12 3.5l3.2 3.2"/></svg><span><b>Full screen</b>⋯ ▸ Share ▸ Add to Home Screen<small>The Home Screen app starts fresh: iOS keeps its BEST and LINES separate from Safari's.</small></span><button id="a2hsX" aria-label="Dismiss">×</button></div>
     <div id="startSec" class="head hidden">
       <div class="sec">Start at</div>
       <div class="seg" id="starts"></div>
