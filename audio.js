@@ -112,7 +112,7 @@ export class MotorAudio {
     // ---- "GoPro" camera chain: wind-cut HPF, housing presence peak, auto-gain ride, mic overload, AGC, limiter.
     // AGC attack 20 ms and the limiter at -1.5 dB let impacts through as transients (round-2 sound #7).
     this.master = G(0);
-    const hpf = F('highpass', 110, -3), pres = F('peaking', 2800, 0.9, 4), box = F('lowshelf', 280, 0.7, -3), lpf = F('lowpass', 12500, -3);
+    const hpf = F('highpass', 110, -3), pres = F('peaking', 2800, 0.9, 4), box = F('lowshelf', 280, 0.7, 0), lpf = F('lowpass', 12500, -3);
     const shp = ctx.createWaveShaper(); const cv = new Float32Array(1024);
     for (let i = 0; i < 1024; i++) { const x = (i / 511.5 - 1) * 1.6; cv[i] = Math.tanh(x) / Math.tanh(1.6); } shp.curve = cv; shp.oversample = '2x';
     const agc = ctx.createDynamicsCompressor(); agc.threshold.value = -24; agc.knee.value = 6; agc.ratio.value = 4; agc.attack.value = 0.02; agc.release.value = 0.35;
@@ -157,7 +157,7 @@ export class MotorAudio {
     gust.connect(this.gustD); this.gustD.connect(this.gustAM.gain);
     this.rush = [F('bandpass', 800, 0.7), F('bandpass', 800, 0.7)]; this.rushG = G(0);
     [wnL, wnR].forEach((wn, ch) => {
-      const lp = F('lowpass', 320, -3), pb = P(ch ? 0.85 : -0.85), pr = P(ch ? 0.6 : -0.6);
+      const lp = F('lowpass', 400, -3), pb = P(ch ? 0.85 : -0.85), pr = P(ch ? 0.6 : -0.6);
       wn.connect(lp); lp.connect(pb); pb.connect(this.gustAM);
       wn.connect(this.rush[ch]); this.rush[ch].connect(pr); pr.connect(this.rushG);
     });
@@ -208,7 +208,7 @@ export class MotorAudio {
     this.spin = crashed ? (k < 1 ? 0 : this.spin * Math.exp(-dt / 0.35)) : (k < 1 ? 1 : Math.min(1, this.spin + dt / 0.3));
     const near = clamp(1 - (x.dist ?? Infinity) / 1.5), hall = x.hall || 0, tube = x.tube || 0, gr0 = crashed ? 0 : clamp(+x.grass || 0);
     const jit = 0.008 + 0.012 * clamp(speed / 25) + 0.05 * wash + 0.02 * near + 0.03 * gr0;
-    const sag = 1 - 0.04 * gr0;                                                    // grass loads the props: 3-5 % RPM sag   // fractional RPM jitter (PID + turbulence)
+    const sag = 1 - 0.07 * gr0;                                                    // grass loads the props: up to 7 % RPM sag   // fractional RPM jitter (PID + turbulence)
     const cr = this.spin * this.spin;
     const aL = Math.exp(-dt / 0.3), aN = Math.sqrt(1 - aL * aL) * 0.1;          // per-motor level flutter: ~±1 dB, 0.3 s
     let bpf = 0, rs = 0, pm = 0;
@@ -227,7 +227,7 @@ export class MotorAudio {
     const fr = clamp(3.2 * bpf, 1500, 7000), rg = 0.12 * Math.pow(rs / C.hover, 2.5) * cr;   // tip-speed^5 power
     S(this.raspO.frequency, Math.max(20, bpf), 0.012); S(this.raspF.frequency, fr, 0.03); S(this.raspG.gain, rg, 0.015);
     S(this.amDepth.gain, 0.35 * wash, 0.05);
-    const gk = gr0 * Math.pow(clamp(rs / C.hover, 0, 2.5), 1.2) * cr, gg = 0.38 * gk, gl = 0.2 * gk;
+    const gk = gr0 * Math.pow(clamp(rs / C.hover, 0, 2.5), 1.2) * cr, gg = 0.8 * gk, gl = 0.35 * gk;
     S(this.chopO.frequency, Math.max(20, bpf), 0.012); S(this.grassG.gain, gg, 0.03); S(this.grassLo.gain, gl, 0.03);
     const d = clamp((x.dist ?? 9) + 0.12, 0.05, 2.1);                     // mic-to-surface; lastDist is Infinity past 2 m
     S(this.refl.delayTime, 2 * d / 343, 0.04);                            // moving image source = the only doppler onboard
