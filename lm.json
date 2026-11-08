@@ -1,12 +1,12 @@
 {
  "version": 1,
- "hash": "06f9458dca13f6a4",
+ "hash": "35bba12fc6de415a",
  "hashAlgo": "mm3x2/1 (tools/geohash.mjs) over name, position, normal, uv2, index + layout",
  "W": 2048,
- "H": 1696,
+ "H": 1816,
  "texel": 0.2,
  "terrTexel": 0.25,
- "charts": 7941,
+ "charts": 9163,
  "encoding": "rgb = (log2(E) - range[0]) / (range[1] - range[0]), E = indirect irradiance (pi-included, linear), bilinear",
  "aux": {
   "file": "lm_aux.png",
@@ -22,11 +22,11 @@
     1.5
    ],
    "sunDir": [
-    0.554404,
+    0.646031,
     0.741706,
-    0.377503
+    -0.180323
    ],
-   "rotY": 0,
+   "rotY": 0.87,
    "light": {
     "sunI": 10.01241,
     "sunColor": [
@@ -78,12 +78,12 @@
  ],
  "bounces": 3,
  "mode": "full",
- "bakeSec": 1437,
+ "bakeSec": 662,
  "threads": 2,
  "date": "2026-11-08",
  "files": {
-  "lm_sunny.png": 2284830,
-  "lm_overcast.png": 1451078,
-  "lm_aux.png": 854578
+  "lm_sunny.png": 2441056,
+  "lm_overcast.png": 1617352,
+  "lm_aux.png": 1013662
  }
 }
