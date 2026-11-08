@@ -403,6 +403,27 @@ uniform float uRetroCA;   // extra lateral CA (already x uRetro)
 uniform vec3 uNoise;      // x: shot sigma at mid-grey, y: read sigma (linear, both at full analog gain), z: chroma share
 uniform vec3 uNoiseRGB;   // chroma noise per channel (blue noisiest)
 uniform vec2 uNoiseEv;    // x: EV where base ISO ends, y: analog gain stops available
+// [P2-A] night camera v2 (panel 1: colour #1/#3/#4/#6, graphics #1, FPV #2/#3)
+uniform vec4 uTone;       // filmic shoulder (Lottes 2016) per channel: x contrast a, y shoulder d, z b, w c; reaches 1 at the white point uNightK.x
+uniform float uTonePc;    // per-channel share of the shoulder (the rest is hue-preserving on max(rgb)): the path to white
+uniform vec3 uCore;       // white cores: x sensor crosstalk (share of the max channel in the min), y..z EV over the white point where cores ramp in
+uniform vec2 uMag;        // retro magenta roll-off: x amount (x uRetro), y Oklab chroma gate (neutral highlights stay neutral)
+uniform sampler2D tSmall; // 1/8 lens-mapped frame (a: block-mean radiance): codec blocks
+uniform vec4 uCodec;      // x flatten amount, y..z exposed block level where it fades out, w share of the luma grain it removes
+uniform vec2 uSharpDark;  // exposed level where in-camera sharpening fades in (none in the shadows: no crunch on the noise)
+uniform sampler2D tNoise; // 256^2 gaussian noise (r luma, gb chroma), repeat + bilinear: jittered grain, no grid
+uniform vec4 uNoiseOff;   // luma lattice offsets (px): xy this frame, zw last frame (3DNR: half of the grain carries over)
+uniform vec4 uNoiseOffC;  // chroma lattice offsets (px)
+uniform vec4 uNoiseK;     // x luma cell (px), y chroma cell (px), z read floor (linear, gain-independent), w chroma kept in the deepest shadows
+uniform vec4 uGhostS;     // lens ghosts: xyz mirror scales through the frame centre, w: on
+uniform vec3 uGhostT[3];  // ghost tint x weight (of the narrow-lobe bright pass)
+vec3 nightTone(vec3 e){
+  vec3 x = max(e, 0.0);
+  vec3 pc = pow(x, vec3(uTone.x)) / (pow(x, vec3(uTone.x * uTone.y)) * uTone.z + uTone.w);
+  float m = max(max(x.r, max(x.g, x.b)), 1e-8);
+  float fm = pow(m, uTone.x) / (pow(m, uTone.x * uTone.y) * uTone.z + uTone.w);
+  return mix(x * (min(fm, 1.0) / m), min(pc, 1.0), uTonePc);
+}
 float cbrt1(float x){ return sign(x) * pow(abs(x), 1.0 / 3.0); }
 vec3 okLab(vec3 c){
   float l = cbrt1(dot(c, vec3(0.4122214708, 0.5363325363, 0.0514459929)));
@@ -425,9 +446,12 @@ vec3 okLabInv(vec3 q){
 const NIGHT_FINAL_BODY = /* glsl */`
   // white cores: far past the clip the sensor's other channels saturate too (plus demosaic / highlight recovery), so a red LED
   // face goes pink-white and its colour survives only in the halo (plan-L5 2B: the single most important night cue)
+  // [P2-A] keyed on the MIN channel (+ sensor crosstalk), not the max: a red letter 2 EV over the white point keeps its red
+  // (its G and B are stops under); a narrowband neon tube whitens only when even its weakest channel saturates (colour #1)
   {
-    float over = log2(max(max(eCore.r, max(eCore.g, eCore.b)), 1e-6) / uNightK.x);
-    float core = smoothstep(1.0, 3.0, over) * uNightK.y;
+    float mn = mix(min(eCore.r, min(eCore.g, eCore.b)), max(eCore.r, max(eCore.g, eCore.b)), uCore.x);
+    float over = log2(max(mn, 1e-6) / uNightK.x);
+    float core = smoothstep(uCore.y, uCore.z, over) * uNightK.y;
     t = mix(t, vec3(1.0), core * smoothstep(0.6, 1.0, max(t.r, max(t.g, t.b))));
   }
   // retrowave grade (plan-G5 2F): one knob, linear light, after the clip, before the sensor noise (the grain is never graded)
@@ -439,11 +463,13 @@ const NIGHT_FINAL_BODY = /* glsl */`
     float hS = mix(4.45, 3.58, smoothstep(0.0, 0.6 * Lt, lab.x));
     lab.yz += vec2(cos(hS), sin(hS)) * (0.06 * uRetro * ws * (0.2 + 0.8 * smoothstep(0.0, 0.3 * Lt, lab.x)));
     lab.x -= 0.25 * 0.06 * uRetro * ws * smoothstep(0.0, 0.3 * Lt, lab.x);        // hold the shadows' luma: the tint, not a lift
-    // 2) magenta roll-off: +1..+3 EV over the target shoulders into white through pink-magenta (330 deg); clipped cores stay white
-    float evo = log2(max(dot(e, LUMA), 1e-6) / 0.24);
+    // 2) magenta roll-off: +1..+3 EV over the target shoulders into white through pink-magenta (330 deg); clipped cores stay white.
+    //    [P2-A] keyed on the source (eCore), not source + halo: the glow ring round every sign no longer turns magenta; and only
+    //    on highlights that already have colour (white windows and walls keep their white) (colour #3)
+    float evo = log2(max(dot(eCore, LUMA), 1e-6) / 0.24);
     float wc = 1.0 - smoothstep(0.92, 1.0, min(t.r, min(t.g, t.b)));
-    float wh = smoothstep(0.7, 1.6, evo) * (1.0 - smoothstep(2.6, 3.4, evo)) * wc;
-    lab.yz += vec2(0.866, -0.5) * (0.05 * uRetro * wh);
+    float wh = smoothstep(0.7, 1.6, evo) * (1.0 - smoothstep(2.6, 3.4, evo)) * wc * smoothstep(uMag.y, uMag.y + 0.03, length(lab.yz));
+    lab.yz += vec2(0.866, -0.5) * (uMag.x * uRetro * wh);
     // 3) neon vibrance: bright AND already saturated pixels only (skin, asphalt and grey concrete are left alone)
     float C = length(lab.yz);
     float wn = smoothstep(0.8 * Lt, 1.3 * Lt, lab.x) * smoothstep(0.05, 0.12, C) * wc;
@@ -453,24 +479,33 @@ const NIGHT_FINAL_BODY = /* glsl */`
   // sensor noise in linear (plan-L5 2E): shot ~ sqrt(signal x gain), read ~ gain; blue noisiest; luma clumped by the ISP
   // (grainPx), chroma in NR-smeared 2x blotches. Gain: analog gain past base ISO from where AE sits, plus the ISP's push
   // while AE is pinned (it lifts the toe too: pinEv/pinToe)
+  // [P2-A] FPV #3: a gain-independent read floor (base ISO is not clean), luma grain on a jittered ~1.4 px lattice and chroma
+  // blotches on ~8 px (bilinear noise texture, no grid squares), half of each carried into the next frame (3DNR crawl: the sum of
+  // this frame's and last frame's lattice), the codec eating part of the luma grain in the shadow blocks; chroma NR in the deepest
+  // shadows. Measured target: 3-6 DN luma sigma in dark flats (refs 2.8-6.5), chroma 1-2.
   {
     float G = exp2(clamp(ev - uNoiseEv.x, 0.0, uNoiseEv.y) - uNoiseEv.y) * exp2(X.a);   // 1 at full analog gain, up to 2 pinned
     float Ls = max(dot(t, LUMA), 0.0);
-    float sg = sqrt(uNoise.x * uNoise.x * (Ls / 0.18) * G + uNoise.y * uNoise.y * G * G);
-    vec2 gp = floor(gl_FragCoord.xy / uGrainPx), gq = floor(gl_FragCoord.xy / (2.0 * uGrainPx));
-    float fr = mod(uFrame, 997.0);
-    float nl = (hash(vec3(gp, fr)) + hash(vec3(gp + 41.0, fr)) - 1.0) * 2.449;
-    float c1 = (hash(vec3(gq.yx + 17.0, fr)) + hash(vec3(gq + 7.0, fr)) - 1.0) * 2.449;
-    float c2 = (hash(vec3(gq + 29.0, fr)) + hash(vec3(gq.yx + 3.0, fr)) - 1.0) * 2.449;
-    vec3 cv = vec3(c1 * uNoiseRGB.r, -0.5 * (c1 + c2) * uNoiseRGB.g, c2 * uNoiseRGB.b);
+    float sg = sqrt(uNoise.x * uNoise.x * (Ls / 0.18) * G + uNoise.y * uNoise.y * G * G + uNoiseK.z * uNoiseK.z);
+    vec2 fc = gl_FragCoord.xy;
+    float nl = (texture(tNoise, (fc + uNoiseOff.xy) / (256.0 * uNoiseK.x)).r + texture(tNoise, (fc + uNoiseOff.zw) / (256.0 * uNoiseK.x)).r - 1.0) * 6.36;
+    vec2 ca = texture(tNoise, (fc + uNoiseOffC.xy) / (256.0 * uNoiseK.y)).gb, cb = texture(tNoise, (fc + uNoiseOffC.zw) / (256.0 * uNoiseK.y)).gb;
+    vec2 cc = (ca + cb - 1.0) * 6.36;
+    vec3 cv = vec3(cc.x * uNoiseRGB.r, -0.5 * (cc.x + cc.y) * uNoiseRGB.g, cc.y * uNoiseRGB.b);
     cv -= dot(cv, LUMA);
+    cv *= mix(uNoiseK.w, 1.0, smoothstep(0.002, 0.03, Ls));
+    nl *= 1.0 - uCodec.w * codecK;
     t = max(t + sg * (vec3(nl) + cv * uNoise.z), 0.0);
   }
 `;
 
 // [S3] night auto-exposure (plan-L5 2A): 16x12 taps of the lens-mapped 1/8 frame; the brightest share (sign cores) is
-// rejected through a log histogram, then a centre-weighted log average; asymmetric second-order adaptation (darken fast,
+// rejected through a log histogram, then a weighted log average; asymmetric second-order adaptation (darken fast,
 // brighten slow, zeta ~0.7 overshoot = the visible hunt) with a deadband. State is a half-float texel: ev, ev rate, mean, pin.
+// [P2-A] colour #6 / graphics #1: matrix metering (uMat: a flat field with a mild centre bias, not a centre spot), point
+// sources rejected (aeReject 1 %), area sources (taps brighter than uArea.x scene units: sign faces, lit windows, screens)
+// weighted uArea.y instead of dragging the street dark; the veil reads the glare under a fixed sensor level (uVeilL), not the
+// white point; and a reset (teleport, respawn, a snapshot) settles at once: the sensor cap is re-solved at the new target.
 const METER_N_FS = /* glsl */`precision highp float;
 in vec2 vUv;
 out vec4 fragColor;
@@ -484,37 +519,44 @@ uniform float uLockEv;
 uniform float uEvMin;
 uniform float uEvMax;
 uniform float uClipL;     // sensor clip in exposed units (meter saturates there)
+uniform float uVeilL;     // veil: per-tap cap in exposed units (the glare of what the lens passes; a blown face caps)
 uniform vec4 uAe;         // x: tau darken (s), y: tau brighten (s), z: zeta, w: deadband (EV)
 uniform float uReject;    // brightest share of taps dropped
-void main(){
-  vec4 P = texelFetch(tPrev, ivec2(0), 0);
-  float prevEv = P.r, vel = P.g;
-  float Ls[192];
+uniform vec2 uArea;       // x: tap radiance (scene units) above which a tap is an area source, y: its weight
+uniform vec2 uMat;        // x: weighting centre (v), y: falloff (1.6 = the old centre-weighted spot)
+float Lr[192];
+float meterWant(float capEv){
   float hist[24];
   for (int i = 0; i < 24; i++) hist[i] = 0.0;
-  float aAll = 0.0;
-  for (int y = 0; y < 12; y++) for (int x = 0; x < 16; x++) {
-    vec2 uv = (vec2(float(x), float(y)) + 0.5) / vec2(16.0, 12.0);
-    float L = max(texture(tSmall, uv).a, 0.0);
-    aAll += min(L, 4.0 * uClipL * exp2(-prevEv));   // veil: the glare of what the lens passes (a blown face caps, not its nits)
-    L = min(L, uClipL * exp2(-prevEv));            // the sensor saturates: a blown face reads as clip, not as its nits
-    Ls[y * 16 + x] = L;
-    hist[int(clamp(floor(log2(L + 1e-7) + 18.0), 0.0, 23.0))] += 1.0;
-  }
+  float cap = uClipL * exp2(-capEv);
+  for (int i = 0; i < 192; i++) hist[int(clamp(floor(log2(min(Lr[i], cap) + 1e-7) + 18.0), 0.0, 23.0))] += 1.0;
   // cut: the lowest bin edge above which at most uReject of the taps sit
   float cum = 0.0, cut = 1e9, lim = uReject * 192.0;
   for (int b = 23; b >= 0; b--) { if (cum + hist[b] > lim) break; cum += hist[b]; cut = exp2(float(b) - 18.0); }
   float lsum = 0.0, asum = 0.0, wsum = 0.0;
   for (int y = 0; y < 12; y++) for (int x = 0; x < 16; x++) {
-    float L = Ls[y * 16 + x];
+    float L0 = Lr[y * 16 + x], L = min(L0, cap);   // the sensor saturates: a blown face reads as clip, not as its nits
     if (L >= cut) continue;
     vec2 uv = (vec2(float(x), float(y)) + 0.5) / vec2(16.0, 12.0);
-    vec2 d = (uv - vec2(0.5, 0.45)) * vec2(1.6, 2.0);
-    float w = exp(-dot(d, d) * 1.6);
+    vec2 d = (uv - vec2(0.5, uMat.x)) * vec2(1.6, 2.0);
+    float w = exp(-dot(d, d) * uMat.y) * (L0 > uArea.x ? uArea.y : 1.0);
     lsum += w * log2(L + 1e-5); asum += w * L; wsum += w;
   }
   float avg = wsum > 0.0 ? exp2(mix(lsum / wsum, log2(asum / wsum + 1e-5), 0.15)) : 1.0;
-  float want = log2(0.24 / avg) + uBias;
+  return log2(0.24 / avg) + uBias;
+}
+void main(){
+  vec4 P = texelFetch(tPrev, ivec2(0), 0);
+  float prevEv = P.r, vel = P.g;
+  float aAll = 0.0;
+  for (int y = 0; y < 12; y++) for (int x = 0; x < 16; x++) {
+    vec2 uv = (vec2(float(x), float(y)) + 0.5) / vec2(16.0, 12.0);
+    float L = max(texture(tSmall, uv).a, 0.0);
+    aAll += min(L, 4.0 * uVeilL * exp2(-prevEv));
+    Lr[y * 16 + x] = L;
+  }
+  float want = meterWant(prevEv);
+  if (uReset > 0.5) { for (int k = 0; k < 3; k++) want = meterWant(clamp(want, uEvMin, uEvMax)); }
   float target = clamp(want, uEvMin, uEvMax);
   if (uLock > 0.5) target = uLockEv;
   float d = target - prevEv;
@@ -530,6 +572,8 @@ void main(){
       vel += acc * h; ev += vel * h; }
     ev = clamp(ev, uEvMin - 0.6, uEvMax + 0.3);
   }
+  if (uReset > 0.5) aAll = 0.0;
+  if (uReset > 0.5) for (int i = 0; i < 192; i++) aAll += min(Lr[i], 4.0 * uVeilL * exp2(-ev));
   float pin = clamp((want - uEvMax) * 0.25, 0.0, 1.0);
   float pk = uReset > 0.5 ? 1.0 : 1.0 - exp(-uDt * 2.5);
   fragColor = vec4(ev, vel, 0.5 * aAll / 192.0 * exp2(ev), P.a + (pin - P.a) * pk);
@@ -621,7 +665,12 @@ void main(){
   float Lc = dot(c, LUMA);
   // [L5] HDR: as a luma ratio held to 0.6..1.6 (ui 12d): an interior exposed for concrete puts the sky through a slab
   // hole 5+ EV over it, and the additive mask drove the 2 px ring round every hole to 0 (black-rimmed white blotches)
+#ifdef NIGHT
+  // [P2-A] no sharpening in the shadows (FPV #3): the ISP doesn't crunch its own noise floor
+  c = c * clamp(1.0 + (Lc - Ln) * uSharp * smoothstep(uSharpDark.x, uSharpDark.y, Lc * exp2(decodeEv(texelFetch(tExp, ivec2(0), 0)))) * 0.8 / max(Lc, 1e-6), 0.6, 1.6);
+#else
   c = uHdr > 0.5 ? c * clamp(1.0 + (Lc - Ln) * uSharp * 0.8 / max(Lc, 1e-6), 0.6, 1.6) : clamp(c + (Lc - Ln) * uSharp, 0.0, 1.0);
+#endif
 
   vec3 lin = uHdr > 0.5 ? c : srgb2lin(c);
   vec4 X = texelFetch(tExp, ivec2(0), 0);
@@ -637,12 +686,36 @@ void main(){
 #ifdef NIGHT
   vec3 eCore = e;                                                          // pre-halo exposure: the clip/core test reads the source, not its glow
   e += texture(tHalo, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uHalo * uHaloTint;   // wide warm halation (lens glow + sensor scatter)
+  // [P2-A] FPV #2: tBloom is the PSF's narrow lobe, tHalo its wide lobe (energy fractions of the uncapped bright pass); plus
+  // 3 ghosts of the bright pass mirrored through the frame centre (only the brightest sources leave a visible one)
+  if (uGhostS.w > 0.0) {
+    vec2 g0 = 0.5 + (vUv - 0.5) * uGhostS.x, g1 = 0.5 + (vUv - 0.5) * uGhostS.y, g2 = 0.5 + (vUv - 0.5) * uGhostS.z;
+    vec2 f0 = smoothstep(vec2(0.0), vec2(0.06), g0) * smoothstep(vec2(0.0), vec2(0.06), 1.0 - g0);
+    vec2 f1 = smoothstep(vec2(0.0), vec2(0.06), g1) * smoothstep(vec2(0.0), vec2(0.06), 1.0 - g1);
+    vec2 f2 = smoothstep(vec2(0.0), vec2(0.06), g2) * smoothstep(vec2(0.0), vec2(0.06), 1.0 - g2);
+    e += texture(tBloom, clamp(g0, 0.0, 1.0)).rgb * uGhostT[0] * (f0.x * f0.y)
+       + texture(tBloom, clamp(g1, 0.0, 1.0)).rgb * uGhostT[1] * (f1.x * f1.y)
+       + texture(tBloom, clamp(g2, 0.0, 1.0)).rgb * uGhostT[2] * (f2.x * f2.y);
+  }
+  // [P2-A] codec (FPV #3): in the shadow 8x8 blocks the long-GOP encoder keeps little more than the block mean, so fine detail
+  // flattens toward it (block-consistent mask: the block edges show) and part of the luma grain goes with it (below)
+  float codecK = 0.0;
+  if (uCodec.x > 0.0) {
+    vec2 sz = vec2(textureSize(tSmall, 0));
+    float Lb = texelFetch(tSmall, ivec2(min(vUv * sz, sz - 1.0)), 0).a * exp2(ev);
+    codecK = uCodec.x * (1.0 - smoothstep(uCodec.y, uCodec.z, Lb));
+    e *= 1.0 + codecK * (clamp(Lb / max(dot(eCore, LUMA), 1e-6), 0.25, 4.0) - 1.0);
+  }
 #endif
   float vig = pow(max(cos(th), 0.0), 2.2);                                 // optical cos^n falloff
   e *= mix(1.0, vig, uVig);
   if (con != 1.0) e *= pow(max(dot(e, LUMA), 1e-6) / 0.24, con - 1.0);     // camera contrast about the AE target
   e += uVeil * X.b * vec3(1.0, 0.99, 0.97);                                // veiling glare from the metered mean
+#ifdef NIGHT
+  vec3 t = nightTone(e);                                                   // [P2-A] graphics #1: filmic shoulder to the white point
+#else
   vec3 t = min(camCurve(e * uExpo) * uWhite, 1.0);                         // per channel: skies clip blue-first
+#endif
   if (toe > 0.0) t = t * t / (t + toe) * (1.0 + toe);                       // sensor toe (real blacks)
   float l = dot(t, LUMA);
   t = max(mix(vec3(l), t, uSat * mix(uShSat, 1.0, smoothstep(0.01, 0.16, l))), 0.0);
@@ -736,12 +809,48 @@ export const GRADES = {
   //   noise: [shot sigma at mid-grey, read sigma, chroma share] in linear at full analog gain; noiseRGB: chroma noise per channel; noiseSpan: analog gain stops
   //   (base ISO ends at evMax - noiseSpan); ae: [tau darken s, tau brighten s, zeta, deadband EV]; aeReject: brightest tap share
   //   the meter ignores; evMin..evMax: 6 stops.
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.94, 1.0, 1.08], wbShade: null, evBias: -2.0, lift: 0, clipEv: 2.2, con: 1.2, toe: 0.08,
-    veil: 0.03, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0, bloom: 0.025, bloomCap: 24, bloomKnee: 0.5, halo: 0.035, haloR: 1, haloTint: [1.0, 0.62, 0.45],
-    core: 1, grain: 0, grainEv: [0, 0], grainPx: 2, noise: [0.010, 0.0011, 1.6], noiseRGB: [1.1, 0.8, 1.5], noiseSpan: 6, meterLens: 1, sharpen: 0.22, sharpPx: 2,
+  // Phase 2 [P2-A] (panel 1 colour #1/#3/#4/#6, graphics #1, FPV #2/#3; offline-fitted on HDR captures of the hero streets):
+  //   clipEv 2.2 -> 6.5 is now the WHITE POINT of a filmic shoulder (Lottes 2016, `tone` [a, d, mid-out]) instead of a hard clip 2.2 EV
+  //   over grey: grey (0.24) -> code ~123, ground (-2 EV) ~55, +2 ~190, +4 ~230, +6 ~251 (a log camera graded to Rec.709: light boxes and
+  //   shop interiors hold, only true sources clip). tonePc: per-channel share of the shoulder (the rest preserves hue on max(rgb)).
+  //   core keyed on the min channel (+ coreXtalk of the max: sensor crosstalk), ramping in coreEv EV over the white point.
+  //   wb [1, 1, 0.96] (G5 2E: fixed ~4300 K; the old blue gain neutralised the warm interiors), toe 0.08 -> 0.045, lift 0.02 (colour #4).
+  //   veil 0.03 -> 0.012 with veilCapEv 3 (the wide PSF lobe carries the local glare now). mag/magC: retro magenta amount and chroma gate.
+  //   PSF (FPV #2): bright pass over psfThEv EV above grey, uncapped (bloomCap 4096); narrow lobe = bloom (energy share) after psfNarrowIt
+  //   blur passes at psfNarrowR texel spacing (sigma ~0.8 % of width); wide lobe = halo (sigma ~6 %, haloR); ghosts: [mirror scale,
+  //   weight, tint] x 3. Noise (FPV #3): noise [shot, read, chroma] + noiseFloor (gain-independent), noiseCell [luma, chroma] px,
+  //   chromaDark (chroma kept in the deepest shadows); codec [amount, exposed level where it fades from 1 .. to 0, share of the luma
+  //   grain removed]; sharpDark: exposed level where sharpening fades in. AE (colour #6, graphics #1): aeReject 1 %, aeArea [scene
+  //   units above which a tap is an area source, its weight], aeMatrix [centre v, falloff].
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.0, lift: 0.02, clipEv: 6.5, con: 1.2, toe: 0.045,
+    tone: [1.085, 0.91, 0.219], tonePc: 0.6, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
+    bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 2.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
+    ghosts: [[-0.55, 0.004, [0.9, 1.0, 0.8]], [-1.25, 0.0025, [1.0, 0.85, 1.0]], [0.4, 0.002, [1.0, 0.95, 0.8]]],
+    core: 1, coreXtalk: 0.15, coreEv: [0, 2], mag: 0.035, magC: 0.04, grain: 0, grainEv: [0, 0], grainPx: 2,
+    noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
+    codec: [0.5, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], meterLens: 1, sharpen: 0.22, sharpPx: 2,
     recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,
-    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.02, shutter: 1 / 60, readout: 0.011 },
+    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.01, aeArea: [0.8, 0.5], aeMatrix: [0.45, 0.5],
+    shutter: 1 / 60, readout: 0.011 },
 };
+// Lottes 2016 shoulder constants: x^a / (x^(a d) b + c) passes (0.24, mid) and reaches 1 at the white point hdrMax
+export function nightToneBC(a, d, mid, hdrMax) {
+  const mi = 0.24, ad = a * d, den = (Math.pow(hdrMax, ad) - Math.pow(mi, ad)) * mid;
+  return [(-Math.pow(mi, a) + Math.pow(hdrMax, a) * mid) / den, (Math.pow(hdrMax, ad) * Math.pow(mi, a) - Math.pow(hdrMax, a) * Math.pow(mi, ad) * mid) / den];
+}
+// 256^2 RGBA8 gaussian noise (sigma 1 -> 1/6 of the range, clamped at 3 sigma), deterministic: the night grain's lattice
+function noiseTexture() {
+  const N = 256, a = new Uint8Array(N * N * 4);
+  let s = 0x9e3779b9 >>> 0;
+  const rnd = () => { s = (s + 0x6d2b79f5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  for (let i = 0; i < N * N * 4; i++) {
+    const g = Math.sqrt(-2 * Math.log(1 - rnd())) * Math.cos(2 * Math.PI * rnd());
+    a[i] = Math.round((Math.max(-3, Math.min(3, g)) / 6 + 0.5) * 255);
+  }
+  const t = new THREE.DataTexture(a, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; t.needsUpdate = true;
+  return t;
+}
 const NIGHT_KEYS = Object.keys(GRADES.night);
 const TAU = Math.PI * 2;
 const JELLO_RATIO = [1, 1.077, 0.93], JELLO_AXIS = [1, 0.8, 0.5];
@@ -943,14 +1052,21 @@ export class FPVCamera {
   _initNight() {
     if (this._nightP) return this._nightP;
     const D = { NIGHT: 1 }, V2 = THREE.Vector2, V3 = THREE.Vector3;
+    const V4 = THREE.Vector4;
     const nfU = { ...this.final.u, tHalo: { value: null }, uHalo: { value: 0 }, uHaloTint: { value: new V3(1, 1, 1) }, uNightK: { value: new V3(1, 1, 0.5) },
-      uRetro: { value: 0 }, uRetroVib: { value: 0 }, uRetroCA: { value: 0 }, uNoise: { value: new V3() }, uNoiseRGB: { value: new V3(1, 1, 1) }, uNoiseEv: { value: new V2(0, 6) } };
+      uRetro: { value: 0 }, uRetroVib: { value: 0 }, uRetroCA: { value: 0 }, uNoise: { value: new V3() }, uNoiseRGB: { value: new V3(1, 1, 1) }, uNoiseEv: { value: new V2(0, 6) },
+      // [P2-A]
+      uTone: { value: new V4(1, 1, 1, 1) }, uTonePc: { value: 1 }, uCore: { value: new V3(0, 0, 2) }, uMag: { value: new V2(0.05, 0) },
+      tSmall: { value: null }, uCodec: { value: new V4(0, 0.02, 0.08, 0) }, uSharpDark: { value: new V2(0, 0) },
+      tNoise: { value: null }, uNoiseOff: { value: new V4() }, uNoiseOffC: { value: new V4() }, uNoiseK: { value: new V4(1.4, 8, 0, 1) },
+      uGhostS: { value: new V4(-0.55, -1.25, 0.4, 0) }, uGhostT: { value: [new V3(), new V3(), new V3()] } };
     const bl = () => pass(BLOOM_FS, { tSrc: { value: null }, uDir: { value: new V2() } });
     this._nightP = {
       down: pass(DOWN_FS, this.down.u, D), final: pass(FINAL_FS, nfU, D),
       meter: pass(METER_N_FS, { tSmall: { value: null }, tPrev: { value: null }, uDt: { value: 0.016 }, uBias: { value: 0 }, uReset: { value: 1 }, uLock: { value: 0 },
-        uLockEv: { value: 0 }, uEvMin: { value: -4.5 }, uEvMax: { value: 1.5 }, uClipL: { value: 1 }, uAe: { value: new THREE.Vector4(0.25, 0.8, 0.7, 0.15) }, uReject: { value: 0.02 } }),
-      copy: bl(), haloH: bl(), haloV: bl(),
+        uLockEv: { value: 0 }, uEvMin: { value: -4.5 }, uEvMax: { value: 1.5 }, uClipL: { value: 1 }, uAe: { value: new THREE.Vector4(0.25, 0.8, 0.7, 0.15) }, uReject: { value: 0.02 },
+        uVeilL: { value: 1 }, uArea: { value: new V2(1e9, 1) }, uMat: { value: new V2(0.45, 1.6) } }),
+      copy: bl(), haloH: bl(), haloV: bl(), noise: noiseTexture(), noiseOff: [0, 0, 0, 0], noiseOffC: [0, 0, 0, 0],
       exp: [rt(1, 1, { filter: THREE.NearestFilter, type: THREE.HalfFloatType }), rt(1, 1, { filter: THREE.NearestFilter, type: THREE.HalfFloatType })], idx: 0,
       haloA: null, haloB: null,
     };
@@ -1328,7 +1444,7 @@ export class FPVCamera {
     du.uScale.value.set(vw / this.blurRT.width, vh / this.blurRT.height);
     du.uTexel.value.set(1 / this.smallRT.width, 1 / this.smallRT.height);
     du.uClampLo.value.set(0.5 / vw, 0.5 / vh);
-    du.uInv.value = lk.invTone; du.uThresh.value = NI ? 0.24 * Math.pow(2, (lk.clipEv ?? 3) - (lk.bloomKnee ?? 0.5)) : 1.0;
+    du.uInv.value = lk.invTone; du.uThresh.value = NI ? 0.24 * Math.pow(2, Number.isFinite(lk.psfThEv) ? lk.psfThEv : (lk.clipEv ?? 3) - (lk.bloomKnee ?? 0.5)) : 1.0;
     du.uHdr.value = H; du.uLumScale.value = LS; du.uF16.value = F16; du.uLens.value = LM; du.uBloomCap.value = lk.bloomCap ?? 16;
     du.uWB.value.fromArray(lk.wb); du.uWBShade.value.fromArray(lk.wbShade || lk.wb);
     du.uHalf.value.set(L.hw, L.hh); du.uF.value = L.F; du.uK.value = L.k; du.uSrcTan.value.set(L.tx, L.ty);
@@ -1342,6 +1458,9 @@ export class FPVCamera {
       nu.uLock.value = lk.aeLock ? 1 : 0; nu.uLockEv.value = lk.aeLockEv || 0;
       nu.uEvMin.value = lk.evMin; nu.uEvMax.value = lk.evMax; nu.uClipL.value = 0.24 * Math.pow(2, lk.clipEv ?? 3);
       nu.uAe.value.fromArray(lk.ae || [0.25, 0.8, 0.7, 0.15]); nu.uReject.value = lk.aeReject ?? 0.02;
+      nu.uVeilL.value = 0.24 * Math.pow(2, Number.isFinite(lk.veilCapEv) ? lk.veilCapEv : (lk.clipEv ?? 3));   // [P2-A]
+      if (lk.aeArea) nu.uArea.value.fromArray(lk.aeArea); else nu.uArea.value.set(1e9, 1);
+      if (lk.aeMatrix) nu.uMat.value.fromArray(lk.aeMatrix); else nu.uMat.value.set(0.45, 1.6);
       r.setRenderTarget(nextExp); r.clear(true, false, false); r.render(NP.meter.scene, this.quadCam);
       NP.idx = 1 - NP.idx;
     } else {
@@ -1359,10 +1478,12 @@ export class FPVCamera {
     // 7) bloom: separable 9-tap gaussian at unit tap spacing (the linear-sampling offsets assume it), run twice
     const bw = this.smallRT.width, bh = this.smallRT.height;
     let src = this.smallRT;
-    for (let it = 0; it < 2; it++) {
-      this.bloomH.u.tSrc.value = src.texture; this.bloomH.u.uDir.value.set(1 / bw, 0);
+    // [P2-A] night: the PSF's narrow lobe (FPV #2): psfNarrowIt passes at psfNarrowR texel spacing (bando: 2 passes at 1, as before)
+    const nIt = NI ? Math.max(1, Math.min(2, lk.psfNarrowIt ?? 2)) : 2, nSp = NI ? (lk.psfNarrowR ?? 1) : 1;
+    for (let it = 0; it < nIt; it++) {
+      this.bloomH.u.tSrc.value = src.texture; this.bloomH.u.uDir.value.set(nSp / bw, 0);
       r.setRenderTarget(this.bloomA); r.clear(true, false, false); r.render(this.bloomH.scene, this.quadCam);
-      this.bloomV.u.tSrc.value = this.bloomA.texture; this.bloomV.u.uDir.value.set(0, 1 / bh);
+      this.bloomV.u.tSrc.value = this.bloomA.texture; this.bloomV.u.uDir.value.set(0, nSp / bh);
       r.setRenderTarget(this.bloomB); r.clear(true, false, false); r.render(this.bloomV.scene, this.quadCam);
       src = this.bloomB;
     }
@@ -1410,8 +1531,26 @@ export class FPVCamera {
       const ht = lk.haloTint || [1, 0.62, 0.45], hl = 0.2126 * ht[0] + 0.7152 * ht[1] + 0.0722 * ht[2];
       nf.uHaloTint.value.set(ht[0] / hl, ht[1] / hl, ht[2] / hl);
       // AE target grey through the camera curve + toe -> Oklab L (the grade's shadow/highlight pivots)
-      let tg = (1 - Math.exp(-1.25 * 0.24 * ex)) * fu.uWhite.value; tg = Math.min(1, tg); const to = lk.toe || 0; if (to > 0) tg = tg * tg / (tg + to) * (1 + to);
-      nf.uNightK.value.set(0.24 * Math.pow(2, ce ?? 3), lk.core ?? 1, Math.cbrt(tg));
+      // [P2-A] the night curve is the filmic shoulder: grey maps to tone[2] by construction
+      const tn = lk.tone || [1.085, 0.91, 0.219], wp = 0.24 * Math.pow(2, ce ?? 6.5), bc = nightToneBC(tn[0], tn[1], tn[2], wp);
+      nf.uTone.value.set(tn[0], tn[1], bc[0], bc[1]); nf.uTonePc.value = lk.tonePc ?? 1;
+      let tg = Math.min(1, tn[2]); const to = lk.toe || 0; if (to > 0) tg = tg * tg / (tg + to) * (1 + to);
+      nf.uNightK.value.set(wp, lk.core ?? 1, Math.cbrt(tg));
+      const cev = lk.coreEv || [1, 3]; nf.uCore.value.set(lk.coreXtalk ?? 0, cev[0], cev[1]);
+      nf.uMag.value.set(lk.mag ?? 0.05, lk.magC ?? 0);
+      nf.tSmall.value = this.smallRT.texture;
+      const cd = lk.codec || [0, 0.02, 0.08, 0]; nf.uCodec.value.set(cd[0], cd[1], cd[2], cd[3]);
+      nf.uSharpDark.value.fromArray(lk.sharpDark || [0, 0]);
+      // noise lattice: a fresh random offset per frame (no fixed grid), last frame's offset kept for the 3DNR carry
+      const nc = lk.noiseCell || [1.4, 8], fh = (k) => { let h = Math.imul((this.frame + 1) ^ k, 0x9e3779b1) >>> 0; h ^= h >>> 15; h = Math.imul(h, 0x85ebca77) >>> 0; h ^= h >>> 13; return (h >>> 0) / 4294967296; };
+      const o = NP.noiseOff, oc = NP.noiseOffC;
+      o[2] = o[0]; o[3] = o[1]; o[0] = fh(0x51) * 256 * nc[0]; o[1] = fh(0x7a) * 256 * nc[0];
+      oc[2] = oc[0]; oc[3] = oc[1]; oc[0] = fh(0x13) * 256 * nc[1]; oc[1] = fh(0x2f) * 256 * nc[1];
+      nf.tNoise.value = NP.noise; nf.uNoiseOff.value.fromArray(o); nf.uNoiseOffC.value.fromArray(oc);
+      nf.uNoiseK.value.set(nc[0], nc[1], lk.noiseFloor ?? 0, lk.chromaDark ?? 1);
+      const gs = lk.ghosts || [];
+      nf.uGhostS.value.set(gs[0]?.[0] ?? 0, gs[1]?.[0] ?? 0, gs[2]?.[0] ?? 0, gs.length ? 1 : 0);
+      for (let i = 0; i < 3; i++) { const g = gs[i], v = nf.uGhostT.value[i]; if (g) v.fromArray(g[2]).multiplyScalar(g[1]); else v.set(0, 0, 0); }
       nf.uRetro.value = rt0; nf.uRetroVib.value = lk.retroVib ?? 0.5; nf.uRetroCA.value = (lk.retroCA || 0) * rt0 * 0.004;
       nf.uNoise.value.fromArray(lk.noise || [0.010, 0.0011, 1.6]); nf.uNoiseRGB.value.fromArray(lk.noiseRGB || [1.1, 0.8, 1.5]);
       nf.uNoiseEv.value.set(lk.evMax - (lk.noiseSpan ?? 6), lk.noiseSpan ?? 6);
