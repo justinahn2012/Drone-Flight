@@ -5,7 +5,7 @@
 // non-negative and fills interior probes; 7 splitCells keeps every triangle; 8 the real block: attach + update budget.
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { attach, splitCells, heightField, SOURCE_TYPES } from '../seoul-light.js';
+import { attach, splitCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams } from '../seoul-light.js';
 
 let pass = 0, fail = 0;
 const ok = (c, msg) => { if (c) pass++; else { fail++; console.log('FAIL', msg); } };
@@ -13,6 +13,8 @@ const approx = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
 const world = (extra = {}) => ({ scene: new THREE.Scene(), ...extra });
 const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width: 10, kind: 'main' }, { id: 't', points: [[0, -60], [0, 60]], width: 10, kind: 'main' }] };
 
+// 0 the hardcoded lobe integrals match their functions
+{ const P = exportParams().lobes; for (const k of ['street', 'beam']) { const w = lobeIntegral(LOBES[k]); ok(approx(w, P[k].omega, 1e-4), `omega ${k} ${w} vs ${P[k].omega}`); } }
 // 1 flux
 {
   const C = attach(world(), [{ id: 'street:0', pos: [20, 8.7, -6], normal: [0, -1, 0], w: 0.56, h: 0.24, rgb: [1, 0.93, 0.82], nits: 9000, kind: 'street', lumens: 12000 }], { layout: flat, steam: false, airlight: false, cull: false });

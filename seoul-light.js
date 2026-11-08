@@ -98,8 +98,8 @@ function lobeBeam(dx, dy, dz, fx, fz) {      // low beam: +-23 deg wide, peak 2 
   const th = (dx * fz - dz * fx) / fw, tv = dy / fw, dv = tv + 0.035, sv = dv > 0 ? 0.05 : 0.16;
   return Math.exp(-(th * th) / (0.42 * 0.42)) * Math.exp(-(dv * dv) / (sv * sv)) * (1 - sstep(-0.02, 0.015, tv));
 }
-// integral of a lobe over the sphere (sr), f = +x
-function lobeIntegral(fn) {
+// integral of a lobe over the sphere (sr), f = +x (tests/seoul-light.mjs re-derives the constants below)
+export function lobeIntegral(fn) {
   const NT = 720, NP = 720; let s = 0;
   for (let i = 0; i < NT; i++) {
     const th = (i + 0.5) / NT * Math.PI, st = Math.sin(th), ct = Math.cos(th);
@@ -108,8 +108,9 @@ function lobeIntegral(fn) {
   }
   return s * (Math.PI / NT) * (2 * Math.PI / NP);
 }
-let OMEGA = null;   // { street, beam } sr, computed once
-const omega = () => OMEGA || (OMEGA = { street: lobeIntegral(lobeStreet), beam: lobeIntegral(lobeBeam) });
+const OMEGA = { street: 12.3205, beam: 0.110828 };   // sr: lobeIntegral(lobeStreet), lobeIntegral(lobeBeam) (~0.2 s to derive)
+const omega = () => OMEGA;
+export const LOBES = { street: lobeStreet, beam: lobeBeam };
 
 // ------------------------------------------------------------------------------------------------- packing helpers
 const _f32 = new Float32Array(1), _u32 = new Uint32Array(_f32.buffer);
