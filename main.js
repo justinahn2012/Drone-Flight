@@ -9,7 +9,8 @@ import { Controls } from './controls.js';
 import { MotorAudio } from './audio.js';
 import { renderHQ, hqSupport } from './clipexport.js';   // F24: HQ offline clips (WebCodecs + mp4-muxer)
 import { Take, defaultTakeUI } from './take.js';
-import * as TakeLib from './take.js';   // F1: TAKE_TUNING (cutT/bankT/stars) for the HUD, read live; a namespace import never fails on a missing name
+import * as TakeLib from './take.js';
+import { GhostKeeper } from './ghost.js';   // C12 (D5): best take as a ghost, CHALLENGE files   // F1: TAKE_TUNING (cutT/bankT/stars) for the HUD, read live; a namespace import never fails on a missing name
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
@@ -223,6 +224,11 @@ press($('rMode'), () => toast('HOLD TO SWITCH CINE / ANGLE'), () => {
 $('rClip').onclick = () => openClip();
 $('cReset').onclick = () => respawn();
 $('cClip').onclick = () => openClip();
+// CHALLENGE (C12): the take's .otil + score through the share sheet (inside this tap), else a download
+$('cChal').onclick = () => {
+  const k = ghostKeeper; if (!k?.last) return;
+  k.challenge(k.last).then((r) => { if (r === 'downloaded') toast('CHALLENGE SAVED · SEND THE .OTIL FILE', 2.5, true); else if (r === 'failed') toast('COULDN\'T SHARE THE CHALLENGE', 2.5, true); });
+};
 $('btnClip')?.addEventListener('click', () => openClip());   // F1's in-flight landscape CLIP, if present
 $('recCancel').onclick = () => { if (hqJob?.bg) { hqJob.cancel = true; return; } if (replay) { endReplay(true); toast('CLIP CANCELLED', 1.8, true); } };
 controls.onButton = (b) => { if (b === 'reset' && (state === 'fly' || state === 'crash')) respawn(false); if (b === 'menu') state === 'menu' ? startFlight(false) : openMenu(); };
@@ -566,6 +572,12 @@ try { score.best = +localStorage.getItem('onetake.best') || 0; } catch (e) {}
 // the take (take.js): named lines, FLOW, bank / crash / CUT. Free fly runs its own free instance: lines still fire
 // (captions, e.free, pts 0) and count as flown, nothing scores or ends.
 const take = new Take(), freeTake = new Take({ free: true });
+// C12: the stored best take (IndexedDB) re-flown as take.ghost; fed every take event; it reads the live input log
+let ghostKeeper = null;
+function keeper() {
+  if (!ghostKeeper && (world.bvh || world.mesh)) { try { ghostKeeper = new GhostKeeper(take, () => inputLog, () => world); } catch (e) { console.warn('ghost', e); } }
+  return ghostKeeper;
+}
 const _cp = {};
 // proximity to anything (terrain included): flight turbulence, audio, OLED bars. Scoring uses world.skimBvh.
 // [E] measured inside the physics tick (drone.prox, Infinity when crashed or clear); mirrored here for audio/HUD
@@ -588,7 +600,10 @@ function sticksActive(inp, dt) {
   const moved = steer || (S.mode === 'cine' ? Math.abs(inp.climb) > STICK_EPS : Math.abs(d) > 0.04);
   return { hands: moved || thumbsDown(), moved, steer };
 }
-const takeEvent = (e) => (typeof onTakeEvent === 'function' ? onTakeEvent : (ev) => defaultTakeUI(ev, pop))(e);
+const takeEvent = (e) => {
+  if (S.game !== 'free') { try { keeper()?.event(e); } catch (err) { console.warn('ghost event', err); } }   // before the UI: the CUT card's CHALLENGE needs keeper.last
+  return (typeof onTakeEvent === 'function' ? onTakeEvent : (ev) => defaultTakeUI(ev, pop))(e);
+};
 // one call per physics update (frame or tick): stream E may move it onto the fixed ticks as is
 function updateTake(dt, inp) {
   const on = sticksActive(inp, dt);
@@ -608,7 +623,8 @@ const camPose = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
 // wash / bump (0-1, contract C4): prop-wash and impact intensity for D's 45 Hz jello band
 const motion = { vel: new THREE.Vector3(), ang: new THREE.Vector3(), vib: 1, hz: 170, wash: 0, bump: 0 };
 const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), rigP = new THREE.Vector3(), rigQ = new THREE.Quaternion();
-let cpPrev = 0, cpResets = -1;
+const yawQ = new THREE.Quaternion(), UP = new THREE.Vector3(0, 1, 0);   // D5 counter-yaw (not yawS: that is Cine's yaw smoothing)
+let cpPrev = 0, cpResets = -1, cyPrev = 0;
 function rigCamera(dt) {
   // [E] the body pose between the last two physics ticks (physAlpha = leftover accumulator / tick, see frame())
   rigP.lerpVectors(drone.prev, drone.pos, physAlpha); rigQ.slerpQuaternions(drone.prevQ, drone.q, physAlpha);
@@ -619,6 +635,8 @@ function rigCamera(dt) {
   const cp = drone.camView(physAlpha, tilt);
   tiltQ.setFromAxisAngle(_v.set(1, 0, 0), tilt + cp);
   _q.copy(rigQ).multiply(tiltQ);
+  const cy = drone.camYaw?.(physAlpha) ?? 0;           // D5 (FPV r4 #5): cine counter-yaw about world up, from the tick state
+  _q.premultiply(yawQ.setFromAxisAngle(UP, cy));
   const tau = STAB[S.stab] || 0;
   if (tau > 0) camQ.slerp(_q, 1 - Math.exp(-dt / tau)); else camQ.copy(_q);
   camPose.quat.copy(camQ);
@@ -627,9 +645,11 @@ function rigCamera(dt) {
   motion.ang.copy(drone.w).applyQuaternion(rigQ);      // physical camera rotation (blur uses the raw motion)
   // ...plus the pitch-follow and counter-pitch, which turn the view about the body's x axis too (34-65 px of smear were missing on a
   // chimney entry). No spike across a respawn.
-  if (drone.resets !== cpResets) { cpResets = drone.resets; cpPrev = cp; }
+  if (drone.resets !== cpResets) { cpResets = drone.resets; cpPrev = cp; cyPrev = cy; }
   const cpd = dt > 0 ? (cp - cpPrev) / dt : 0; cpPrev = cp;
   motion.ang.addScaledVector(_v.set(1, 0, 0).applyQuaternion(rigQ), cpd);
+  const cyd = dt > 0 ? (cy - cyPrev) / dt : 0; cyPrev = cy;   // the counter-yaw turns the view too (blur)
+  motion.ang.addScaledVector(UP, cyd);
   motion.vib = drone.crashed ? 0.2 : 0.35 + 1.1 * Math.sqrt(drone.thrust / drone.tMax) + drone.wash * 3 + drone.bump * 4;
   motion.hz = drone.rpmHz;                             // ~170 Hz at hover, ~430 Hz at full throttle (rpm ~ sqrt(thrust))
   motion.wash = drone.crashed ? 0 : drone.wash; motion.bump = drone.bump;
@@ -1517,7 +1537,7 @@ function ghostPos(t) {
   let g = null;
   try {
     const tt = typeof t.time === 'number' ? t.time : +t._t || 0;
-    if (typeof t.ghostPose === 'function') g = t.ghostPose(tt);
+    if (typeof t.ghostPose === 'function') g = t.ghostPose(physAlpha);   // D5: alpha between the last two ticks; take clock inside
     else if (t.ghost && typeof t.ghost.pose === 'function') g = t.ghost.pose(tt);
     else if (typeof ghostPose === 'function') g = ghostPose(tt);   // eslint-disable-line no-undef (main.js-level, if D5 puts it there)
     else g = t.ghost?.pos ?? null;
@@ -1864,6 +1884,7 @@ function showSummary(kind, e) {
   $('cReset').textContent = isTake ? 'RETRY' : 'FLY ON';
   // a CUT is the take you want to keep: CLIP is the hot button there (UX #4), RETRY after a crash
   $('cReset').classList.toggle('hot', kind !== 'cut'); $('cClip').classList.toggle('hot', kind === 'cut');
+  $('cChal').classList.toggle('hidden', !(kind === 'cut' && ghostKeeper?.last));   // C12: share this take as a ghost to beat
   $('banner').classList.remove('hidden'); $('crashBar').classList.remove('hidden'); $('live').classList.remove('show');
   document.body.classList.add('sumup');
   padArmed = false;
