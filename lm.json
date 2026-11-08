@@ -1,12 +1,12 @@
 {
  "version": 1,
- "hash": "35bba12fc6de415a",
+ "hash": "c181830fc55c375a",
  "hashAlgo": "mm3x2/1 (tools/geohash.mjs) over name, position, normal, uv2, index + layout",
  "W": 2048,
- "H": 1816,
+ "H": 1808,
  "texel": 0.2,
  "terrTexel": 0.25,
- "charts": 9163,
+ "charts": 9158,
  "encoding": "rgb = (log2(E) - range[0]) / (range[1] - range[0]), E = indirect irradiance (pi-included, linear), bilinear",
  "aux": {
   "file": "lm_aux.png",
@@ -18,8 +18,8 @@
    "file": "lm_sunny.png",
    "id": "kloofendal_48d_partly_cloudy_puresky",
    "range": [
-    -12.75,
-    3.25
+    -13.5,
+    2.5
    ],
    "sunDir": [
     0.646031,
@@ -75,22 +75,22 @@
    }
   }
  },
- "vegHash": null,
- "vegTris": 0,
+ "vegHash": "50272d63dc685848",
+ "vegTris": 12320,
  "denoise": "cross-bilateral (openness, back hits, log luminance)",
  "rays": [
-  8,
-  8,
-  48
+  32,
+  32,
+  256
  ],
  "bounces": 3,
- "mode": "quick",
- "bakeSec": 443,
+ "mode": "full",
+ "bakeSec": 1505,
  "threads": 2,
  "date": "2026-11-08",
  "files": {
-  "lm_sunny.png": 3426612,
-  "lm_overcast.png": 2343478,
-  "lm_aux.png": 1511846
+  "lm_sunny.png": 2995950,
+  "lm_overcast.png": 2066128,
+  "lm_aux.png": 1450321
  }
 }
