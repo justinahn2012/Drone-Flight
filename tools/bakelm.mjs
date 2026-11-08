@@ -321,14 +321,14 @@ async function main() {
     let solidV = 0; for (const list of Object.values(geo.site.parts)) for (const e of list) if (e.collide) solidV += e.g.attributes.position.count;
     const ci = geo.colGeo.index.array, cp = geo.colGeo.attributes.position.array, vStart = solidV + geo.terr.attributes.position.count;
     const far = [], prox = [], fps = geo.site.footprints || [];
-    let inSite = 0;
+    let inSite = 0; const treeV0 = geo.colGeo.attributes.position.count - (geo.treeColVerts || 0);   // [V1] tree tubes sit last and may stand next to walls
     for (let k = 0; k < ci.length; k += 3) {
       const a = ci[k], b = ci[k + 1], c = ci[k + 2];
       if (a < vStart) continue;
       const cx = (cp[a * 3] + cp[b * 3] + cp[c * 3]) / 3, cz = (cp[a * 3 + 2] + cp[b * 3 + 2] + cp[c * 3 + 2]) / 3;
       // [A4] "inside the site" = over a structure footprint (+3 m): the bug's signature (hall triangles). The old box
       // (|x| < 95, |z| < 65) also caught 73 real treeline-grove proxies 104+ m from the centre and failed every bake.
-      if (fps.some((f) => cx > f.x0 - 3 && cx < f.x1 + 3 && cz > f.z0 - 3 && cz < f.z1 + 3)) inSite++;
+      if (a < treeV0 && fps.some((f) => cx > f.x0 - 3 && cx < f.x1 + 3 && cz > f.z0 - 3 && cz < f.z1 + 3)) inSite++;
       const ux = cp[b * 3] - cp[a * 3], uz = cp[b * 3 + 2] - cp[a * 3 + 2], vx = cp[c * 3] - cp[a * 3], vz = cp[c * 3 + 2] - cp[a * 3 + 2];
       (Math.abs(ux * vz - uz * vx) / 2 > 500 ? far : prox).push(a, b, c);
     }
