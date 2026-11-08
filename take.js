@@ -22,6 +22,11 @@
 // PERFECT (design r4 #1): a take that ends in a CUT with 3 stars, every line CLEAN and no SCRAPE.
 // Ghost (C12, ghost.js): `take.ghost` holds a Ghost (the best take re-simulated from its input log, or a CHALLENGE);
 // take.ghostPose(alpha) is its pose at this take's clock, for the UI's OSD diamond (never drawn into clips).
+// [P2-F1] Per level: world.tuning (lines.json `tuning`) merges over TAKE_TUNING (take.tuning; bando has none, so its numbers
+// stay bit-exact): stars, bankT, holdZone, armHold (no bank while a line is armed: take.armed is the line in progress and
+// its countdown, for the OSD), microFlow (Seoul: micros keep the chain but add no FLOW), firstR, pace. Lines with `piece`
+// fly only while world.setPieces has that id. world.movers contacts come through the drone (flight.js moverN / moverKind /
+// crashBy): a pedestrian is SCRAPE + HEADS! (event heads: true), a crash into a vehicle carries by: <type>.
 // No three.js import: plain vector maths, runs headless in node too.
 
 export const TAKE_TUNING = {

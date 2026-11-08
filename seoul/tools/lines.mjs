@@ -5,6 +5,9 @@
 // buildings, a climb up a facade, a roof drop into an alley, the station-front crossing of Yanghwa-ro over the buses.
 // Every gate is placed from layout.json and checked against the collider (buildSeoulGeometry): no sample point of
 // the gate rectangle within CLEAR of geometry, and a straight pass through its centre along n is open for +-2 m.
+// [P2-F1] phase 2: streets cut into <= 60 m segment micros with feature micros (blades, queues, forks) between them,
+// windows sized for 4.5 m/s, gaps open at both ends, a hint + next per start point, set-piece lines coded against stream
+// E's setPieces ids, and the level's take `tuning`. Re-run after the buildings (C) or the dressing (E) change.
 import fs from 'node:fs';
 import * as THREE from 'three';
 import { buildSeoulGeometry } from '../../world-seoul.js';
@@ -12,6 +15,8 @@ import { buildSeoulGeometry } from '../../world-seoul.js';
 const ROOT = new URL('../', import.meta.url);
 const layout = JSON.parse(fs.readFileSync(new URL('layout.json', ROOT), 'utf8'));
 const geo = buildSeoulGeometry(layout);
+// the previous lines.json: seoul-dressing.js keeps its clutter out of these gates (contract P2-1)
+const lineDataPrev = (() => { try { return JSON.parse(fs.readFileSync(new URL('lines.json', ROOT), 'utf8')); } catch (e) { return null; } })();
 const { bvh } = geo;
 const CLEAR = 0.3;
 const lotById = new Map(layout.lots.map((l) => [l.id, l]));
@@ -307,25 +312,40 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
   report.push(`THE CORNER           500  carve 28 x 28 m box at [${p.x.toFixed(1)}, ${p.z.toFixed(1)}] (micro)`); }
 
 // ---- [P2-F1 design #2] set pieces (stream E's seoul-dressing.js, contract P2-1): lines coded against E's setPieces ids.
-// A piece gives its opening as `gate` ({c, n, w, h, u?}) and optionally `pre` ([gate]: then a window from the route) or
-// `oneWay`; without a gate it is reported and skipped (only E knows where the opening is). Each line carries `piece`:
-// take.js flies it only while world.setPieces holds that id, so this lines.json also works on a build without them.
+// E gives each piece's openings as `gates`: {pre, gate} (a pre-gate -> gate move), {left: {pre, gate}, right: {...}}
+// (alternatives: one line, either one scores), {windows: [rect...]} (threaded in order: first -> last) or {gate} (one
+// opening, either way). Each line carries `piece`: take.js flies it only while world.setPieces holds that id, so this
+// lines.json also works on a build without the pieces. The stairs are a dive (one way); the rest go either way.
 const SET_LINES = {
-  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000 },
+  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true },
   'under-the-stage': { name: 'UNDER THE STAGE', caption: 'UNDER THE *STAGE*!', pts: 1500 },
   'bus-shelter': { name: 'BUS SHELTER', caption: 'THROUGH THE *SHELTER*!', pts: 1000 },
   'cable-thread': { name: 'CABLE THREAD', caption: 'CABLE *THREAD*!', pts: 1500 },
   'roofline-slot': { name: 'ROOF SLOT', caption: 'THE ROOF *SLOT*!', pts: 1500 },
 };
+const rect = (q) => (q?.c && q?.n && q.w > 0 && q.h > 0 ? g(q.c, q.n, q.w, q.h, q.u) : null);
+function pieceMoves(sp) {   // -> [{pre: rect | null, gate: rect}]
+  const G = sp.gates || (sp.gate ? { gate: sp.gate, pre: sp.pre?.[0] } : null); if (!G) return [];
+  if (G.gate) return [{ pre: rect(G.pre), gate: rect(G.gate) }];
+  if (Array.isArray(G.windows) && G.windows.length) { const w = G.windows.map(rect).filter(Boolean); return w.length > 1 ? [{ pre: w[0], gate: w[w.length - 1] }] : w.length ? [{ pre: null, gate: w[0] }] : []; }
+  return Object.values(G).filter((v) => v && v.gate).map((v) => ({ pre: rect(v.pre), gate: rect(v.gate) }));
+}
 { let D = null; try { const m = await import('../../seoul-dressing.js'); D = m.seoulDressing || m.default || m; } catch (e) {}
-  let pieces = []; try { pieces = (D?.geometry ? D.geometry(layout, { seed: 11 })?.setPieces : null) || []; } catch (e) { report.push(`  (seoul-dressing.geometry threw: ${e.message})`); }
+  let pieces = [];
+  try { pieces = (D?.geometry ? D.geometry(layout, { seed: 11, lines: lineDataPrev, lotInfo: geo.lotInfo })?.setPieces : null) || []; } catch (e) { report.push(`  (seoul-dressing.geometry threw: ${e.message})`); }
   const made = [];
   for (const sp of pieces) {
-    const L = SET_LINES[sp.id] || SET_LINES[sp.kind]; if (!L) continue;
-    const G = sp.gate; if (!G?.c || !G?.n || !(G.w > 0) || !(G.h > 0)) { report.push(`  (set piece ${sp.id}: no gate, no line)`); continue; }
-    const main = g(G.c, G.n, G.w, G.h, G.u), pre = (sp.pre || []).filter((q) => q?.c && q?.n).map((q) => g(q.c, q.n, q.w, q.h, q.u));
-    add(L.name, L.caption, sp.pts || L.pts, main, pre.length ? { pre, within: within(dist3(pre[0], main) + 4), piece: sp.id } : { ...(sp.oneWay ? {} : { two: true }), piece: sp.id });
-    made.push(sp.id);
+    const L = SET_LINES[sp.id]; if (!L) continue;
+    const mv = pieceMoves(sp).filter((m) => m.gate);
+    if (!mv.length) { report.push(`  (set piece ${sp.id}: no gates, no line)`); continue; }
+    for (const m of mv) {
+      if (m.pre) {
+        const w = within(dist3(m.pre, m.gate) + 4);
+        add(L.name, L.caption, L.pts, m.gate, { pre: [m.pre], within: w, piece: sp.id });
+        if (!L.oneWay) add(L.name, L.caption, L.pts, neg(m.pre), { pre: [neg(m.gate)], within: w, piece: sp.id });
+      } else add(L.name, L.caption, L.pts, m.gate, { ...(L.oneWay ? {} : { two: true }), piece: sp.id });
+    }
+    made.push(`${sp.id} (${mv.length})`);
   }
   report.push(`  (set pieces: ${pieces.length ? `${pieces.length} from seoul-dressing.js, lines for ${made.join(', ') || 'none'}` : 'seoul-dressing.js absent or without setPieces: no set-piece lines'})`); }
 
