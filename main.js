@@ -124,9 +124,7 @@ function applySettings() {
   if (S.frame === 'cine' && fpv.look.letterbox < 0) fpv.look.letterbox = 0;
   fpv.targetMs = S.fps === '30' ? 33.3 : 16.7;
   controls.mode = S.mode;
-  audio.on = S.sound !== 'off';
-  // C6: 'mix' = ambient audio session (other apps' music keeps playing). F2 implements the switch in audio.js.
-  audio.setSession?.(S.sound === 'mix' ? 'ambient' : 'playback');
+  audio.on = S.sound === 'on';
   const B = document.body.classList;
   B.toggle('nohud', S.hud === 'off'); B.toggle('hud-min', S.hud === 'min'); B.toggle('thr', S.mode !== 'cine');
   $('rMode').textContent = { cine: 'CINE', angle: 'ANGLE', acro: 'ACRO' }[S.mode];
@@ -134,6 +132,7 @@ function applySettings() {
   $('lblL').textContent = ll; $('lblR').textContent = rl; $('gLt').textContent = ll; $('gRt').textContent = rl;
   $('modeHint').textContent = MODE_HINT[S.mode];
   $('gameHint').textContent = GAME_HINT[S.game]?.() || '';
+  if (S.sound === 'mix' && !audio.setMode) audio.on = true;   // C6 'mix': F2's audio.setMode runs the ambient session; alone, it just plays
   const craftKey = craftFor(world.def);
   if (drone.key !== craftKey) { drone.setCraft(craftKey); }
   audio.setCraft?.(craftKey);
@@ -216,7 +215,6 @@ press($('rMode'), () => toast('HOLD TO SWITCH CINE / ANGLE'), () => {
   S.mode = S.mode === 'cine' ? 'angle' : 'cine'; applySettings(); controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); toast(S.mode === 'cine' ? 'CINE ASSIST' : 'ANGLE');
 }, 500);
 $('rClip').onclick = () => saveClip();
-$('btnClip').onclick = () => saveClip();   // landscape in-flight CLIP (UX #4); what it exports is F2's saveClip
 $('cReset').onclick = () => respawn();
 $('cClip').onclick = () => saveClip();
 $('recCancel').onclick = () => { if (replay) { endReplay(true); toast('CLIP CANCELLED'); } };
@@ -291,7 +289,7 @@ const LOAD_TIPS = {
     '<b>Free fly</b>: no clock. Lines still caption. Crash and you fly on from where you last flew clear.',
     '<b>RESET</b> goes back to your last clear spot; hold it to go back to the spawn.',
   ],
-  any: () => ['<b>CLIP</b> turns your take into a stabilised, captioned video for your camera roll.'],
+  any: () => ['<b>CLIP</b> saves the last 20 s, the full take, or a captioned 9:16 <b>SHORT</b> of your lines to your camera roll.'],
 };
 let loadN = 0;
 try { loadN = +localStorage.getItem('onetake.loads') || 0; } catch (e) {}
