@@ -16,7 +16,7 @@ chars = set(c for c in text if ord(c) >= 0x80) | set(chr(c) for c in range(0x20,
 uni = sorted(ord(c) for c in chars)
 FACES = [  # (source file, out name, variable weight or None)
     ('bhs.ttf', 'BlackHanSans', None), ('DoHyeon-Regular.ttf', 'DoHyeon', None), ('Jua-Regular.ttf', 'Jua', None),
-    ('NanumBrushScript-Regular.ttf', 'NanumBrushScript', None), ('NanumPenScript-Regular.ttf', 'NanumPenScript', None),
+    ('NanumBrushScript-Regular.ttf', 'BrushScript', None), ('NanumPenScript-Regular.ttf', 'PenScript', None),
     ('GothicA1-Black.ttf', 'GothicA1Black', None), ('NotoSerifKR', 'NotoSerifKR900', 900), ('NotoSansKR', 'NotoSansKR800', 800)]
 out = os.path.join(ROOT, 'seoul', 'fonts'); os.makedirs(out, exist_ok=True)
 for f, name, wght in FACES:
@@ -24,6 +24,10 @@ for f, name, wght in FACES:
     if wght is not None: font = instancer.instantiateVariableFont(font, {'wght': wght})
     o = subset.Options(); o.flavor = 'woff2'; o.layout_features = ['*']; o.name_IDs = ['*']; o.notdef_outline = True
     s = subset.Subsetter(o); s.populate(unicodes=uni); s.subset(font)
-    p = os.path.join(out, name + '.woff2'); font.flavor = 'woff2'; font.save(p)
+    # OFL: a subset is a Modified Version, so it must not carry a Reserved Font Name (Nanum, Source): rename every family
+    fam = 'S2 ' + name; ps = 'S2-' + name
+    nt = font['name']; nt.names = [n for n in nt.names if n.nameID not in (1, 2, 3, 4, 6, 16, 17)]
+    for nid, v in ((1, fam), (2, 'Regular'), (3, ps + ';subset'), (4, fam), (6, ps)): nt.setName(v, nid, 3, 1, 0x409); nt.setName(v, nid, 1, 0, 0)
+    p = os.path.join(out, ps + '.woff2'); font.flavor = 'woff2'; font.save(p)
     print(f'{name:18s} {os.path.getsize(p)/1024:7.1f} KB')
 print(len(uni), 'code points')

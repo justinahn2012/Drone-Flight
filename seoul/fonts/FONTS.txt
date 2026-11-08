@@ -1,11 +1,39 @@
-Seoul sign faces (S2). All SIL Open Font License 1.1 (OFL.txt). Subset to the glyphs seoul-signs.js draws by
-tools/seoul-fonts.py from the Google Fonts repository (github.com/google/fonts/tree/main/ofl).
-  BlackHanSans.woff2      Black Han Sans      (c) 2017 The Black Han Sans Project Authors (Zess Type)
-  DoHyeon.woff2           Do Hyeon            (c) 2018 Woowahan Brothers
-  Jua.woff2               Jua                 (c) 2018 Woowahan Brothers
-  NanumBrushScript.woff2  Nanum Brush Script  (c) 2010 NAVER Corporation
-  NanumPenScript.woff2    Nanum Pen Script    (c) 2010 NAVER Corporation
-  GothicA1Black.woff2     Gothic A1 Black     (c) 2018 HanYang I&C Co.
-  NotoSerifKR900.woff2    Noto Serif KR 900   (c) 2017-2022 Adobe / Google (static instance of the variable font)
-  NotoSansKR800.woff2     Noto Sans KR 800    (c) 2014-2021 Adobe / Google (static instance of the variable font)
-Reserved Font Names are not used: the subsets keep the original family metadata and are loaded under "S2 *" aliases.
+Seoul sign faces (S2). All SIL Open Font License 1.1 (full text: OFL.txt).
+Subset by tools/seoul-fonts.py from github.com/google/fonts/tree/main/ofl to the glyphs seoul-signs.js draws.
+A subset is a Modified Version under the OFL, so every file is renamed ("S2 *" family, S2-*.woff2) and none carries a
+Reserved Font Name (Nanum, Naver, Source, ...).
+
+  S2-BlackHanSans.woff2    from Black Han Sans
+  S2-DoHyeon.woff2         from Do Hyeon
+  S2-Jua.woff2             from Jua
+  S2-BrushScript.woff2     from Nanum Brush Script
+  S2-PenScript.woff2       from Nanum Pen Script
+  S2-GothicA1Black.woff2   from Gothic A1 Black
+  S2-NotoSerifKR900.woff2  from Noto Serif KR (variable, instanced at wght 900)
+  S2-NotoSansKR800.woff2   from Noto Sans KR (variable, instanced at wght 800)
+
+Original copyright notices:
+== blackhansans
+Copyright 2015 The Black Han Sans Project Authors (https://github.com/zesstype/Black-Han-Sans)
+
+== dohyeon
+Copyright 2018 The Do Hyeon Project Authors
+
+== jua
+Copyright 2018 The Jua Project Authors
+
+== nanumbrushscript
+Copyright (c) 2010, NHN Corporation (http://www.nhncorp.com),
+with Reserved Font Name Nanum, Naver Nanum, NanumGothic, Naver 
+NanumGothic, NanumMyeongjo, Naver NanumMyeongjo, NanumBrush, Naver
+NanumBrush, NanumPen, Naver NanumPen.
+
+== gothica1
+(C) Copyright HanYang I&C Co.,Ltd. All rights reserved.
+
+== notosanskr
+Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'
+
+== notoserifkr
+Copyright 2012 Google Inc. All Rights Reserved.
+

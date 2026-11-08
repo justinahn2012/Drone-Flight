@@ -82,7 +82,7 @@ for (const s of layout.streets) {
     m.rotation.z = -Math.atan2(b[1] - a[1], b[0] - a[0]); m.position.set((a[0] + b[0]) / 2, 0.01, (a[1] + b[1]) / 2); scene.add(m);
   }
 }
-scene.add(new THREE.HemisphereLight(0x30344a, 0x0a0806, num('amb', 3)));
+scene.add(new THREE.HemisphereLight(0x30344a, 0x0a0806, num('amb', 14)));
 
 // --- signs ---
 let signs = null; const lights = new THREE.Group(); scene.add(lights);
@@ -120,7 +120,8 @@ const CAMS = {
   walk: [[-70, 3.2, 3.5], [-40, 6, -5]], walk2: [[-10, 5, -1], [-40, 7, -6]], main: [[-125, 9, 80], [-80, 16, 57]],
   'screen-near': [[s0.pos[0] + 1.2, s0.pos[1] - 0.6, s0.pos[2] + 2.2], [s0.pos[0] - 0.5, s0.pos[1] - 0.3, s0.pos[2]]],
   'screen-mid': [[s0.pos[0] + 6, s0.pos[1] - 2, s0.pos[2] + 22], [s0.pos[0], s0.pos[1], s0.pos[2]]],
-  alley: [[40, 3, 52], [40, 8, 20]], blade: [[-24, 7, 4], [-40, 9, -5]], high: [[0, 70, 130], [0, 5, 20]],
+  fascia: [[-80, 3.4, -1.5], [-80, 3.6, 5]], fascia2: [[-100, 4.5, 1.5], [-102, 5, -5]],
+  east: [[34, 3.5, 1], [0, 7, -2]], blade: [[-24, 7, 4], [-40, 9, -5]], high: [[0, 70, 130], [0, 5, 20]],
 };
 const camSel = document.getElementById('cam');
 for (const k of Object.keys(CAMS)) camSel.add(new Option(k, k));

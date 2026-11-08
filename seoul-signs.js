@@ -332,9 +332,9 @@ function box(buf, c, r, n, hw, hh, hd, col, noFront = false) {
 // ---------------------------------------------------------------------------------------------------------------
 // 6) atlas: shelf packer + Canvas2D painter (fonts from seoul/fonts, system fallbacks)
 // ---------------------------------------------------------------------------------------------------------------
-export const FONTS = [ // family, file (seoul/fonts), role
-  ['S2 BlackHan', 'BlackHanSans.woff2'], ['S2 DoHyeon', 'DoHyeon.woff2'], ['S2 Jua', 'Jua.woff2'], ['S2 Brush', 'NanumBrushScript.woff2'],
-  ['S2 Pen', 'NanumPenScript.woff2'], ['S2 Gothic', 'GothicA1Black.woff2'], ['S2 Serif', 'NotoSerifKR900.woff2'], ['S2 Sans', 'NotoSansKR800.woff2'],
+export const FONTS = [ // family (as drawn), file in seoul/fonts (renamed OFL subsets; see seoul/fonts/FONTS.txt)
+  ['S2 BlackHan', 'S2-BlackHanSans.woff2'], ['S2 DoHyeon', 'S2-DoHyeon.woff2'], ['S2 Jua', 'S2-Jua.woff2'], ['S2 Brush', 'S2-BrushScript.woff2'],
+  ['S2 Pen', 'S2-PenScript.woff2'], ['S2 Gothic', 'S2-GothicA1Black.woff2'], ['S2 Serif', 'S2-NotoSerifKR900.woff2'], ['S2 Sans', 'S2-NotoSansKR800.woff2'],
 ];
 const FALLBACK = '"Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
 let fontsPromise = null;
@@ -545,6 +545,7 @@ uniform int uProg;
 uniform vec3 uC0, uC1, uC2;
 uniform vec2 uRow;          // text rows (main, sub); -1 = none
 uniform sampler2D uText; uniform float uRows;
+float sdn(float a, float b, float x){ return 1.0 - smoothstep(b, a, x); } // falling edge, a > b
 float h21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
 float txt(vec2 uv, float row){ // uv in [0,1]^2 of the text box -> alpha
   if (row < 0.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 0.0;
@@ -564,7 +565,7 @@ vec3 content(vec2 uv, float t){
     c = vec3(0.01, 0.008, 0.02);
     for (int i = 0; i < 5; i++) { float fi = float(i); float ang = sin(t*0.8 + fi*1.7 + uSeed) * 0.6;
       vec2 o = vec2(0.1 + fi*0.2, -0.05); vec2 d = uv - o; float aa = atan(d.x, d.y) - ang;
-      c += mix(uC0, uC1, fi/4.0) * smoothstep(0.09, 0.0, abs(aa)) * (0.7 - 0.5*length(d)); }
+      c += mix(uC0, uC1, fi/4.0) * sdn(0.09, 0.0, abs(aa)) * (0.7 - 0.5*length(d)); }
     float bars = floor(uv.x * 24.0); float hgt = 0.08 + 0.22 * abs(sin(t*3.0 + bars*0.7 + sin(bars*1.3 + t)));
     float beat = pow(fract(t*2.0), 3.0);
     c += mix(uC1, uC2, uv.y*3.0) * step(uv.y, hgt) * step(0.15, fract(uv.x*24.0)) * (0.6 + 0.4*(1.0-beat));
@@ -582,15 +583,15 @@ vec3 content(vec2 uv, float t){
     c = mix(uC0 * 0.25, uC0, uv.y);
     for (int i = 0; i < 3; i++) { float s = 8.0 + float(i)*6.0; vec2 g = vec2(uv.x*asp, uv.y - t*(0.12 + 0.05*float(i))) * s;
       vec2 id = floor(g); vec2 fp = fract(g) - 0.5 - (vec2(h21(id), h21(id+3.1)) - 0.5) * 0.5; float r = 0.12 + 0.18*h21(id+7.7);
-      c += uC2 * 0.55 * step(0.55, h21(id+1.3)) * smoothstep(r, r - 0.06, length(fp)) * smoothstep(r - 0.12, r, length(fp)); }
+      c += uC2 * 0.55 * step(0.55, h21(id+1.3)) * sdn(r, r - 0.06, length(fp)) * smoothstep(r - 0.12, r, length(fp)); }
     a = txt(vec2((uv.x - 0.1) / 0.8, (uv.y - 0.5) / 0.3), uRow.x); float b = txt(vec2((uv.x - 0.2)/0.6, (uv.y - 0.28)/0.16), uRow.y);
     c = mix(c, vec3(1.0), max(a, b));
   } else if (uProg == 4) { // game pre-registration: perspective grid, title
     c = mix(vec3(0.02, 0.0, 0.05), uC0 * 0.4, uv.y);
     float hz = 0.42; if (uv.y < hz) { float z = 1.0 / max(hz - uv.y, 1e-3); float gx = (uv.x - 0.5) * z; float gz = z + t * 4.0;
-      float line = max(smoothstep(0.06*z*0.05, 0.0, abs(fract(gx) - 0.5) - 0.47), smoothstep(0.0, 0.03, fract(gz*0.5) - 0.96));
+      float line = max(sdn(0.06*z*0.05, 0.0, abs(fract(gx) - 0.5) - 0.47), smoothstep(0.0, 0.03, fract(gz*0.5) - 0.96));
       c += uC1 * line * smoothstep(0.0, 0.25, hz - uv.y + 0.05); }
-    c += uC1 * 0.6 * smoothstep(0.012, 0.0, abs(uv.y - hz));
+    c += uC1 * 0.6 * sdn(0.012, 0.0, abs(uv.y - hz));
     a = txt(vec2((uv.x - 0.05) / 0.9, (uv.y - 0.58) / 0.24), uRow.x); float b = txt(vec2((uv.x - 0.25)/0.5, (uv.y - 0.82)/0.12), uRow.y) * step(0.5, fract(t*1.2));
     c = mix(c, uC2, max(a, b));
   } else if (uProg == 5) { // clock + weather (public info)
@@ -626,17 +627,17 @@ void main(){
   // SMD panel: RGB dies in a triangle inside each pixel, black louvred face. fill ~ mean coverage of the mask.
   vec2 q = f - 0.5;
   float rr = 0.13;
-  float mR = smoothstep(rr, rr*0.55, length(q - vec2(-0.14, 0.09)));
-  float mG = smoothstep(rr, rr*0.55, length(q - vec2( 0.14, 0.09)));
-  float mB = smoothstep(rr, rr*0.55, length(q - vec2( 0.0, -0.13)));
+  float mR = sdn(rr, rr*0.55, length(q - vec2(-0.14, 0.09)));
+  float mG = sdn(rr, rr*0.55, length(q - vec2( 0.14, 0.09)));
+  float mB = sdn(rr, rr*0.55, length(q - vec2( 0.0, -0.13)));
   vec3 mask = vec3(mR, mG, mB);
   const float FILL = 0.0385;  // area of one die / pixel area (pi * ~0.11^2), so mask/FILL averages to 1
   // The camera integrates each sensor pixel over its area (box filter) and then samples. A die grid of period P sensor px
   // keeps its fundamental at amplitude |sinc(1/P)|; sampled below Nyquist that cosine aliases into a smooth beat: the
   // moire. Each colour's dies sit at a different offset, so the beats are phase-shifted per channel (colour fringes).
   vec2 px2 = max(fwidth(cell), vec2(1e-4)); float px = max(px2.x, px2.y);   // LED pixels per sensor pixel
-  float resolve = smoothstep(0.75, 0.3, px);                                // 1 = dies resolved (closer than ~1.5 px per LED)
-  vec2 sx = 3.14159265 * px2; vec2 att = abs(sin(sx) / sx) * smoothstep(4.0, 1.5, px2);
+  float resolve = sdn(0.75, 0.3, px);                                // 1 = dies resolved (closer than ~1.5 px per LED)
+  vec2 sx = 3.14159265 * px2; vec2 att = abs(sin(sx) / sx) * (vec2(1.0) - smoothstep(vec2(1.5), vec2(4.0), px2));
   float k = 0.85 * uMoire;
   vec3 ox = vec3(-0.14, 0.14, 0.0), oy = vec3(0.09, 0.09, -0.13);
   vec3 far = (1.0 + k * att.x * cos(6.2831853 * (cell.x - 0.5 - ox))) * (1.0 + k * att.y * cos(6.2831853 * (cell.y - 0.5 - oy)));
@@ -663,12 +664,13 @@ const SCROLL_FRAG = /* glsl */`
 precision highp float;
 varying vec2 vUv; varying vec4 vS; varying vec3 vC;
 uniform sampler2D uText; uniform float uT, uRows, uTexW, uNit;
+float sdn(float a, float b, float x){ return 1.0 - smoothstep(b, a, x); }
 void main(){
   float rows = 16.0; vec2 cell = vec2(vUv.x * vS.z, vUv.y * rows); vec2 id = floor(cell); vec2 f = fract(cell) - 0.5;
   float x = mod(id.x + floor(uT * vS.y + vS.w), uTexW);
   float on = step(0.5, texture2D(uText, vec2((x + 0.5) / uTexW, (vS.x + 1.0 - (id.y + 0.5) / rows) / uRows)).a);
   float px = max(fwidth(cell.x), fwidth(cell.y));
-  float dotm = mix(smoothstep(0.42, 0.28, length(f)) / 0.38, 1.0, smoothstep(0.4, 1.2, px));
+  float dotm = mix(sdn(0.42, 0.28, length(f)) / 0.38, 1.0, smoothstep(0.4, 1.2, px));
   vec3 c = vC * (on * dotm + 0.004);
   gl_FragColor = vec4(c * uNit, 1.0);
 }`;
@@ -755,7 +757,9 @@ export function build(layout, ctx = {}) {
   const PAD = 4;
   for (let attempt = 0; attempt < 12; attempt++) {
     for (const it of atlasItems) {
-      const wpx = Math.max(16, Math.round(it.w * density)), hpx = Math.max(16, Math.round(it.h * density));
+      // texel budget by how close and how readable the sign gets: windows, banners and unlit faces get less
+      const tw = ({ window: 0.55, banner: 0.5, blade: 0.9 }[it.spec.style] ?? 1) * (it.spec.lit ? 1 : 0.7);
+      const wpx = Math.max(16, Math.round(it.w * density * tw)), hpx = Math.max(16, Math.round(it.h * density * tw));
       const k = Math.min(1, 1024 / wpx, 1024 / hpx);  // cap one face at 1024 px
       it.pw = Math.round(wpx * k); it.ph = Math.round(hpx * k); it.wp = it.pw + PAD * 2; it.hp = it.ph + PAD * 2;
     }
@@ -786,7 +790,7 @@ export function build(layout, ctx = {}) {
     if (atlasTex) { atlasTex.needsUpdate = true; }
     return (typeof performance !== 'undefined' ? performance.now() : 0) - t;
   };
-  if (atlasTex) { atlasTex.colorSpace = THREE.SRGBColorSpace; atlasTex.anisotropy = ctx.anisotropy ?? 8; atlasTex.generateMipmaps = true; atlasTex.minFilter = THREE.LinearMipmapLinearFilter; }
+  if (atlasTex) { atlasTex.colorSpace = THREE.SRGBColorSpace; atlasTex.anisotropy = ctx.anisotropy ?? (ctx.renderer ? Math.min(8, ctx.renderer.capabilities.getMaxAnisotropy()) : 8); atlasTex.generateMipmaps = true; atlasTex.minFilter = THREE.LinearMipmapLinearFilter; }
 
   // --- materials ---
   const flickerPatch = (m) => {
@@ -816,8 +820,8 @@ export function build(layout, ctx = {}) {
   const tcan = makeCanvas(TW, TROWS * TH); const textTex = tcan ? new THREE.CanvasTexture(tcan) : null;
   const SROWS = SCROLL_TEXT.length, SW = 2048, SH = 16;
   const scan = makeCanvas(SW, SROWS * SH); const scrollTex = scan ? new THREE.CanvasTexture(scan) : null;
-  if (textTex) { textTex.colorSpace = THREE.NoColorSpace; textTex.generateMipmaps = false; textTex.minFilter = THREE.LinearFilter; }
-  if (scrollTex) { scrollTex.colorSpace = THREE.NoColorSpace; scrollTex.generateMipmaps = false; scrollTex.minFilter = THREE.NearestFilter; scrollTex.magFilter = THREE.NearestFilter; }
+  if (textTex) { textTex.flipY = false; textTex.colorSpace = THREE.NoColorSpace; textTex.generateMipmaps = false; textTex.minFilter = THREE.LinearFilter; }
+  if (scrollTex) { scrollTex.flipY = false; scrollTex.colorSpace = THREE.NoColorSpace; scrollTex.generateMipmaps = false; scrollTex.minFilter = THREE.NearestFilter; scrollTex.magFilter = THREE.NearestFilter; }
   const paintText = () => {
     if (tcan) {
       const g = tcan.getContext('2d'); g.clearRect(0, 0, TW, TROWS * TH);
@@ -887,7 +891,7 @@ export function build(layout, ctx = {}) {
     mesh.onBeforeRender = (renderer) => { const rt = renderer.getRenderTarget(); u.uViewH.value = rt ? rt.height : renderer.domElement.height; };
     group.add(mesh);
     // cabinet behind the panel, and a truss for rooftop billboards
-    const fr = [nn.z, 0, -nn.x], c = [sc.pos[0] - nn.x * 0.15, sc.pos[1], sc.pos[2] - nn.z * 0.15];
+    const fr = [nn.z, 0, -nn.x], c = [sc.pos[0] - nn.x * 0.25, sc.pos[1], sc.pos[2] - nn.z * 0.25]; // cabinet front 10 cm behind the panel
     box(houseBuf, c, fr, [nn.x, 0, nn.z], sc.w / 2 + 0.12, sc.h / 2 + 0.12, 0.2, HOUSE);
     if (sc.kind === 'billboard') { const bot = sc.pos[1] - sc.h / 2; const lot = (layout.lots || []).find((l) => l.id === sc.lot); const roof = lot ? lot.floors * (lot.floorH || 3.2) : bot - 3;
       for (const k of [-0.4, 0, 0.4]) box(houseBuf, [c[0] + fr[0] * sc.w * k - nn.x * 0.6, (bot + roof) / 2, c[2] + fr[2] * sc.w * k - nn.z * 0.6], fr, [nn.x, 0, nn.z], 0.08, Math.max(0.1, (bot - roof) / 2), 0.08, STEEL); }
