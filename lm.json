@@ -18,8 +18,8 @@
    "file": "lm_sunny.png",
    "id": "kloofendal_48d_partly_cloudy_puresky",
    "range": [
-    -14.5,
-    1.5
+    -12.75,
+    3.25
    ],
    "sunDir": [
     0.646031,
@@ -35,11 +35,13 @@
      0.90881
     ],
     "skyB": [
-     1.15895,
-     1.33002,
-     1.90254
+     2.3179,
+     2.66004,
+     3.80507
     ],
-    "envI": 0.85
+    "envI": 1.7,
+    "sunRatio": 3.75,
+    "bgI": 2
    }
   },
   "overcast": {
@@ -67,23 +69,28 @@
      3.97609,
      3.99409
     ],
-    "envI": 0.85
+    "envI": 0.85,
+    "sunRatio": 0,
+    "bgI": 1
    }
   }
  },
+ "vegHash": null,
+ "vegTris": 0,
+ "denoise": "cross-bilateral (openness, back hits, log luminance)",
  "rays": [
-  32,
-  32,
-  256
+  8,
+  8,
+  48
  ],
  "bounces": 3,
- "mode": "full",
- "bakeSec": 662,
+ "mode": "quick",
+ "bakeSec": 443,
  "threads": 2,
  "date": "2026-11-08",
  "files": {
-  "lm_sunny.png": 2441056,
-  "lm_overcast.png": 1617352,
-  "lm_aux.png": 1013662
+  "lm_sunny.png": 3426612,
+  "lm_overcast.png": 2343478,
+  "lm_aux.png": 1511846
  }
 }
