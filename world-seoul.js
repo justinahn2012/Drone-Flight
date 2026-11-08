@@ -503,7 +503,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
         const hit = grid.near(qx, qz).find((l) => polyD(qx, qz, l.footprint) < 0.6);
         if (!hit) continue;
         const ya = p.h - 1.0 - R() * 1.5, yb = Math.min(hit._H - 0.5, 4.2 + R() * 2.5);
-        catenary([px, ya, pz], [qx, yb, qz], 0.03 + R() * 0.02, 0.012 + R() * 0.01);
+        { const r = 0.012 + R() * 0.01, pts = catenary([px, ya, pz], [qx, yb, qz], 0.03 + R() * 0.02, r); cables.push({ a: pts[0], b: pts[pts.length - 1], low: Math.min(...pts.map((v) => v[1])), pts, r, drop: true }); }
       }
       prev = p;
     });
@@ -522,22 +522,34 @@ export function buildSeoulGeometry(layout, opts = {}) {
       const ya = p.h - 0.7 - k * 0.35 - R() * 0.2, yb = q.h - 0.7 - k * 0.35 - R() * 0.2, sag = 0.02 + R() * 0.02, r = k < 2 ? 0.03 : 0.02 + R() * 0.015;
       const ox = (R() - 0.5) * 0.5, oz = (R() - 0.5) * 0.5;
       const pts = catenary([p.x + ox, ya, p.z + oz], [q.x + ox, yb, q.z + oz], sag, r);
-      cables.push({ a: [p.x, ya, p.z], b: [q.x, yb, q.z], low: Math.min(...pts.map((v) => v[1])) });
+      cables.push({ a: [p.x, ya, p.z], b: [q.x, yb, q.z], low: Math.min(...pts.map((v) => v[1])), pts, r });   // pts, r: E's screen-space line renderer
     }
   }
 
   // ---------------- [P2-C] stream E's street dressing (contract P2-1), tolerated missing: render geometry by material, collider
   // triangles, emitters (L3) and set pieces. Keys that match ours merge into our meshes; new keys keep their own material
   // (seoul-dressing's MATS / materials, SEOUL_MATS schema).
-  const merged = {}, dressing = { keys: [], colTris: 0, emitters: 0, setPieces: [], materials: {}, error: null };
+  const merged = {}, dressing = { keys: [], colTris: 0, emitters: 0, setPieces: [], materials: {}, error: null, out: null };
+  const DM = opts.dressing === false ? null : (opts.dressing || DRESSING);
+  let d = null;
+  if (DM && typeof DM.geometry === 'function') {
+    try { d = DM.geometry(layout, { seed, lotInfo, poles, cables, streets, lines: lineData, emitters: emitters.slice(), shopTop: K.shopTop, fasciaY: K.fascia[0], NITS }) || {}; }
+    catch (e) { dressing.error = String(e?.message || e); console.warn('seoulDressing.geometry', e); d = null; }
+  }
+  // E's ground openings (stairwells): the ground is re-cut around them
+  if (d?.holes?.length && typeof DM.groundTris === 'function') {
+    try { const x0 = B.x0 - 80, x1 = B.x1 + 80, z0 = B.z0 - 80, z1 = B.z1 + 80, g = new Acc(false);
+      for (const [p, q, r] of DM.groundTris(x0, z0, x1, z1, d.holes)) { const P3 = (v) => [v[0], 0, v[1]]; const cr = (q[1] - p[1]) * (r[0] - p[0]) - (q[0] - p[0]) * (r[1] - p[1]);
+        if (cr >= 0) g.tri(P3(p), P3(q), P3(r), p, q, r); else g.tri(P3(p), P3(r), P3(q), p, r, q); }
+      acc.walk = g; } catch (e) { console.warn('seoul ground holes', e); }
+  }
   for (const [k, a] of Object.entries(acc)) { const g = a.geometry(); if (g) merged[k] = g; }
   const own = { ...merged };   // our part of each mesh: the collider (E's triangles collide through its colTris)
-  const DM = opts.dressing === false ? null : (opts.dressing || DRESSING);
   let dressCol = null;
-  if (DM && typeof DM.geometry === 'function') {
+  if (d) {
     try {
-      const d = DM.geometry(layout, { seed, lotInfo, poles, cables, streets, NITS }) || {};
-      Object.assign(dressing.materials, DM.MATS || DM.materials || {}, d.materials || {});
+      dressing.out = d;
+      Object.assign(dressing.materials, DM.DRESS_MATS || DM.MATS || DM.materials || {}, d.materials || {});
       for (const [k, g0] of Object.entries(d.merged || {})) {
         if (!g0?.getAttribute?.('position')) continue;
         if (merged[k]) { const g = conform(g0, merged[k]); if (g) merged[k] = mergeGeometries([merged[k], g], false); else merged['E:' + k] = g0; }
@@ -547,12 +559,12 @@ export function buildSeoulGeometry(layout, opts = {}) {
       if (d.colTris?.getAttribute?.('position')) { dressCol = d.colTris.index ? d.colTris.toNonIndexed() : d.colTris; dressing.colTris = dressCol.getAttribute('position').count / 3; }
       for (const e of d.emitters || []) emitters.push(e);
       dressing.emitters = (d.emitters || []).length; dressing.setPieces = d.setPieces || [];
-    } catch (e) { dressing.error = String(e?.message || e); console.warn('seoulDressing.geometry', e); }
+    } catch (e) { dressing.error = String(e?.message || e); console.warn('seoulDressing merge', e); }
   }
   facts.dressing = { keys: dressing.keys.length, colTris: dressing.colTris, emitters: dressing.emitters, setPieces: dressing.setPieces.length, ...(dressing.error ? { error: dressing.error } : {}) };
   // ---------------- merge per material, collider
   const posOnly = (g) => { const h = new THREE.BufferGeometry(); h.setAttribute('position', (g.index ? g.toNonIndexed() : g).getAttribute('position')); return h; };
-  const dressNoCol = new Set(Object.entries(dressing.materials).filter(([, m]) => m.collide === false || m.decal).map(([k]) => k));
+  const dressNoCol = new Set(Object.entries(dressing.materials).filter(([, m]) => m.collide === false || m.noCol || m.decal).map(([k]) => k));
   // dressing meshes collide through E's colTris only (render meshes of E's own keys stay out of our collider)
   const colKeys = Object.keys(merged).filter((k) => !noCol.has(k) && !dressNoCol.has(k) && (SEOUL_MATS[k] && !k.startsWith('E:'))), colRanges = [];
   const colParts = colKeys.map((k) => posOnly(own[k] || merged[k]));
@@ -575,7 +587,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
     merged, colGeo, colRanges, colKeyOf, bvh, skimBvh, emitters, facts, lotInfo, poles, cables, layout,
     lines: L.lines || [], funnels: L.funnels || [],
     startPoints: (L.startPoints || []).map(v3), takeStart: L.takeStart || null,
-    spawn: layout.spawn, setPieces: dressing.setPieces, dressingMats: dressing.materials, dressing: DM,
+    spawn: layout.spawn, setPieces: dressing.setPieces, dressingMats: dressing.materials, dressing: DM, dressingOut: dressing.out,
   };
 }
 // make a partner geometry match one of ours (non-indexed, same attribute set) so the two can merge; null if impossible
@@ -665,6 +677,11 @@ void seoulGlass(inout vec4 dc) {
   } else if (front > 5.5 && front < 6.5) {    // cafe curtain on the lower 40 %
     if (gu.y < 0.4) { vec4 cc = sgTile(10.0, vec2(fract(gu.x * w / 0.9), gu.y), lod); col = mix(col, cc.rgb * vec3(0.95, 0.92, 0.85) * L * 0.8, cc.a); }
   }
+  // mirror term: at grazing angles the pane mirrors the lit street (warm-magenta neon haze, broken up), above ~15 deg the sky
+  vec3 rf = reflect(rd, n); float F = 0.04 + 0.96 * pow(1.0 - clamp(-dot(rd, n), 0.0, 1.0), 5.0);
+  vec2 gp = floor(sWPos.xz * 0.35 + rf.xz * 6.0); float hz = fract(sin(dot(gp, vec2(12.9898, 78.233))) * 43758.5453);
+  vec3 street = mix(vec3(0.30, 0.12, 0.20), vec3(0.32, 0.22, 0.10), hz) * (0.4 + 1.2 * hz * hz);
+  col += F * mix(street, vec3(0.006, 0.006, 0.01), smoothstep(0.05, 0.3, rf.y));
   sgEmit = col;
 }
 `;
@@ -798,7 +815,7 @@ export async function buildSeoul(renderer, a, b) {
   const texLoader = IS_NODE ? null : new THREE.TextureLoader();
   const { mats, ready } = makeMaterials(renderer, texLoader, geo.dressingMats);
   for (const [k, g] of Object.entries(geo.merged)) {
-    let mat = mats[k] || mats[k.replace(/^E:/, '')] || mats.concrete;
+    let mat = (!SEOUL_MATS[k] && geo.dressing?.material?.(k.replace(/^E:/, ''), renderer)) || mats[k] || mats[k.replace(/^E:/, '')] || mats.concrete;
     if (mat.vertexColors && !g.getAttribute('color')) { mat = mat.clone(); mat.vertexColors = false; }   // a partner mesh without vertex colour
     const mesh = new THREE.Mesh(g, mat); mesh.name = 'seoul:' + k; mesh.matrixAutoUpdate = false; mesh.receiveShadow = true;
     if (k === 'ao') { mesh.renderOrder = -10; mesh.frustumCulled = false; }
@@ -824,7 +841,7 @@ export async function buildSeoul(renderer, a, b) {
   if (lifeMod?.build) { try { parts.life = await lifeMod.build(layout, ctx); if (parts.life?.group) scene.add(parts.life.group); emitters.push(...(parts.life?.emitters || [])); } catch (e) { console.warn('seoulLife.build', e); } }
   // [P2-C] stream E's runtime part (cable renderer, animated bits), contract P2-1: build(layout, ctx) -> { group, update }
   if (geo.dressing && typeof geo.dressing.build === 'function' && opts.dressing !== false) {
-    try { parts.dressing = await geo.dressing.build(layout, { ...ctx, setPieces: geo.setPieces }); if (parts.dressing?.group) scene.add(parts.dressing.group); emitters.push(...(parts.dressing?.emitters || [])); }
+    try { parts.dressing = await geo.dressing.build(layout, { ...ctx, dressing: geo.dressingOut, lines: lineData, setPieces: geo.setPieces }); if (parts.dressing?.group) scene.add(parts.dressing.group); emitters.push(...(parts.dressing?.emitters || [])); }
     catch (e) { console.warn('seoulDressing.build', e); }
   }
   await Promise.race([ready, new Promise((r) => setTimeout(r, 8000))]);
