@@ -23,15 +23,25 @@ export const SKIES = {
   // Overcast stays x1.0: under stream D's grade (clipEv 2.5, evBias +0.3) its cloud deck already clips 22.6% of the
   // spawn frame (ref 7.7-22%); x1.6 blew 37% (80% of the sky). disc: a 0.6 deg sun disc kept in the background at
   // this radiance (the energy over the clamp is carried by the DirectionalLight, so the env never sees it).
-  sunny: { id: 'kloofendal_48d_partly_cloudy_puresky', label: 'Sunny', sunRatio: 7.5, sunDir: [0.5544, 0.7417, 0.3775], rotY: 0.87, bgI: 2.0, disc: 2000 },
+  // [A4] decision 2: the sky light that falls on the world is the sky you see: envI = 0.85 x bgI (skyEnvI), so sunny
+  // runs envI 1.7. sunRatio 7.5 -> 3.75 keeps sunI at 10.0 (sunI = sunRatio x skyLum x envI); shade goes blue.
+  sunny: { id: 'kloofendal_48d_partly_cloudy_puresky', label: 'Sunny', sunRatio: 3.75, sunDir: [0.5544, 0.7417, 0.3775], rotY: 0.87, bgI: 2.0, disc: 2000 },
   overcast: { id: 'overcast_soil_puresky', label: 'Overcast', sunRatio: 0, sunDir: [0.3813, 0.921, 0.0794], rotY: 0, bgI: 1.0, disc: 0 },
 };
 // [A2] world-space sun of a SKIES entry (three r180: a background/env rotation Euler(0, rotY, 0) samples the texture at
 // R(-rotY) * worldDir, so a texture direction d shows at R(+rotY) * d). The bake, shadows, haze and exporters use this.
 export function skySunDir(def) { return new THREE.Vector3(...def.sunDir).normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), def.rotY || 0); }
+// [A4] sky light on the world (scene.environmentIntensity, the bake's sky, uSkyB): 0.85 of the visible sky (decision 2)
+export function skyEnvI(def) { return 0.85 * ((def && def.bgI) ?? 1); }
 // [A2] live shadow map: +-ext m, re-rendered only when its centre (the camera, no lead) moves a snapM light-space step.
 // Lead 0 + 8 m snap: ~2-3 re-renders/s in carves instead of 13-20 (perf #1b). Exported for the frequency test.
+// [A4] only used when some caster opts out of the static maps (userData.liveShadow, e.g. foliage whose shadow sways):
+// then the live map renders those casters alone. By default every caster is static and there is no live map.
 export const LIVE_SHADOW = { ext: 52, snapM: 8, lead: 0, back: 150 };
+// [A4] static sun shadow maps, rendered once at load (perf #1, decision 6). near: 4096^2 hardware-compare depth (16 bit)
+// fitted to the site's casters in light space, capped at +-half m (5.4 cm texels at 110); far: every caster (+-170 m);
+// ring: the treeline crowns (A2). normal/bias: receiver offset along the normal and depth bias, metres.
+export const SUN_MAPS = { near: { size: 4096, sizeLow: 2048, half: 110, normal: 0.05, bias: 0.03 }, far: { size: 2048, sizeLow: 1024, half: 170, normal: 0.15, bias: 0.08 } };
 // [B] surfaces. CC0 Poly Haven sets at 1k; `maps` = which maps are worth downloading.
 // color = linear multiplier on the diffuse map (measured texture means, see report); w = weathering
 // [streaks, base damp, up-facing grime, moss]; wx = [streak columns per m, cylinder radius (0 = planar walls),
@@ -1505,11 +1515,15 @@ export async function bakeLight(geo, { sunDir, sun = true, quality = 'auto', onT
 }
 
 // ---------------------------------------------------------------- [A] shader patch (one hook inside weatherPatch)
-// uniforms.aLight: uSunB/uSkyB scale the baked bounce once the HDR is measured; uFar* = static far shadow map that takes
-// over where the live (camera-following) map ends; uSunW/uHaze = forward-scatter haze in the fog.
+// uniforms.aLight: uSunB/uSkyB scale the baked bounce once the HDR is measured; uSunW/uHaze = forward-scatter haze in
+// the fog. [A4] Sun shadows: uNear* = the static near map (4096^2, the site), uFar* = the static far map (every caster),
+// both rendered once at load (renderSunMap); uSunShOn = 0 when the sky casts no shadow. uHz/uHzI = the horizon table
+// (loadSky) that the fog converges to, x bgI.
 function lightUniforms() {
   return { uSunB: { value: new THREE.Vector3() }, uSkyB: { value: new THREE.Vector3() }, uFarSM: { value: null }, uFarMat: { value: new THREE.Matrix4() },
     uFarOn: { value: 0 }, uFarTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) }, uSunW: { value: new THREE.Vector3(0, 1, 0) }, uHaze: { value: 1.2 },
+    uNearSM: { value: null }, uNearMat: { value: new THREE.Matrix4() }, uNearTexel: { value: new THREE.Vector2(1 / 4096, 1 / 4096) }, uSunShOn: { value: 0 },
+    uHz: { value: null }, uHzI: { value: 1 }, uHzOn: { value: 0 },
     // [A1] committed lightmap (see lmLoad): indirect irradiance, aux = (openness, sun mask), log2 range, live scale
     uLM: { value: null }, uLMAux: { value: null }, uLMRange: { value: new THREE.Vector2(-12, 3) }, uLMScale: { value: new THREE.Vector3(1, 1, 1) } };
 }
@@ -1518,11 +1532,18 @@ function lightUniforms() {
 // Indirect diffuse x mix(1, ao, 0.8) on the surfaces that are in D's depth pass (not foliage, grass, treeline).
 function aoUniforms() { return { uAO: { value: null }, uAOOn: { value: 0 }, uAOScale: { value: new THREE.Vector2(1, 1) } }; }
 const AO_KINDS = new Set(['built', 'ground', 'track', 'bark', 'decal']);
-const A_DIR_LINE = 'directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;';
-const A_LIGHTS_BEGIN = THREE.ShaderChunk.lights_fragment_begin.includes(A_DIR_LINE)
-  ? THREE.ShaderChunk.lights_fragment_begin.replace(A_DIR_LINE, A_DIR_LINE.replace('? getShadow(', '? aDirShadow( getShadow(').replace(' ) : 1.0;', ' ), vDirectionalShadowCoord[ i ] ) : 1.0;'))
+// [A4] the sun's static shadow goes in right after getDirectionalLightInfo, whether or not three has a shadow map
+// (by default it has none: no live pass). If some caster keeps a live map (userData.liveShadow), three's own getShadow
+// line below still multiplies it in. Only the first directional light (the sun).
+const A_DIR_INFO = 'getDirectionalLightInfo( directionalLight, directLight );';
+const A_SUN_LINE = 'directLight.color *= receiveShadow ? aSunShadow() : 1.0;';
+const A_LIGHTS_BEGIN = THREE.ShaderChunk.lights_fragment_begin.split(A_DIR_INFO).length === 2
+  ? THREE.ShaderChunk.lights_fragment_begin.replace(A_DIR_INFO, `${A_DIR_INFO}
+		#if UNROLLED_LOOP_INDEX == 0
+		${A_SUN_LINE}
+		#endif`)
   : null;
-if (!A_LIGHTS_BEGIN) console.warn('[A-lighting] three lights_fragment_begin changed: far shadows + sun mask disabled');
+if (!A_LIGHTS_BEGIN) console.warn('[A-lighting] three lights_fragment_begin changed: static sun shadows + sun mask disabled');
 function aLightingPatch(sh, uniforms, mat, kind) {
   const U = uniforms?.aLight; if (!U) return;
   // [A1] lightmapped material (mat.userData.aLM, set by lmEnable with its own program key): the indirect diffuse is
@@ -1537,8 +1558,10 @@ attribute float aSunOcc;
 uniform vec3 uSunB;
 uniform vec3 uSkyB;
 uniform mat4 uFarMat;
+uniform mat4 uNearMat;
 varying vec3 vBounceA;
 varying vec4 vFarC;
+varying vec3 vNearC;
 ${lm ? `#ifndef USE_UV2
 attribute vec2 uv2;
 #endif
@@ -1552,17 +1575,25 @@ centroid varying vec2 vLmUv;` : ''}`)
     #endif
     aW = modelMatrix * aW;
     vec3 aN = inverseTransformDirection( transformedNormal, viewMatrix );
-    vFarC = vec4( ( uFarMat * vec4( aW.xyz + aN * 0.15, 1.0 ) ).xyz, 1.0 - aSunOcc );
+    vFarC = vec4( ( uFarMat * vec4( aW.xyz + aN * ${SUN_MAPS.far.normal.toFixed(3)}, 1.0 ) ).xyz, 1.0 - aSunOcc );
+    vNearC = ( uNearMat * vec4( aW.xyz + aN * ${SUN_MAPS.near.normal.toFixed(3)}, 1.0 ) ).xyz;
   }`);
   sh.fragmentShader = sh.fragmentShader
     .replace('#include <common>', `#include <common>
 uniform sampler2DShadow uFarSM;
+uniform sampler2DShadow uNearSM;
 uniform float uFarOn;
+uniform float uSunShOn;
 uniform vec2 uFarTexel;
+uniform vec2 uNearTexel;
 uniform vec3 uSunW;
 uniform float uHaze;
+uniform sampler2D uHz;
+uniform float uHzI;
+uniform float uHzOn;
 varying vec3 vBounceA;
 varying vec4 vFarC;
+varying vec3 vNearC;
 ${ssao ? `uniform sampler2D uAO;
 uniform float uAOOn;
 uniform vec2 uAOScale;
@@ -1582,11 +1613,21 @@ float aFarShadow() {
   return 0.25 * ( texture( uFarSM, vec3( c.xy - t, c.z ) ) + texture( uFarSM, vec3( c.xy + vec2( t.x, - t.y ), c.z ) )
     + texture( uFarSM, vec3( c.xy + vec2( - t.x, t.y ), c.z ) ) + texture( uFarSM, vec3( c.xy + t, c.z ) ) );
 }
-float aDirShadow( float live, vec4 sc ) {
-  vec3 c = sc.xyz / sc.w;
-  vec2 e = min( c.xy, 1.0 - c.xy );
-  float wL = smoothstep( 0.0, 0.05, min( e.x, e.y ) ) * step( c.z, 1.0 );
-  float s = wL > 0.999 ? live : mix( aFarShadow(), live, wL );
+// [A4] static near map: 4 hardware-compare bilinear taps at +-0.5 texel (a 3x3-texel tent, ~0.1 m at 5.4 cm texels),
+// fading into the far map over the outer 3 % of the near map
+float aNearShadow() {
+  vec3 c = vNearC;
+  vec2 t = uNearTexel * 0.5;
+  return 0.25 * ( texture( uNearSM, vec3( c.xy - t, c.z ) ) + texture( uNearSM, vec3( c.xy + vec2( t.x, - t.y ), c.z ) )
+    + texture( uNearSM, vec3( c.xy + vec2( - t.x, t.y ), c.z ) ) + texture( uNearSM, vec3( c.xy + t, c.z ) ) );
+}
+float aSunShadow() {
+  float s = 1.0;
+  if ( uSunShOn > 0.5 ) {
+    vec2 e = min( vNearC.xy, 1.0 - vNearC.xy );
+    float wN = vNearC.z <= 1.0 ? smoothstep( 0.0, 0.03, min( e.x, e.y ) ) : 0.0;
+    s = wN > 0.999 ? aNearShadow() : wN > 0.0 ? mix( aFarShadow(), aNearShadow(), wN ) : aFarShadow();
+  }
   return s * smoothstep( 0.05, 0.4, ${lm ? 'aLmX.g' : 'vFarC.w'} );
 }`)
     .replace('#include <aomap_fragment>', `${lm ? 'reflectedLight.indirectDiffuse = aLmIrr() * BRDF_Lambert( material.diffuseColor ) * aSSAO();'
@@ -1599,7 +1640,10 @@ float aDirShadow( float live, vec4 sc ) {
     float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
   #endif
   vec3 aVd = inverseTransformDirection( normalize( - vViewPosition ), viewMatrix );
-  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor * ( 1.0 + uHaze * pow( max( dot( aVd, uSunW ), 0.0 ), 6.0 ) ), fogFactor );
+  // [A4] the horizon sky of this view azimuth (x bgI), so far ground meets the sky and the below-horizon fill without
+  // a band; the forward-scatter lobe fades out as the fog closes in (at full fog the colour is exactly the table)
+  vec3 aFc = uHzOn > 0.5 ? texture2D( uHz, vec2( atan( aVd.z, aVd.x ) * 0.15915494 + 0.5, 0.5 ) ).rgb * uHzI : fogColor;
+  gl_FragColor.rgb = mix( gl_FragColor.rgb, aFc * ( 1.0 + uHaze * pow( max( dot( aVd, uSunW ), 0.0 ), 6.0 ) * ( 1.0 - fogFactor ) ), fogFactor );
 #endif`);
   if (A_LIGHTS_BEGIN) sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_begin>', A_LIGHTS_BEGIN);
   if (lm) {   // vAO -> the lightmap's openness from here on (after B's `varying float vAO;`, before any use in main)
@@ -1852,7 +1896,7 @@ export function lmBakeInputs(geo) {
   return {
     albedo: Object.fromEntries(Object.keys(geo.merged).map((k) => [k, albedoOf(k)])), ground: gA, leaf: MATS.leaf?.albedo ?? [0.1, 0.12, 0.04],
     terrainAlbedo: (x, z) => (ap && fps.some((f) => Math.max(f.x0 - x, 0, x - f.x1) ** 2 + Math.max(f.z0 - z, 0, z - f.z1) ** 2 < rad * rad) ? ap : distToPaths(x, z) < 2.6 ? pA : gA),
-    envI: 0.85, aoExp: 1.15, PH,
+    envI: 0.85, envIOf: (def) => skyEnvI(def), aoExp: 1.15, PH,   // [A4] envI per sky = 0.85 bgI (envI: the round-3 base)
   };
 }
 export function geometryHash(geo) {
@@ -1999,36 +2043,45 @@ function lmEnable(mat) {
   mat.customProgramCacheKey = () => (k ? k.call(mat) : '') + '|lm';
 }
 
-// ---------------------------------------------------------------- [A] static far shadow map (rendered once at load)
-// Covers every caster in light space at ~13 cm texels; the live map (+-48 m around the camera) fades into it, so the
-// hall and silos cast shadows from the spawn and from altitude. Cost: one depth pass at load, 0 per frame, 16 MB.
-function renderFarShadow(renderer, scene, merged, L, size, U) {
-  const box = new THREE.Box3(); for (const g of Object.values(merged)) { if (!g.boundingBox) g.computeBoundingBox(); box.union(g.boundingBox); }
-  box.expandByScalar(8);
+// ---------------------------------------------------------------- [A4] static sun shadow maps (rendered once at load)
+// Perf #1 / decision 6: every caster is static, so the camera-following live map (re-rendered 2-5x/s, ~4 ms each, 16
+// RGBA-unpack taps per lit fragment) is gone. Two depth maps are rendered once from proxies of the casters:
+//   near: fitted in light space to the casters inside `fit` (the site), capped at +-half m, 4096^2 x 16 bit (5.4 cm
+//         texels at 110 m), sampled with 4 hardware-compare taps;
+//   far:  every caster (+-170 m cap, 2048^2), where the near map ends (as round 3's far map).
+// casters: meshes; fit: a Box3 the map must cover (null = the casters' own bounds); opt: { size, half, bias, bits }.
+function renderSunMap(renderer, casters, L, fit, opt) {
+  const box = fit ? fit.clone() : new THREE.Box3(); if (!fit) for (const o of casters) box.expandByObject(o);
+  box.expandByScalar(4);
   const lx = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), L).normalize(), ly = new THREE.Vector3().crossVectors(L, lx);
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], c = new THREE.Vector3();
   for (let k = 0; k < 8; k++) {
     c.set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z);
     [c.dot(lx), c.dot(ly), c.dot(L)].forEach((v, i) => { lo[i] = Math.min(lo[i], v); hi[i] = Math.max(hi[i], v); });
   }
-  const hx = Math.min(170, (hi[0] - lo[0]) / 2), hy = Math.min(170, (hi[1] - lo[1]) / 2), back = (hi[2] - lo[2]) / 2 + 60;
+  const size = opt.size, hx = Math.min(opt.half, (hi[0] - lo[0]) / 2), hy = Math.min(opt.half, (hi[1] - lo[1]) / 2), back = (hi[2] - lo[2]) / 2 + 60;
   const ctr = new THREE.Vector3().addScaledVector(lx, (lo[0] + hi[0]) / 2).addScaledVector(ly, (lo[1] + hi[1]) / 2).addScaledVector(L, (lo[2] + hi[2]) / 2);
   const cam = new THREE.OrthographicCamera(-hx, hx, hy, -hy, 1, 2 * back);
   cam.position.copy(ctr).addScaledVector(L, back); cam.up.set(0, 1, 0); cam.lookAt(ctr); cam.updateMatrixWorld(true); cam.updateProjectionMatrix();
-  const dt = new THREE.DepthTexture(size, size); dt.type = THREE.UnsignedIntType; dt.compareFunction = THREE.LessEqualCompare; dt.minFilter = dt.magFilter = THREE.LinearFilter;
+  const dt = new THREE.DepthTexture(size, size); dt.type = opt.bits === 16 ? THREE.UnsignedShortType : THREE.UnsignedIntType;
+  dt.compareFunction = THREE.LessEqualCompare; dt.minFilter = dt.magFilter = THREE.LinearFilter;
   const rt = new THREE.WebGLRenderTarget(size, size, { depthTexture: dt, depthBuffer: true, format: THREE.RedFormat, type: THREE.UnsignedByteType, generateMipmaps: false });
-  // proxies of every shadow caster with a depth-only material (alpha-tested where the original is)
-  scene.updateMatrixWorld(true);
-  const casters = []; scene.traverse((o) => { if (o.isMesh && o.castShadow && o.visible) casters.push(o); });
-  const px = shadowProxies(casters);
-  const prev = renderer.getRenderTarget();
+  const px = shadowProxies(casters), prev = renderer.getRenderTarget();
   renderer.setRenderTarget(rt); renderer.clear(true, true, true); renderer.render(px.scene, cam); renderer.setRenderTarget(prev);
   px.dispose();
   rt.depthTexture = null; rt.dispose();   // keep only the depth texture (frees the FBO and the colour plane)
   const M = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
-  M.elements[14] -= 0.08 / (2 * back - 1);   // 8 cm depth bias (plus the 15 cm normal offset in the shader)
-  U.uFarMat.value.copy(M); U.uFarSM.value = dt; U.uFarOn.value = 1; U.uFarTexel.value.set(1 / size, 1 / size);
-  return { tex: dt, texel: (2 * Math.max(hx, hy)) / size };
+  M.elements[14] -= opt.bias / (2 * back - 1);   // depth bias in metres (plus the normal offset in the shader)
+  return { tex: dt, M, size, texel: (2 * Math.max(hx, hy)) / size, half: [+hx.toFixed(1), +hy.toFixed(1)] };
+}
+// a 1x1 compare texture cleared to the far plane: what a sampler2DShadow sees when there is no map (an unbound shadow
+// sampler makes ANGLE drop the draw; three never uploads its null fallback)
+function blankSunMap(renderer) {
+  const dt = new THREE.DepthTexture(1, 1); dt.type = THREE.UnsignedShortType; dt.compareFunction = THREE.LessEqualCompare; dt.minFilter = dt.magFilter = THREE.NearestFilter;
+  const rt = new THREE.WebGLRenderTarget(1, 1, { depthTexture: dt, depthBuffer: true, format: THREE.RedFormat, type: THREE.UnsignedByteType, generateMipmaps: false });
+  const prev = renderer.getRenderTarget(); renderer.setRenderTarget(rt); renderer.clear(true, true, true); renderer.setRenderTarget(prev);
+  rt.depthTexture = null; rt.dispose();
+  return dt;
 }
 
 // [A2] depth-only stand-ins for shadow casters, sharing geometry and instance matrices. A mesh's customDepthMaterial
@@ -2071,12 +2124,12 @@ float aRingShadow() {
   return texture( uRingSM, c );
 }
 `;
-// Runs right after aLightingPatch (inside weatherPatch's [A-lighting] block): needs its aDirShadow( getShadow( ... call.
+// Runs right after aLightingPatch (inside weatherPatch's [A-lighting] block): needs its sun line ([A4] A_SUN_LINE).
 function aSkyShadowPatch(sh, uniforms) {
-  const U = uniforms?.aSky; if (!U || !sh.fragmentShader.includes('aDirShadow( getShadow(')) return;
+  const U = uniforms?.aSky; if (!U || !sh.fragmentShader.includes(A_SUN_LINE)) return;
   Object.assign(sh.uniforms, U);
   sh.fragmentShader = sh.fragmentShader.replace('void main() {', `${A2_RING_GLSL}\nvoid main() {`)
-    .replace('? aDirShadow( getShadow(', '? aRingShadow() * aDirShadow( getShadow(');
+    .replace(A_SUN_LINE, A_SUN_LINE.replace('? aSunShadow()', '? aRingShadow() * aSunShadow()'));
 }
 // hole: world xz the ring surrounds (the site centre; the crowns' own bounding box is lopsided by the outer groves)
 function renderRingShadow(renderer, root, L, size, U, hole = null) {
@@ -2155,10 +2208,37 @@ export function applySky(scene, def, sk) {
   scene.background = sk.sky; scene.environment = sk.env;
   scene.backgroundRotation.set(0, rot, 0); scene.environmentRotation.set(0, rot, 0);
   scene.backgroundIntensity = bgI;
-  scene.fog = new THREE.Fog(sk.fogColor.clone().multiplyScalar(bgI), 40, 2600);
+  scene.fog = new THREE.Fog(sk.fogColor.clone().multiplyScalar(bgI), 40, 2600);   // [A4] = the horizon table's mean (non-patched materials)
   return bgI;
 }
-export async function loadSky(def, renderer, { envI = 0.85, groundAlb = ALB_FALLBACK.ground, haze = 1.2, onProgress } = {}) {
+// [A4] horizon colour per azimuth (decision 7, lighting #4, graphics #4). One fog colour averaged over every direction
+// was up to 1.7x the horizon sky on the dim side (the HDR's horizon runs 0.25-0.85 by azimuth), so from altitude the
+// fogged far ground and the below-horizon fill showed as a white band (luma 227 over sky 188). Now the fog converges, per
+// view azimuth, to the sky 0.25-1.5 deg above the horizon in that azimuth (blurred +-3 deg so clouds don't streak), and
+// the background below the horizon is the same table: far ground, fill and the sky row above meet without a seam.
+// HZ_N bins over atan2(z, x); `world` is in the world frame (rotY applied), for the shader; `hdr` in the HDR's own frame.
+const HZ_N = 512, HZ_LAT = [0.25, 1.5], HZ_BLUR = 3;
+function horizonTable(data, W, H, ch, rotY) {
+  const hdr = new Float64Array(HZ_N * 3), cnt = new Float64Array(HZ_N);
+  const r0 = Math.floor((0.5 - HZ_LAT[1] / 180) * H), r1 = Math.ceil((0.5 - HZ_LAT[0] / 180) * H);
+  for (let py = r0; py <= r1; py++) for (let px = 0; px < W; px++) {
+    const b = Math.min(HZ_N - 1, Math.floor((px + 0.5) / W * HZ_N)), i = (py * W + px) * ch;
+    hdr[b * 3] += data[i]; hdr[b * 3 + 1] += data[i + 1]; hdr[b * 3 + 2] += data[i + 2]; cnt[b]++;
+  }
+  for (let b = 0; b < HZ_N; b++) for (let c = 0; c < 3; c++) hdr[b * 3 + c] /= Math.max(1, cnt[b]);
+  // circular Gaussian blur in azimuth
+  const sig = HZ_BLUR / 360 * HZ_N, R = Math.ceil(sig * 3), K = Array.from({ length: 2 * R + 1 }, (_, k) => Math.exp(-((k - R) ** 2) / (2 * sig * sig)));
+  const ks = K.reduce((a, v) => a + v, 0), bl = new Float32Array(HZ_N * 3);
+  for (let b = 0; b < HZ_N; b++) for (let c = 0; c < 3; c++) { let s = 0; for (let k = -R; k <= R; k++) s += K[k + R] * hdr[(((b + k) % HZ_N + HZ_N) % HZ_N) * 3 + c]; bl[b * 3 + c] = s / ks; }
+  // HDR bin of texture azimuth phi: bin = (phi / 2pi + 0.5) * N (equirectDir: phi = ((px + 0.5) / W - 0.5) * 2pi).
+  // A world direction at azimuth phiW shows texture azimuth phiW + rotY (R(-rotY) turns atan2(z, x) by +rotY).
+  const at = (tab, phi) => { let u = (phi / (2 * Math.PI) + 0.5) * HZ_N - 0.5; u -= Math.floor(u / HZ_N) * HZ_N; const i0 = Math.floor(u), f = u - i0, i1 = (i0 + 1) % HZ_N; return [0, 1, 2].map((c) => tab[i0 * 3 + c] * (1 - f) + tab[i1 * 3 + c] * f); };
+  const world = new Float32Array(HZ_N * 3);
+  for (let b = 0; b < HZ_N; b++) { const v = at(bl, ((b + 0.5) / HZ_N - 0.5) * 2 * Math.PI + rotY); world[b * 3] = v[0]; world[b * 3 + 1] = v[1]; world[b * 3 + 2] = v[2]; }
+  const mean = [0, 1, 2].map((c) => { let s = 0; for (let b = 0; b < HZ_N; b++) s += bl[b * 3 + c]; return s / HZ_N; });
+  return { hdr: bl, world, mean, at: (phi) => at(bl, phi) };
+}
+export async function loadSky(def, renderer, { envI = skyEnvI(def), groundAlb = ALB_FALLBACK.ground, haze = 1.2, onProgress } = {}) {
   const id = def.id, url = `${PH}/HDRIs/hdr/2k/${id}_2k.hdr`;
   const tex = await new HDRLoader().setDataType(THREE.FloatType).loadAsync(url, (e) => e.total && onProgress?.(e.loaded / e.total));
   const { width: W, height: H, data } = tex.image; const ch = data.length / (W * H);
@@ -2186,21 +2266,25 @@ export async function loadSky(def, renderer, { envI = 0.85, groundAlb = ALB_FALL
   const Ei = Math.max(...E), skyLum = 0.2126 * skyE.x + 0.7152 * skyE.y + 0.0722 * skyE.z;
   const sunColor = Ei > 1e-2 ? new THREE.Color(E[0] / Ei, E[1] / Ei, E[2] / Ei) : new THREE.Color(1, 1, 1);
   const sunI = Math.min(16, Math.max(Ei > 1e-2 ? Ei : 0, (def.sunRatio || 0) * skyLum * envI));
-  const fogC = new THREE.Color(fog[0] / fogN, fog[1] / fogN, fog[2] / fogN);
+  // [A4] the horizon table (sun already clamped out of `data`); fogC = its azimuth mean (round 3: 0.5-5 deg mean, `fog`)
+  const hzT = horizonTable(data, W, H, ch, def.rotY || 0);
+  const fogC = new THREE.Color(...hzT.mean), fogOld = [fog[0] / fogN, fog[1] / fogN, fog[2] / fogN];
   const sst = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
   const H1 = THREE.DataUtils.toHalfFloat(1);
-  // background: below the horizon = what the fog converges to (fog colour x forward-scatter haze)
+  // background: below the horizon = what the fog converges to: [A4] the horizon table of that azimuth (round 3: one
+  // mean fog colour x the haze lobe), blended in from 1 deg above the horizon
   // [A2] plus the capped sun disc (stored / bgI, so it shows at def.disc after scene.backgroundIntensity)
   const half = new Uint16Array(W * H * 4);
   const discL = def.sunRatio > 0 && def.disc > 0 ? def.disc / (def.bgI || 1) : 0, texAng = Math.PI / H, latSun = Math.asin(L.y);
+  const hzPx = new Float32Array(W * 3); for (let px = 0; px < W; px++) { const v = hzT.at(((px + 0.5) / W - 0.5) * 2 * Math.PI); hzPx[px * 3] = v[0]; hzPx[px * 3 + 1] = v[1]; hzPx[px * 3 + 2] = v[2]; }
   let discN = 0;
   for (let py = 0; py < H; py++) {
-    const lat = latOf(py), t = sst(0.5, -1.0, lat * 180 / Math.PI), cl = Math.cos(lat), sl = Math.sin(lat);
+    const lat = latOf(py), t = sst(1.0, 0.0, lat * 180 / Math.PI), cl = Math.cos(lat), sl = Math.sin(lat);
     const discRow = discL > 0 && Math.abs(lat - latSun) < SUN_R + 2 * texAng;
     for (let px = 0; px < W; px++) {
       const i = (py * W + px) * ch, o = (py * W + px) * 4;
       let r = data[i], g = data[i + 1], b = data[i + 2];
-      if (t > 0) { const hz = 1 + haze * Math.pow(Math.max(0, cosP[px] * cl * L.x + sl * L.y + sinP[px] * cl * L.z), 6); r += (fogC.r * hz - r) * t; g += (fogC.g * hz - g) * t; b += (fogC.b * hz - b) * t; }
+      if (t > 0) { r += (hzPx[px * 3] - r) * t; g += (hzPx[px * 3 + 1] - g) * t; b += (hzPx[px * 3 + 2] - b) * t; }
       if (discRow) {
         const k = sunDiscCover(cosP[px] * cl * L.x + sl * L.y + sinP[px] * cl * L.z, texAng);
         if (k > 0) { r += (discL * sunColor.r - r) * k; g += (discL * sunColor.g - g) * k; b += (discL * sunColor.b - b) * k; discN++; }
@@ -2230,8 +2314,13 @@ export async function loadSky(def, renderer, { envI = 0.85, groundAlb = ALB_FALL
   const pm = new THREE.PMREMGenerator(renderer);
   const env = pm.fromEquirectangular(envSrc).texture; pm.dispose(); envSrc.dispose();
   console.info('sky', id, 'sunI', +sunI.toFixed(2), 'sunE', +Ei.toFixed(2), 'sunColor', [sunColor.r, sunColor.g, sunColor.b].map((v) => +v.toFixed(3)), 'skyE', skyE.toArray().map((v) => +v.toFixed(3)),
-    'fog', [fogC.r, fogC.g, fogC.b].map((v) => +v.toFixed(3)), 'ground', gR.map((v) => +v.toFixed(3)), 'maxL', +maxL.toFixed(0), 'disc texels', discN);
-  return { sky, env, sunDir: L, sunColor, sunI, sunE: Ei, skyE, fogColor: fogC, discTexels: discN };
+    'fog', [fogC.r, fogC.g, fogC.b].map((v) => +v.toFixed(3)), 'fog r3 (0.5-5 deg mean)', fogOld.map((v) => +v.toFixed(3)), 'envI', +envI.toFixed(3), 'ground', gR.map((v) => +v.toFixed(3)), 'maxL', +maxL.toFixed(0), 'disc texels', discN);
+  // [A4] the world-frame horizon table as a 512x1 half-float texture (linear, wraps in azimuth) for the fog patch
+  const hzHalf = new Uint16Array(HZ_N * 4);
+  for (let b = 0; b < HZ_N; b++) { for (let c = 0; c < 3; c++) hzHalf[b * 4 + c] = THREE.DataUtils.toHalfFloat(hzT.world[b * 3 + c]); hzHalf[b * 4 + 3] = H1; }
+  const hzTex = new THREE.DataTexture(hzHalf, HZ_N, 1, THREE.RGBAFormat, THREE.HalfFloatType);
+  hzTex.colorSpace = THREE.LinearSRGBColorSpace; hzTex.magFilter = hzTex.minFilter = THREE.LinearFilter; hzTex.generateMipmaps = false; hzTex.wrapS = THREE.RepeatWrapping; hzTex.wrapT = THREE.ClampToEdgeWrapping; hzTex.needsUpdate = true;
+  return { sky, env, sunDir: L, sunColor, sunI, sunE: Ei, skyE, fogColor: fogC, discTexels: discN, horizon: { tex: hzTex, world: hzT.world, mean: hzT.mean } };
 }
 
 
@@ -2394,7 +2483,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   // [A] sky + light. The bake needs only the per-sky sun direction, so it runs right after the geometry while the HDR
   // and textures stream; the HDR's measured sun/sky intensities then scale it through uniforms (uniforms.aLight).
   // [A2] sunDir is the WORLD sun (the sky's own sunDir turned by rotY), for the bake, the light, shadows and haze
-  const skyDef = SKIES[sky] || SKIES.sunny, hasSun = skyDef.sunRatio > 0, envI = 0.85, sunDir = skySunDir(skyDef);
+  const skyDef = SKIES[sky] || SKIES.sunny, hasSun = skyDef.sunRatio > 0, envI = skyEnvI(skyDef), sunDir = skySunDir(skyDef);   // [A4] envI = 0.85 bgI
   const aLight = (uniforms.aLight = lightUniforms());
   uniforms.aSky = skyShadowUniforms();   // [A2] ring shadow map (treeline crowns)
   aLight.uSunW.value.copy(sunDir); aLight.uHaze.value = hasSun ? 1.2 : 0;
@@ -2934,13 +3023,16 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     }
     bake.stats.decals = dr || 'probe';
   }
-  // [A] sun: a shadowed DirectionalLight carrying the energy clamped out of the HDR.
-  // [A2] Live map: +-52 m (5.1 cm texels at 2048) centred on the camera (no lead), snapped to a texel-aligned 8 m
-  // light-space grid and re-rendered only when that snapped centre moves (autoUpdate off): >= 48 m of cover all round.
-  // Beyond it the static far map (site casters), and over the far ground the static ring map (treeline crowns).
+  // [A] sun: a DirectionalLight carrying the energy clamped out of the HDR.
+  // [A4] Shadows (decision 6): static maps rendered once here, after every caster exists (renderSunShadows): the near
+  // map over the site, the far map over every caster, the ring map over the treeline crowns. No live map and no shadow
+  // pass per frame, unless a caster opts out with userData.liveShadow = true (e.g. foliage with a swaying shadow): then
+  // three's live map (+-52 m around the camera, A2's snapping) renders those casters alone and multiplies in on top.
+  // A static caster added after buildBando returns is picked up by update() (checked 1/s) or world.rebakeShadows().
   const sun = new THREE.DirectionalLight(sk.sunColor, sunI);
   scene.environmentIntensity = envI;
-  sun.castShadow = sunI > 0.5;                       // overcast: no shadow pass at all
+  const sunShadows = sunI > 0.5;                     // overcast: no shadow maps at all
+  sun.castShadow = false;
   const sm = quality === 'low' ? 1024 : 2048; sun.shadow.mapSize.set(sm, sm);
   const { ext, back, snapM, lead } = LIVE_SHADOW;
   Object.assign(sun.shadow.camera, { left: -ext, right: ext, top: ext, bottom: -ext, near: 1, far: 2 * back });
@@ -2951,18 +3043,50 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   const texel = (2 * ext) / sm, snap = texel * Math.max(1, Math.round(snapM / texel));
   const lightBasisX = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), sunDir).normalize(), lightBasisY = new THREE.Vector3().crossVectors(sunDir, lightBasisX);
   const _fwd = new THREE.Vector3(), _ctr = new THREE.Vector3(); let shAx = NaN, shAy = NaN, shN = 0;
-  if (sun.castShadow) {
-    const fs = renderFarShadow(renderer, scene, merged, sunDir, quality === 'low' ? 1024 : 2048, aLight);
-    if (mats.slab) mats.slab.aFarShadowTex = fs.tex;   // so clearWorld()'s material sweep disposes it with the world
-    console.info('far shadow texel m', +fs.texel.toFixed(3));
+  // [A4] horizon fog (loadSky's table, x bgI)
+  aLight.uHz.value = sk.horizon.tex; aLight.uHzI.value = bgI; aLight.uHzOn.value = 1;
+  if (mats.slab) mats.slab.aHorizonTex = sk.horizon.tex;
+  // the near map fits the site: the footprints, up to the chimney top, plus the reach of their shadows on the ground
+  const nearFit = new THREE.Box3();
+  for (const f of site.footprints || []) nearFit.union(new THREE.Box3(new THREE.Vector3(f.x0, -2, f.z0), new THREE.Vector3(f.x1, 4, f.z1)));
+  for (const g of Object.values(merged)) { if (!g.boundingBox) g.computeBoundingBox(); }
+  if (nearFit.isEmpty()) nearFit.setFromCenterAndSize(new THREE.Vector3(-5, 20, 10), new THREE.Vector3(160, 50, 160));
+  nearFit.max.y = Math.max(nearFit.max.y, ...Object.values(merged).map((g) => Math.min(60, g.boundingBox.max.y)));
+  nearFit.expandByVector(new THREE.Vector3(12, 0, 12));
+  const blank = blankSunMap(renderer); if (mats.slab) mats.slab.aBlankShadowTex = blank;
+  aLight.uNearSM.value = blank; aLight.uFarSM.value = blank; uniforms.aSky.uRingSM.value = blank;
+  let shadowInfo = { static: false }, liveCasters = [], tCheck = 0;
+  const newCaster = () => { let f = false; scene.traverse((o) => { if (!f && o.isMesh && o.castShadow && o.visible && !o.userData.liveShadow && !o.userData.aStaticCaster && o.name !== 'treeline') f = true; }); return f; };
+  const renderSunShadows = () => {
+    if (!sunShadows) { shadowInfo = { static: false, why: 'no sun' }; return shadowInfo; }
+    const t0 = performance.now();
+    scene.updateMatrixWorld(true);
+    const all = [], live = [];
+    scene.traverse((o) => { if (o.isMesh && o.visible && (o.castShadow || o.userData.liveShadow || o.userData.aStaticCaster) && o.name !== 'treeline') (o.userData.liveShadow ? live : all).push(o); });
+    for (const o of all) { o.castShadow = false; o.userData.aStaticCaster = true; }   // three's shadow pass skips them: they are in the static maps
+    for (const o of live) o.castShadow = true;
+    liveCasters = live; sun.castShadow = live.length > 0; if (sun.castShadow) sun.shadow.needsUpdate = true;
+    for (const k of ['aNearShadowTex', 'aFarShadowTex']) if (mats.slab?.[k]) { mats.slab[k].dispose(); mats.slab[k] = null; }
+    const nq = quality === 'low' ? SUN_MAPS.near.sizeLow : SUN_MAPS.near.size, fq = quality === 'low' ? SUN_MAPS.far.sizeLow : SUN_MAPS.far.size;
+    const near = renderSunMap(renderer, all, sunDir, nearFit, { size: nq, half: SUN_MAPS.near.half, bias: SUN_MAPS.near.bias, bits: 16 });
+    const far = renderSunMap(renderer, all, sunDir, null, { size: fq, half: SUN_MAPS.far.half, bias: SUN_MAPS.far.bias, bits: 24 });
+    aLight.uNearSM.value = near.tex; aLight.uNearMat.value.copy(near.M); aLight.uNearTexel.value.set(1 / near.size, 1 / near.size);
+    aLight.uFarSM.value = far.tex; aLight.uFarMat.value.copy(far.M); aLight.uFarTexel.value.set(1 / far.size, 1 / far.size); aLight.uFarOn.value = 1;
+    aLight.uSunShOn.value = 1;
+    if (mats.slab) { mats.slab.aNearShadowTex = near.tex; mats.slab.aFarShadowTex = far.tex; }   // so clearWorld()'s material sweep disposes them
+    shadowInfo = { static: true, casters: all.length, live: live.length, near: { size: near.size, texel: +near.texel.toFixed(4), half: near.half }, far: { size: far.size, texel: +far.texel.toFixed(3), half: far.half }, ms: Math.round(performance.now() - t0) };
+    console.info('[A4] static sun shadows', JSON.stringify(shadowInfo));
+    return shadowInfo;
+  };
+  if (sunShadows) {
     // [A2] treeline crowns (stream B's mesh or group named 'treeline'; absent = no ring map) into a static ring map
-    // A sampler2DShadow must always see an allocated compare texture (three's null fallback is never uploaded, and
-    // ANGLE then drops every draw), so without a treeline the far map stands in and uRingG.w stays 0.
+    // A sampler2DShadow must always see an allocated compare texture, so without a treeline the blank map stands in.
     const tl = scene.getObjectByName('treeline');
-    const siteBox = new THREE.Box3(); for (const g of Object.values(merged)) { if (!g.boundingBox) g.computeBoundingBox(); siteBox.union(g.boundingBox); }
+    const siteBox = new THREE.Box3(); for (const g of Object.values(merged)) siteBox.union(g.boundingBox);
     const rs = tl ? renderRingShadow(renderer, tl, sunDir, 1024, uniforms.aSky, new THREE.Vector2((siteBox.min.x + siteBox.max.x) / 2, (siteBox.min.z + siteBox.max.z) / 2)) : null;
     if (rs) { if (mats.slab) mats.slab.aRingShadowTex = rs.tex; console.info('ring shadow', rs.info); }
-    else { uniforms.aSky.uRingSM.value = fs.tex; uniforms.aSky.uRingG.value.w = 0; console.info('ring shadow: no treeline object, off'); }
+    else { uniforms.aSky.uRingG.value.w = 0; console.info('ring shadow: no treeline object, off'); }
+    renderSunShadows();
   }
   let grassLevel = 1;
   const update = (camPos, dt, camQuat) => {
@@ -2981,8 +3105,12 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     // [B] C2 depth: the grass ring within ~8 m, the leaf tiles within 40 m
     grassDepth.visible = grass.visible; grassDepth.geometry.instanceCount = Math.min(grass.geometry.instanceCount, ringCount(8 / cell + 1.5));
     for (const m of leafTiles) { _ds.copy(m.geometry.boundingSphere); m.visible = _ds.distanceToPoint(camPos) < 40; }
-    // [A2] live shadow map follows the camera (lead 0: a heading-dependent centre re-rendered on every turn);
-    // re-render only when its snapped centre moves
+    // [A4] a static caster added after the bake (a mesh with castShadow that is in no map yet; checked once a second):
+    // render the static maps again
+    if (sunShadows && (tCheck += dt) > 1) { tCheck = 0; if (newCaster()) renderSunShadows(); }
+    // [A2] live shadow map (only with userData.liveShadow casters) follows the camera; re-render only when its
+    // snapped centre moves
+    if (!sun.castShadow) return;
     _ctr.copy(camPos);
     if (camQuat && lead > 0) { _fwd.set(0, 0, -1).applyQuaternion(camQuat); _fwd.y = 0; const l = _fwd.length(); if (l > 1e-3) _ctr.addScaledVector(_fwd, (lead * ext) / l); }
     const ax = Math.round(_ctr.dot(lightBasisX) / snap) * snap, ay = Math.round(_ctr.dot(lightBasisY) / snap) * snap;
@@ -3004,7 +3132,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   if (lm) lm.irr.pix = null;   // [A1] the CPU copy of the lightmap (14 MB) served the build-time probes only
   scene.userData.aLight = aLight; scene.userData.lightBake = bake.stats; scene.userData.aoUniforms = uniforms.aAO;   // [A] live tuning hooks (uSunB, uSkyB, uFarOn, uHaze...)
   // [A2] sky/shadow hooks: ring map uniforms, live-map re-render count (for perf checks), the world sun
-  scene.userData.aSky = { u: uniforms.aSky, shadowUpdates: () => shN, sunDir: sunDir.clone(), rotY: skyDef.rotY || 0, bgI };
+  scene.userData.aSky = { u: uniforms.aSky, shadowUpdates: () => shN, sunDir: sunDir.clone(), rotY: skyDef.rotY || 0, bgI, envI, shadows: () => shadowInfo, rebakeShadows: renderSunShadows };
   return {
     scene, colliderScene: colScene, depthScene, bvh, skimBvh, update, hdr: true, stats: bStats,      // [B] depthScene: contract C2
     spawn: new THREE.Vector3(0, terrainHeight(0, 118) + 1.4, 118), yaw: 0,                       // first flight: the reveal
@@ -3015,5 +3143,6 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     bounds: new THREE.Box3(new THREE.Vector3(-480, -5, -480), new THREE.Vector3(480, 260, 480)),
     envelope: { min: new THREE.Vector3(-440, -2, -440), max: new THREE.Vector3(440, 220, 440) },
     aoUniforms: uniforms.aAO,   // [A1] contract C3
+    rebakeShadows: renderSunShadows,   // [A4] re-render the static sun maps after adding/moving a static caster
   };
 }
