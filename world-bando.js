@@ -2243,6 +2243,16 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
       qq.setFromAxisAngle(UPV, t.rot); M.compose(P.set(t.x, t.y, t.z), qq, S.set(t.w, t.h, t.d)); im.setMatrixAt(i, M);
       const gc = greens[Math.min(3, Math.floor(t.tint * 4))], k = 0.88 + t.tint * 0.24; im.setColorAt(i, col.setRGB(gc[0] * k, gc[1] * k, gc[2] * k));
     });
+    // depth stand-in for A2's static ring shadow map (it uses customDepthMaterial when present): the same map cut-out
+    // with the same mip alpha boost as the visible cards, so at ~0.9 m shadow texels the crowns' shadows keep their
+    // fill. castShadow stays false: three's own live shadow pass never draws the treeline (it is A2's ring map's).
+    const tdm = new THREE.MeshBasicMaterial({ map: leafMap, alphaTest: 0.42, side: THREE.DoubleSide, colorWrite: false });
+    tdm.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <alphatest_fragment>', `#ifdef USE_MAP
+  { vec2 tx = vMapUv * 512.0; diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
+#endif
+#include <alphatest_fragment>`); };
+    tdm.customProgramCacheKey = () => 'treelineDepth';
+    im.customDepthMaterial = tdm;
     im.computeBoundingSphere(); im.castShadow = false; im.receiveShadow = false; im.renderOrder = 1; im.matrixAutoUpdate = false; im.name = 'treeline'; scene.add(im);
     foliageStats.treeline = treeline.filter((t) => !t.outer).length; foliageStats.treelineOuter = treeline.length - foliageStats.treeline; lap('treeline');
   }
