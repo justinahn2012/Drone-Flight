@@ -3,7 +3,7 @@
 // Contract P2-1
 //   seoulDressing.geometry(layout, opts) is pure CPU (node-safe, deterministic, no Math.random) and returns
 //     { merged: {matKey: BufferGeometry}, colTris: BufferGeometry (position only), emitters: [L3], setPieces: [...],
-//       holes: [[[x, z], ...]], cables: [{pts, r}], labels: [...], lamps: [...], facts }
+//       holes: [[[x, z], ...]], cables: [{pts, r}], labels: [...], lamps: [...], obstacles: [[x, z, r]], facts }
 //   - merged keys are either S1/C keys (SEOUL_MATS: concrete, tile, walk, metal, white, dark, pole) with C's attribute
 //     layout (position, normal, uv), or E's own keys (DRESS_MATS, prefix dr_) whose material comes from
 //     seoulDressing.material(key, renderer). vcol keys carry `color`, emissive keys `aEm` (scene-linear radiance).
@@ -1154,7 +1154,9 @@ export function geometry(layout, opts = {}) {
   for (const [k, a] of Object.entries(acc)) { const g = a.geometry(); if (g) { merged[k] = g; tris += g.getAttribute('position').count / 3; } }
   const colTris = new THREE.BufferGeometry(); colTris.setAttribute('position', new THREE.BufferAttribute(col.out(), 3)); colTris.computeBoundingBox();
   facts.tris = tris; facts.colTris = col.length / 9; facts.emitters = emitters.length; facts.holes = holes.length; facts.cables = cables.length; facts.labels = labels.length; facts.lamps = lamps.length; facts.setPieces = setPieces.map((s) => s.id); facts.ms = Date.now() - t0; facts.msParts = msParts;
-  const out = { merged, colTris, emitters, setPieces, holes, cables, labels, lamps, facts, materials: DRESS_MATS };
+  // ground footprints of what E placed (discs x, z, r): for G's crowd to walk around
+  const obstacles = []; for (const v of occ.values()) for (const d of v) if (d[2] > 0.2) obstacles.push([+d[0].toFixed(2), +d[1].toFixed(2), +d[2].toFixed(2)]);
+  const out = { merged, colTris, emitters, setPieces, holes, cables, labels, lamps, obstacles, facts, materials: DRESS_MATS };
   CACHE.set(layout, out);
   return out;
 }
@@ -1339,7 +1341,7 @@ function paintLabel(g, c, fam) {
 // native export (H): the runtime content as plain data (geometry itself goes out through buildGeometry / export-world)
 export function exportData(layout, opts = {}) {
   const g = CACHE.get(layout) || geometry(layout, opts);
-  return { version: 1, setPieces: g.setPieces, emitters: g.emitters, holes: g.holes, cables: g.cables, labels: g.labels, lamps: g.lamps, materials: DRESS_MATS, facts: g.facts };
+  return { version: 1, setPieces: g.setPieces, emitters: g.emitters, holes: g.holes, cables: g.cables, labels: g.labels, lamps: g.lamps, obstacles: g.obstacles, materials: DRESS_MATS, facts: g.facts };
 }
 
 export const seoulDressing = { geometry, build, material, groundTris, exportData, DRESS_MATS, NITS };
