@@ -36,7 +36,7 @@ jobs:
       - name: Lightmaps match the geometry (stale = fail)
         run: node tools/test-lightmap.mjs
       - name: Take rules
-        run: if [ -f tests/take.mjs ]; then node tests/take.mjs; else echo "::notice::no tests/take.mjs on this branch"; fi
+        run: if [ -f tests/take.mjs ]; then node tests/take.mjs && HZ=240 node tests/take.mjs; else echo "::notice::no tests/take.mjs on this branch"; fi
       - name: Collision stress (lite)
         run: node tests/stress-lite.mjs
       - name: Export round trip
