@@ -24,6 +24,7 @@ export function perfProbe(o, frames = 120) {
   box.append(txt, btn); document.body.appendChild(box);
   const say = (s) => { txt.textContent = s; };
 
+  const warm = Math.min(WARM, frames);   // a short ?perf=N test run gets a short warm-up too
   const run = async () => {
     btn.style.display = 'none';
     const fpv = o.fpv, r = o.renderer, gl = r.getContext(), px = new Uint8Array(4), S = o.S;
@@ -37,7 +38,7 @@ export function perfProbe(o, frames = 120) {
       for (const s of SCALES) {
         o.tp(0, 1.6, 118, 0, 4 - o.drone.c.camTilt);
         const tot = [], cpu = [];
-        for (let i = 0; i < WARM + frames; i++) {
+        for (let i = 0; i < warm + frames; i++) {
           await raf();
           fpv.scale = s; o.drone.vel.set(0, 0, -5);
           const t0 = performance.now();
@@ -45,8 +46,8 @@ export function perfProbe(o, frames = 120) {
           const t1 = performance.now();
           sync();
           const t2 = performance.now();
-          if (i >= WARM) { tot.push(t2 - t0); cpu.push(t1 - t0); }
-          if (i % 10 === 0) say(`PERF · scale ${s.toFixed(1)} · ${i < WARM ? 'warm-up' : `frame ${i - WARM}/${frames}`}`);
+          if (i >= warm) { tot.push(t2 - t0); cpu.push(t1 - t0); }
+          if (i % 10 === 0) say(`PERF · scale ${s.toFixed(1)} · ${i < warm ? 'warm-up' : `frame ${i - warm}/${frames}`}`);
         }
         const mean = tot.reduce((a, b) => a + b, 0) / tot.length;
         res.scales.push({ scale: s, px: [Math.round(fpv.outW * s), Math.round(fpv.outH * s)], p50: q(tot, 0.5), p90: q(tot, 0.9), mean, cpuP50: q(cpu, 0.5), max: Math.max(...tot) });
@@ -71,7 +72,7 @@ export function perfProbe(o, frames = 120) {
     await o.startFlight(true);
     while (o.state !== 'fly' && o.state !== 'crash') await new Promise((r) => setTimeout(r, 250));
     o.step(1000 / 60, 1, false);
-    say(`PERF · ready. Hold the phone the way you fly, then tap RUN.\n${SCALES.length} × (${WARM} + ${frames}) frames, about ${Math.ceil(SCALES.length * (WARM + frames) / 40)} s.`);
+    say(`PERF · ready. Hold the phone the way you fly, then tap RUN.\n${SCALES.length} × (${warm} + ${frames}) frames, about ${Math.ceil(SCALES.length * (warm + frames) / 40)} s.`);
     btn.textContent = 'RUN'; btn.style.display = '';
   })().catch((e) => say('PERF · failed: ' + (e?.message || e)));
 }
