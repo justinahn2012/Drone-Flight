@@ -326,7 +326,6 @@ async function loadProcWorld(def) {
   clearWorld();
   Object.assign(world, { scene: w.scene, colliderScene: w.colliderScene, bvh: w.bvh, bounds: w.bounds, envelope: w.envelope, update: w.update, hdr: true });
   Object.assign(world, { skimBvh: w.skimBvh, lines: w.lines, takeStart: w.takeStart });   // C: the take
-  world.aoUniforms = w.aoUniforms;   // [A1] contract C3: SSAO uniforms the world's materials read; fpvcam (D) fills them
   world.spawn.copy(w.spawn); world.yaw = w.yaw;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);

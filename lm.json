@@ -1,0 +1,89 @@
+{
+ "version": 1,
+ "hash": "06f9458dca13f6a4",
+ "hashAlgo": "mm3x2/1 (tools/geohash.mjs) over name, position, normal, uv2, index + layout",
+ "W": 2048,
+ "H": 1696,
+ "texel": 0.2,
+ "terrTexel": 0.25,
+ "charts": 7941,
+ "encoding": "rgb = (log2(E) - range[0]) / (range[1] - range[0]), E = indirect irradiance (pi-included, linear), bilinear",
+ "aux": {
+  "file": "lm_aux.png",
+  "r": "openness^1.15 (40 m, terrain 24 m)",
+  "g": "sunny sun visibility, dilated 3 texels"
+ },
+ "skies": {
+  "sunny": {
+   "file": "lm_sunny.png",
+   "id": "kloofendal_48d_partly_cloudy_puresky",
+   "range": [
+    -14.5,
+    1.5
+   ],
+   "sunDir": [
+    0.554404,
+    0.741706,
+    0.377503
+   ],
+   "rotY": 0,
+   "light": {
+    "sunI": 10.01241,
+    "sunColor": [
+     0.99149,
+     1,
+     0.90881
+    ],
+    "skyB": [
+     1.15895,
+     1.33002,
+     1.90254
+    ],
+    "envI": 0.85
+   }
+  },
+  "overcast": {
+   "file": "lm_overcast.png",
+   "id": "overcast_soil_puresky",
+   "range": [
+    -13.75,
+    2.25
+   ],
+   "sunDir": [
+    0.381312,
+    0.92103,
+    0.079403
+   ],
+   "rotY": 0,
+   "light": {
+    "sunI": 0,
+    "sunColor": [
+     1,
+     1,
+     1
+    ],
+    "skyB": [
+     4.01171,
+     3.97609,
+     3.99409
+    ],
+    "envI": 0.85
+   }
+  }
+ },
+ "rays": [
+  32,
+  32,
+  256
+ ],
+ "bounces": 3,
+ "mode": "full",
+ "bakeSec": 1437,
+ "threads": 2,
+ "date": "2026-11-08",
+ "files": {
+  "lm_sunny.png": 2284830,
+  "lm_overcast.png": 1451078,
+  "lm_aux.png": 854578
+ }
+}

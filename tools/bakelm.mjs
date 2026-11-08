@@ -248,7 +248,7 @@ async function main() {
     const tex = new HDRLoader().setDataType(THREE.FloatType).parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
     const Wh = tex.width, Hh = tex.height, D = tex.data, ch = D.length / (Wh * Hh);
     const L = new THREE.Vector3(...def.sunDir).normalize(), rotY = def.rotY || 0;
-    let maxL = 0; for (let i = 0; i < Wh * Hh; i++) { const l = 0.2126 * D[i * ch] + 0.7152 * D[i * ch + 1] + 0.0722 * D[i * ch + 2]; if (l > maxL) maxL = l; }
+    let maxL = 0, mi = 0; for (let i = 0; i < Wh * Hh; i++) { const l = 0.2126 * D[i * ch] + 0.7152 * D[i * ch + 1] + 0.0722 * D[i * ch + 2]; if (l > maxL) { maxL = l; mi = i; } }
     const cosP = new Float64Array(Wh), sinP = new Float64Array(Wh); for (let px = 0; px < Wh; px++) { const ph = ((px + 0.5) / Wh - 0.5) * 2 * PI; cosP[px] = Math.cos(ph); sinP[px] = Math.sin(ph); }
     const latOf = (py) => (0.5 - (py + 0.5) / Hh) * PI, T = Math.max(8, Math.min(40, maxL * 0.05)), E = [0, 0, 0], skyE = [0, 0, 0];
     for (let py = 0; py < Hh; py++) {
@@ -270,7 +270,15 @@ async function main() {
       const latD = (0.5 - (ty + 0.5) / EH) * 180, t0 = Math.min(1, Math.max(0, (0 - latD) / 2)), t = t0 * t0 * (3 - 2 * t0);
       for (let c = 0; c < 3; c++) tab[(ty * EW + tx) * 3 + c] = PI * envI * (acc[c] / n + (gR[c] / envI - acc[c] / n) * t);
     }
-    const Lw = L.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+    // world sun: stream A2's skySunDir() when present (same as here: the HDR's sun turned by +rotY about Y); the sky
+    // is looked up at R(-rotY) * w (envIdx), exactly as three samples a background/env with rotation (0, rotY, 0)
+    if (def.sunRatio > 0) {   // the HDR's brightest pixel, turned by +rotY, must sit on the world sun (rotation sign check)
+      const ph = ((mi % Wh + 0.5) / Wh - 0.5) * 2 * PI, la = (0.5 - (Math.floor(mi / Wh) + 0.5) / Hh) * PI;
+      const m = new THREE.Vector3(Math.cos(ph) * Math.cos(la), Math.sin(la), Math.sin(ph) * Math.cos(la)).applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+      const Lc = typeof wb.skySunDir === 'function' ? wb.skySunDir(def) : L.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+      if (m.angleTo(Lc) > 0.05) throw new Error(`${key}: HDR sun pixel lands at ${m.toArray().map((v) => v.toFixed(3))} but the world sun is ${Lc.toArray().map((v) => v.toFixed(3))}`);
+    }
+    const Lw = typeof wb.skySunDir === 'function' ? wb.skySunDir(def).normalize() : L.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
     return { key, id: def.id, rotY, sunDir: Lw.toArray(), sunI, sunColor, SUN: sunColor.map((v) => v * sunI), skyB: skyE.map((v) => v * envI), tab, EW, EH, shadows: sunI > 0.5 };
   };
   const SKY = { sunny: await skyOf('sunny'), overcast: await skyOf('overcast') };
