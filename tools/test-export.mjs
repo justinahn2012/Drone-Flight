@@ -91,10 +91,11 @@ try {
   eq(world.hash.world, new GeoHash().str(hRender).str(hCol).hex(), 'world.json hash.world');
   const R = world.collider.ranges;
   if (ok(R, 'collider ranges present')) {
-    eq(R.solid, [0, geo.skimBvh.geometry.attributes.position.count], 'collider solid range == skim geometry');
+    eq(R.solid, [0, (geo.solidGeo || geo.skimBvh.geometry).attributes.position.count], 'collider solid range == solid geometry');
+    eq((R.solid[1] - R.solid[0]) + (R.trees ? R.trees[1] - R.trees[0] : 0), geo.skimBvh.geometry.attributes.position.count, 'solid + trees ranges == skim geometry');
     eq(Object.values(R).at(-1)[1], col.attributes.position.count, 'collider ranges cover every vertex');
     eq(Object.values(world.collider.triangleCounts).reduce((s, n) => s + n, 0), col.index.count / 3, 'collider range triangle counts sum');
-    eq(world.collider.triangleCounts.solid, geo.skimBvh.geometry.index.count / 3, 'solid triangles == skim triangles');
+    eq(world.collider.triangleCounts.solid + (world.collider.triangleCounts.trees || 0), geo.skimBvh.geometry.index.count / 3, 'solid + trees triangles == skim triangles');
     eq(cg.userData.ranges, R, 'collider.glb primitive extras carry the ranges');
   }
 
