@@ -1,0 +1,5 @@
+[
+  { "id": "bando", "name": "Silo Yard", "module": "./world-bando.js", "build": "buildBando", "args": ["renderer", "opts"], "look": "day", "sky": "sunny", "craft": "freestyle5" },
+  { "id": "stub", "name": "Stub Level", "note": "S0 level-switch test", "module": "./tests/level-stub.js", "build": "buildStub", "geometry": "buildStubGeometry", "args": ["renderer", "scene", "opts"], "look": "night", "sky": "night", "grade": { "retro": 0.3 }, "craft": "freestyle5", "tag": "TEST" },
+  { "id": "seoul-hongdae", "alias": ["seoul"], "name": "Neon Seoul", "module": "./world-seoul.js", "build": "buildSeoul", "args": ["renderer", "scene", "opts"], "look": "night", "sky": "night", "craft": "freestyle5" }
+]

@@ -1857,6 +1857,14 @@ export function disposeObject(root, seen = { geo: new Set(), mat: new Set(), tex
     if (o.isLight && o.shadow?.map) seen.rt.add(o.shadow.map);
   });
   tex(root.background); tex(root.environment);
+  // uniform tables parked on scene.userData (aLight: lightmaps, horizon, static sun maps; aSky.u: the ring shadow map)
+  const walk = (o, depth, vis) => {
+    if (!o || typeof o !== 'object' || vis.has(o) || depth > 3) return; vis.add(o);
+    if (o.isTexture || o.isWebGLRenderTarget || o.isRenderTarget) return tex(o);
+    if (o.isObject3D || o.isBufferGeometry || o.isMaterial || ArrayBuffer.isView(o)) return;
+    for (const v of Object.values(o)) walk(v, depth + 1, vis);
+  };
+  walk(root.userData, 0, new Set());
   for (const g of seen.geo) g.dispose?.();
   for (const m of seen.mat) m.dispose?.();
   for (const t of seen.tex) t.dispose?.();
