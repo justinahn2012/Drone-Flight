@@ -69,5 +69,5 @@ def grade(src, size, crop, out, kb):
         if os.path.getsize(out) <= kb * 1024: break
     print(f'{os.path.basename(out)} {size[0]}x{size[1]} q{q} {os.path.getsize(out) / 1024:.0f} KB')
 
-if a.backdrop: grade(a.backdrop, (1600, 900), a.backdrop_crop, os.path.join(OUT, 'backdrop.jpg'), 180)
+if a.backdrop: grade(a.backdrop, (1600, 900), a.backdrop_crop, os.path.join(OUT, 'backdrop.jpg'), 172)
 if a.thumb: grade(a.thumb, (480, 270), a.thumb_crop, os.path.join(OUT, 'thumb.jpg'), 40)

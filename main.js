@@ -1755,7 +1755,7 @@ function updateHud(dt) {
     else $('oNextA').style.transform = `rotate(${dir * 45}deg)`;
     $('oNextN').textContent = arm ? arm.name : nx.name;
     const D = $('oNextD');
-    D.textContent = arm ? (arm.left != null ? ` · ${fmtS(Math.ceil(arm.left))}` : '') : `${Math.round(nx.dist)}M${vt ? '' : elevTxt(nx)}`;
+    D.textContent = arm ? (arm.left != null ? `· ${fmtS(Math.ceil(arm.left))}` : '') : `${Math.round(nx.dist)}M${vt ? '' : elevTxt(nx)}`;
     D.classList.toggle('low', !!arm && arm.left != null && arm.left <= 5);
   }
   $('oNext').classList.toggle('on', guide); $('oNext').classList.toggle('armed', guide && !!arm);
