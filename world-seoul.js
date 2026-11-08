@@ -457,28 +457,32 @@ export function buildSeoulGeometry(layout, opts = {}) {
     if (area > 80 && R() < 0.5) { const s = roofSpot(1.2); if (s) { facts.ac++; A('white').box([s[0], H + 0.55, s[1]], [0.5, 0.55, 0.35], R() * 3); } }   // condenser
   }
 
-  // ---------------- street lights on main roads: LED cobra heads, ~30 m apart, both sides staggered
-  const lampHead = (x, z, ox, oz, h, arm) => {
-    const px = x + ox * arm, pz = z + oz * arm;
-    A('pole').tube([[x, 0, z], [x, h, z], [x + ox * 0.4, h + 0.3, z + oz * 0.4], [px, h + 0.35, pz]], 0.09, 6);
-    A('pole').box([px, h + 0.3, pz], [0.32, 0.08, 0.18], Math.atan2(-oz, ox), false);
-    A('lamp').quad([px - ox * 0.28 - oz * 0.12, h + 0.215, pz - oz * 0.28 + ox * 0.12], [px + ox * 0.28 - oz * 0.12, h + 0.215, pz + oz * 0.28 + ox * 0.12], [px + ox * 0.28 + oz * 0.12, h + 0.215, pz + oz * 0.28 - ox * 0.12], [px - ox * 0.28 + oz * 0.12, h + 0.215, pz - oz * 0.28 - ox * 0.12], [0, -1, 0], undefined, [1.0 * 9000 * NIT, 0.93 * 9000 * NIT, 0.82 * 9000 * NIT]);
-    emitters.push({ id: 'street:' + emitters.length, pos: [+px.toFixed(2), +(h + 0.2).toFixed(2), +pz.toFixed(2)], normal: [0, -1, 0], w: 0.56, h: 0.24, rgb: [1.0, 0.93, 0.82], nits: 9000, kind: 'street', animated: false, lumens: 12000 });
+  // ---------------- street lights. [P2-C] (lighting #6) nits from lumens for a Lambertian head (nits = lm / (pi x area)), so
+  // the L3 records are self-consistent (12 klm cobra head: ~28,000 nits; phase 1 had 9,000, a third of its flux); main roads
+  // get opposite pairs every 32 m (was staggered), pedestrian posts 4 klm, and every second alley pole a 3000 K security lamp.
+  const LAMP = { main: { lumens: 12000, cct: 4000, w: 0.56, h: 0.24 }, ped: { lumens: 4000, cct: 3500, w: 0.56, h: 0.24 }, security: { lumens: 3000, cct: 3000, w: 0.3, h: 0.15 } };
+  const lampHead = (x, z, ox, oz, h, arm, spec = LAMP.main, pole = true) => {
+    const px = x + ox * arm, pz = z + oz * arm, nits = Math.round(spec.lumens / (Math.PI * spec.w * spec.h)), rgb = cctRGB(spec.cct), hw = spec.w / 2, hd = spec.h / 2;
+    if (pole) A('pole').tube([[x, 0, z], [x, h, z], [x + ox * 0.4, h + 0.3, z + oz * 0.4], [px, h + 0.35, pz]], 0.09, 6);
+    else A('pole').tube([[x, h + 0.35, z], [px, h + 0.35, pz]], 0.04, 4);
+    A('pole').box([px, h + 0.3, pz], [hw + 0.04, 0.08, hd + 0.06], Math.atan2(-oz, ox), false);
+    A('lamp').quad([px - ox * hw - oz * hd, h + 0.215, pz - oz * hw + ox * hd], [px + ox * hw - oz * hd, h + 0.215, pz + oz * hw + ox * hd], [px + ox * hw + oz * hd, h + 0.215, pz + oz * hw - ox * hd], [px - ox * hw + oz * hd, h + 0.215, pz - oz * hw - ox * hd], [0, -1, 0], undefined, [rgb[0] * nits * NIT, rgb[1] * nits * NIT, rgb[2] * nits * NIT, 0]);
+    emitters.push({ id: 'street:' + emitters.length, pos: [+px.toFixed(2), +(h + 0.2).toFixed(2), +pz.toFixed(2)], normal: [0, -1, 0], w: spec.w, h: spec.h, rgb: rgb.map((v) => +v.toFixed(3)), nits, kind: 'street', animated: false, lumens: spec.lumens, cct: spec.cct, ...(spec === LAMP.security ? { role: 'security' } : spec === LAMP.ped ? { role: 'pedestrian' } : {}) });
     facts.streetLights++;
   };
   const along = (pts, step, fn) => { let carry = step / 2; for (let i = 0; i < pts.length - 1; i++) { const [ax, az] = pts[i], [bx, bz] = pts[i + 1], L = Math.hypot(bx - ax, bz - az); if (L < 0.1) continue; const tx = (bx - ax) / L, tz = (bz - az) / L; let s = carry; for (; s < L; s += step) fn(ax + tx * s, az + tz * s, tx, tz); carry = s - L; } };
   const clearSpot = (x, z, r) => !grid.inside(x, z) && !grid.near(x, z).some((l) => polyD(x, z, l.footprint) < r) && x > B.x0 && x < B.x1 && z > B.z0 && z < B.z1;
-  let side = 1;
   for (const s of streets) {
     if (s.kind !== 'main' || s.width < 7) continue;
-    along(s.points, 32, (x, z, tx, tz) => { side = -side; const off = s.width / 2 + 0.7, ox = -tz * side, oz = tx * side, px = x + ox * off, pz = z + oz * off;
-      if (clearSpot(px, pz, 0.8)) lampHead(px, pz, -ox, -oz, 8.5, 1.6); });
+    along(s.points, 32, (x, z, tx, tz) => { for (const side of [1, -1]) { const off = s.width / 2 + 0.7, ox = -tz * side, oz = tx * side, px = x + ox * off, pz = z + oz * off;
+      if (clearSpot(px, pz, 0.8)) lampHead(px, pz, -ox, -oz, 8.5, 1.6, LAMP.main); } });
   }
-  // walking street and club streets: short pedestrian lamp posts (4.5 m), warm
+  // walking and club streets: 4.5 m pedestrian posts, staggered, at the edge of the paving (pulled in where facades close in)
+  let side = 1;
   for (const s of streets) {
     if (s.kind !== 'walking' && s.kind !== 'club') continue;
-    along(s.points, 24, (x, z, tx, tz) => { side = -side; const off = s.width / 2 - 0.4, ox = -tz * side, oz = tx * side, px = x + ox * off, pz = z + oz * off;
-      if (clearSpot(px, pz, 0.6)) lampHead(px, pz, -ox, -oz, 4.5, 0.5); });
+    along(s.points, 24, (x, z, tx, tz) => { side = -side; const ox = -tz * side, oz = tx * side;
+      for (let off = s.width / 2 - 0.4; off >= 1.2; off -= 0.5) { const px = x + ox * off, pz = z + oz * off; if (clearSpot(px, pz, 0.6)) { lampHead(px, pz, -ox, -oz, 4.5, 0.5, LAMP.ped); break; } } });
   }
 
   // ---------------- utility poles and cables along alleys and club streets (overhead lines are the norm off the main roads)
@@ -496,6 +500,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
       // cross arm + transformer on some
       A('dark').box([px, p.h - 0.6, pz], [0.9, 0.05, 0.06], Math.atan2(-tz, tx), false);
       if (R() < 0.3) { A('pole').cyl([px + ox * 0.45, p.h - 2.6, pz + oz * 0.45], 0.28, 1.0, 8); }
+      if (poles.length % 2 === 0) lampHead(px, pz, -ox, -oz, 6.0, 0.9, LAMP.security, false);   // 3000 K security lamp toward the lane
       if (prev && Math.hypot(prev.x - px, prev.z - pz) < 45) spanCables(prev, p, R);
       // service drops to the facades across the street (2-3 per pole)
       for (let k = 0; k < 2 + Math.floor(R() * 2); k++) {
