@@ -61,9 +61,9 @@ const MATS = {
   // ground and track: greener, darker, less chromatic (decision 3 / graphics #2: reference ground L39 C6)
   ground: { id: 'grass_ground', tile: 4.0, maps: ['diff'], color: [1.05, 1.3, 2.0], rough: 1, kind: 'ground', albedo: [0.128, 0.128, 0.068] },
   bark: { id: 'bark_brown_02', tile: 1.5, maps: [], color: [1.1, 1.1, 1.1], rough: 0.95, kind: 'bark', albedo: [0.136, 0.111, 0.066] },
-  path: { id: 'grass_path_2', tile: 3.5, maps: ['diff'], color: [0.31, 0.345, 0.48], rough: 1, kind: 'track', albedo: [0.088, 0.080, 0.066] },
+  path: { id: 'grass_path_2', tile: 3.5, maps: ['diff'], color: [0.31, 0.345, 0.48], rough: 1, kind: 'track', albedo: [0.124, 0.121, 0.113] },   // [G5] neutral dirt (WP_FRAG.track)
   // not merged-geometry materials: the paved apron is sampled inside the ground shader; grass and leaves are atlases
-  apron: { id: 'asphalt_02', tile: 5.0, maps: ['diff'], color: [1.75, 1.72, 1.72], kind: 'aux', albedo: [0.176, 0.170, 0.152], radius: 9 },   // radius: mean paved reach around footprints (5-12 m)
+  apron: { id: 'asphalt_02', tile: 5.0, maps: ['diff', 'nor_gl'], color: [1.75, 1.72, 1.72], kind: 'aux', albedo: [0.176, 0.170, 0.152], radius: 9 },   // radius: mean paved reach around footprints (5-12 m)
   // [V2] grass is geometric blades now (shader colour, no texture download); the albedo is the blades' mean (the bake)
   grass: { model: 'grass_medium_01', tile: 1, maps: [], kind: 'aux', albedo: [0.112, 0.109, 0.052] },
   // [V2] straw meadow seen from above: the dry patches of the ground shader (detail only, normalised to unit mean)
@@ -354,22 +354,32 @@ function hangingChunk(S, R, ax, az, bx, bz, y, nx, nz) {
   const d = new THREE.Vector3(nx * Math.cos(tilt), -Math.sin(tilt), nz * Math.cos(tilt));
   S.beam('slab', alongM(d, px, y, pz), -0.05, depth, 0, 0, 0.26, 0.8 + R() * 0.8);
 }
-// jittered, squashed icosahedron: a broken lump of concrete
-function rock(R, s, x, y, z) {
-  const g = s > 0.55 ? new THREE.IcosahedronGeometry(s, 0) : new THREE.OctahedronGeometry(s, 0), p = g.attributes.position, jit = new Map();
-  for (let i = 0; i < p.count; i++) {
-    const key = `${p.getX(i).toFixed(3)},${p.getY(i).toFixed(3)},${p.getZ(i).toFixed(3)}`;
-    let j = jit.get(key); if (!j) jit.set(key, (j = [1 + (R() - 0.5) * 0.5, 1 + (R() - 0.5) * 0.5, 1 + (R() - 0.5) * 0.5]));
-    p.setXYZ(i, p.getX(i) * j[0], p.getY(i) * j[1] * 0.6, p.getZ(i) * j[2]);
+// [G5] a sharp broken slab chunk (graphics #3, round-3 #5: the jittered icosahedra read as smooth lumps): a 4-7 sided
+// irregular plate, 0.15-0.4 x its size thick, flat faces and hard edges, lying flat or tipped up against its pile;
+// a few keep a stub of rebar. y = the surface it lies on.
+function slabChunk(S, R, s, x, y, z) {
+  const n = 4 + Math.floor(R() * 4), el = 0.75 + R() * 0.6, pts = [];
+  for (let i = 0; i < n; i++) { const a = ((i + 0.15 + R() * 0.7) / n) * Math.PI * 2, r = s * (0.55 + R() * 0.5); pts.push(new THREE.Vector2(Math.cos(a) * r * el, Math.sin(a) * r / el)); }
+  const t = s * (0.15 + R() * 0.25), g0 = new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: t, bevelEnabled: false, curveSegments: 1 });
+  const g = g0; g.clearGroups(); g.deleteAttribute('uv'); g.computeVertexNormals();   // non-indexed: flat faces, hard edges
+  g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+  g.rotateX(-Math.PI / 2); g.translate(0, -t / 2, 0);
+  const tip = R() < 0.35 ? 0.25 + R() * 0.55 : R() * 0.12;                   // a third tipped up on their neighbours
+  g.rotateZ(tip * (R() < 0.5 ? -1 : 1)); g.rotateX((R() - 0.5) * 0.2); g.rotateY(R() * 6.283);
+  g.computeBoundingBox(); g.translate(x, y - g.boundingBox.min.y - 0.02 - R() * 0.03, z);
+  planarUV(g, { x: x * 0.31, y: 0, z: z * 0.47 });
+  S.add('slab', g);
+  if (s > 0.35 && R() < 0.2) {                                              // a rebar stub out of a broken edge
+    const a = R() * 6.283, d = new THREE.Vector3(Math.cos(a), 0.1 + R() * 0.5, Math.sin(a)).normalize(), len = 0.2 + R() * 0.45;
+    const rb = new THREE.CylinderGeometry(0.016, 0.016, len, 3, 1, true); rb.translate(0, len / 2, 0); rb.applyQuaternion(_rq.setFromUnitVectors(Y_UP, d));
+    rb.translate(x + Math.cos(a) * s * 0.5, y + t * 0.6, z + Math.sin(a) * s * 0.5); S.add('rust', rb);
   }
-  g.rotateY(R() * 6.28); g.translate(x, y + s * 0.3, z); g.computeVertexNormals(); planarUV(g, { x: 0, y: 0, z: 0 });
-  return g;
 }
 function rubblePile(S, R, cx, cy, cz, rad, n) {
   for (let k = 0; k < n; k++) {
-    const s = 0.2 + Math.pow(R(), 1.6) * 0.6, x = cx + (R() + R() - 1) * rad, z = cz + (R() + R() - 1) * rad;
-    if (R() < 0.4) S.add('slab', rock(R, s, x, cy, z));
-    else S.box('slab', x, cy - s * 0.12, z, s * (1.2 + R()), s * (0.4 + R() * 0.4), s * (0.8 + R() * 0.6), R() * 3);
+    // sizes skewed small; the pile heaps toward its middle (chunks there sit on the ones below)
+    const s = 0.14 + Math.pow(R(), 1.8) * 0.5, u = R() + R() - 1, v = R() + R() - 1, x = cx + u * rad, z = cz + v * rad;
+    slabChunk(S, R, s, x, cy + Math.max(0, 0.22 - Math.hypot(u, v) * 0.3) * (k / n), z);
   }
 }
 // a steep industrial flight (waist slab + treads) from (a, y0) to (b, y1) in a band wd wide
@@ -565,10 +575,11 @@ function buildSite(seed = 7) {
       if (!h.line && rDet() < 0.6) { const e = Math.floor(rDet() * 4), E = [[h.x0, h.z0, h.x1, h.z0, 0, 1], [h.x0, h.z1, h.x1, h.z1, 0, -1], [h.x0, h.z0, h.x0, h.z1, 1, 0], [h.x1, h.z0, h.x1, h.z1, -1, 0]][e]; hangingChunk(S, rDet, ...E.slice(0, 4), y, E[4], E[5]); }
       let L = h.L - 1; while (L >= 0 && kindOf[`${L}:${h.i}:${h.j}`] === 'hole') L--;
       const key = `${L}:${h.i}:${h.j}`; if (piled.has(key)) continue; piled.add(key);
-      rubblePile(S, rRub, (h.x0 + h.x1) / 2, L < 0 ? 0.18 : (L + 1) * fh, (h.z0 + h.z1) / 2, 1.5, L < 0 ? 6 : 4);
+      rubblePile(S, rRub, (h.x0 + h.x1) / 2, L < 0 ? 0.18 : (L + 1) * fh, (h.z0 + h.z1) / 2, 1.5, L < 0 ? 14 : 9);
     }
     // loose slab chunks on the ground floor
     for (let k = 0; k < 10; k++) { const s = 0.4 + rRub() * 0.9; S.box('slab', x0 + 3 + rRub() * (x1 - x0 - 6), 0.18, z0 + 2 + rRub() * (z1 - z0 - 4), s * 1.6, s * 0.6, s, rRub() * 3); }
+    for (let k = 0; k < 30; k++) slabChunk(S, rRub, 0.12 + Math.pow(rRub(), 2) * 0.4, x0 + 2 + rRub() * (x1 - x0 - 4), 0.18, z0 + 1.5 + rRub() * (z1 - z0 - 3));   // [G5] spall
   }
 
   // ---- conveyor gallery: sloped hollow tube from the head house east end down to the hall roof
@@ -612,7 +623,7 @@ function buildSite(seed = 7) {
     S.box('slab', x0 + 6, fh - 0.3, z0 + Lz / 2, 12, 0.3, Lz);                 // first floor, partial
     S.box('slab', x0 + 18.5, fh - 0.3, z0 + Lz / 2, 7, 0.3, Lz * 0.45);
     S.box('slab', x0 + 5.5, 2 * fh, z0 + Lz / 2, 11, 0.3, Lz + 0.4);         // half a roof
-    rubblePile(S, rRub, x0 + 17.5, 0, z0 + 3.0, 1.5, 6);                      // under the missing roof, clear of the doors
+    rubblePile(S, rRub, x0 + 17.5, 0, z0 + 3.0, 1.5, 18);                     // under the missing roof, clear of the doors
     brokenRun(S, rDet, 'wall', x0 + 0.2, z0 + Lz, x0 + Lx - 0.2, z0 + Lz, 2 * fh, 0.5, T);
   }
 
@@ -650,6 +661,23 @@ function buildSite(seed = 7) {
     const x = -90 + rBlk() * 180, z = -60 + rBlk() * 140, s = 0.6 + rBlk() * 1.4, rot = rBlk() * 3;
     if (S.footprints.some((f) => x > f.x0 - 2 && x < f.x1 + 2 && z > f.z0 - 2 && z < f.z1 + 2) || distToPaths(x, z) < 3.5) continue;
     S.box('slab', x, terrainHeight(x, z) - 0.1, z, s * 1.8, s * 0.7, s, rot);
+  }
+  // [G5] spall: broken slab chunks along the foot of the hall, the silo table and the workshop (graphics #3), off the
+  // tracks and clear of every low gate (doors, the rack): they collide, and a skim through a door must stay clean
+  {
+    const gates = []; for (const l of buildLines()) for (const G of [l, ...(l.pre || [])]) if (G.c && G.h && G.c[1] - G.h / 2 < 1.2) gates.push(G.c);
+    const feet = [[HALL.x0, HALL.x1, HALL.z0, HALL.z1, 60], [-54.5, -13.5, -28.5, 0.5, 34], [-64, -42, 40, 53, 22]];
+    for (const [fx0, fx1, fz0, fz1, n] of feet) {
+      const per = 2 * (fx1 - fx0 + fz1 - fz0);
+      for (let k = 0; k < n; k++) {
+        let u = rRub() * per, x, z; const off = 0.75 + Math.pow(rRub(), 1.5) * 2.3, s = 0.12 + Math.pow(rRub(), 2.2) * 0.45;
+        if (u < fx1 - fx0) { x = fx0 + u; z = fz0 - off; } else if ((u -= fx1 - fx0) < fz1 - fz0) { x = fx1 + off; z = fz0 + u; }
+        else if ((u -= fz1 - fz0) < fx1 - fx0) { x = fx1 - u; z = fz1 + off; } else { u -= fx1 - fx0; x = fx0 - off; z = fz1 - u; }
+        if (distToPaths(x, z) < 3 || gates.some((c) => Math.hypot(c[0] - x, c[2] - z) < 6)) continue;
+        if (S.footprints.some((f) => x > f.x0 + 0.6 && x < f.x1 - 0.6 && z > f.z0 + 0.6 && z < f.z1 - 0.6)) continue;
+        slabChunk(S, rRub, s, x, terrainHeight(x, z), z);
+      }
+    }
   }
   S.chimney = CHIM;
   S.lines = buildLines();
@@ -800,6 +828,10 @@ function canvasTex(w, h, draw, srgb = true) {
   const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
 }
 // mean linear colour of a loaded texture (for distance fades / normalisation)
+// [G5] 1x1 stand-ins when a download fails (flatTex was referenced but never defined: a failed meadow download threw)
+const px1 = (r, g, b) => { const t = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1, THREE.RGBAFormat); t.needsUpdate = true; return t; };
+function flatTex() { const t = px1(255, 255, 255); t.colorSpace = THREE.SRGBColorSpace; return t; }
+function flatNorm() { return px1(128, 128, 255); }
 function texMean(t, fallback) {
   try {
     const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(t.image, 0, 0, 32, 32);
@@ -996,7 +1028,22 @@ function buildGroundMask(site, terr) {
     d2[o] = Math.min(1, dP / 8) * 255; d2[o + 1] = dry * 255; d2[o + 2] = flw * 255; d2[o + 3] = lush * 255;
   }
   const mkT = (a) => { const t = new THREE.DataTexture(a, N, N, THREE.RGBAFormat); t.magFilter = t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; t.needsUpdate = true; return t; };
-  return { t: mkT(d), t2: mkT(d2) };
+  return { t: mkT(d), t2: mkT(d2), d, d2 };
+}
+// [G5] contract C7: grass height (m) over the ground at x, z, 0 where nothing stands (the CPU side of the blades: the
+// mask texel as the VS samples it, the same track profile, the 0.5-1.5 m clumps). main.js turns it into prop strikes.
+// Formula after sound r4 §3: dens < 0.08 -> 0, else (0.3 + 0.62 a) x mix(0.42, 1, smoothstep(1.4, 5, trackDist)) x 0.75
+function grassAtFn({ d, d2 }) {
+  const { N, x0, z0, size } = MASK;
+  return (x, z) => {
+    const i = Math.floor((x - x0) / size * N), j = Math.floor((z - z0) / size * N);
+    if (i < 0 || j < 0 || i >= N || j >= N) return 0;
+    const o = (j * N + i) * 4, a = d[o + 3] / 255, dP = (d2[o] / 255) * 8, { clump, brk } = grassFields(x, z);
+    const strip = 1 - smooth1(0.26, 0.44, dP), rut = 1 - smooth1(0.16, 0.36, Math.abs(dP - 0.8)), verge = smooth1(1.45, 2.6, dP);
+    const dens = (d[o] / 255) * Math.max(verge, 0.55 * strip * brk) * (1 - rut) * clump;
+    if (dens < 0.08) return 0;
+    return (0.3 + 0.62 * a) * (0.42 + 0.58 * smooth1(1.4, 5, dP)) * (1 - 0.5 * strip) * (0.82 + 0.3 * smooth1(0.5, 1.5, clump)) * 0.75;
+  };
 }
 
 // ---------------------------------------------------------------- materials
@@ -1011,6 +1058,28 @@ float h21(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); 
 float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
   return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y); }
 float lum3(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }`;
+// [G5] the grass cell hash and the meadow fields shared by the blades (VS), the ground and the track (FS), so the
+// matted floor, the bare strip gaps and the tufts agree texel for texel. gClump: 0.5-1.5 m tuft clumps, a density
+// multiplier 0.2-1.8 with mean 1 (art #1); gBreak: 1-2 m runs of grass on the track's centre strip (1 = grass, art #3).
+// The CPU twin is grassFields() (world.grassAt, contract C7).
+const GRASS_HASH = `
+uint gPcg(uint v) { uint s = v * 747796405u + 2891336453u; uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u; return (w >> 22u) ^ w; }
+vec4 gU4(uint h) { return vec4(uvec4(h, h >> 8u, h >> 16u, h >> 24u) & 255u) * (1.0 / 255.0); }
+float gh(vec2 p) { vec3 q = fract(p.xyx * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+float gvn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(gh(i), gh(i + vec2(1, 0)), f.x), mix(gh(i + vec2(0, 1)), gh(i + vec2(1, 1)), f.x), f.y); }
+float gClump(vec2 p) { return 0.2 + 1.6 * smoothstep(0.3, 0.7, gvn(p * 0.9 + vec2(3.7, 1.3)) * 0.62 + gvn(p * 1.9 + vec2(7.1, 3.3)) * 0.38); }
+float gBreak(vec2 p) { return smoothstep(0.4, 0.6, gvn(p * 0.55 + vec2(13.0, 5.0) + 0.7 * vec2(gvn(p * 1.4), gvn(p * 1.4 + 4.0)))); }
+uvec3 gTuft(vec2 bi) { ivec2 ib = ivec2(bi); uint h0 = gPcg(uint(ib.x + 32768) * 65599u + gPcg(uint(ib.y + 32768))); uint h1 = gPcg(h0); return uvec3(h0, h1, gPcg(h1)); }`;
+const fract1 = (x) => x - Math.floor(x);
+const gh1 = (x, y) => { let a = fract1(x * 0.1031), b = fract1(y * 0.1031), c = fract1(x * 0.1031); const d = a * (b + 33.33) + b * (c + 33.33) + c * (a + 33.33); a += d; b += d; c += d; return fract1((a + b) * c); };
+const gvn1 = (x, y) => { const i = Math.floor(x), j = Math.floor(y); let u = x - i, v = y - j; u = u * u * (3 - 2 * u); v = v * v * (3 - 2 * v);
+  const a = gh1(i, j), b = gh1(i + 1, j), c = gh1(i, j + 1), d = gh1(i + 1, j + 1); return (a + (b - a) * u) + ((c + (d - c) * u) - (a + (b - a) * u)) * v; };
+const smooth1 = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+// CPU twin of gClump / gBreak (GRASS_HASH)
+export function grassFields(x, z) {
+  return { clump: 0.2 + 1.6 * smooth1(0.3, 0.7, gvn1(x * 0.9 + 3.7, z * 0.9 + 1.3) * 0.62 + gvn1(x * 1.9 + 7.1, z * 1.9 + 3.3) * 0.38),
+    brk: smooth1(0.4, 0.6, gvn1(x * 0.55 + 13 + 0.7 * gvn1(x * 1.4, z * 1.4), z * 0.55 + 5 + 0.7 * gvn1(x * 1.4 + 4, z * 1.4 + 4))) };
+}
 // built weathering: per-element run-off streaks from the element top (sills, slab edges, rims), rising damp at the
 // foot, dust at storey floors, grime/moss on up-facing faces, warm dust where the weather can't reach (baked AO),
 // soot over the top of the chimney. uWx2.y > 0 = the material is cylinders of about that radius (silos): the
@@ -1061,6 +1130,23 @@ vec3 weather(vec3 c, vec3 nw, vec3 wp, vec2 ay, float ao) {
   c = mix(c, c * vec3(0.5, 0.66, 0.3), up * uWx.w * smoothstep(0.5, 0.78, pt) * smoothstep(0.45, 0.85, ao));
   float cov = 1.0 - smoothstep(0.25, 0.7, ao);
   c = mix(c, c * vec3(1.05, 0.98, 0.86), cov * 0.7);
+  // [G5] floors and roofs (planar, up-facing; graphics #3: the hall floor was one uniform gravel): 3-8 m patches of
+  // wear, saw-cut joints every 6 m (anti-aliased), oil / damp stains, drifts of dust where the weather can't reach
+  float fl = up * (1.0 - step(0.5, uWx2.y));
+  { float pv = vn(wp.xz * 0.15 + 3.0) * 0.65 + vn(wp.xz * 0.6 + 1.0) * 0.35;
+    vec2 jg = abs(fract(wp.xz / 6.0 + 0.5) - 0.5) * 6.0; float jw = min(jg.x, jg.y), fwj = max(fwidth(wp.x) + fwidth(wp.z), 1e-4);
+    float jl = (1.0 - smoothstep(0.008, 0.008 + fwj, jw)) * min(1.0, 0.012 / fwj);
+    float stn = smoothstep(0.7, 0.88, vn(wp.xz * 0.35 + 17.0) * 0.75 + vn(wp.xz * 1.7) * 0.25);
+    c *= mix(1.0, (0.78 + 0.44 * pv) * (1.0 - 0.4 * jl) * (1.0 - 0.32 * stn), fl);
+    c = mix(c, c * vec3(1.12, 1.06, 0.94), fl * cov * smoothstep(0.45, 0.7, vn(wp.xz * 0.5 + 5.0)) * 0.6); }
+  // [G5] the open silo caps (graphics #3: "marble", L82 C5): 20 % darker, a sooty tide band at the parapet foot,
+  // ragged tide rings where water stood and dried, darker round the filling hatch
+  { float cd = 9.0;
+    ${SILO.x.map((x) => `cd = min(cd, length(wp.xz - vec2(${x.toFixed(2)}, ${SILO.z[0].toFixed(1)})));`).join(' ')}
+    float cap = up * (1.0 - step(0.3, abs(wp.y - ${SILO.top.toFixed(1)}))) * (1.0 - step(${(SILO.r - SILO.rim.wall + 0.05).toFixed(2)}, cd));
+    float ns = vn(wp.xz * 1.3 + 2.0), soot = smoothstep(2.6, 3.8, cd + (ns - 0.5) * 0.7);
+    float tr = abs(fract(cd * 0.75 + vn(wp.xz * 0.6) * 0.5) - 0.5), ring = (1.0 - smoothstep(0.02, 0.07, tr)) * smoothstep(0.3, 0.6, vn(wp.xz * 0.4 + 9.0));
+    c *= mix(1.0, 0.8 * (1.0 - 0.5 * soot) * (1.0 - 0.22 * ring) * (0.85 + 0.3 * ns), cap); }
   return c;
 }`;
 const WP_FRAG = {
@@ -1080,6 +1166,7 @@ const WP_FRAG = {
     diffuseColor.rgb = weather(diffuseColor.rgb, nwd, vWPos, vAY, vAO);
     diffuseColor.a *= (0.55 + 0.45 * vn(vec2(along * 0.9, vWPos.y * 0.9))) * smoothstep(0.1, 0.3, vn(vec2(along * 5.0, vWPos.y * 5.0))); }`,
   ground: `
+  vec3 gBump = vec3(0.0); float gRough = 1.0;      // [G5] apron normal (world xz tilt) and wet-patch roughness, used below
   { vec2 xz = vWPos.xz; float dist = distance(vWPos, cameraPosition), far = smoothstep(40.0, 140.0, dist);
     vec2 muv = (xz - uMaskO) / uMaskS;
     vec4 mk = texture2D(uMask, muv), m2 = texture2D(uMask2, muv);
@@ -1104,10 +1191,31 @@ const WP_FRAG = {
     vec3 meadow = mix(cG * gD, vec3(0.15, 0.13, 0.078) * mD, dryF) * (0.66 + 0.68 * cl * cl) * (0.78 + 0.44 * vn(xz * 0.12 + 17.0));   // + 5-15 m swells
     // out to ~8 m the blades stand on it (NEAR tier): there the ground is the shaded thatch between tufts. Further
     // out they thin away, and the ground IS the meadow: no dark felt under a fading field. Track profile = the VS's.
+    // [G5] the track and meadow profile exactly as the blades' (VS): verges, broken centre strip, bare ruts
     float dP = mix(8.0, m2.r * 8.0, inM);
-    float gDen = mk.r * inM * max(smoothstep(1.5, 2.6, dP), 0.5 * (1.0 - smoothstep(0.26, 0.44, dP))) * smoothstep(0.16, 0.36, abs(dP - 0.8));
-    vec3 base = mix(meadow, meadow * vec3(0.58, 0.55, 0.46), gDen * mix(0.35, 1.0, 1.0 - smoothstep(5.0, 10.0, dist)) * (1.0 - smoothstep(24.0, 40.0, dist)));
+    float tStrip = 1.0 - smoothstep(0.26, 0.44, dP), tRut = 1.0 - smoothstep(0.16, 0.36, abs(dP - 0.8));
+    float prof = max(smoothstep(1.45, 2.6, dP + (gvn(xz * 1.1) - 0.5) * 1.0), 0.55 * tStrip * gBreak(xz)) * (1.0 - tRut);
+    float gDen = mk.r * inM * prof;
+    // [G5] the matted floor (lighting #3, graphics #2): under the canopy the ground gets x(1 - 0.45 density) of the light
+    // (the clumps' own density), browner, plus a 0.15-0.3 m contact shadow round each tuft's root (the VS's cell hash:
+    // it sits where the tufts stand). Fades with the blades (24-40 m), so the meadow seen from afar is unchanged.
+    float gNear = 1.0 - smoothstep(24.0, 40.0, dist), fD = min(gDen * gClump(xz), 1.25) * gNear * mix(1.0, 0.7, smoothstep(8.0, 18.0, dist));
+    float spot = 0.0;
+    if (dist < 16.0 && gDen > 0.02) {
+      vec2 c0 = floor(xz / 0.34);
+      for (int q = 0; q < 4; q++) {
+        vec2 bi = c0 + vec2(float(q & 1), float(q >> 1));
+        uvec3 th = gTuft(bi); vec4 tA = gU4(th.x), tB = gU4(th.y);
+        vec2 bp = bi * 0.34 + (tA.xy - 0.5) * 0.306;
+        spot = max(spot, step(tB.z * 0.75 + 0.004, gDen * gClump(bp)) * (1.0 - smoothstep(0.08, 0.17 + 0.1 * tA.w, distance(xz, bp))));
+      }
+      spot *= 1.0 - smoothstep(10.0, 16.0, dist);
+    }
+    vec3 base = meadow * mix(vec3(1.0), vec3(0.93, 0.9, 0.8), min(fD, 1.0)) * (1.0 - 0.45 * fD) * (1.0 - 0.4 * spot);
     vec3 dirt = vec3(0.118, 0.104, 0.078) * (0.74 + 0.5 * cl) * mix(vec3(1.0), gD, 0.6);
+    // [G5] the track's dirt under (and between) the ribbon's bare bands: the same neutral dirt as WP_FRAG.track
+    vec3 tDirt = vec3(0.13, 0.128, 0.124) * (0.8 + 0.4 * vn(xz * 0.2)) * mix(vec3(1.0), vec3(lum3(gD)), 0.5) * mix(1.0, 0.8, tRut);
+    base = mix(base, tDirt, inM * (1.0 - prof) * (1.0 - smoothstep(1.7, 2.9, dP)) * (1.0 - smoothstep(0.4, 0.6, mk.g)));
     float bare = smoothstep(0.7, 0.86, vn(xz * 0.07 + 2.0) * 0.7 + vn(xz * 0.6) * 0.3);
     float cov = 1.0 - smoothstep(0.3, 0.78, vAO);                         // under slabs / inside: bare dirt
     base = mix(base, dirt, max(bare * 0.6, cov));
@@ -1123,26 +1231,47 @@ const WP_FRAG = {
     vec2 auv = xz * uApronRep, wq = auv + 0.3 * vec2(vn(xz * 0.23), vn(xz * 0.23 + 9.0));
     vec2 cid = floor(wq); float rq = floor(h21(cid + 0.37) * 4.0);
     mat2 Rm = rq < 1.0 ? mat2(1.0, 0.0, 0.0, 1.0) : rq < 2.0 ? mat2(0.0, 1.0, -1.0, 0.0) : rq < 3.0 ? mat2(-1.0, 0.0, 0.0, -1.0) : mat2(0.0, -1.0, 1.0, 0.0);
-    vec3 at = textureGrad(uApron, Rm * auv + vec2(h21(cid + 1.7), h21(cid + 5.3)), Rm * dFdx(auv), Rm * dFdy(auv)).rgb;   // (outside any branch)
+    vec2 auvR = Rm * auv + vec2(h21(cid + 1.7), h21(cid + 5.3));
+    vec3 at = textureGrad(uApron, auvR, Rm * dFdx(auv), Rm * dFdy(auv)).rgb;   // (outside any branch)
+    vec2 an = textureGrad(uApronN, auvR, Rm * dFdx(auv), Rm * dFdy(auv)).rg * 2.0 - 1.0;
     float al = lum3(at) / uAMean.w;
-    vec3 asph = mix(at * uApronCol, uAMean.rgb, far) * 0.85;               // [V2] old asphalt ~0.15 (was a flat white plane)
+    vec3 asph = mix(at * uApronCol, uAMean.rgb, far) * 0.78;               // [V2] old asphalt ~0.14 (was a flat white plane)
+    asph *= 0.86 + 0.28 * h21(cid + 9.1);                                  // [G5] each laid cell its own age / tone
     asph *= 0.7 + 0.36 * vn(xz * 0.11 + 4.0) + 0.14 * vn(xz * 0.9 + 6.0); // patches of old repair and stain
     asph *= 1.0 - 0.28 * smoothstep(0.62, 0.82, vn(xz * 0.27 + 8.0));     // oil and damp
     float crack = (1.0 - smoothstep(0.4, 0.68, al)) * (1.0 - far);         // weeds and moss in the cracks
+    // [G5] a crack network over the slab: the edges of a warped ~2.5 m Voronoi, 1-2.5 cm wide, anti-aliased in metres
+    // (a thinner line fades instead of crawling); the wider ones carry moss and weeds
+    { vec2 cq = xz * 0.4 + 0.35 * vec2(vn(xz * 0.7), vn(xz * 0.7 + 5.0)), ci = floor(cq), cf = fract(cq);
+      float f1 = 8.0, f2 = 8.0;
+      for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) { vec2 o = vec2(float(i), float(j)); vec2 r = o + vec2(h21(ci + o), h21(ci + o + 7.7)) * 0.8 + 0.1 - cf; float dd = dot(r, r); if (dd < f1) { f2 = f1; f1 = dd; } else if (dd < f2) f2 = dd; }
+      float e = (sqrt(f2) - sqrt(f1)) * 1.25, cw = 0.01 + 0.015 * vn(xz * 0.9 + 3.0), fw = max(length(fwidth(xz)), 1e-4);   // e: metres to the crack
+      float ln = (1.0 - smoothstep(cw, cw + fw, e)) * min(1.0, (cw + 0.004) / fw) * smoothstep(0.25, 0.5, vn(xz * 0.3 + 1.0));
+      asph *= 1.0 - 0.6 * ln;
+      crack = max(crack, (1.0 - smoothstep(0.0, 0.12, e)) * smoothstep(0.55, 0.75, vn(xz * 0.5 + 9.0)) * (1.0 - far)); }
     asph = mix(asph, vec3(0.045, 0.06, 0.02), crack * 0.45);
+    // [G5] standing water in the low spots: darker, smooth (it shows the sky), the asphalt normal flattened
+    float wet = smoothstep(0.76, 0.84, vn(xz * 0.16 + 21.0) * 0.8 + vn(xz * 1.3) * 0.2) * (1.0 - far);
+    asph *= 1.0 - 0.4 * wet;
+    vec2 anR = an * Rm;                                                     // tangent (uv') -> world xz: Rm^T
+    gBump = vec3(anR.x, 0.0, anR.y) * 0.85 * (1.0 - far) * (1.0 - wet);
+    gRough = mix(1.0, 0.25, wet);
     asph = mix(asph, dirt, (1.0 - smoothstep(0.2, 0.75, ap)) * 0.55 + smoothstep(0.7, 0.9, vn(xz * 0.33)) * 0.35);
-    diffuseColor.rgb = mix(base, asph, ap); }`,
+    diffuseColor.rgb = mix(base, asph, ap); gBump *= ap; gRough = mix(1.0, gRough, ap); }`,
   track: `
   { vec2 xz = vWPos.xz, muv = (xz - uMaskO) / uMaskS;
     vec4 mk = texture2D(uMask, muv), m2 = texture2D(uMask2, muv);
     float dP = m2.r * 8.0, n1 = vn(xz * 0.9), n2 = vn(xz * 2.7);
-    // [V2] a two-track, not a carpet: neutral worn dirt (sat ~0.1), two darker compacted wheel ruts ~0.8 m either side
-    // of the centreline, a grassy centre strip and ragged grassy verges (the blades follow the same profile)
-    vec3 c = diffuseColor.rgb; c = mix(vec3(lum3(c)), c, 0.25) * vec3(1.26, 1.22, 1.12);   // worn dirt reads ~1.5x the meadow (ref 237)
-    c *= 0.74 + 0.5 * vn(xz * 0.2) * (0.6 + 0.4 * n1);
+    // [V2] a two-track, not a carpet. [G5] dirt, not lawn (art #3: was (123,126,79) sat 0.37; ref 237 (154,152,141) sat
+    // 0.09): a neutral dirt albedo (sat ~0.1, ~1.5x the meadow) carrying only the scan's luminance detail, two bare
+    // compacted wheel ruts ~0.8 m either side of the centreline, a centre strip of grass broken into 1-2 m runs (bare
+    // dirt between: gBreak, as the blades and the ground) and ragged grassy verges (the blades follow the same profile)
+    float dl = clamp(lum3(diffuseColor.rgb) / 0.081, 0.45, 1.7);
+    vec3 c = vec3(0.13, 0.128, 0.124) * mix(1.0, dl, 0.85) * (0.88 + 0.24 * vn(xz * 9.0));   // + pebble grain
+    c *= 0.78 + 0.44 * vn(xz * 0.2) * (0.6 + 0.4 * n1);
     float rut = 1.0 - smoothstep(0.13, 0.27, abs(dP - 0.8 - (vn(xz * 0.11 + 3.0) - 0.5) * 0.16) + (n2 - 0.5) * 0.07);
-    c *= mix(1.0, 0.64, rut);
-    float strip = 1.0 - smoothstep(0.26, 0.46, dP + (n2 - 0.5) * 0.25);
+    c = mix(c, vec3(0.112, 0.111, 0.108) * (0.9 + 0.2 * n1), rut * 0.6);    // ruts: compacted, smoother, a touch darker
+    float strip = (1.0 - smoothstep(0.26, 0.46, dP + (n2 - 0.5) * 0.25)) * gBreak(xz);
     float verge = smoothstep(1.5, 2.7, dP + (n1 - 0.5) * 0.9 + (n2 - 0.5) * 0.3);
     float a = diffuseColor.a + (n1 - 0.5) * 0.6;
     diffuseColor.a = smoothstep(0.3, 0.65, a) * (1.0 - max(0.85 * strip, verge) * (1.0 - rut)) * (1.0 - smoothstep(0.35, 0.6, mk.g));
@@ -1298,7 +1427,8 @@ ${GLSL_NOISE}
 ${weathers ? GLSL_WEATHER : ''}
 ${kind === 'decal' ? 'uniform sampler2D uWallTex; uniform float uWallRep; uniform float uWallMean; varying float vSeed;' : ''}
 ${kind === 'ground' || kind === 'track' ? 'uniform sampler2D uMask; uniform sampler2D uMask2; uniform vec2 uMaskO; uniform float uMaskS;' : ''}
-${kind === 'ground' ? 'uniform sampler2D uApron; uniform float uApronRep; uniform vec3 uApronCol; uniform vec3 uGMean; uniform vec4 uAMean;\nuniform sampler2D uMeadow; uniform float uMeadowRep; uniform vec3 uMMean;' : ''}
+${kind === 'ground' || kind === 'track' ? GRASS_HASH : ''}
+${kind === 'ground' ? 'uniform sampler2D uApron; uniform sampler2D uApronN; uniform float uApronRep; uniform vec3 uApronCol; uniform vec3 uGMean; uniform vec4 uAMean;\nuniform sampler2D uMeadow; uniform float uMeadowRep; uniform vec3 uMMean;' : ''}
 ${opt.fsHead || ''}`)
       .replace('#include <map_fragment>', `${kind === 'decal' ? WP_FRAG.decalMap : '#include <map_fragment>'}
 ${kind === 'track' ? '' : WP_FRAG[kind]}
@@ -1316,7 +1446,8 @@ ${opt.fsAlpha || ''}`)
 ${opt.fsLights || ''}`)
       .replace('#include <lights_fragment_maps>', opt.diffuseOnly ? LIGHT_MAPS_DIFFUSE : '#include <lights_fragment_maps>')
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-  roughnessFactor = max(roughnessFactor, uRoughMin);`)
+  roughnessFactor = max(roughnessFactor, uRoughMin);${kind === 'ground' ? '\n  roughnessFactor = min(roughnessFactor, gRough);' : ''}`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>${kind === 'ground' ? '\n  normal = normalize(normal + (viewMatrix * vec4(gBump, 0.0)).xyz);   // [G5] apron normal map' : ''}`)
       .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
 ${foliage ? `#ifdef DOUBLE_SIDED
   normal *= faceDirection; nonPerturbedNormal = normal;     // cards are lit like the canopy/ground they belong to, both faces
@@ -2736,7 +2867,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const bStats = { ms: {} }; globalThis.__bandoStats = bStats;    // [B] counts + CPU ms per block, for the smoke harness / integrator
   let tLap = performance.now(); const lap = (k) => { const n = performance.now(); bStats.ms[k] = Math.round(n - tLap); tLap = n; };
   // [B] ground mask (grass density, paved apron, terrain AO, grass height) shared by the ground, tracks and grass
-  const { t: gmask, t2: gmask2 } = buildGroundMask(site, terr);
+  const gm = buildGroundMask(site, terr), { t: gmask, t2: gmask2 } = gm, grassAt = grassAtFn(gm);
   const maskU = { uMask: { value: gmask }, uMask2: { value: gmask2 }, uMaskO: { value: new THREE.Vector2(MASK.x0, MASK.z0) }, uMaskS: { value: MASK.size } };
   const lin3 = (a) => new THREE.Color().setRGB(a[0], a[1], a[2]);
   const meanOf = (key) => { const m = MATS[key], t = texOf[key]?.diff, raw = t ? texMean(t, null) : null; return raw ? { raw, col: raw.map((v, i) => v * m.color[i]) } : { raw: [0.1, 0.1, 0.1], col: m.albedo }; };
@@ -2745,7 +2876,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
     if (m.kind === 'ground') {
       const gm = meanOf('ground'), am = meanOf('apron'), at = texOf.apron?.diff, mt = texOf.meadow?.diff, mm = mt && texMean(mt, null);
       if (mt) { mt.repeat.set(1, 1); mt.anisotropy = 8; }
-      return { ...maskU, uApron: { value: at || gmask }, uApronRep: { value: 1 / MATS.apron.tile }, uApronCol: { value: lin3(MATS.apron.color) },
+      return { ...maskU, uApron: { value: at || gmask }, uApronN: { value: texOf.apron?.nor_gl || flatNorm() }, uApronRep: { value: 1 / MATS.apron.tile }, uApronCol: { value: lin3(MATS.apron.color) },
         uGMean: { value: lin3(gm.col) }, uAMean: { value: new THREE.Vector4(...am.col, Math.max(0.02, 0.2126 * am.raw[0] + 0.7152 * am.raw[1] + 0.0722 * am.raw[2])) },
         uMeadow: { value: mm ? mt : flatTex() }, uMeadowRep: { value: 1 / MATS.meadow.tile }, uMMean: { value: mm ? lin3(mm.map((v) => Math.max(v, 1e-3))) : new THREE.Color(1, 1, 1) } };
     }
@@ -2935,7 +3066,8 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   // alpha-tested cards were 1.3-2.9 fragments/px in skims). Widths never drop under 1 px (uPix). Wind: a per-blade
   // flutter plus gusts that travel downwind across the field. The track profile (bare wheel ruts, a short sparse
   // centre strip, verges rising over ~4 m) comes from the path distance field in mask2, as in the ground and track.
-  const GQS = { low: { nb: 10, near: [4.5, 6.5], mid: 24 }, auto: { nb: 14, near: [5.5, 8], mid: 32 }, high: { nb: 16, near: [6, 8.5], mid: 34 } };
+  // [G5] nb upright blades + nt thatch blades per near tuft; mb blades per mid tuft (two tufts per mid instance)
+  const GQS = { low: { nb: 11, nt: 4, mb: 6, near: [4.5, 6.5], mid: 24 }, auto: { nb: 15, nt: 6, mb: 6, near: [5.2, 7.6], mid: 30 }, high: { nb: 17, nt: 6, mb: 7, near: [6, 8.5], mid: 34 } };
   const GQ = GQS[quality] || GQS.auto, gCell = 0.34;
   const gShared = { uCam: { value: new THREE.Vector3() }, uCell0: { value: gCell }, uPix: { value: 0.003 },
     uFr: { value: [0, 1, 2, 3].map(() => new THREE.Vector4(0, 0, 0, 1e6)) }, uWind: { value: new THREE.Vector4(0.8, 0.6, 0.3, 3.5) }, ...maskU };
@@ -2944,26 +3076,26 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const tierU = (cell, lod, lod2) => ({ ...gShared, uOrigin: { value: new THREE.Vector2() }, uCell: { value: cell }, uR: { value: 10 },
     uLod: { value: new THREE.Vector4(...lod) }, uLod2: { value: new THREE.Vector4(...lod2) } });
   const nearU = tierU(gCell, [0, GQ.near[0], GQ.near[1], GQ.nb], [0.11, 1, 1e4, 1e4]);
-  const midU = tierU(gCell * 2, [1, GQ.near[0], GQ.near[1], 8], [0.3, 3.2, GQ.mid - 10, GQ.mid]);
+  const midU = tierU(gCell * 2, [1, GQ.near[0], GQ.near[1], GQ.mb], [0.24, 2.7, GQ.mid - 10, GQ.mid]);   // [G5] a tuft stands for 2 cells (was 4)
   // shared by both tiers and the blur-depth twin (contract C2)
   const GRASS_VS_HEAD = `attribute vec2 aCell;
 uniform vec2 uOrigin; uniform vec3 uCam; uniform float uCell; uniform float uCell0; uniform float uR; uniform float uPix;
 uniform vec4 uLod; uniform vec4 uLod2; uniform vec4 uWind; uniform vec4 uFr[4];
 uniform sampler2D uMask; uniform sampler2D uMask2; uniform vec2 uMaskO; uniform float uMaskS;
-uint gPcg(uint v) { uint s = v * 747796405u + 2891336453u; uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u; return (w >> 22u) ^ w; }
-vec4 gU4(uint h) { return vec4(uvec4(h, h >> 8u, h >> 16u, h >> 24u) & 255u) * (1.0 / 255.0); }
-float gh(vec2 p) { vec3 q = fract(p.xyx * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
-float gvn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(gh(i), gh(i + vec2(1, 0)), f.x), mix(gh(i + vec2(0, 1)), gh(i + vec2(1, 1)), f.x), f.y); }
+${GRASS_HASH}
 float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95.0, abs(z - 10.0) - 85.0), 0.0);
   float n = sin(x * 0.021) * cos(z * 0.017) * 1.2 + sin(x * 0.053 + z * 0.041) * 0.45 + sin(z * 0.11 - x * 0.07) * 0.15;
   float ramp = min(1.0, d / 40.0); return n * ramp + min(d, 180.0) * 0.012 * ramp - 0.05 * (1.0 - ramp); }`;
   const GRASS_VS_CORE = `
   // ---- the tuft (instance): integer base cell -> 3 x 4 random bytes
+  float k = position.z, t = position.y, side = position.x;
   vec2 bi = floor((uOrigin + aCell * uCell) / uCell0 + 0.5);
-  ivec2 ib = ivec2(bi);
-  uint th0 = gPcg(uint(ib.x + 32768) * 65599u + gPcg(uint(ib.y + 32768)));
-  uint th1 = gPcg(th0), th2 = gPcg(th1);
-  vec4 tA = gU4(th0), tB = gU4(th1), tC = gU4(th2);
+  // [G5] mid tier on every 2nd cell (checkerboard, was every 4th): an instance sits on an (even, even) cell and draws
+  // that tuft (blades 0..w-1) and the (odd, odd) tuft diagonally beside it (blades w..2w-1)
+  if (uLod.x > 0.5 && k >= uLod.w) { bi += 1.0; k -= uLod.w; }
+  uvec3 th = gTuft(bi);
+  uint th2 = th.z;
+  vec4 tA = gU4(th.x), tB = gU4(th.y), tC = gU4(th.z);
   vec2 bp = bi * uCell0 + (tA.xy - 0.5) * uCell0 * 0.9;
   vec2 muv = (bp - uMaskO) / uMaskS;
   vec4 mk = textureLod(uMask, muv, 0.0), m2 = textureLod(uMask2, muv, 0.0);
@@ -2976,39 +3108,49 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
   float strip = 1.0 - smoothstep(0.26, 0.44, dP);
   float verge = smoothstep(1.45, 2.6, dP + (gvn(bp * 1.1) - 0.5) * 1.0);
   float edge = min(min(muv.x, muv.y), min(1.0 - muv.x, 1.0 - muv.y));
-  float dens = mk.r * max(verge, 0.5 * strip) * (1.0 - rut) * smoothstep(0.0, 0.02, edge);
+  // [G5] the meadow stands in 0.5-1.5 m clumps (density x0.2-1.8, art #1); the centre strip is broken into 1-2 m runs;
+  // the mid tier keeps 0.6 m clear of the ruts (art #3). mead = the unclumped meadow: the thatch layer follows it.
+  float clump = gClump(bp);
+  float mead = mk.r * max(verge, 0.55 * strip * gBreak(bp)) * (1.0 - rut) * smoothstep(0.0, 0.02, edge);
+  float dens = mead * clump * (uLod.x > 0.5 ? smoothstep(1.35, 1.6, dP) : 1.0);
   float weed = step(0.955, tC.x) * (1.0 - strip);
-  float H = (0.3 + 0.62 * mk.a) * (0.72 + 0.56 * tA.w) * mix(0.42, 1.0, smoothstep(1.4, 5.0, dP)) * mix(1.0, 0.5, strip);
+  float H = (0.3 + 0.62 * mk.a) * (0.72 + 0.56 * tA.w) * mix(0.42, 1.0, smoothstep(1.4, 5.0, dP)) * mix(1.0, 0.5, strip) * mix(0.82, 1.12, smoothstep(0.5, 1.5, clump));
   // tier: near shows the tuft inside its switch distance sw, mid shows member tufts beyond it; non-members shrink
   // away in the 1.2 m before theirs; the mid tier thins out per tuft at fo; nothing within 0.35-1 m of the lens
-  float member = step(mod(bi.x, 2.0) + mod(bi.y, 2.0), 0.5);
+  float member = 1.0 - abs(mod(bi.x, 2.0) - mod(bi.y, 2.0));   // [G5] checkerboard: the mid tier's cells
   float sw = mix(uLod.y, uLod.z, tB.x), fo = mix(uLod2.z, uLod2.w, tB.y);
   float scl = uLod.x < 0.5 ? (1.0 - step(sw, d3)) * (1.0 - (1.0 - member) * smoothstep(sw - 1.2, sw, d3))
                            : member * step(sw, d3) * (1.0 - smoothstep(fo - 3.0, fo, d3));
-  scl *= step(tB.z * 0.75 + 0.004, dens) * (1.0 - smoothstep(uR - 1.5, uR, dh)) * smoothstep(0.35, 1.0, d3);
+  // [G5] near tier: blades 0..w-1 stand upright (40-100 % of them by density: 18-21 with the thatch where dens > 1),
+  // blades w.. are the thatch, a 0.03-0.08 m layer of bent, matted dead blades that hides the ground wherever the meadow
+  // stands, between the clumps too (art #1). Per blade: off blades go straight to the clip-space bin.
+  float isTh = uLod.x < 0.5 && k >= uLod.w ? 1.0 : 0.0;
+  float tuftOn = step(tB.z * 0.75 + 0.004, dens), thOn = isTh * step(0.1 + 0.3 * tC.z, mead);
+  k -= isTh * uLod.w;
+  scl *= max(isTh > 0.5 ? thOn : tuftOn * step(k + 0.5, uLod.w * clamp(0.4 + 0.6 * dens, 0.4, 1.0)), 0.0) * (1.0 - smoothstep(uR - 1.5, uR, dh)) * smoothstep(0.35, 1.0, d3);
   vec3 gc = vec3(bp.x, gy + H * 0.5, bp.y); float rad = H * 1.1 + uLod2.x + 0.2;
   bool cull = scl < 0.01;
   for (int i = 0; i < 4; i++) cull = cull || dot(uFr[i].xyz, gc) + uFr[i].w < -rad;
   if (cull) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   // ---- the blade (vertex): position = (side -1/+1 or 0 at the tip, t along the blade, blade index)
-  float k = position.z, t = position.y, side = position.x;
   uint bh0 = gPcg(th2 ^ (uint(k) * 2654435769u + 374761393u));
   vec4 bA = gU4(bh0), bB = gU4(gPcg(bh0));
   float fk = (k + 0.5) / uLod.w;
   float dryT = clamp(m2.g * (0.55 + 0.6 * tB.w) + 0.12 * tC.z, 0.0, 1.0);
-  float flower = step(tC.y, 0.07 * m2.b + 0.004) * (1.0 - weed) * (1.0 - step(0.5, k));        // blade 0 of a flowering tuft
-  float stalk = max(step(bA.x, mix(0.04, 0.2, dryT)) * (1.0 - weed) * step(0.5, k), flower);    // seed stalks ripen with the field
+  weed *= 1.0 - isTh;
+  float flower = step(tC.y, 0.07 * m2.b + 0.004) * (1.0 - weed) * (1.0 - step(0.5, k)) * (1.0 - isTh);   // blade 0 of a flowering tuft
+  float stalk = max(step(bA.x, mix(0.025, 0.09, dryT)) * (1.0 - weed) * step(0.5, k) * (1.0 - isTh), flower);   // [G5] <= 1 in 10 (was 1 in 4)
   float ang = tA.x * 6.2832 + k * 2.39996 + (bA.y - 0.5) * 0.8;                                  // golden-angle spread, jittered
   vec2 dir = vec2(cos(ang), sin(ang));
-  float rr = uLod2.x * sqrt(fk) * (0.45 + 0.75 * bA.z) * mix(1.0, 0.3, weed) * mix(1.0, 0.4, stalk);
+  float rr = mix(uLod2.x * sqrt(fk) * (0.45 + 0.75 * bA.z) * mix(1.0, 0.3, weed) * mix(1.0, 0.4, stalk), uLod2.x * (0.3 + 1.2 * bA.z), isTh);
   float bh = mix(H * (0.55 + 0.5 * bA.w) * (1.0 - 0.3 * fk), H * (1.12 + 0.35 * bB.x), stalk);
-  bh = mix(bh, 0.08 + H * 0.12 + 0.06 * bA.w, weed);
-  float lean = mix(mix(0.1 + 0.55 * fk * fk + 0.25 * bB.y, 0.05 + 0.12 * bB.y, stalk), 1.05 + 0.3 * bB.y, weed);   // outer blades splay
-  float curl = mix(mix((0.2 + 0.8 * bB.z) * (0.5 + fk), 0.1, stalk), 0.3, weed);
+  bh = mix(mix(bh, 0.08 + H * 0.12 + 0.06 * bA.w, weed), 0.2 + 0.16 * bA.w, isTh);
+  float lean = mix(mix(mix(0.1 + 0.55 * fk * fk + 0.25 * bB.y, 0.05 + 0.12 * bB.y, stalk), 1.05 + 0.3 * bB.y, weed), 1.2 + 0.3 * bB.y, isTh);   // outer blades splay; thatch lies
+  float curl = mix(mix(mix((0.2 + 0.8 * bB.z) * (0.5 + fk), 0.1, stalk), 0.3, weed), 0.12 + 0.2 * bB.z, isTh);
   // wind: gusts travel downwind across the field (a 16 m noise field moving at uWind.w m/s) plus a per-blade flutter
   float gust = smoothstep(0.3, 0.85, gvn((bp - uWind.xy * (uTime * uWind.w)) * 0.06));
   float fl = sin(uTime * 2.6 + dot(bp, vec2(1.3, 0.9)) + k * 1.9) * 0.6 + sin(uTime * 6.1 + k * 3.7 + bp.y * 2.3) * 0.25;
-  vec3 W = (vec3(uWind.x, 0.0, uWind.y) * uWind.z * (0.3 + 1.5 * gust) + vec3(dir.x, 0.0, dir.y) * fl * 0.07) * mix(1.0, 0.15, weed);
+  vec3 W = (vec3(uWind.x, 0.0, uWind.y) * uWind.z * (0.3 + 1.5 * gust) + vec3(dir.x, 0.0, dir.y) * fl * 0.07) * mix(1.0, 0.15, max(weed, isTh));
   float a1 = min(lean + curl, 2.4);
   vec3 P0 = vec3(dir.x * rr, 0.0, dir.y * rr);
   vec3 P1 = P0 + vec3(dir.x * sin(lean), cos(lean), dir.y * sin(lean)) * (bh * 0.55) + W * (bh * 0.2);
@@ -3021,9 +3163,10 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
   // width: leaves taper to a point, stalks are thin with a spindle seed head, weeds are broad; never under 1 px
   float bw = mix((0.009 + 0.009 * bA.w) * (1.0 - 0.8 * pow(t, 2.2)), 0.0022 + 0.012 * smoothstep(0.62, 0.8, t), stalk);
   bw = mix(bw, (0.03 + 0.03 * bA.w) * sin(3.1416 * min(t * 1.15, 1.0)) + 0.004, weed);
+  bw = mix(bw, (0.022 + 0.024 * bA.w) * (1.0 - 0.65 * t * t), isTh);
   bw = max(bw * uLod2.y, uPix * d3);
   vec3 lpos = bpos + wax * (side * bw * 0.5);
-  transformed = vec3(bp.x, gy - 0.03, bp.y) + lpos * scl;
+  transformed = vec3(bp.x, gy - 0.03 + 0.03 * isTh, bp.y) + lpos * scl;
   // a canopy normal: the blade face, rounded across its width, bent toward the sky (both faces lit alike)
   vec3 gFn = normalize(cross(wax, btan)); gFn *= gFn.y < 0.0 ? -1.0 : 1.0;
   vec3 gNrm = normalize(gFn + wax * (side * 0.5) + vec3(0.0, 0.7, 0.0));
@@ -3045,7 +3188,9 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
   col *= mix(0.5, 1.0, smoothstep(0.0, 0.55, t));
   col = mix(col, vec3(0.25, 0.2, 0.1), smoothstep(0.7, 1.0, t) * (0.2 + 0.5 * dryT) * (1.0 - dead) * (1.0 - weed) * (1.0 - stalk));
   col = mix(col, tC.w < 0.45 ? vec3(0.62, 0.6, 0.55) : tC.w < 0.8 ? vec3(0.62, 0.45, 0.04) : vec3(0.28, 0.1, 0.34), flower * smoothstep(0.66, 0.8, t));
-  vGCol = col; vGv = gHt; vThin = mix(1.0, 0.6, dead) * mix(1.0, 0.4, weed);
+  // [G5] thatch: last year's matted blades, mostly grey-brown straw with some flattened green, dark at the roots
+  col = mix(col, mix(vec3(0.05, 0.06, 0.024), mix(vec3(0.15, 0.125, 0.08), vec3(0.11, 0.1, 0.075), bA.y), step(bB.x, 0.55 + 0.35 * dryT)) * (0.7 + 0.45 * bA.z) * mix(0.6, 1.0, t), isTh);
+  vGCol = col; vGv = gHt; vThin = mix(1.0, 0.6, max(dead, isTh)) * mix(1.0, 0.4, weed);
   float gAO = mix(0.4, 1.0, smoothstep(0.0, 0.85, gHt)) * (0.3 + 0.7 * mk.b);`;
   // blade strips: per blade 2 verts per level + 1 tip vertex; position = (side, t, blade index)
   const bladeGeo = (nb, lv) => {
@@ -3071,7 +3216,7 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
   };
   const tiers = {};
   let grassDepth = null;
-  for (const [name, U, nb, lv, rMax] of [['near', nearU, GQ.nb, [0, 0.4, 0.7, 0.88, 1], GQ.near[1] + 1], ['mid', midU, 8, [0, 0.62, 1], GQ.mid + 1]]) {
+  for (const [name, U, nb, lv, rMax] of [['near', nearU, GQ.nb + GQ.nt, [0, 0.4, 0.7, 0.88, 1], GQ.near[1] + 1], ['mid', midU, 2 * GQ.mb, [0, 0.62, 1], GQ.mid + 1]]) {
     const cell = U.uCell.value, gN = 2 * Math.ceil((rMax + 2) / cell), g = bladeGeo(nb, lv);
     // cells in rings around the camera cell: instanceCount stops at the tier's radius
     const order = []; for (let i = 0; i < gN; i++) for (let j = 0; j < gN; j++) order.push([i, j, Math.hypot(i - gN / 2, j - gN / 2)]);
@@ -3098,7 +3243,7 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
     T.U.uR.value = r; T.mesh.visible = r > 0.8;
     T.mesh.geometry.instanceCount = T.mesh.visible ? Math.min(T.gN * T.gN, ringCount(T.ringR, r / c + 1.5)) : 0;
   };
-  bStats.grass = { near: { blades: GQ.nb, vertsPerTuft: tiers.near.verts, cells: tiers.near.gN ** 2, switch: GQ.near }, mid: { blades: 8, vertsPerTuft: tiers.mid.verts, cells: tiers.mid.gN ** 2, out: GQ.mid } };
+  bStats.grass = { near: { blades: GQ.nb, thatch: GQ.nt, vertsPerTuft: tiers.near.verts, cells: tiers.near.gN ** 2, switch: GQ.near }, mid: { blades: GQ.mb, tuftsPerInstance: 2, vertsPerInstance: tiers.mid.verts, cells: tiers.mid.gN ** 2, out: GQ.mid } };
   scene.userData.grass = { shared: gShared, near: nearU, mid: midU, tiers };   // live tuning (wind, LOD)
   lap('grass');
   // [V1] vegetation: real CC0 trees and shrubs (Poly Haven tree_small_02 'A', island_tree_01 'B', island_tree_02 'S')
@@ -3506,5 +3651,6 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
     envelope: { min: new THREE.Vector3(-440, -2, -440), max: new THREE.Vector3(440, 220, 440) },
     aoUniforms: uniforms.aAO,   // [A1] contract C3
     rebakeShadows: renderSunShadows,   // [A4] re-render the static sun maps after adding/moving a static caster
+    grassAt,                           // [G5] contract C7: grass height (m) at x, z (prop strikes in main.js)
   };
 }
