@@ -32,7 +32,9 @@ const PI = Math.PI;
 // BVH: NB = node bounds [minx miny minz maxx maxy maxz], NC = [first, count>0] for leaves, [left child, -(axis+1)]
 // for inner nodes (right child = left + 1). TV = [v0, e1, e2] per triangle in leaf order, TO = original triangle id.
 function makeTracer(S) {
-  const { NB, NC, TV, TO } = S, ST = new Int32Array(256), SD = new Float64Array(256), R = { t: 0, tri: -1, u: 0, v: 0 };
+  const { NB, NC, TV, TO, TK, TOp } = S, ST = new Int32Array(256), SD = new Float64Array(256), R = { t: 0, tri: -1, u: 0, v: 0 };
+  // [A4] vegetation proxies (TK 3) in shadow rays: veg 0 = see through them, 1 = blocked with their opacity (stochastic)
+  let vh = 0x2545f491; const vr = () => { vh = hash32(vh + 0x9e3779b9); return vh / 4294967296; };
   // closest hit: both children's boxes are tested at the parent, the nearer is visited first, and each stacked node
   // carries its entry distance so it is skipped without a box test once a closer hit is known
   let Ox = 0, Oy = 0, Oz = 0, Ix = 0, Iy = 0, Iz = 0, Sx = 0, Sy = 1, Sz = 2, Best = 0;
@@ -74,7 +76,8 @@ function makeTracer(S) {
     if (bk < 0) return false;
     R.t = Best; R.tri = TO[bk]; R.u = bu; R.v = bv; return true;
   }
-  function any(ox, oy, oz, dx, dy, dz, tmax) {
+  function any(ox, oy, oz, dx, dy, dz, tmax, veg = 1, seed = 0) {
+    if (seed) vh = seed;
     if (dx > -1e-12 && dx < 1e-12) dx = 1e-12; if (dy > -1e-12 && dy < 1e-12) dy = 1e-12; if (dz > -1e-12 && dz < 1e-12) dz = 1e-12;
     const ix = 1 / dx, iy = 1 / dy, iz = 1 / dz;
     let sp = 0; ST[sp++] = 0;
@@ -97,7 +100,10 @@ function makeTracer(S) {
           const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x, v = (dx * qx + dy * qy + dz * qz) * inv;
           if (v < 0 || u + v > 1) continue;
           const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
-          if (t > 1e-5 && t < tmax) return true;
+          if (t > 1e-5 && t < tmax) {
+            if (TK[TO[k]] === 3 && (!veg || vr() >= TOp[TO[k]])) continue;
+            return true;
+          }
         }
       } else { ST[sp++] = NC[n * 2]; ST[sp++] = NC[n * 2] + 1; }
     }
@@ -110,7 +116,7 @@ const hash32 = (x) => { x ^= x >>> 16; x = Math.imul(x, 0x7feb352d); x ^= x >>> 
 // per-texel work (workers). C = constants, S = shared arrays.
 function makeWorker(S, C) {
   const tr = makeTracer(S), R = tr.R;
-  const { SP, SN, SG, SD, TK, TFo, TU, BS, BO, ENVS, ENVO, OS, OO, OA, OB, OV1, OV2, OVO } = S;
+  const { SP, SN, SG, SD, TK, TFo, TU, BS, BO, ENVS, ENVO, OS, OO, OA, OB, OV1, OV2, OVO, TOp, TOcc, TAlb } = S;
   const { W, H, EW, EH } = C;
   const envIdx = (cr, sr, dx, dy, dz) => {   // texel of the (rotated) pi * radiance table
     const x = dx * cr - dz * sr, z = dx * sr + dz * cr;
@@ -127,6 +133,8 @@ function makeWorker(S, C) {
   function sun(i, eps) {   // pass 0: mean and any of 4 sub-texel shadow rays, sunny (and overcast when it casts)
     const px = SP[i * 3], py = SP[i * 3 + 1], pz = SP[i * 3 + 2], nx = SN[i * 3], ny = SN[i * 3 + 1], nz = SN[i * 3 + 2], gx = SG[i * 3], gy = SG[i * 3 + 1], gz = SG[i * 3 + 2];
     frame(nx, ny, nz, F);
+    // [A4] m (bounce radiosity) counts vegetation proxies as partial blockers; a (the runtime sun mask, aux.g) ignores
+    // them, so leaf shadows stay the shadow map's (alpha-tested cards), never a proxy hull's blob
     const one = (L, shadowed) => {
       if (nx * L[0] + ny * L[1] + nz * L[2] <= 0) return [0, 0];
       if (!shadowed) return [1, 1];
@@ -134,7 +142,7 @@ function makeWorker(S, C) {
       for (let k = 0; k < 4; k++) {
         const sa = (k & 1 ? 0.25 : -0.25) * C.texel, sb = (k & 2 ? 0.25 : -0.25) * C.texel;
         const ox = px + gx * eps + F[0] * sa + F[3] * sb, oy = py + gy * eps + F[1] * sa + F[4] * sb, oz = pz + gz * eps + F[2] * sa + F[5] * sb;
-        if (!tr.any(ox, oy, oz, L[0], L[1], L[2], 1e4)) { m += 0.25; a = 1; }
+        if (!tr.any(ox, oy, oz, L[0], L[1], L[2], 1e4, 0)) { a = 1; if (!C.hasVeg || !tr.any(ox, oy, oz, L[0], L[1], L[2], 1e4, 1, (i * 4 + k + 1) >>> 0)) m += 0.25; }
       }
       return [m, a];
     };
@@ -154,14 +162,32 @@ function makeWorker(S, C) {
       let dx = F[0] * lx + F[3] * ly + nx * lz, dy = F[1] * lx + F[4] * ly + ny * lz, dz = F[2] * lx + F[5] * ly + nz * lz;
       const dg = dx * gx + dy * gy + dz * gz;
       if (dg < 1e-3) { dx -= (dg - 1e-3) * 2 * gx; dy -= (dg - 1e-3) * 2 * gy; dz -= (dg - 1e-3) * 2 * gz; const l = Math.hypot(dx, dy, dz); dx /= l; dy /= l; dz /= l; }
-      if (!tr.closest(ox, oy, oz, dx, dy, dz, 1e5)) {
+      // [A4] vegetation proxies (TK 3): a front-face hit stops the ray with the proxy's opacity, a back-face hit (the
+      // texel sits inside a crown or shrub hull) with half of it; otherwise the ray goes on through (<= 6 crossings)
+      let hit = false, vegBack = false, trav = 0, qx = ox, qy = oy, qz = oz;
+      for (let pass = 0; pass < 6; pass++) {
+        if (!tr.closest(qx, qy, qz, dx, dy, dz, 1e5)) break;
+        const tt = R.tri;
+        if (TK[tt] !== 3) { hit = true; break; }
+        const fdot = dx * TFo[tt * 3] + dy * TFo[tt * 3 + 1] + dz * TFo[tt * 3 + 2];
+        h = hash32(h + 0x632be5ab);
+        if (h / 4294967296 < TOp[tt] * (fdot > 0 ? 0.5 : 1)) { hit = true; vegBack = fdot > 0; break; }
+        trav += R.t + 1e-3; qx += dx * (R.t + 1e-3); qy += dy * (R.t + 1e-3); qz += dz * (R.t + 1e-3);
+      }
+      if (!hit) {
         open++;
         const es = envIdx(C.crs, C.srs, dx, dy, dz), eo = sameRot ? es : envIdx(C.cro, C.sro, dx, dy, dz);
         s0 += ENVS[es]; s1 += ENVS[es + 1]; s2 += ENVS[es + 2]; o0 += ENVO[eo]; o1 += ENVO[eo + 1]; o2 += ENVO[eo + 2];
         continue;
       }
-      if (R.t > maxD) open++;
+      if (R.t + trav > maxD) open++;
       const t = R.tri, fx = TFo[t * 3], fy = TFo[t * 3 + 1], fz = TFo[t * 3 + 2];
+      if (TK[t] === 3) {   // inside: shaded sky only; outside: the proxy's own estimate (as the treeline's, its albedo x occ)
+        const a = t * 3, oc = TOcc[t] * (vegBack ? 0.5 : 1), cs = vegBack ? 0 : Math.max(0, fx * C.Ls[0] + fy * C.Ls[1] + fz * C.Ls[2]), co = vegBack ? 0 : Math.max(0, fx * C.Lo[0] + fy * C.Lo[1] + fz * C.Lo[2]), sk = vegBack ? 0.5 : 0.5 + 0.5 * fy;
+        s0 += TAlb[a] * oc * (C.SUNs[0] * cs + C.SKYs[0] * sk); s1 += TAlb[a + 1] * oc * (C.SUNs[1] * cs + C.SKYs[1] * sk); s2 += TAlb[a + 2] * oc * (C.SUNs[2] * cs + C.SKYs[2] * sk);
+        o0 += TAlb[a] * oc * (C.SUNo[0] * co + C.SKYo[0] * sk); o1 += TAlb[a + 1] * oc * (C.SUNo[1] * co + C.SKYo[1] * sk); o2 += TAlb[a + 2] * oc * (C.SUNo[2] * co + C.SKYo[2] * sk);
+        continue;
+      }
       if (dx * fx + dy * fy + dz * fz > 0) { if (TK[t] === 0) back++; continue; }
       if (TK[t] === 0) {
         const b = t * 6, w1 = R.u, w2 = R.v;
@@ -209,7 +235,8 @@ async function main() {
   const quick = has('--quick'), fresh = has('--fresh'), verifyOnly = has('--verify');
   const threads = Math.max(1, +arg('--threads', Math.min(8, os.availableParallelism?.() ?? os.cpus().length)));
   const OUT = path.resolve(arg('--out', ROOT)), HDRDIR = arg('--hdr', '/home/claude/dl/ph/files');
-  const RAYS = quick ? [8, 8, 48] : [32, 32, 256], FILT = quick ? [[5, 2.5], [5, 2.5], [3, 1.4]] : [[4, 2.0], [4, 2.0], [2, 1.0]];
+  // [A4] the final pass filters r 1 (full) / r 2 (quick), cross-bilateral (lighting #3); [r, sigma, range sigma log2]
+  const RAYS = quick ? [8, 8, 48] : [32, 32, 256], FILT = quick ? [[5, 2.5, 0], [5, 2.5, 0], [2, 1.2, 0.9]] : [[4, 2.0, 0], [4, 2.0, 0], [1, 0.8, 0.7]];
   const T0 = performance.now(), log = (...a) => console.log(`[${((performance.now() - T0) / 1000).toFixed(1).padStart(6)}s]`, ...a);
 
   const THREE = await import('three');
@@ -235,9 +262,9 @@ async function main() {
   log(`world ${hash}: atlas ${W}x${H}, texel ${lay.texel} m (terrain ${lay.terrTexel} m), ${lay.charts} charts`);
 
   // ---------------------------------------------------------------- skies (loadSky's measurement, replicated)
-  const envI = IN.envI;
   const skyOf = async (key) => {
     const def = SKIES[key], file = path.join(HDRDIR, `${def.id}_2k.hdr`);
+    const envI = IN.envIOf ? IN.envIOf(def) : IN.envI;   // [A4] decision 2: 0.85 x bgI (sunny 1.7)
     let buf;
     if (fs.existsSync(file)) buf = fs.readFileSync(file);
     else {
@@ -279,10 +306,10 @@ async function main() {
       if (m.angleTo(Lc) > 0.05) throw new Error(`${key}: HDR sun pixel lands at ${m.toArray().map((v) => v.toFixed(3))} but the world sun is ${Lc.toArray().map((v) => v.toFixed(3))}`);
     }
     const Lw = typeof wb.skySunDir === 'function' ? wb.skySunDir(def).normalize() : L.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
-    return { key, id: def.id, rotY, sunDir: Lw.toArray(), sunI, sunColor, SUN: sunColor.map((v) => v * sunI), skyB: skyE.map((v) => v * envI), tab, EW, EH, shadows: sunI > 0.5 };
+    return { key, id: def.id, rotY, sunDir: Lw.toArray(), sunI, sunColor, SUN: sunColor.map((v) => v * sunI), skyB: skyE.map((v) => v * envI), tab, EW, EH, shadows: sunI > 0.5, envI, sunRatio: def.sunRatio || 0, bgI: def.bgI ?? 1 };
   };
   const SKY = { sunny: await skyOf('sunny'), overcast: await skyOf('overcast') };
-  for (const s of Object.values(SKY)) log(`sky ${s.key} (${s.id}): sunI ${s.sunI.toFixed(2)} sun [${s.sunColor.map((v) => v.toFixed(3))}] skyB [${s.skyB.map((v) => v.toFixed(3))}] sunDir [${s.sunDir.map((v) => v.toFixed(4))}] rotY ${s.rotY}`);
+  for (const s of Object.values(SKY)) log(`sky ${s.key} (${s.id}): envI ${s.envI.toFixed(3)} sunI ${s.sunI.toFixed(2)} sun [${s.sunColor.map((v) => v.toFixed(3))}] skyB [${s.skyB.map((v) => v.toFixed(3))}] sunDir [${s.sunDir.map((v) => v.toFixed(4))}] rotY ${s.rotY}`);
 
   // ---------------------------------------------------------------- trace scene: merged + terrain (lightmapped), far field + treeline proxies
   const parts = [];   // [kind, positions, normals|null, uv2|null, index]
@@ -307,12 +334,23 @@ async function main() {
     log(`collider tail: ${far.length / 3} far-field + ${prox.length / 3} proxy triangles, 0 inside the site`);
     parts.push([1, cp, null, null, Uint32Array.from(far)], [2, cp, null, null, Uint32Array.from(prox)]);
   }
+  // [A4] contract C10: vegetation proxies (stream V1, optional) = geo.vegProxies or geo.site.vegProxies. Each entry is a
+  // BufferGeometry in world space (position, optional index; userData.occ / opacity / albedo) or a plain object
+  // { position: [x, y, z, ...], index?: [...], occ?: 0.6, opacity?: 1, albedo?: [r, g, b] }. occ = how much of the light
+  // reaching the crown it sends back (self-shading, lighting #5: 0.6), opacity = the share of rays the hull stops (1 = a
+  // solid crown, ~0.6 for a loose shrub). They occlude the bounce light and the sky (and dim the bounce radiosity under
+  // them), but never the runtime sun mask (aux.g): leaf shadows stay the shadow map's.
+  const vegList = wb.vegProxyList ? wb.vegProxyList(geo) : [];
+  let vegTris = 0;
+  for (const v of vegList) { parts.push([3, v.position, null, null, v.index, v]); vegTris += v.index.length / 3; }
+  if (vegList.length) log(`vegetation proxies: ${vegList.length} entries, ${vegTris} triangles`);
   let NVg = 0, NT = 0; for (const p of parts) { NVg += p[1].length / 3; NT += p[4].length / 3; }
   const SAB = (T, n) => new T(new SharedArrayBuffer(T.BYTES_PER_ELEMENT * Math.max(1, n)));
   const VP = new Float32Array(NVg * 3), TI = new Uint32Array(NT * 3), TK = SAB(Uint8Array, NT), TFo = SAB(Float32Array, NT * 3), TU = SAB(Float32Array, NT * 6);
+  const TOp = SAB(Float32Array, NT), TOcc = SAB(Float32Array, NT), TAlb = SAB(Float32Array, NT * 3);   // [A4] per-triangle veg proxy data
   {
     let vo = 0, to = 0;
-    for (const [kind, p, n, u, ix] of parts) {
+    for (const [kind, p, n, u, ix, meta] of parts) {
       VP.set(p, vo * 3);
       for (let k = 0; k < ix.length; k += 3, to++) {
         const a = ix[k], b = ix[k + 1], c = ix[k + 2];
@@ -321,6 +359,7 @@ async function main() {
         let fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx; const l = Math.hypot(fx, fy, fz) || 1; fx /= l; fy /= l; fz /= l;
         if (n) { const sx = n[a * 3] + n[b * 3] + n[c * 3], sy = n[a * 3 + 1] + n[b * 3 + 1] + n[c * 3 + 1], sz = n[a * 3 + 2] + n[b * 3 + 2] + n[c * 3 + 2]; if (fx * sx + fy * sy + fz * sz < 0) { fx = -fx; fy = -fy; fz = -fz; } }
         TFo[to * 3] = fx; TFo[to * 3 + 1] = fy; TFo[to * 3 + 2] = fz;
+        if (meta) { TOp[to] = meta.opacity; TOcc[to] = meta.occ; TAlb[to * 3] = meta.albedo[0]; TAlb[to * 3 + 1] = meta.albedo[1]; TAlb[to * 3 + 2] = meta.albedo[2]; }
         if (u) for (let j = 0; j < 3; j++) { const v = ix[k + j]; TU[to * 6 + j * 2] = u[v * 2] * W; TU[to * 6 + j * 2 + 1] = u[v * 2 + 1] * H; }
       }
       vo += p.length / 3;
@@ -337,7 +376,7 @@ async function main() {
   log(`samples: ${NS} texels (${(NS / WH * 100).toFixed(1)} % of the atlas) in ${Math.round(performance.now() - t1)} ms`);
 
   const S = {
-    NB: bvh.NB, NC: bvh.NC, TV: bvh.TV, TO: bvh.TO, TK, TFo, TU, SP: smp.SP, SN: smp.SN, SG: smp.SG, SD: smp.SD,
+    NB: bvh.NB, NC: bvh.NC, TV: bvh.TV, TO: bvh.TO, TK, TFo, TU, TOp, TOcc, TAlb, SP: smp.SP, SN: smp.SN, SG: smp.SG, SD: smp.SD,
     BS: SAB(Float32Array, WH * 3), BO: SAB(Float32Array, WH * 3), ENVS: SAB(Float32Array, SKY.sunny.tab.length), ENVO: SAB(Float32Array, SKY.overcast.tab.length),
     OS: SAB(Float32Array, NS * 3), OO: SAB(Float32Array, NS * 3), OA: SAB(Float32Array, NS), OB: SAB(Float32Array, NS),
     OV1: SAB(Float32Array, NS), OV2: SAB(Float32Array, NS), OVO: SAB(Float32Array, NS), ctrl: SAB(Int32Array, 16),
@@ -348,6 +387,7 @@ async function main() {
     Ls: SKY.sunny.sunDir, Lo: SKY.overcast.sunDir, oShadow: SKY.overcast.shadows,
     crs: Math.cos(SKY.sunny.rotY), srs: Math.sin(SKY.sunny.rotY), cro: Math.cos(SKY.overcast.rotY), sro: Math.sin(SKY.overcast.rotY),
     SUNs: SKY.sunny.SUN, SUNo: SKY.overcast.SUN, SKYs: SKY.sunny.skyB, SKYo: SKY.overcast.skyB, aFar: IN.ground, aLeaf: IN.leaf,
+    hasVeg: vegTris > 0,
   };
 
   if (verifyOnly) { await verify({ THREE, wb, geo, lay, S, C, SKY, smp, OUT, log, W, H }); return; }
@@ -431,8 +471,9 @@ async function main() {
       for (let i = 0; i < NS; i++) valid[i] = S.OB[i] < 0.25 ? 1 : 0;
       Es.set(S.OS); Eo.set(S.OO); open.set(S.OA);
       t1 = performance.now();
-      denoise(PP, [Es, Eo], 3, FILT[k - 1][0], FILT[k - 1][1]);
-      if (k === 3) denoise(PP, [open], 1, FILT[k - 1][0], FILT[k - 1][1]);
+      const gd = { open: S.OA.slice(), back: S.OB.slice(), range: FILT[k - 1][2] };
+      denoise(PP, [Es, Eo], 3, FILT[k - 1][0], FILT[k - 1][1], gd);
+      if (k === 3) denoise(PP, [open], 1, FILT[k - 1][0], FILT[k - 1][1], { ...gd, range: 0 });
       saveF(post, [Es, Eo, open, valid]);
       log(`pass ${k}: denoised (r ${FILT[k - 1][0]}, sigma ${FILT[k - 1][1]}) in ${Math.round(performance.now() - t1)} ms; ${NS - valid.reduce((a, b) => a + b, 0)} texels inside geometry`);
     }
@@ -447,12 +488,13 @@ async function main() {
   writePNG('lm_sunny.png', enc.sunny.bytes); writePNG('lm_overcast.png', enc.overcast.bytes); writePNG('lm_aux.png', enc.aux);
   const bakeSec = (performance.now() - T0) / 1000;
   const sky = (s, e) => ({ file: `lm_${s.key}.png`, id: s.id, range: e.range, sunDir: s.sunDir.map((v) => +v.toFixed(6)), rotY: s.rotY,
-    light: { sunI: +s.sunI.toFixed(5), sunColor: s.sunColor.map((v) => +v.toFixed(5)), skyB: s.skyB.map((v) => +v.toFixed(5)), envI } });
+    light: { sunI: +s.sunI.toFixed(5), sunColor: s.sunColor.map((v) => +v.toFixed(5)), skyB: s.skyB.map((v) => +v.toFixed(5)), envI: +s.envI.toFixed(5), sunRatio: s.sunRatio, bgI: s.bgI } });
   const json = {
     version: 1, hash, hashAlgo: 'mm3x2/1 (tools/geohash.mjs) over name, position, normal, uv2, index + layout', W, H, texel: lay.texel, terrTexel: lay.terrTexel, charts: lay.charts,
     encoding: 'rgb = (log2(E) - range[0]) / (range[1] - range[0]), E = indirect irradiance (pi-included, linear), bilinear',
     aux: { file: 'lm_aux.png', r: `openness^${IN.aoExp} (40 m, terrain 24 m)`, g: 'sunny sun visibility, dilated 3 texels' },
     skies: { sunny: sky(SKY.sunny, enc.sunny), overcast: sky(SKY.overcast, enc.overcast) },
+    vegHash: wb.vegProxyHash ? wb.vegProxyHash(geo) : null, vegTris, denoise: 'cross-bilateral (openness, back hits, log luminance)',
     rays: RAYS, bounces: 3, mode, bakeSec: Math.round(bakeSec), threads, date: new Date().toISOString().slice(0, 10), files,
   };
   fs.writeFileSync(path.join(OUT, 'lm.json'), JSON.stringify(json, null, 1) + '\n');
@@ -613,12 +655,18 @@ function closest2D(px, py, ax, ay, bx, by, cx, cy) {   // closest point of trian
 
 // ================================================================ denoise + dilate (atlas space, chart-aware)
 // Normalised separable Gaussian over valid texels of the same chart (weights x normal agreement on curved charts).
-function denoise(PP, arrs, comps, r, sigma) {
+// [A4] cross-bilateral (lighting #3): x exp(-d^2 / 2 s^2) on the texels' openness (rays escaping 40 m), back-hit share
+// and, when g.range > 0, log2 luminance of the first array (the sunny irradiance), so a real step (a beam side under the
+// table next to its sunlit end, a column foot against the floor) is not smeared across the step. Guides are per sample.
+const DN = { sOpen: 0.18, sBack: 0.12 };
+function denoise(PP, arrs, comps, r, sigma, g = null) {
   const { smp, W, H, valid } = PP, { NS, SPIX, SCH, SN, chartOf, pixS } = smp, WH = W * H;
   const K = Array.from({ length: 2 * r + 1 }, (_, i) => Math.exp(-((i - r) ** 2) / (2 * sigma * sigma)));
   const nC = arrs.length * comps, val = new Float32Array(WH * nC), wgt = new Float32Array(WH), tv = new Float32Array(WH * nC), tw = new Float32Array(WH);
   for (let i = 0; i < NS; i++) { if (!valid[i]) continue; const p = SPIX[i]; wgt[p] = 1; let o = 0; for (const a of arrs) for (let c = 0; c < comps; c++) val[p * nC + o++] = a[i * comps + c]; }
   const acc = new Float64Array(nC);
+  const iO = 1 / (2 * DN.sOpen * DN.sOpen), iB = 1 / (2 * DN.sBack * DN.sBack), iR = g && g.range > 0 ? 1 / (2 * g.range * g.range) : 0;
+  const lum0 = (src, q, w) => (0.2126 * src[q * nC] + 0.7152 * src[q * nC + 1] + 0.0722 * src[q * nC + 2]) / w;
   const pass = (src, sw, dst, dw, step, len, lines, lstep) => {
     for (let L = 0; L < lines; L++) {
       const base = L * lstep;
@@ -632,6 +680,12 @@ function denoise(PP, arrs, comps, r, sigma) {
           let kw = K[k + r] * sw[q];
           const sq = pixS[q];
           if (n0 >= 0 && sq >= 0) { const d = SN[n0] * SN[sq * 3] + SN[n0 + 1] * SN[sq * 3 + 1] + SN[n0 + 2] * SN[sq * 3 + 2]; if (d < 0.9) kw *= Math.max(0, (d - 0.5) / 0.4); }
+          if (g && s0 >= 0 && sq >= 0 && k !== 0) {
+            const dO = g.open[s0] - g.open[sq], dB = g.back[s0] - g.back[sq];
+            let e = (dO * dO) * iO + (dB * dB) * iB;
+            if (g.range > 0 && sw[p] > 0) { const lp = lum0(src, p, sw[p]), lq = lum0(src, q, sw[q]), dl = Math.log2(Math.max(lp, 1e-6) / Math.max(lq, 1e-6)); e += dl * dl * iR; }
+            kw *= Math.exp(-e);
+          }
           if (kw <= 0) continue;
           w += kw; for (let c = 0; c < nC; c++) acc[c] += kw * src[q * nC + c] / sw[q];
         }
@@ -754,7 +808,7 @@ async function verify({ THREE, wb, geo, lay, S, C, SKY, smp, OUT, log, W, H }) {
   ranges.push([t0, t0 + geo.terr.index.count / 3, null, geo.terr]); t0 += geo.terr.index.count / 3;
   const rangeOf = (t) => ranges.find((r) => t >= r[0] && t < r[1]);
   const albAt = (t, x, z) => { const r = rangeOf(t); return r ? (r[2] || IN.terrainAlbedo(x, z)) : TKa(t); };
-  const TKa = (t) => (S.TK[t] === 1 ? C.aFar : C.aLeaf.map((v) => v * 0.6));
+  const TKa = (t) => (S.TK[t] === 1 ? C.aFar : S.TK[t] === 3 ? [0, 1, 2].map((c) => S.TAlb[t * 3 + c] * S.TOcc[t]) : C.aLeaf.map((v) => v * 0.6));
   let seed = 12345; const rnd = () => (seed = hash32(seed + 0x9e3779b9)) / 4294967296;
   const F = new Float64Array(6), frame = (n) => { const s = n[2] >= 0 ? 1 : -1, a = -1 / (s + n[2]), b = n[0] * n[1] * a; return [1 + s * n[0] * n[0] * a, s * b, -s * n[0], b, s + n[1] * n[1] * a, -n[1]]; };
   const cosDir = (n) => { const f = frame(n), u = rnd(), v = rnd(), r = Math.sqrt(u), ph = 2 * PI * v, x = r * Math.cos(ph), y = r * Math.sin(ph), z = Math.sqrt(1 - u); return [f[0] * x + f[3] * y + n[0] * z, f[1] * x + f[4] * y + n[1] * z, f[2] * x + f[5] * y + n[2] * z]; };

@@ -39,6 +39,16 @@ else {
   const m = wb.lmMatch(j, geo, 'sunny', sun('sunny'));
   if (!m.ok && !process.argv.includes('--allow-stale')) fails++;   // a stale lightmap = a ~10 s phone load: fail unless explicitly allowed
   console.log(`${m.ok ? 'ok  ' : 'STALE'} committed lm.json (${j.mode}, ${j.date}) vs this geometry: ${m.ok ? 'matches, the game uses the lightmaps' : m.why + ' -> the game bakes per vertex until node tools/bakelm.mjs is re-run'}`);
+  // [A4] the light it was baked with (envI / sunRatio, decision 2) and the vegetation proxies (C10): stale = fail too
+  const fr = wb.lmFresh ? wb.lmFresh(j, geo) : [];
+  if (fr.length && !process.argv.includes('--allow-stale')) fails++;
+  console.log(`${fr.length ? 'STALE' : 'ok  '} committed lm.json light + vegetation: ${fr.length ? fr.join('; ') + ' -> re-run node tools/bakelm.mjs' : 'baked with this sky light and these vegetation proxies'}`);
+}
+{ // [A4] C10: vegetation proxies change the freshness verdict, not the geometry gate
+  const g = wb.buildGeometry(); g.vegProxies = [{ position: [0, 0, 0, 1, 0, 0, 0, 1, 0], occ: 0.6 }];
+  const jj = { vegHash: wb.vegProxyHash(geo), skies: Object.fromEntries(Object.entries(wb.SKIES).map(([k, d]) => [k, { light: { envI: wb.skyEnvI(d), sunRatio: d.sunRatio || 0 } }])) };
+  ok(wb.vegProxyList(g).length === 1 && wb.lmFresh(jj, geo).length === 0 && wb.lmFresh(jj, g).length === 1, 'vegetation proxies (C10) read and hashed: added proxies -> stale light, same -> fresh');
+  ok(wb.lmFresh({ ...jj, skies: { ...jj.skies, sunny: { light: { envI: 0.85, sunRatio: 7.5 } } } }, geo).length === 2, 'round-3 sky light (envI 0.85, sunRatio 7.5) -> stale');
 }
 // mismatch -> fallback (against a synthetic lm.json for this exact geometry)
 const fake = { version: 1, hash: h, W: lay.W, H: lay.H, skies: { sunny: { file: 'lm_sunny.png', range: [-12, 3], sunDir: sun('sunny').toArray() }, overcast: { file: 'lm_overcast.png', range: [-12, 3], sunDir: sun('overcast').toArray() } } };

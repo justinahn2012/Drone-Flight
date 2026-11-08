@@ -1932,6 +1932,39 @@ export function lmMatch(j, geo, sky, sunDir) {
   if (d > 2e-3) return { ok: false, why: `sun direction moved (${d.toFixed(4)}): re-run node tools/bakelm.mjs` };
   return { ok: true, j, s, hash: h };
 }
+// [A4] contract C10: vegetation proxies for the bake (V1, optional): geo.vegProxies or geo.site.vegProxies, each a
+// BufferGeometry (world space; userData.occ / opacity / albedo) or { position, index?, occ?, opacity?, albedo? }.
+// Normalised to { position: Float32Array, index: Uint32Array, occ, opacity, albedo }; [] when there are none.
+export function vegProxyList(geo) {
+  const src = geo?.vegProxies || geo?.site?.vegProxies || [], out = [], leaf = MATS.leaf?.albedo ?? [0.1, 0.12, 0.04];
+  for (const e of src) {
+    const g = e?.isBufferGeometry ? e : null, m = g ? g.userData || {} : e || {};
+    const pos = g ? g.attributes.position?.array : e?.position; if (!pos || pos.length < 9) continue;
+    const ix = g ? g.index?.array : e.index, n = pos.length / 3;
+    const index = ix ? Uint32Array.from(ix) : Uint32Array.from({ length: n - (n % 3) }, (_, i) => i);
+    out.push({ position: Float32Array.from(pos), index, occ: m.occ ?? 0.6, opacity: Math.min(1, Math.max(0, m.opacity ?? 1)), albedo: m.albedo || leaf });
+  }
+  return out;
+}
+export function vegProxyHash(geo) {
+  const L = vegProxyList(geo); if (!L.length) return null;
+  const h = new GeoHash().str('vegProxies'); h.word(L.length);
+  for (const v of L) h.array(v.position).array(v.index).str(`${v.occ}:${v.opacity}:${v.albedo.join(',')}`);
+  return h.hex();
+}
+// [A4] what lmMatch does not gate (the runtime keeps a lightmap whose geometry matches; a per-vertex re-bake would cost
+// ~10 s on a phone) but tools/test-lightmap.mjs fails on: the sky light it was baked with (envI, sunRatio, bgI, decision 2)
+// and the vegetation proxies (C10). Returns a list of reasons; [] = fresh.
+export function lmFresh(j, geo) {
+  const why = [];
+  for (const [k, def] of Object.entries(SKIES)) {
+    const l = j?.skies?.[k]?.light; if (!l) { why.push(`${k}: no baked light`); continue; }
+    if (Math.abs((l.envI ?? 0.85) - skyEnvI(def)) > 1e-3) why.push(`${k}: baked with envI ${l.envI ?? 0.85}, sky wants ${skyEnvI(def)}`);
+    if (l.sunRatio !== undefined && l.sunRatio !== (def.sunRatio || 0)) why.push(`${k}: baked with sunRatio ${l.sunRatio}, SKIES has ${def.sunRatio}`);
+  }
+  const vh = vegProxyHash(geo); if ((j?.vegHash ?? null) !== vh) why.push(`vegetation proxies ${j?.vegHash ?? 'none'} baked, ${vh ?? 'none'} now`);
+  return why;
+}
 async function lmImage(file, cpu) {
   const r = await fetch(lmURL(file)); if (!r.ok) throw new Error(`${file}: HTTP ${r.status}`);
   const blob = await r.blob();
@@ -3021,6 +3054,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
       const b = lm.s.light, d = Math.abs(b.sunI - sunI) / Math.max(1, sunI) + Math.abs(b.skyB[1] - aLight.uSkyB.value.y) / Math.max(0.1, aLight.uSkyB.value.y);
       if (d > 0.02) console.warn('[A1] lightmap baked with sunI', b.sunI, 'skyB', b.skyB, 'but the sky measures sunI', +sunI.toFixed(3), 'skyB', aLight.uSkyB.value.toArray().map((v) => +v.toFixed(3)), ': re-run node tools/bakelm.mjs');
     }
+    const fr = lmFresh(lm.j, geo); if (fr.length) console.warn('[A4] lightmap stale in light/vegetation:', fr.join('; '), ': re-run node tools/bakelm.mjs');
     bake.stats.decals = dr || 'probe';
   }
   // [A] sun: a DirectionalLight carrying the energy clamped out of the HDR.
