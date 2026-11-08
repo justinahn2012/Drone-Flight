@@ -25,8 +25,10 @@ import { Rng } from './rng.js';
 export const LIFE = {
   crowdHz: 10, trafficHz: 60,
   // pedestrians per m^2 of walkway, Friday ~22:00 (provisional; to be fitted to the M0 clip counts, plan-U5 §5)
-  density: { main: 0.11, walking: 0.30, club: 0.24, alley: 0.13 },
-  maxAgents: 1400, nearR: 18, farR: 170, maxNear: 140,
+  density: { main: 0.08, walking: 0.25, club: 0.2, alley: 0.06 },
+  // when the budget can't hold every street at its density, hero streets keep more of theirs
+  priority: { walking: 1, club: 1, main: 0.6, alley: 0.35 },
+  maxAgents: 2400, nearR: 18, farR: 170, maxNear: 140, maxMid: 1500,
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
   phoneShare: 0.18,            // walkers looking at a phone
   sidewalk: (w) => Math.max(3, Math.min(6, w * 0.15)),
@@ -457,7 +459,7 @@ export class CrowdSim {
     this.n = 0; this.groups = [];
     const D = LIFE.density;
     // budgets: walkway area x density, then frontage people, then crossers; scaled to maxAgents
-    const wayN = this.ways.map((w) => Math.max(0, (w.s1 - w.s0) * (w.dmax - w.dmin) * (D[w.kind] ?? D.alley) * this.density));
+    const wayN = this.ways.map((w) => Math.max(0, (w.s1 - w.s0) * (w.dmax - w.dmin) * (D[w.kind] ?? D.alley) * (LIFE.priority[w.kind] ?? 0.35) * this.density));
     const frontN = this.lots.map((l) => (l.use === 'club' ? 12 : l.use === 'pocha' ? 10 : ['conv', 'bar', 'karaoke', 'pc', 'cafe'].includes(l.use) ? 3 : 1.2) * this.density);
     const crossN = this.net.crossings.map((c) => (c.kind === 'T' ? 30 : 12) * this.density);
     const tot = [...wayN, ...frontN, ...crossN].reduce((a, b) => a + b, 0);
@@ -1044,7 +1046,7 @@ function buildFill(net, layout, emitters, cell = 4) {
 // ================================================================ build (contract L2)
 export function build(layout, ctx = {}) {
   const seed = ctx.seed ?? 7, q = ctx.quality || 'auto';
-  const maxAgents = ctx.maxAgents ?? (q === 'low' ? 700 : LIFE.maxAgents);
+  const maxAgents = ctx.maxAgents ?? (q === 'low' ? 1200 : LIFE.maxAgents);
   const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents });
   const crowd = sim.crowd, traffic = sim.traffic;
   const group = new THREE.Group(); group.name = 'seoul-life';
@@ -1067,7 +1069,7 @@ export function build(layout, ctx = {}) {
   };
   humanMat.customProgramCacheKey = () => 'seoul-human';
   const tiers = [0, 1].map((lod) => {
-    const g = buildHumanGeo(lod), cap = lod ? maxAgents : LIFE.maxNear;
+    const g = buildHumanGeo(lod), cap = lod ? Math.min(maxAgents, LIFE.maxMid) : LIFE.maxNear;
     const at = (n) => { const a = new THREE.InstancedBufferAttribute(new Float32Array(cap * n), n); a.setUsage(THREE.DynamicDrawUsage); return a; };
     const A = { iPos: at(4), iAnim: at(4), iTop: at(4), iBot: at(4), iHair: at(4), iSkin: at(4), iFill: at(4) };
     for (const k in A) g.setAttribute(k, A[k]);
@@ -1125,6 +1127,7 @@ export function build(layout, ctx = {}) {
 
   const tmpF = [0, 0, 0, 0], M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S1 = new THREE.Vector3(1, 1, 1), V3 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0), PO = {};
   const fwd = new THREE.Vector3(0, 0, -1);
+  const hist = new Int32Array(18), ax = new Float32Array(crowd.agents.length), az = new Float32Array(crowd.agents.length), ab = new Uint8Array(crowd.agents.length);
   const stats = { agents: crowd.agents.length, vehicles: traffic.vehicles.length, near: 0, mid: 0, drawn: 0, cpuMs: 0, simMs: 0, trisNear: tiers[0].tris, trisMid: tiers[1].tris, lanes: traffic.lanes.length, ways: crowd.ways.length, crossings: sim.net.crossings.length };
   let clock = 0, extClock = false;
   const camP = new THREE.Vector3(0, 2, 0);
@@ -1138,14 +1141,23 @@ export function build(layout, ctx = {}) {
     uTime.value = clock;
     if (camQuat) fwd.set(0, 0, -1).applyQuaternion(camQuat); else fwd.set(0, 0, 0);
     // ---- people: interpolate, tier by distance, cull behind the camera (FPV lenses are wide: only > ~100 deg)
-    const aC = sim.aC, A = crowd.agents, nr2 = LIFE.nearR * LIFE.nearR, fr2 = LIFE.farR * LIFE.farR;
+    const aC = sim.aC, A = crowd.agents, nr2 = LIFE.nearR * LIFE.nearR;
     let nN = 0, nM = 0; const T0 = tiers[0].A, T1 = tiers[1].A;
+    // visible set + a 10 m distance histogram: the mid tier keeps the nearest maxMid
+    hist.fill(0);
     for (let i = 0; i < A.length; i++) {
       const a = A[i], u = a.jumped ? 1 : aC;
       const x = a.px + (a.x - a.px) * u, z = a.pz + (a.z - a.pz) * u;
       const dx = x - camP.x, dz = z - camP.z, d2 = dx * dx + dz * dz + camP.y * camP.y * 0.25;
-      if (d2 > fr2) continue;
-      if (d2 > 36 && (dx * fwd.x + dz * fwd.z) < -0.25 * Math.sqrt(d2)) continue;
+      let b = d2 > 36 && (dx * fwd.x + dz * fwd.z) < -0.25 * Math.sqrt(d2) ? 99 : Math.floor(Math.sqrt(d2) / 10);
+      if (b > 17) b = 99; else hist[b]++;
+      ax[i] = x; az[i] = z; ab[i] = b;
+    }
+    let cut = 17, acc = 0; for (let b = 0; b <= 17; b++) { acc += hist[b]; if (acc > tiers[1].cap + LIFE.maxNear) { cut = b - 1; break; } }
+    for (let i = 0; i < A.length; i++) {
+      if (ab[i] > cut) continue;
+      const a = A[i], u = a.jumped ? 1 : aC, x = ax[i], z = az[i];
+      const dx = x - camP.x, dz = z - camP.z, d2 = dx * dx + dz * dz + camP.y * camP.y * 0.25;
       let T, k;
       if (d2 < nr2 && nN < tiers[0].cap) { T = T0; k = nN++; } else if (nM < tiers[1].cap) { T = T1; k = nM++; } else continue;
       let dy = a.yaw - a.pyaw; dy -= Math.round(dy / 6.283185307) * 6.283185307;
