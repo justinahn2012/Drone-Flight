@@ -11,6 +11,12 @@
 //  - controls.cancelAll()                   drops every touch; also runs by itself on orientation change, page hide
 //                                           and when `enabled` goes false
 //  - controls.padKind                       'pad' | 'radio' | null — which device is driving the sticks
+//  - controls.touches                       (C8) Map touchId -> {side, ...} of the thumbs on the screen right now
+//                                           ('m' = desktop mouse drag); .size > 0 = a thumb is down, wherever it sits
+//  - controls.raw                           {lx, ly, rx, ry}: last poll()'s sticks after the deadzone, before expo
+//  - controls.active                        (C8, for main.js sticksActive / decision 9) "hands on": a thumb on the
+//                                           screen, a stick key held, or any raw stick past its deadzone (in Angle /
+//                                           Acro the non-centring throttle doesn't count)
 //  - ?radio=TAER (URL) overrides the USB-radio channel order (default AETR, the EdgeTX/OpenTX default)
 
 const DZ = 0.07;            // touch deadzone (fraction of R)
@@ -22,6 +28,8 @@ const R_WELL = 0.34;        // portrait throw as a fraction of the well size
 const R_MIN_VMIN = 0.13;    // ...but never below this fraction of the short screen side (small wells)
 const EDGE = 8;             // px kept clear of a screen edge when computing reach
 const REACH_MIN = 0.45;     // reach compensation never shrinks a throw below this fraction of R
+
+const STICK_KEYS = new Set(['KeyA', 'KeyD', 'KeyW', 'KeyS', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
 
 const clamp1 = (v) => Math.max(-1, Math.min(1, v));
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
@@ -37,6 +45,7 @@ export class Controls {
     this.sticks = { L: { x: 0, y: 0 }, R: { x: 0, y: 0 } };
     this.touches = new Map();          // touchId -> { side, ox, oy, thr0, R, rL, rR, rU, rD, portrait }
     this.keys = new Set();
+    this.raw = { lx: 0, ly: 0, rx: 0, ry: 0 };
     this.padActive = false; this.padKind = null; this._padRef = null; this._en = true;
     this.radioMap = 'AETR';
     try { const m = new URLSearchParams(location.search).get('radio'); if (m && /^[AETR]{4}$/i.test(m) && new Set(m.toUpperCase()).size === 4) this.radioMap = m.toUpperCase(); } catch (e) {}
@@ -50,6 +59,12 @@ export class Controls {
   }
 
   get throttleCentering() { return this.mode === 'cine'; }
+  get active() {
+    if (this.touches.size > 0) return true;
+    for (const k of this.keys) if (STICK_KEYS.has(k)) return true;
+    const r = this.raw;
+    return r.lx !== 0 || r.rx !== 0 || r.ry !== 0 || (this.throttleCentering && r.ly !== 0);
+  }
   get enabled() { return this._en; }
   set enabled(v) { this._en = !!v; if (!v) this.cancelAll(); }
 
@@ -245,6 +260,7 @@ export class Controls {
       if (this.throttleCentering) { if (k.has('KeyW') || k.has('KeyS')) ly = a('KeyW', 'KeyS'); }
       else if (k.has('KeyW') || k.has('KeyS')) { this.thr = clamp01(this.thr + a('KeyW', 'KeyS') * dt * 0.6); ly = this.thr * 2 - 1; this.sticks.L.y = ly; }
     }
+    const raw = this.raw; raw.lx = lx; raw.ly = ly; raw.rx = rx; raw.ry = ry;
     if (this.throttleCentering) {
       // Cine: this expo is the only stick shaping (flight.js maps it to speeds)
       this.yaw = ex(lx, 0.55); this.roll = ex(rx, 0.55); this.pitch = ex(ry, 0.45); this.climb = ex(ly, 0.35);

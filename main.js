@@ -583,8 +583,10 @@ function rigCamera(dt) {
   // [E] the body pose between the last two physics ticks (physAlpha = leftover accumulator / tick, see frame())
   rigP.lerpVectors(drone.prev, drone.pos, physAlpha); rigQ.slerpQuaternions(drone.prevQ, drone.q, physAlpha);
   const tilt = (S.tilt >= 0 ? S.tilt : defTilt(drone.c)) * DEG;
-  // Cine: the view also pitches with the climb/dive angle (flight.js camPitch; eases back to 0 in the other modes)
-  const cp = drone.camPitch(dt, S.mode === 'cine');
+  // Cine: the view also pitches with the climb/dive angle, looks down the tube in a vertical drop and half-cancels the
+  // fast pitch nods (flight.js camView: advanced inside the physics tick, read between the last two ticks like the pose,
+  // so it replays from the input log; eases back to 0 in the other modes)
+  const cp = drone.camView(physAlpha, tilt);
   tiltQ.setFromAxisAngle(_v.set(1, 0, 0), tilt + cp);
   _q.copy(rigQ).multiply(tiltQ);
   const tau = STAB[S.stab] || 0;
@@ -593,7 +595,7 @@ function rigCamera(dt) {
   camPose.pos.copy(rigP).add(_v.set(0, 0.02, -0.04).applyQuaternion(rigQ));
   motion.vel.copy(drone.vel);
   motion.ang.copy(drone.w).applyQuaternion(rigQ);      // physical camera rotation (blur uses the raw motion)
-  // ...plus the pitch-follow, which turns the view about the body's x axis too (34-65 px of smear were missing on a
+  // ...plus the pitch-follow and counter-pitch, which turn the view about the body's x axis too (34-65 px of smear were missing on a
   // chimney entry). No spike across a respawn.
   if (drone.resets !== cpResets) { cpResets = drone.resets; cpPrev = cp; }
   const cpd = dt > 0 ? (cp - cpPrev) / dt : 0; cpPrev = cp;
