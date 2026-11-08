@@ -1,0 +1,52 @@
+# One Take FPV: node tests on every push (native #1.2, perf "stale lightmap = fail"). About 1-2 min; capped at 10.
+# The site itself stays a static, build-free deploy. The npm dependencies live in ci/ (not at the root), so
+# Cloudflare Pages finds no package.json and never npm-installs on deploy. Nothing here writes to the site root.
+# Exports (world.glb, collider.glb, world.json, camera.json, graffiti.png) are NOT committed. Each run builds them into
+# exports/ (git-ignored) and uploads them as the "exports" artifact (see PORTING.md, "Exports and CI").
+name: ci
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ci/package-lock.json
+      - name: Install three + three-mesh-bvh (versions = the index.html import map)
+        run: |
+          npm ci --prefix ci --ignore-scripts --no-audit --no-fund
+          ln -s ci/node_modules node_modules
+      - name: Syntax check (node --check on .mjs copies; on a .js ES module it is a no-op)
+        run: |
+          mkdir -p "$RUNNER_TEMP/chk"
+          for f in *.js; do cp "$f" "$RUNNER_TEMP/chk/$f.mjs"; node --check "$RUNNER_TEMP/chk/$f.mjs"; done
+          for f in tools/*.mjs tests/*.mjs; do node --check "$f"; done
+      - name: Replay input logs (determinism; a stale scripted log fails)
+        run: node tests/replay.mjs --strict
+      - name: Lightmaps match the geometry (stale = fail)
+        run: node tools/test-lightmap.mjs
+      - name: Take rules
+        run: if [ -f tests/take.mjs ]; then node tests/take.mjs; else echo "::notice::no tests/take.mjs on this branch"; fi
+      - name: Collision stress (lite)
+        run: node tests/stress-lite.mjs
+      - name: Export round trip
+        run: node tools/test-export.mjs
+      - name: Build exports
+        run: |
+          node tools/export-world.mjs --out exports
+          node tools/camera-profile.mjs --out exports
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exports
+          path: exports/
+          retention-days: 30
