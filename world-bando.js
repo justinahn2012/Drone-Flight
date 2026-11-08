@@ -1007,7 +1007,7 @@ ${foliage ? `#ifdef DOUBLE_SIDED
 #include <aomap_fragment>`);
     if (opt.fsFog) sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', `${opt.fsFog}\n#include <fog_fragment>`);   // before, never instead of
     // [A-lighting] begin: baked sun/sky bounce, sun mask, far shadow map, forward-scatter haze (see aLightingPatch)
-    aLightingPatch(sh, uniforms);
+    aLightingPatch(sh, uniforms, mat, kind);   // [A1] + material (lightmap flag) and kind (SSAO surfaces)
     // [A-lighting] end
   };
   return mat;
@@ -1036,7 +1036,8 @@ let BAKE = null;
 function lightProbe(bvh, p, n, maxD, rays) {
   if (!BAKE) { LP.out.set(0, 0, 0); return skyVisibility(bvh, p, n, maxD, rays); }
   const r = BAKE.probe(p, n, Math.max(4, rays), maxD);
-  LP.out.set(r.bs[0] * LP.sunRGB.x + r.bk[0] * LP.skyRGB.x, r.bs[1] * LP.sunRGB.y + r.bk[1] * LP.skyRGB.y, r.bs[2] * LP.sunRGB.z + r.bk[2] * LP.skyRGB.z);
+  if (r.out) LP.out.set(r.out[0], r.out[1], r.out[2]);   // [A1] lightmap probe: final units already
+  else LP.out.set(r.bs[0] * LP.sunRGB.x + r.bk[0] * LP.skyRGB.x, r.bs[1] * LP.sunRGB.y + r.bk[1] * LP.skyRGB.y, r.bs[2] * LP.sunRGB.z + r.bk[2] * LP.skyRGB.z);
   return r.open;
 }
 function skyVisibility(bvh, p, n, maxD, rays) {
@@ -1271,16 +1272,26 @@ export async function bakeLight(geo, { sunDir, sun = true, quality = 'auto', onT
 // over where the live (camera-following) map ends; uSunW/uHaze = forward-scatter haze in the fog.
 function lightUniforms() {
   return { uSunB: { value: new THREE.Vector3() }, uSkyB: { value: new THREE.Vector3() }, uFarSM: { value: null }, uFarMat: { value: new THREE.Matrix4() },
-    uFarOn: { value: 0 }, uFarTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) }, uSunW: { value: new THREE.Vector3(0, 1, 0) }, uHaze: { value: 1.2 } };
+    uFarOn: { value: 0 }, uFarTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) }, uSunW: { value: new THREE.Vector3(0, 1, 0) }, uHaze: { value: 1.2 },
+    // [A1] committed lightmap (see lmLoad): indirect irradiance, aux = (openness, sun mask), log2 range, live scale
+    uLM: { value: null }, uLMAux: { value: null }, uLMRange: { value: new THREE.Vector2(-12, 3) }, uLMScale: { value: new THREE.Vector3(1, 1, 1) } };
 }
+// [A1] contract C3: SSAO from stream D. world.aoUniforms; D fills uAO (the SSAO texture), uAOOn and uAOScale (1 / the
+// scene RT size in pixels) every frame, so texture(uAO, gl_FragCoord.xy * uAOScale).r is the AO under this pixel.
+// Indirect diffuse x mix(1, ao, 0.8) on the surfaces that are in D's depth pass (not foliage, grass, treeline).
+function aoUniforms() { return { uAO: { value: null }, uAOOn: { value: 0 }, uAOScale: { value: new THREE.Vector2(1, 1) } }; }
+const AO_KINDS = new Set(['built', 'ground', 'track', 'bark', 'decal']);
 const A_DIR_LINE = 'directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;';
 const A_LIGHTS_BEGIN = THREE.ShaderChunk.lights_fragment_begin.includes(A_DIR_LINE)
   ? THREE.ShaderChunk.lights_fragment_begin.replace(A_DIR_LINE, A_DIR_LINE.replace('? getShadow(', '? aDirShadow( getShadow(').replace(' ) : 1.0;', ' ), vDirectionalShadowCoord[ i ] ) : 1.0;'))
   : null;
 if (!A_LIGHTS_BEGIN) console.warn('[A-lighting] three lights_fragment_begin changed: far shadows + sun mask disabled');
-function aLightingPatch(sh, uniforms) {
+function aLightingPatch(sh, uniforms, mat, kind) {
   const U = uniforms?.aLight; if (!U) return;
-  Object.assign(sh.uniforms, U);
+  // [A1] lightmapped material (mat.userData.aLM, set by lmEnable with its own program key): the indirect diffuse is
+  // the committed lightmap, vAO (B's weathering + specular occlusion) its aux openness, the sun mask its aux.g
+  const lm = !!(mat?.userData?.aLM && U.uLM.value), AO = uniforms.aAO, ssao = !!AO && AO_KINDS.has(kind);
+  Object.assign(sh.uniforms, U); if (AO) Object.assign(sh.uniforms, AO);
   sh.vertexShader = sh.vertexShader
     .replace('#include <common>', `#include <common>
 attribute vec3 aBSun;
@@ -1290,9 +1301,13 @@ uniform vec3 uSunB;
 uniform vec3 uSkyB;
 uniform mat4 uFarMat;
 varying vec3 vBounceA;
-varying vec4 vFarC;`)
+varying vec4 vFarC;
+${lm ? `#ifndef USE_UV2
+attribute vec2 uv2;
+#endif
+centroid varying vec2 vLmUv;` : ''}`)
     .replace('#include <fog_vertex>', `#include <fog_vertex>
-  vBounceA = aBSun * uSunB + aBSky * uSkyB;
+  vBounceA = aBSun * uSunB + aBSky * uSkyB;${lm ? '\n  vLmUv = uv2;' : ''}
   {
     vec4 aW = vec4( transformed, 1.0 );
     #ifdef USE_INSTANCING
@@ -1311,6 +1326,18 @@ uniform vec3 uSunW;
 uniform float uHaze;
 varying vec3 vBounceA;
 varying vec4 vFarC;
+${ssao ? `uniform sampler2D uAO;
+uniform float uAOOn;
+uniform vec2 uAOScale;
+float aSSAO() { return uAOOn > 0.5 ? mix( 1.0, texture2D( uAO, gl_FragCoord.xy * uAOScale ).r, 0.8 ) : 1.0; }` : 'float aSSAO() { return 1.0; }'}
+${lm ? `uniform sampler2D uLM;
+uniform sampler2D uLMAux;
+uniform vec2 uLMRange;
+uniform vec3 uLMScale;
+centroid varying vec2 vLmUv;
+float aLmAO;
+vec4 aLmX;
+vec3 aLmIrr() { return exp2( mix( vec3( uLMRange.x ), vec3( uLMRange.y ), texture2D( uLM, vLmUv ).rgb ) ) * uLMScale; }` : ''}
 float aFarShadow() {
   vec3 c = vFarC.xyz;
   if ( uFarOn < 0.5 || c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0 ) return 1.0;
@@ -1323,9 +1350,10 @@ float aDirShadow( float live, vec4 sc ) {
   vec2 e = min( c.xy, 1.0 - c.xy );
   float wL = smoothstep( 0.0, 0.05, min( e.x, e.y ) ) * step( c.z, 1.0 );
   float s = wL > 0.999 ? live : mix( aFarShadow(), live, wL );
-  return s * smoothstep( 0.05, 0.4, vFarC.w );
+  return s * smoothstep( 0.05, 0.4, ${lm ? 'aLmX.g' : 'vFarC.w'} );
 }`)
-    .replace('#include <aomap_fragment>', `reflectedLight.indirectDiffuse += vBounceA * BRDF_Lambert( material.diffuseColor );
+    .replace('#include <aomap_fragment>', `${lm ? 'reflectedLight.indirectDiffuse = aLmIrr() * BRDF_Lambert( material.diffuseColor ) * aSSAO();'
+      : 'reflectedLight.indirectDiffuse += vBounceA * BRDF_Lambert( material.diffuseColor );\n  reflectedLight.indirectDiffuse *= aSSAO();'}
 #include <aomap_fragment>`)
     .replace('#include <fog_fragment>', `#ifdef USE_FOG
   #ifdef FOG_EXP2
@@ -1337,6 +1365,12 @@ float aDirShadow( float live, vec4 sc ) {
   gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor * ( 1.0 + uHaze * pow( max( dot( aVd, uSunW ), 0.0 ), 6.0 ) ), fogFactor );
 #endif`);
   if (A_LIGHTS_BEGIN) sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_begin>', A_LIGHTS_BEGIN);
+  if (lm) {   // vAO -> the lightmap's openness from here on (after B's `varying float vAO;`, before any use in main)
+    if (!sh.fragmentShader.includes('void main() {')) console.warn('[A1] fragment main() not found: lightmap openness not applied');
+    sh.fragmentShader = sh.fragmentShader.replace('void main() {', `#define vAO aLmAO
+void main() {
+  aLmX = texture2D( uLMAux, vLmUv ); aLmAO = aLmX.r;`);
+  }
 }
 
 // ---------------------------------------------------------------- [A1] lightmap UV2: deterministic charts + skyline packer
@@ -1575,6 +1609,15 @@ class GeoHash {
   }
   hex() { const a = _fmix((this.a ^ this.n) >>> 0), b = _fmix((this.b ^ this.n) >>> 0); return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0'); }
 }
+// what tools/bakelm.mjs needs from module scope: the bake's albedo rules (same as bakeLight's) and constants
+export function lmBakeInputs(geo) {
+  const fps = geo.site.footprints || [], ap = MATS.apron?.albedo, rad = MATS.apron?.radius ?? 9, gA = groundAlbedo(), pA = albedoOf('path');
+  return {
+    albedo: Object.fromEntries(Object.keys(geo.merged).map((k) => [k, albedoOf(k)])), ground: gA, leaf: MATS.leaf?.albedo ?? [0.1, 0.12, 0.04],
+    terrainAlbedo: (x, z) => (ap && fps.some((f) => Math.max(f.x0 - x, 0, x - f.x1) ** 2 + Math.max(f.z0 - z, 0, z - f.z1) ** 2 < rad * rad) ? ap : distToPaths(x, z) < 2.6 ? pA : gA),
+    envI: 0.85, aoExp: 1.15, PH,
+  };
+}
 export function geometryHash(geo) {
   const lay = geo.terr.userData.lm, h = new GeoHash().str('lightmap').str(`${lay.ver}:${lay.W}x${lay.H}:${lay.texel}:${lay.terrTexel}`);
   const list = [...Object.entries(geo.merged), ['terr', geo.terr]];
@@ -1585,6 +1628,138 @@ export function geometryHash(geo) {
     h.str('index').array(g.index.array);
   }
   return h.hex();
+}
+
+// ---------------------------------------------------------------- [A1] runtime: the committed lightmaps
+// lm.json (tools/bakelm.mjs) is fetched while the geometry builds. If its hash equals geometryHash() and its sun
+// direction equals this sky's, buildBando loads lm_<sky>.png + lm_aux.png and skips bakeLight (the 2-4 s per-vertex
+// bake); otherwise (other streams changed the geometry, no files, a load error) it bakes per vertex exactly as before.
+// Decals and foliage still probe the light at load (lightProbe); the lightmap probe below answers those queries:
+// openness = the same rays as bakeLight's probe (so foliage placement is identical on both paths), bounce = albedo x
+// (lightmap + direct sun) at the ray hits.
+const lmURL = (f) => new URL(f, import.meta.url).href;
+async function lmFetchJSON() {
+  try { const r = await fetch(lmURL('lm.json'), { cache: 'no-cache' }); return r.ok ? await r.json() : null; } catch (e) { return null; }
+}
+export function lmMatch(j, geo, sky, sunDir) {
+  if (!j || j.version !== 1) return { ok: false, why: j ? `lm.json version ${j.version}` : 'no lm.json' };
+  const s = j.skies?.[sky]; if (!s) return { ok: false, why: `no ${sky} lightmap` };
+  const h = geometryHash(geo), lay = geo.terr.userData.lm;
+  if (h !== j.hash) return { ok: false, why: `geometry hash ${h} != lm.json ${j.hash}` };
+  if (j.W !== lay.W || j.H !== lay.H) return { ok: false, why: 'atlas size' };
+  const L = s.sunDir || [0, 1, 0], d = Math.hypot(L[0] - sunDir.x, L[1] - sunDir.y, L[2] - sunDir.z);
+  if (d > 2e-3) return { ok: false, why: `sun direction moved (${d.toFixed(4)}): re-run node tools/bakelm.mjs` };
+  return { ok: true, j, s, hash: h };
+}
+async function lmImage(file, cpu) {
+  const r = await fetch(lmURL(file)); if (!r.ok) throw new Error(`${file}: HTTP ${r.status}`);
+  const blob = await r.blob();
+  let img;
+  if (typeof createImageBitmap === 'function') img = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+  else { img = new Image(); img.src = URL.createObjectURL(blob); await img.decode(); }
+  const tex = new THREE.Texture(img);
+  tex.flipY = false; tex.colorSpace = THREE.NoColorSpace; tex.generateMipmaps = false; tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping; tex.premultiplyAlpha = false; tex.needsUpdate = true;
+  let pix = null;
+  if (cpu) {
+    const cv = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(img.width, img.height) : Object.assign(document.createElement('canvas'), { width: img.width, height: img.height });
+    const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(img, 0, 0); pix = cx.getImageData(0, 0, img.width, img.height).data;
+  }
+  return { tex, pix, w: img.width, h: img.height };
+}
+async function lmLoad(m) {
+  const [irr, aux] = await Promise.all([lmImage(m.s.file, true), lmImage(m.j.aux?.file || 'lm_aux.png', false)]);
+  if (irr.w !== m.j.W || irr.h !== m.j.H || aux.w !== m.j.W || aux.h !== m.j.H) throw new Error('lightmap size mismatch');
+  return { ...m, irr, aux };
+}
+// CPU side of the shader's lookup: bilinear on the encoded bytes, then decoded (exactly what the GPU does)
+function lmSampler(lm) {
+  const { pix } = lm.irr, W = lm.j.W, H = lm.j.H, [lo, hi] = lm.s.range, k = (hi - lo) / 255;
+  return (u, v, out) => {
+    const x = Math.min(W - 1.001, Math.max(0, u * W - 0.5)), y = Math.min(H - 1.001, Math.max(0, v * H - 0.5)), x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+    const i00 = (y0 * W + x0) * 4, i10 = i00 + 4, i01 = i00 + W * 4, i11 = i01 + 4;
+    for (let c = 0; c < 3; c++) {
+      const e = (pix[i00 + c] * (1 - fx) + pix[i10 + c] * fx) * (1 - fy) + (pix[i01 + c] * (1 - fx) + pix[i11 + c] * fx) * fy;
+      out[c] = Math.pow(2, lo + e * k);
+    }
+    return out;
+  };
+}
+// the lightmap as the build-time light probe (BAKE interface of bakeLight: probe, applyTo, stats)
+function lmProbeBake(geo, L, sun, lm) {
+  const t0 = performance.now(), { site, merged, terr, colGeo, bvh } = geo;
+  const list = [...Object.entries(merged), ['terr', terr]], base = []; let NV = 0;
+  for (const [, g] of list) { base.push(NV); NV += g.attributes.position.count; }
+  const { map: c2r } = colliderMap(site, terr, colGeo, list, base);
+  const uv2 = new Float32Array(NV * 2), pos = new Float32Array(NV * 3), alb = new Float32Array(NV * 3);
+  const fps = site.footprints || [], ap = MATS.apron?.albedo, rad = MATS.apron?.radius ?? 9, gA = groundAlbedo(), pA = albedoOf('path');
+  list.forEach(([k, g], gi) => {
+    uv2.set(g.attributes.uv2.array, base[gi] * 2); pos.set(g.attributes.position.array, base[gi] * 3);
+    const a = albedoOf(k), p = g.attributes.position.array;
+    for (let i = 0; i < g.attributes.position.count; i++) {
+      const v = base[gi] + i, x = p[i * 3], z = p[i * 3 + 2];
+      const q = k !== 'terr' ? a : ap && fps.some((f) => Math.max(f.x0 - x, 0, x - f.x1) ** 2 + Math.max(f.z0 - z, 0, z - f.z1) ** 2 < rad * rad) ? ap : distToPaths(x, z) < 2.6 ? pA : gA;
+      alb[v * 3] = q[0]; alb[v * 3 + 1] = q[1]; alb[v * 3 + 2] = q[2];
+    }
+  });
+  const smp = lmSampler(lm), W = lm.j.W, E = [0, 0, 0], pats = {}, D = new THREE.Vector3(), Q = new THREE.Vector3(), hn = new THREE.Vector3(), up = new THREE.Vector3();
+  const sunMax = Math.min(400, 70 / Math.max(0.1, L.y) + 10);
+  const sunVis = (o) => { _sr.origin.copy(o); _sr.direction.copy(L); return !bvh.raycastFirst(_sr, THREE.DoubleSide, 0, sunMax); };
+  // uv2 at a collider hit: the render vertices of its corners (null when they lie in different charts: a vertex
+  // that lightmapUV2 duplicated, rare)
+  const uvAt = (hit, out) => {
+    const a = c2r[hit.face.a], b = c2r[hit.face.b], c = c2r[hit.face.c]; if (a < 0 || b < 0 || c < 0) return -1;
+    const wb = hit.barycoord.y, wc = hit.barycoord.z, wa = 1 - wb - wc;
+    const span = Math.max(Math.abs(uv2[a * 2] - uv2[b * 2]), Math.abs(uv2[a * 2] - uv2[c * 2]), Math.abs(uv2[a * 2 + 1] - uv2[b * 2 + 1]), Math.abs(uv2[a * 2 + 1] - uv2[c * 2 + 1])) * W;
+    const ext = Math.max(Math.hypot(pos[a * 3] - pos[b * 3], pos[a * 3 + 1] - pos[b * 3 + 1], pos[a * 3 + 2] - pos[b * 3 + 2]), Math.hypot(pos[a * 3] - pos[c * 3], pos[a * 3 + 1] - pos[c * 3 + 1], pos[a * 3 + 2] - pos[c * 3 + 2]));
+    if (span > ext * 7 + 4) return -1;
+    out[0] = wa * uv2[a * 2] + wb * uv2[b * 2] + wc * uv2[c * 2]; out[1] = wa * uv2[a * 2 + 1] + wb * uv2[b * 2 + 1] + wc * uv2[c * 2 + 1];
+    return a;
+  };
+  const UV = [0, 0];
+  const probe = (P, N, n = 8, maxD = 26) => {
+    n = Math.min(64, n); const pat = (pats[n] ||= cosPattern(n));
+    // the frame, pattern, origin and range of bakeLight's trace(): identical openness on both paths
+    up.set(...(Math.abs(N.y) < 0.95 ? [0, 1, 0] : [1, 0, 0]));
+    _bx.crossVectors(up, N).normalize(); _by.crossVectors(N, _bx);
+    let nOpen = 0; const out = [0, 0, 0];
+    for (let k = 0; k < pat.length; k++) {
+      const [a, b, c] = pat[k];
+      D.set(0, 0, 0).addScaledVector(_bx, a).addScaledVector(N, b).addScaledVector(_by, c).normalize();
+      _ray.origin.copy(P).addScaledVector(N, 0.06); _ray.direction.copy(D);
+      const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, maxD);
+      if (!hit) { nOpen++; continue; }
+      hn.copy(hit.face.normal); if (hn.dot(D) > 0) hn.negate();
+      let es = 0; if (sun) { const cs = hn.dot(L); if (cs > 0 && sunVis(Q.copy(hit.point).addScaledVector(hn, 0.05))) es = cs; }
+      const v = uvAt(hit, UV);
+      if (v >= 0) { smp(UV[0], UV[1], E); for (let q = 0; q < 3; q++) out[q] += alb[v * 3 + q] * (E[q] + es * LP.sunRGB.getComponent(q)); }
+      else { const ga = hit.point.y < terrainHeight(hit.point.x, hit.point.z) + 0.35 ? gA : ALB_DEFAULT, sk = 0.5 + 0.5 * hn.y; for (let q = 0; q < 3; q++) out[q] += ga[q] * (es * LP.sunRGB.getComponent(q) + sk * LP.skyRGB.getComponent(q)); }
+    }
+    return { open: nOpen / pat.length, out: out.map((x) => x / pat.length) };
+  };
+  // decals: lightmap uv2 from the surface under each vertex (a short ray back along -n); null if too many miss
+  const decalUV2 = (g) => {
+    const p = g.attributes.position.array, nr = g.attributes.normal.array, cnt = g.attributes.position.count, a = new Float32Array(cnt * 2), ok = new Uint8Array(cnt);
+    const P = new THREE.Vector3(), N = new THREE.Vector3(); let miss = 0;
+    for (let i = 0; i < cnt; i++) {
+      P.fromArray(p, i * 3); N.fromArray(nr, i * 3).normalize();
+      _ray.origin.copy(P).addScaledVector(N, 0.05); _ray.direction.copy(N).negate();
+      const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, 0.2);
+      if (hit && uvAt(hit, UV) >= 0) { a[i * 2] = UV[0]; a[i * 2 + 1] = UV[1]; ok[i] = 1; } else miss++;
+    }
+    if (miss > cnt * 0.03) return null;
+    for (let i = 0; i < cnt; i++) if (!ok[i]) { const j = i > 0 && ok[i - 1] ? i - 1 : ok[i + 1] ? i + 1 : -1; if (j >= 0) { a[i * 2] = a[j * 2]; a[i * 2 + 1] = a[j * 2 + 1]; } }
+    g.setAttribute('uv2', new THREE.BufferAttribute(a, 2));
+    return { verts: cnt, missed: miss };
+  };
+  const stats = { lightmap: lm.s.file, hash: lm.hash, rays: lm.j.rays, bakedSec: lm.j.bakeSec, setupMs: Math.round(performance.now() - t0) };
+  return { probe, applyTo() {}, decalUV2, stats, sunDir: L, c2r };
+}
+// a material that reads the lightmap: own program key (three must not share it with an unlit twin, e.g. far vs terrain)
+function lmEnable(mat) {
+  if (!mat || mat.userData.aLM) return;
+  const k = mat.customProgramCacheKey; mat.userData.aLM = true;
+  mat.customProgramCacheKey = () => (k ? k.call(mat) : '') + '|lm';
 }
 
 // ---------------------------------------------------------------- [A] static far shadow map (rendered once at load)
@@ -1817,6 +1992,8 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const prog = (f, t) => onProgress?.(f, t);
   const scene = new THREE.Scene();
   const uniforms = { uTime: { value: 0 } };
+  uniforms.aAO = aoUniforms();          // [A1] contract C3 (world.aoUniforms): stream D fills it each frame
+  const lmJP = lmFetchJSON();           // [A1] lm.json, fetched while the geometry builds
 
   // textures (stream in parallel with the sky)
   const tl = new THREE.TextureLoader(); tl.setCrossOrigin('anonymous');
@@ -1842,8 +2019,16 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const { site, terr, far, pathG, treeSpots, treeline, merged, colGeo, bvh, skimBvh } = geo;
   prog(0.1, 'Baking light');
   await yieldUI();
-  const bake = await bakeLight(geo, { sunDir, sun: hasSun, quality, onTick: (f) => (bakeFrac = f) });
-  bake.applyTo(pathG, 4, 18);
+  // [A1] the committed lightmap when it was baked for exactly this geometry + sun; else the per-vertex bake (2-4 s)
+  let lm = null;
+  {
+    const m = lmMatch(await lmJP, geo, SKIES[sky] ? sky : 'sunny', sunDir);
+    if (m.ok) { try { lm = await lmLoad(m); } catch (e) { console.warn('[A1] lightmap load failed, baking per vertex:', e.message); } }
+    else console.info('[A1] lightmap not used (per-vertex bake):', m.why);
+  }
+  const bake = lm ? (BAKE = lmProbeBake(geo, sunDir, hasSun, lm)) : await bakeLight(geo, { sunDir, sun: hasSun, quality, onTick: (f) => (bakeFrac = f) });
+  if (lm) { aLight.uLM.value = lm.irr.tex; aLight.uLMAux.value = lm.aux.tex; aLight.uLMRange.value.set(lm.s.range[0], lm.s.range[1]); }
+  else bake.applyTo(pathG, 4, 18);
   far.setAttribute('ao', new THREE.BufferAttribute(new Float32Array(far.attributes.position.count).fill(1), 1));
   bakeFrac = 1;
   console.info('light bake', bake.stats);
@@ -2244,6 +2429,19 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     foliageStats.treeline = treeline.length; foliageStats.band = NB; lap('treeline');
   }
 
+  // [A1] lightmapped materials: the merged structures, the yard terrain, the path ribbons and, when every vertex
+  // finds its wall, the graffiti (it then gets exactly the wall's indirect light). The far field keeps env x ao.
+  if (lm) {
+    for (const k of Object.keys(merged)) lmEnable(mats[k] || mats.wall);
+    lmEnable(mats.ground); lmEnable(mats.path);
+    const dm = scene.children.find((o) => o.isMesh && o.material?.customProgramCacheKey?.() === 'wp:decal');
+    const dr = dm && bake.decalUV2(dm.geometry); if (dr) lmEnable(dm.material);
+    if (lm.j.skies?.[SKIES[sky] ? sky : 'sunny']?.light) {   // the sky the map was baked with vs the one measured now
+      const b = lm.s.light, d = Math.abs(b.sunI - sunI) / Math.max(1, sunI) + Math.abs(b.skyB[1] - aLight.uSkyB.value.y) / Math.max(0.1, aLight.uSkyB.value.y);
+      if (d > 0.02) console.warn('[A1] lightmap baked with sunI', b.sunI, 'skyB', b.skyB, 'but the sky measures sunI', +sunI.toFixed(3), 'skyB', aLight.uSkyB.value.toArray().map((v) => +v.toFixed(3)), ': re-run node tools/bakelm.mjs');
+    }
+    bake.stats.decals = dr || 'probe';
+  }
   // [A] sun: a shadowed DirectionalLight carrying the energy clamped out of the HDR.
   // Live map: +-48 m (4.7 cm texels at 2048), centred 0.3*ext ahead of the camera, snapped to a texel-aligned ~4 m
   // light-space grid and re-rendered only when that snapped centre moves (autoUpdate off). Beyond it the static far map.
@@ -2299,7 +2497,8 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   const cm = new THREE.Mesh(colGeo, new THREE.MeshBasicMaterial()); cm.frustumCulled = false; colScene.add(cm);
   prog(0.98, 'Ready');
   BAKE = null;   // [A] the probe solution was only needed while building (decals); free it
-  scene.userData.aLight = aLight; scene.userData.lightBake = bake.stats;   // [A] live tuning hooks (uSunB, uSkyB, uFarOn, uHaze...)
+  if (lm) lm.irr.pix = null;   // [A1] the CPU copy of the lightmap (14 MB) served the build-time probes only
+  scene.userData.aLight = aLight; scene.userData.lightBake = bake.stats; scene.userData.aoUniforms = uniforms.aAO;   // [A] live tuning hooks (uSunB, uSkyB, uFarOn, uHaze...)
   return {
     scene, colliderScene: colScene, bvh, skimBvh, update, hdr: true, stats: bStats,
     spawn: new THREE.Vector3(0, terrainHeight(0, 118) + 1.4, 118), yaw: 0,                       // first flight: the reveal
@@ -2307,5 +2506,6 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     lines: site.lines,
     bounds: new THREE.Box3(new THREE.Vector3(-480, -5, -480), new THREE.Vector3(480, 260, 480)),
     envelope: { min: new THREE.Vector3(-440, -2, -440), max: new THREE.Vector3(440, 220, 440) },
+    aoUniforms: uniforms.aAO,   // [A1] contract C3
   };
 }
