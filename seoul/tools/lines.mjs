@@ -91,29 +91,54 @@ const add = (name, caption, pts, main, extra = {}) => {
 const speedWithin = (dist, v = 7) => Math.ceil(dist / v + 4);
 
 // 1. WALKING STREET: Eoulmadang-ro's car-free 220 m (Hongik-ro -> Wausan-ro 21-gil), 2.2-5.2 m: over heads, under the drops
-const walk = piece('어울마당로', [-10, 70], 'walking'); const WL = len(walk.points);
+const walk = piece('어울마당로', [-27, -14], 'walking'); const WL = len(walk.points);
 { const A = bestAcross(walk.points, [15, 20, 25, 30, 10], walk.width - 1, 2.2, 5.2), B = bestAcross(walk.points, [-15, -20, -25, -30, -35, -40, -45, -50], walk.width - 1, 2.2, 5.2);
   add('WALKING STREET', 'THE WALKING *STREET*!', 2000, B, { pre: [A], within: speedWithin(WL), first: true });
   add('WALKING STREET', 'THE WALKING *STREET*!', 2000, neg(A), { pre: [neg(B)], within: speedWithin(WL) }); }
-// 2. CLUB STREET: Wausan-ro 21-gil, the club and pocha block, 2.0-4.0 m (service drops cross from 4.2 m)
-const club = piece('와우산로21길', [60, 160], 'club'); const CL = len(club.points);
+// 2. BAR ALLEY: Wausan-ro 21-gil, the E-W bar and club alley (reference hero line 4), 2.0-4.0 m (drops cross from 4.2 m)
+const longest = (ko, kind) => layout.streets.filter((s) => s.ko === ko && (!kind || s.kind === kind)).sort((a, b) => len(b.points) - len(a.points))[0];
+const club = longest('와우산로21길', 'club'); const CL = len(club.points);
 { const A = bestAcross(club.points, [12, 16, 20, 8], club.width - 0.8, 2.0, 4.0), B = bestAcross(club.points, [-12, -16, -20, -8], club.width - 0.8, 2.0, 4.0);
-  add('CLUB STREET', 'CLUB *STREET*!', 2000, B, { pre: [A], within: speedWithin(CL) });
-  add('CLUB STREET', 'CLUB *STREET*!', 2000, neg(A), { pre: [neg(B)], within: speedWithin(CL) }); }
+  add('BAR ALLEY', 'THE BAR *ALLEY*!', 2000, B, { pre: [A], within: speedWithin(CL) });
+  add('BAR ALLEY', 'THE BAR *ALLEY*!', 2000, neg(A), { pre: [neg(B)], within: speedWithin(CL) }); }
+// 2b. CLUB STREET: Wausan-ro 19-gil, "클럽거리" proper (hero line 5), 2.0-4.0 m
+{ const c19 = longest('와우산로19길'); const L19 = len(c19.points);
+  if (c19 && L19 > 40) { const A = bestAcross(c19.points, [8, 12, 16], c19.width + 2, 2.0, 4.0), B = bestAcross(c19.points, [-8, -12, -16], c19.width + 2, 2.0, 4.0);
+    add('CLUB STREET', 'CLUB *STREET*!', 2000, B, { pre: [A], within: speedWithin(L19) });
+    add('CLUB STREET', 'CLUB *STREET*!', 2000, neg(A), { pre: [neg(B)], within: speedWithin(L19) });
+    report.push(`  (CLUB STREET: Wausan-ro 19-gil piece ${c19.id}, ${L19.toFixed(0)} m)`); } }
+// 2c. PLAYGROUND POP (micro): out of the bar alleys, up over Hongdae Playground (hero line 4's pop-up): a 10 m
+// horizontal portal at 9 m over the park, crossed climbing
+{ const G = g([80, 9, 97], [0, 1, 0], 10, 10, [1, 0, 0]); add('PLAYGROUND POP', 'PLAYGROUND *POP*!', 500, G, { micro: true }); }
 // 3. HONGIK-RO: down the main road from the station to the university, 5-8.5 m: over the buses, under the lamp arms' reach
-const hong = piece('홍익로', [90, 40], 'main'); const HL = len(hong.points);
+const hong = longest('홍익로', 'main'); const HL = len(hong.points);
 { const A = across(hong.points, 10, hong.width, 5.0, 8.0), B = across(hong.points, -10, hong.width, 5.0, 8.0);
   add('HONGIK-RO', 'DOWN *HONGIK-RO*!', 1500, B, { pre: [A], within: speedWithin(HL, 12) });
   add('HONGIK-RO', 'DOWN *HONGIK-RO*!', 1500, neg(A), { pre: [neg(B)], within: speedWithin(HL, 12) }); }
 // 4. CROSSING: across Yanghwa-ro at the station front, 6-9 m over the bus lanes (a 30 m wide portal along the road)
-{ const nA = piece('양화로', [-100, -95], 'main'), nB = layout.streets.filter((s) => s.ko === '양화로' && s !== nA && s.kind === 'main').sort((a, b) => Math.min(...a.points.map((p) => Math.hypot(p[0] + 100, p[1] + 95))) - Math.min(...b.points.map((p) => Math.hypot(p[0] + 100, p[1] + 95))))[0];
-  const pa = at(nA.points, len(nA.points) * 0.5);
+{ const X9 = [46, -313];   // exit 9 (reference.md)
+  const dTo = (s) => Math.min(...s.points.map((p) => Math.hypot(p[0] - X9[0], p[1] - X9[1])));
+  const ys = layout.streets.filter((s) => s.ko === '양화로' && s.kind === 'main').sort((a, b) => dTo(a) - dTo(b));
+  const nA = ys[0], nB = ys.find((s) => s !== nA && Math.abs(dTo(s) - dTo(nA)) < 40 && s.points.length) || ys[1];
+  let s0 = 0, bd = Infinity; for (let s = 0; s <= len(nA.points); s += 1) { const q = at(nA.points, s), d = Math.hypot(q.x - X9[0], q.z - X9[1]); if (d < bd) { bd = d; s0 = s; } }
+  const pa = at(nA.points, s0);
   // the far carriageway's nearest point
   let best = null; for (let s = 0; s <= len(nB.points); s += 1) { const q = at(nB.points, s), d = Math.hypot(q.x - pa.x, q.z - pa.z); if (!best || d < best.d) best = { q, d }; }
   const mx = (pa.x + best.q.x) / 2, mz = (pa.z + best.q.z) / 2, nx = -pa.tz, nz = pa.tx;
   const G = g([mx, 7.5, mz], [nx, 0, nz], 30, 3, [pa.tx, 0, pa.tz]);
   add('CROSSING', 'THE *CROSSING*.', 1500, G, { two: true });
-  report.push(`  (Yanghwa-ro carriageway centres ${best.d.toFixed(1)} m apart at the station front)`); }
+  report.push(`  (Yanghwa-ro carriageway centres ${best.d.toFixed(1)} m apart at exit 9)`);
+  // SCREEN CANYON (hero line 1): from exit 9 SW down Yanghwa-ro between the 14-16 m LED screens, 8-14 m up (over
+  // the bus lanes, at screen height), to the Hongik-ro junction. Portals across the road centre, 30 m wide.
+  const cx = (s) => { const q = at(nA.points, s); let bb = null; for (let t = 0; t <= len(nB.points); t += 1) { const r = at(nB.points, t), d = Math.hypot(r.x - q.x, r.z - q.z); if (!bb || d < bb.d) bb = { r, d }; }
+    return { x: (q.x + bb.r.x) / 2, z: (q.z + bb.r.z) / 2, tx: q.tx, tz: q.tz }; };
+  // nA's direction: sign so that the flight runs SW (toward Hongik-ro, x decreasing)
+  const sg = pa.tx < 0 ? 1 : -1, sA = s0 + sg * 15, sB = s0 + sg * 120;
+  const pA = cx(sA), pB = cx(sB), dir = [pB.x - pA.x, pB.z - pA.z], dl = Math.hypot(...dir), n = [dir[0] / dl, 0, dir[1] / dl];
+  const Ga = g([pA.x, 11, pA.z], n, 30, 6, [-n[2], 0, n[0]]), Gb = g([pB.x, 11, pB.z], n, 30, 6, [-n[2], 0, n[0]]);
+  add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, Gb, { pre: [Ga], within: speedWithin(dl, 10) });
+  add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, neg(Ga), { pre: [neg(Gb)], within: speedWithin(dl, 10) });
+  report.push(`  (SCREEN CANYON: ${dl.toFixed(0)} m from exit 9 SW along Yanghwa-ro)`); }
 // 5. THE GAP / TIGHT GAP: the narrowest real gaps between two buildings of 3+ storeys (parallel walls 1.4-3.2 m apart,
 // overlapping >= 6 m), found in the footprints; flown through along the gap
 const gaps = [];
@@ -148,11 +173,12 @@ const enclosed = (s) => { let n = 0, k = 0; const L = len(s.points); for (let d 
   for (const sd of [1, -1]) { const x = p.x - p.tz * sd * (s.width / 2 + 1.2), z = p.z + p.tx * sd * (s.width / 2 + 1.2);
     if (layout.lots.some((l) => l.floors >= 3 && Math.abs(l.footprint[0][0] - x) < 60 && Math.abs(l.footprint[0][1] - z) < 60 && pipXZ(x, z, l.footprint))) n++; } } return k ? n / (2 * k) : 0; };
 function pipXZ(x, z, P) { let c = false; for (let i = 0, j = P.length - 1; i < P.length; j = i++) { const [xi, zi] = P[i], [xj, zj] = P[j]; if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) c = !c; } return c; }
-const alleys = layout.streets.filter((s) => s.kind === 'alley' && s.width <= 4 && len(s.points) >= 40 && s.points.every(([x, z]) => Math.abs(x) < 200 && Math.abs(z) < 200))
+const alleys = layout.streets.filter((s) => s.kind === 'alley' && s.width <= 4 && len(s.points) >= 40 && s.points.every(([x, z]) => x > layout.core.x0 && x < layout.core.x1 && z > layout.core.z0 && z < layout.core.z1))
   .map((s) => ({ s, e: enclosed(s) })).sort((a, b) => b.e - a.e);
 const usedAl = [];
-for (const name of ['BACK ALLEY', 'NARROW ALLEY']) {
-  for (const { s, e } of alleys) {
+const h3 = layout.streets.filter((s) => s.ko === '홍익로3길').map((s) => ({ s, e: enclosed(s) })).sort((a, b) => len(b.s.points) - len(a.s.points));
+for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
+  for (const { s, e } of name === 'CABLE LATTICE' ? h3.concat(alleys) : alleys) {
     if (usedAl.some((u) => u.id === s.id || u.ko === s.ko && s.ko)) continue;
     const L = Math.min(len(s.points), 90), A = across(s.points, 6, s.width - 0.6, 2.0, 3.8), B = across(s.points, L - 6, s.width - 0.6, 2.0, 3.8);
     if (!clearOf({ ...A, w: A.w * 0.6 }).ok || !clearOf({ ...B, w: B.w * 0.6 }).ok) continue;
@@ -164,7 +190,7 @@ for (const name of ['BACK ALLEY', 'NARROW ALLEY']) {
   }
 }
 // 7. SCREEN PASS: along the face of the biggest facade LED screen, 1-7 m off it (either way)
-{ const sc = layout.screens.filter((s) => s.kind === 'facade').sort((a, b) => b.w * b.h - a.w * a.h)[0];
+{ const sc = layout.screens.find((s) => s.id === 'Y151') || layout.screens.filter((s) => s.kind === 'facade').sort((a, b) => b.w * b.h - a.w * a.h)[0];   // the 14 x 15.8 m screen facing exit 9
   const [nx, , nz] = sc.normal, c = [sc.pos[0] + nx * 4, sc.pos[1], sc.pos[2] + nz * 4];
   add('SCREEN PASS', 'SCREEN *PASS*!', 1000, g(c, [-nz, 0, nx], 6, sc.h, [nx, 0, nz]), { two: true });
   report.push(`  (SCREEN PASS: ${sc.id} on ${sc.lot}, ${sc.w} x ${sc.h} m, centre ${sc.pos[1]} m up)`); }
@@ -204,7 +230,7 @@ for (const name of ['BACK ALLEY', 'NARROW ALLEY']) {
   add('ROOFLINE', 'ROOF*LINE*!', 1500, B, { pre: [A], within: 8 });
   add('ROOFLINE', 'ROOF*LINE*!', 1500, neg(A), { pre: [neg(B)], within: 8 }); }
 // 11. UNDER THE WIRES (micro): under the lowest cable span over the club street or an alley, 2.0 m to 0.4 m below it
-{ const span = geo.cables.filter((c) => c.low > 4.5 && Math.abs(c.a[0]) < 180 && Math.abs(c.a[2]) < 180).sort((a, b) => a.low - b.low);
+{ const span = geo.cables.filter((c) => c.low > 4.5 && c.a[0] > layout.core.x0 && c.a[0] < layout.core.x1 && c.a[2] > layout.core.z0 && c.a[2] < layout.core.z1).sort((a, b) => a.low - b.low);
   for (const c of span) {
     const mx = (c.a[0] + c.b[0]) / 2, mz = (c.a[2] + c.b[2]) / 2, dx = c.b[0] - c.a[0], dz = c.b[2] - c.a[2], ln = Math.hypot(dx, dz);
     const G = g([mx, (2.0 + c.low - 0.4) / 2, mz], [dx / ln, 0, dz / ln], 2.5, c.low - 2.4, [-dz / ln, 0, dx / ln]);
@@ -224,8 +250,9 @@ const yawTo = (dx, dz) => Math.atan2(-dx, -dz);
 const st = (name, s, pts, y, back = 8) => { const p = at(pts, s), sgn = s < 0 ? -1 : 1; return { name, pos: [r3(p.x - p.tx * back * sgn), y, r3(p.z - p.tz * back * sgn)], yaw: r3(yawTo(p.tx * sgn, p.tz * sgn)) }; };
 const startPoints = [
   { ...st('Walking street', 15, walk.points, 4.0), hint: { text: 'FLY THE WALKING STREET · OVER THE HEADS', line: 'WALKING STREET', until: 2, next: 'WALKING STREET' } },
-  st('Club street', 12, club.points, 3.2),
-  st('Station', 10, hong.points, 6.5),
+  st('Bar alley', 12, club.points, 3.2),
+  { name: 'Exit 9', pos: lines.find((l) => l.name === 'SCREEN CANYON').pre[0].c.map((v, i) => i === 1 ? 11 : v - lines.find((l) => l.name === 'SCREEN CANYON').pre[0].n[i] * 10), yaw: r3(yawTo(lines.find((l) => l.name === 'SCREEN CANYON').n[0], lines.find((l) => l.name === 'SCREEN CANYON').n[2])) },
+  st('Hongik-ro', 10, hong.points, 6.5),
   { name: 'Rooftops', pos: [r3(at(walk.points, WL * 0.3 - 20).x), r3(lines.find((l) => l.name === 'ROOFLINE').c[1]), r3(at(walk.points, WL * 0.3 - 20).z)], yaw: r3(yawTo(at(walk.points, WL * 0.3).tx, at(walk.points, WL * 0.3).tz)) },
 ];
 const out = { version: 1, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', lines, funnels, startPoints, takeStart: { pos: startPoints[0].pos, yaw: startPoints[0].yaw } };

@@ -130,6 +130,14 @@ class Acc {
   }
 }
 
+// the layout's extent: layout.box {x0,x1,z0,z1}; older layouts: `half`, or the lots' bounds
+export function boxOf(layout) {
+  if (layout.box) return layout.box;
+  if (layout.half) return { x0: -layout.half, x1: layout.half, z0: -layout.half, z1: layout.half };
+  const b = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
+  for (const l of layout.lots) for (const [x, z] of l.footprint) { b.x0 = Math.min(b.x0, x - 10); b.x1 = Math.max(b.x1, x + 10); b.z0 = Math.min(b.z0, z - 10); b.z1 = Math.max(b.z1, z + 10); }
+  return b;
+}
 // ---- polygon helpers (footprints are CCW in x-z maths terms: outward normal of edge a->b is (dz, -dx))
 const polyArea = (P) => { let a = 0; for (let i = 0; i < P.length; i++) { const [x0, z0] = P[i], [x1, z1] = P[(i + 1) % P.length]; a += x0 * z1 - x1 * z0; } return a / 2; };
 const pip = (x, z, P) => { let c = false; for (let i = 0, j = P.length - 1; i < P.length; j = i++) { const [xi, zi] = P[i], [xj, zj] = P[j]; if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) c = !c; } return c; };
@@ -157,10 +165,10 @@ export function buildSeoulGeometry(layout, { lineData = null, seed = 11 } = {}) 
   const emitters = [], facts = { lots: layout.lots.length, windowsLit: 0, windows: 0, shopsLit: 0, shutters: 0, ac: 0, tanks: 0, poles: 0, cableSpans: 0, streetLights: 0 };
   const streets = layout.streets, lots = layout.lots, streetById = new Map(streets.map((s) => [s.id, s]));
   const grid = lotGrid(lots);
-  const HALF = layout.half || 215;
+  const B = boxOf(layout);
 
   // ---------------- ground: sidewalk pavers everywhere, streets on top by kind
-  { const E = HALF + 80; A('walk').quad([-E, 0, E], [E, 0, E], [E, 0, -E], [-E, 0, -E], [0, 1, 0], [[-E, E], [E, E], [E, -E], [-E, -E]]); }
+  { const x0 = B.x0 - 80, x1 = B.x1 + 80, z0 = B.z0 - 80, z1 = B.z1 + 80; A('walk').quad([x0, 0, z1], [x1, 0, z1], [x1, 0, z0], [x0, 0, z0], [0, 1, 0], [[x0, z1], [x1, z1], [x1, z0], [x0, z0]]); }
   const ribbon = (key, pts, w, y, uvScale = 1) => {
     // mitred ribbon along a polyline at height y
     const n = pts.length; if (n < 2) return; const L = [], R = []; let s = 0; const S = [];
@@ -307,7 +315,7 @@ export function buildSeoulGeometry(layout, { lineData = null, seed = 11 } = {}) 
     facts.streetLights++;
   };
   const along = (pts, step, fn) => { let carry = step / 2; for (let i = 0; i < pts.length - 1; i++) { const [ax, az] = pts[i], [bx, bz] = pts[i + 1], L = Math.hypot(bx - ax, bz - az); if (L < 0.1) continue; const tx = (bx - ax) / L, tz = (bz - az) / L; let s = carry; for (; s < L; s += step) fn(ax + tx * s, az + tz * s, tx, tz); carry = s - L; } };
-  const clearSpot = (x, z, r) => !grid.inside(x, z) && !grid.near(x, z).some((l) => polyD(x, z, l.footprint) < r) && Math.abs(x) < HALF && Math.abs(z) < HALF;
+  const clearSpot = (x, z, r) => !grid.inside(x, z) && !grid.near(x, z).some((l) => polyD(x, z, l.footprint) < r) && x > B.x0 && x < B.x1 && z > B.z0 && z < B.z1;
   let side = 1;
   for (const s of streets) {
     if (s.kind !== 'main' || s.width < 7) continue;
@@ -475,8 +483,8 @@ export async function buildSeoul(renderer, a, b) {
 
   const depthScene = new THREE.Scene(); depthScene.name = 'depthScene';   // C2: no alpha-tested extras in Seoul (yet)
   const colScene = new THREE.Scene(); { const cm = new THREE.Mesh(geo.colGeo, new THREE.MeshBasicMaterial()); cm.frustumCulled = false; colScene.add(cm); }
-  const H = layout.half || 215;
-  const sp = layout.spawn || { pos: [0, 6, 0], yaw: 0 };
+  const B = boxOf(layout);
+  const sp = geo.takeStart || layout.spawn || { pos: [0, 6, 0], yaw: 0 };   // the first start point (the walking street) when lines exist
   const stats = { ...geo.facts, ms: { geometry: geo.facts.ms, total: 0 }, emitters: emitters.length };
   const update = (camPos, dt = 1 / 60, camQuat) => {
     uniforms.uTime.value += dt || 0;
@@ -489,8 +497,8 @@ export async function buildSeoul(renderer, a, b) {
     takeStart: geo.takeStart ? { pos: new THREE.Vector3(...geo.takeStart.pos), yaw: geo.takeStart.yaw } : { pos: new THREE.Vector3(...sp.pos), yaw: sp.yaw },
     startPoints: geo.startPoints.map((s) => ({ name: s.name, pos: new THREE.Vector3(...s.pos), yaw: s.yaw, ...(s.hint ? { hint: s.hint } : {}) })),
     funnels: geo.funnels, lines: geo.lines,
-    bounds: new THREE.Box3(new THREE.Vector3(-H - 60, -5, -H - 60), new THREE.Vector3(H + 60, 200, H + 60)),
-    envelope: { min: new THREE.Vector3(-H - 30, -2, -H - 30), max: new THREE.Vector3(H + 30, 160, H + 30) },
+    bounds: new THREE.Box3(new THREE.Vector3(B.x0 - 60, -5, B.z0 - 60), new THREE.Vector3(B.x1 + 60, 200, B.z1 + 60)),
+    envelope: { min: new THREE.Vector3(B.x0 - 30, -2, B.z0 - 30), max: new THREE.Vector3(B.x1 + 30, 160, B.z1 + 30) },
     aoUniforms: { uAO: { value: null }, uAOOn: { value: 0 }, uAOScale: { value: new THREE.Vector2(1, 1) } },
     rebakeShadows: () => {}, grassAt: null,
     look: 'night', sky: 'night', layout, emitters, parts, NIT, LUX,
