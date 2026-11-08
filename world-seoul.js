@@ -34,7 +34,7 @@ export const SEOUL_MATS = {
   roof: { id: 'concrete_floor_02', tile: 4.0, maps: ['diff', 'nor_gl'], color: [0.55, 0.75, 0.6], rough: 0.8, albedo: [0.17, 0.22, 0.18] },   // green roof paint (T5)
   metal: { id: 'blue_metal_plate', tile: 2.0, maps: ['diff'], color: [0.6, 0.62, 0.65], rough: 0.5, metal: 0.4, albedo: [0.20, 0.21, 0.22] },
   shutter: { id: 'blue_metal_plate', tile: 1.2, maps: ['diff', 'nor_gl'], color: [0.75, 0.75, 0.78], rough: 0.45, metal: 0.5, albedo: [0.24, 0.24, 0.25] },
-  white: { color: [0.55, 0.55, 0.52], rough: 0.6, albedo: [0.55, 0.55, 0.52] },          // AC units, fascia, tanks (flat)
+  white: { color: [0.42, 0.42, 0.40], rough: 0.6, albedo: [0.42, 0.42, 0.40] },          // AC units, fascia, tanks (flat; ivory-grey enamel under grime)
   dark: { color: [0.035, 0.035, 0.04], rough: 0.45, albedo: [0.035, 0.035, 0.04] },        // cables, pole hardware
   pole: { color: [0.32, 0.31, 0.3], rough: 0.85, albedo: [0.32, 0.31, 0.30] },
   stripe: { color: [0.75, 0.75, 0.72], rough: 0.6, albedo: [0.75, 0.75, 0.72] },
