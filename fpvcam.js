@@ -307,7 +307,7 @@ void main(){
   float ev = decodeEv(texelFetch(tExp, ivec2(0), 0));
   vec3 e = (uHdr > 0.5 ? lin : invTone(lin, uInv)) * exp2(ev);
   // HDR: the bright pass sees the white-balanced exposure (halos take the image's WB, not the raw sky's blue)
-  if (uHdr > 0.5) e *= mix(uWB, uWBShade, smoothstep(0.6, 2.4, ev));
+  if (uHdr > 0.5) e *= mix(uWB, uWBShade, smoothstep(1.5, 3.0, ev));
   vec3 bright = max(e - vec3(uThresh), 0.0);
   fragColor = uF16 > 0.5 ? vec4(min(bright, vec3(uBloomCap)), min(L, 6.0e4))
                          : vec4(min(bright / 8.0, 1.0), sqrt(clamp(L / uLumScale, 0.0, 1.0)));
@@ -473,7 +473,9 @@ void main(){
   // AE pinned hard (dark tube): the sensor has no stops left, so the camera stops crushing (lighting #2)
   float pin = smoothstep(uPinEv.x, uPinEv.y, X.a * 4.0);
   float con = mix(uCon, 1.0, pin * uPinK.y), toe = uToe * (1.0 - pin * uPinK.x);
-  vec3 wbm = mix(uWB, uWBShade, smoothstep(0.6, 2.4, ev));
+  // [L5] shade WB only for real interiors (EV 1.5..3.0, hall ~3.1): at 0.6..2.4 an outdoor shaded gap (silo gap EV ~1.4)
+  // got ~40 % of the interior's warm correction (R/B x1.13) and the sky-blue shade went neutral (colour #2)
+  vec3 wbm = mix(uWB, uWBShade, smoothstep(1.5, 3.0, ev));
   vec3 e = (uHdr > 0.5 ? lin : invTone(lin, uInv)) * exp2(ev) * wbm;
   e += texture(tBloom, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uBloom;   // halation / glare (HDR: WB'd in its bright pass)
   float vig = pow(max(cos(th), 0.0), 2.2);                                 // optical cos^n falloff
@@ -1182,7 +1184,7 @@ export class FPVCamera {
         meter: { grid: [9, 7], centre: [0.5, 0.45], scale: [1.6, 2.0], falloff: 1.6, logArithMix: 0.15, space: lk.meterLens ? 'output (lens-mapped)' : 'render' } },
       tone: { camCurveK: 1.25, expo: lk.expo, clipEv: ce, white: Number.isFinite(ce) ? 1 / (1 - Math.exp(-1.25 * 0.24 * lk.expo * Math.pow(2, ce))) : 1,
         toe: lk.toe, con: lk.con, conPivot: 0.24, veil: lk.veil, veilTint: [1, 0.99, 0.97], sCurve: 0.22, lift: lk.lift, invTone: lk.invTone },
-      colour: { wb: lk.wb, wbShade: lk.wbShade || lk.wb, wbShadeEv: [0.6, 2.4], saturation: lk.saturation, shadowSat: lk.shadowSat, shadowSatLuma: [0.01, 0.16],
+      colour: { wb: lk.wb, wbShade: lk.wbShade || lk.wb, wbShadeEv: [1.5, 3.0], saturation: lk.saturation, shadowSat: lk.shadowSat, shadowSatLuma: [0.01, 0.16],
         selective: { sky: lk.skySel, green: lk.greenSel, skyBoost: lk.skyBoost, skyRot: lk.skyRot, skyDark: lk.skyDark, greenRot: -0.209, greenGain: -0.15,
           skyAxis: [0.788, -0.616], skyHue: [0.80, 0.97], skyLuma: [0.35, 0.55], skyChroma: [0.09, 0.15], greenAxis: [-0.819, -0.574], greenHue: [0.70, 0.95], greenChroma: [0.02, 0.05] } },
       bloom: { amount: lk.bloom, threshold: 1.0, cap: lk.bloomCap, resolution: 1 / 8, iterations: 2, kernelWeights: [0.2270270270, 0.3162162162, 0.0702702703], kernelOffsets: [0, 1.3846153846, 3.2307692308], whiteBalanced: true, space: lk.meterLens ? 'output' : 'render' },
