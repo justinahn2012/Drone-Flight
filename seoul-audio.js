@@ -23,6 +23,7 @@ const NORM = { traffic: 15.1, crowd: 19.9, alley: 13.0, air: 10.7, rain: 7.2, mu
 const nrm = (k) => Math.pow(10, NORM[k] / 20);
 export const SND = {
   level: 1,
+  world: 1.33,    // trim on the world path, set so the city sits ~9 LU under a hover on the walking street (sound #1)
   beds: { traffic: 72, crowd: 70, alley: 56, air: 48, rain: 66 },          // at the street centre, full density
   car: 72, taxi: 70, truck: 76, bus: 80, scooter: 80, tyre: 70,          // pass-by at 1 m-equivalent
   music: 78, club: 86, neon: 44, sizzle: 62, pip: 66, hiss: 92, voice: 74,
@@ -145,14 +146,17 @@ export function createSeoulAudio(layout, life, opts = {}) {
   };
   if (opts.signs) api.setSigns(opts.signs);
 
-  api.attach = (ctx, dest, { offline = false, low = false } = {}) => {
+  api.attach = (ctx, dest, { offline = false, low = false, raw = false } = {}) => {
     if (A) api.detach();
     const G = (v = 0) => { const g = ctx.createGain(); g.gain.value = v; return g; };
     const F = (type, f, q = 0.7) => { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; };
     const loop = (buf, rate = 1, off = 0) => { const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true; s.playbackRate.value = rate; s.start(0, off % buf.duration); return s; };
     const white = noise(ctx, 3, 'white', 11), pink = noise(ctx, 4, 'pink', 12), brown = noise(ctx, 5, 'brown', 13);
-    const out = G(SND.level); out.connect(dest);
-    const g = { ctx, out, offline, white, pink, brown, nodes: [], pv: {}, music: new Map(), lastT: null, camV: [0, 0, 0], camPrev: null, rain: !!opts.rain };
+    // routing (sound #1): into MotorAudio's world path (after the camera chain, ducked <= 6 dB by the props) when the
+    // destination offers it; { raw: true } keeps P1's route through the camera mic chain ("raw cam audio")
+    const target = raw ? dest : (dest && dest.world) || dest, viaWorld = target !== dest;
+    const out = G(SND.level * (viaWorld ? SND.world : 1)); out.connect(target);
+    const g = { ctx, out, offline, viaWorld, white, pink, brown, nodes: [], pv: {}, music: new Map(), lastT: null, camV: [0, 0, 0], camPrev: null, rain: !!opts.rain };
     A = g;
     // ---- beds
     const bed = (name) => { const gg = G(0); gg.connect(out); return gg; };
@@ -235,7 +239,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     return api;
   };
   api.detach = () => { if (!A) return; try { A.out.disconnect(); } catch (e) {} A = null; api.attached = false; };
-  api.setLevel = (x) => { SND.level = x; if (A) A.out.gain.value = x; };
+  api.setLevel = (x) => { SND.level = x; if (A) A.out.gain.value = x * (A.viaWorld ? SND.world : 1); };
   api.setRain = (on) => { if (A) A.rain = !!on; };
 
   // music buffers: generated lazily, cached per (style, seed)
