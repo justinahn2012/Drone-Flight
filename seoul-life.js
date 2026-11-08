@@ -29,7 +29,7 @@ export const LIFE = {
   density: { main: 0.08, walking: 0.25, club: 0.2, alley: 0.06 },
   // when the budget can't hold every street at its density, hero streets keep more of theirs
   priority: { walking: 1, club: 1, main: 0.6, alley: 0.35 },
-  maxAgents: 2400, nearR: 18, farR: 170, maxNear: 140, maxMid: 1500,
+  maxAgents: 2400, nearR: 18, midR: 55, farR: 170, maxNear: 140, maxMid: 700, maxDrawn: 1600,
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
   phoneShare: 0.18,            // walkers looking at a phone
   sidewalk: (w) => Math.max(3, Math.min(6, w * 0.15)),
@@ -464,7 +464,7 @@ export class CrowdSim {
     const frontN = this.lots.map((l) => (l.use === 'club' ? 12 : l.use === 'pocha' ? 10 : ['conv', 'bar', 'karaoke', 'pc', 'cafe'].includes(l.use) ? 3 : 1.2) * this.density);
     const crossN = this.net.crossings.map((c) => (c.kind === 'T' ? 30 : 12) * this.density);
     const tot = [...wayN, ...frontN, ...crossN].reduce((a, b) => a + b, 0);
-    const k = tot > this.maxAgents ? this.maxAgents / tot : 1;
+    const k = tot > this.maxAgents ? 0.93 * this.maxAgents / tot : 1;   // 0.93: groups round up
     this.ways.forEach((w, i) => {
       let n = Math.round(wayN[i] * k);
       while (n > 0) {
@@ -728,7 +728,7 @@ const lin = (c) => c.map((v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055)
 // Regions: 0 skin, 1 hair, 2 top, 3 bottom, 4 shoes, 5 phone screen, 6 bag, 7 umbrella
 function buildHumanGeo(lod) {
   const P = [], N = [], B = [], G = [];
-  const rs = lod ? 5 : 9, hs = lod ? 4 : 8;
+  const rs = [9, 5, 3][lod], hs = [8, 4, 2][lod];
   // ring-stack primitive: list of [y, rx, rz, cx, cz]; region fn(y, angle) -> region
   function tube(rings, bone, region, closeTop = false, closeBot = false) {
     const base = P.length / 3, nr = rings.length;
@@ -766,7 +766,7 @@ function buildHumanGeo(lod) {
   for (const [sx, th, sh] of [[0.095, 2, 3], [-0.095, 4, 5]]) {
     add(tube([[0.9, 0.078, 0.082, sx, 0], [0.7, 0.068, 0.07, sx, 0.005], [0.5, 0.055, 0.058, sx, 0.01]], th, 3));
     add(tube([[0.5, 0.055, 0.058, sx, 0.01], [0.32, 0.05, 0.055, sx, -0.005], [0.1, 0.038, 0.042, sx, 0]], sh, (y) => (y < 0.15 ? 4 : 3)));
-    add(box(sx - 0.048, 0, -0.06, sx + 0.048, 0.085, 0.17, sh, 4));
+    if (lod < 2) add(box(sx - 0.048, 0, -0.06, sx + 0.048, 0.085, 0.17, sh, 4));
   }
   // pelvis + torso (back is -z, chest +z), shoulders y 1.39
   add(tube([[0.84, 0.15, 0.105], [0.98, 0.16, 0.105], [1.12, 0.155, 0.11], [1.3, 0.18, 0.12], [1.39, 0.2, 0.105], [1.44, 0.1, 0.07]], 0, (y) => (y < 0.97 ? 3 : 2), true, true));
@@ -786,12 +786,12 @@ function buildHumanGeo(lod) {
     add(tube([[1.41, 0.05, 0.052, sx, 0], [1.25, 0.046, 0.048, sx, 0], [1.1, 0.042, 0.044, sx, 0.005]], ua, 2, true));
     add(tube([[1.1, 0.042, 0.044, sx, 0.005], [0.9, 0.035, 0.036, sx, 0.01], [0.86, 0.032, 0.03, sx, 0.01], [0.77, 0.022, 0.03, sx, 0.015]], fa, (y) => (y < 0.875 ? 0 : 2), false, true));
   }
-  // phone in the right hand (screen faces the body)
-  add(box(-0.24, 0.8, 0.0, -0.17, 0.95, 0.012, 10, (n) => (n[0] === 0 && n[2] === 0 && n[1] === 0 ? 5 : n[2] < 0 ? 5 : 6)));
+  // phone in the right hand (screen faces the body); far LOD: no phone, coat, bag
+  if (lod < 2) add(box(-0.24, 0.8, 0.0, -0.17, 0.95, 0.012, 10, (n) => (n[0] === 0 && n[2] === 0 && n[1] === 0 ? 5 : n[2] < 0 ? 5 : 6)));
   // long coat skirt (hidden unless coat), hip to knee
-  add(tube([[0.98, 0.17, 0.115], [0.75, 0.2, 0.145], [0.5, 0.215, 0.16]], 11, 2, false, false));
+  if (lod < 2) add(tube([[0.98, 0.17, 0.115], [0.75, 0.2, 0.145], [0.5, 0.215, 0.16]], 11, 2, false, false));
   // shoulder bag on the left hip
-  add(box(0.17, 0.86, -0.08, 0.235, 1.07, 0.1, 0, 6));
+  if (lod < 2) add(box(0.17, 0.86, -0.08, 0.235, 1.07, 0.1, 0, 6));
   // umbrella (rain mode): canopy cone over the head on a shaft
   if (!lod) add(tube([[1.95, 0.5, 0.5, 0, 0.15], [2.1, 0.25, 0.25, 0, 0.15], [2.16, 0.01, 0.01, 0, 0.15]], 12, 7));
   const g = new THREE.InstancedBufferGeometry();
@@ -1069,13 +1069,13 @@ export function build(layout, ctx = {}) {
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vAlb * vFillE * uFillK + vec3(0.75, 0.85, 1.0) * 220.0 * uNit * vScreen;');
   };
   humanMat.customProgramCacheKey = () => 'seoul-human';
-  const tiers = [0, 1].map((lod) => {
-    const g = buildHumanGeo(lod), cap = lod ? Math.min(maxAgents, LIFE.maxMid) : LIFE.maxNear;
+  const tiers = [0, 1, 2].map((lod) => {
+    const g = buildHumanGeo(lod), cap = [LIFE.maxNear, LIFE.maxMid, LIFE.maxDrawn][lod];
     const at = (n) => { const a = new THREE.InstancedBufferAttribute(new Float32Array(cap * n), n); a.setUsage(THREE.DynamicDrawUsage); return a; };
     const A = { iPos: at(4), iAnim: at(4), iTop: at(4), iBot: at(4), iHair: at(4), iSkin: at(4), iFill: at(4) };
     for (const k in A) g.setAttribute(k, A[k]);
     g.instanceCount = 0; g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
-    const m = new THREE.Mesh(g, humanMat); m.frustumCulled = false; m.name = lod ? 'crowd-mid' : 'crowd-near'; group.add(m);
+    const m = new THREE.Mesh(g, humanMat); m.frustumCulled = false; m.name = ['crowd-near', 'crowd-mid', 'crowd-far'][lod]; group.add(m);
     return { g, A, cap, mesh: m, tris: g.index.count / 3 };
   });
   // static per-agent appearance, linearised once
@@ -1129,7 +1129,7 @@ export function build(layout, ctx = {}) {
   const tmpF = [0, 0, 0, 0], M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S1 = new THREE.Vector3(1, 1, 1), V3 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0), PO = {};
   const fwd = new THREE.Vector3(0, 0, -1);
   const hist = new Int32Array(18), ax = new Float32Array(crowd.agents.length), az = new Float32Array(crowd.agents.length), ab = new Uint8Array(crowd.agents.length);
-  const stats = { agents: crowd.agents.length, vehicles: traffic.vehicles.length, near: 0, mid: 0, drawn: 0, cpuMs: 0, simMs: 0, trisNear: tiers[0].tris, trisMid: tiers[1].tris, lanes: traffic.lanes.length, ways: crowd.ways.length, crossings: sim.net.crossings.length };
+  const stats = { agents: crowd.agents.length, vehicles: traffic.vehicles.length, near: 0, mid: 0, drawn: 0, cpuMs: 0, simMs: 0, trisNear: tiers[0].tris, trisMid: tiers[1].tris, trisFar: tiers[2].tris, lanes: traffic.lanes.length, ways: crowd.ways.length, crossings: sim.net.crossings.length };
   let clock = 0, extClock = false;
   const camP = new THREE.Vector3(0, 2, 0);
 
@@ -1143,7 +1143,7 @@ export function build(layout, ctx = {}) {
     if (camQuat) fwd.set(0, 0, -1).applyQuaternion(camQuat); else fwd.set(0, 0, 0);
     // ---- people: interpolate, tier by distance, cull behind the camera (FPV lenses are wide: only > ~100 deg)
     const aC = sim.aC, A = crowd.agents, nr2 = LIFE.nearR * LIFE.nearR;
-    let nN = 0, nM = 0; const T0 = tiers[0].A, T1 = tiers[1].A;
+    let nN = 0, nM = 0, nF = 0; const T0 = tiers[0].A, T1 = tiers[1].A, T2 = tiers[2].A, mr2 = LIFE.midR * LIFE.midR;
     // visible set + a 10 m distance histogram: the mid tier keeps the nearest maxMid
     hist.fill(0);
     for (let i = 0; i < A.length; i++) {
@@ -1154,13 +1154,13 @@ export function build(layout, ctx = {}) {
       if (b > 17) b = 99; else hist[b]++;
       ax[i] = x; az[i] = z; ab[i] = b;
     }
-    let cut = 17, acc = 0; for (let b = 0; b <= 17; b++) { acc += hist[b]; if (acc > tiers[1].cap + LIFE.maxNear) { cut = b - 1; break; } }
+    let cut = 17, acc = 0; for (let b = 0; b <= 17; b++) { acc += hist[b]; if (acc > LIFE.maxDrawn) { cut = b - 1; break; } }
     for (let i = 0; i < A.length; i++) {
       if (ab[i] > cut) continue;
       const a = A[i], u = a.jumped ? 1 : aC, x = ax[i], z = az[i];
       const dx = x - camP.x, dz = z - camP.z, d2 = dx * dx + dz * dz + camP.y * camP.y * 0.25;
       let T, k;
-      if (d2 < nr2 && nN < tiers[0].cap) { T = T0; k = nN++; } else if (nM < tiers[1].cap) { T = T1; k = nM++; } else continue;
+      if (d2 < nr2 && nN < tiers[0].cap) { T = T0; k = nN++; } else if (d2 < mr2 && nM < tiers[1].cap) { T = T1; k = nM++; } else if (nN + nM + nF < LIFE.maxDrawn) { T = T2; k = nF++; } else continue;
       let dy = a.yaw - a.pyaw; dy -= Math.round(dy / 6.283185307) * 6.283185307;
       let ph = a.ph - a.pph; if (ph < -0.5) ph += 1; else if (ph > 0.5) ph -= 1;
       const o = k * 4, L = look[i];
@@ -1172,7 +1172,7 @@ export function build(layout, ctx = {}) {
       T.iSkin.array.set(L.skin, o); T.iSkin.array[o + 3] = umbOf[i];
       fill.at(x, z, tmpF); T.iFill.array[o] = tmpF[0]; T.iFill.array[o + 1] = tmpF[1]; T.iFill.array[o + 2] = tmpF[2]; T.iFill.array[o + 3] = tmpF[3];
     }
-    for (const [T, n] of [[tiers[0], nN], [tiers[1], nM]]) {
+    for (const [T, n] of [[tiers[0], nN], [tiers[1], nM], [tiers[2], nF]]) {
       T.g.instanceCount = n;
       for (const k in T.A) { const at = T.A[k]; at.clearUpdateRanges?.(); at.addUpdateRange?.(0, n * 4); at.needsUpdate = true; }
     }
@@ -1195,7 +1195,7 @@ export function build(layout, ctx = {}) {
     }
     for (const ty of VTYPES) { const B = vByType[ty]; B.im.count = cnt[ty]; B.im.instanceMatrix.needsUpdate = true; B.im.instanceColor.needsUpdate = true; B.st.needsUpdate = true; }
     poolG.instanceCount = np; poolA.needsUpdate = true;
-    stats.near = nN; stats.mid = nM; stats.drawn = nN + nM;
+    stats.near = nN; stats.mid = nM; stats.far = nF; stats.drawn = nN + nM + nF; stats.tris = nN * tiers[0].tris + nM * tiers[1].tris + nF * tiers[2].tris;
     stats.simMs = c1 - c0; stats.cpuMs = performance.now() - c0;
     if (life.audio && life.audio.feed) life.audio.feed(camP, fwd, clock);
   }
