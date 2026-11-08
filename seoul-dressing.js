@@ -11,7 +11,7 @@
 //     Every hole lies off the street ribbons, and its walls, floor and ceiling are closed in colTris.
 //   - opts (all optional): seed; lines (seoul/lines.json: gates to keep clear, pre-gates for road plates, gaps for doors);
 //     poles, lotInfo (from buildSeoulGeometry: extra span cables, drops, roof clearances); emitters (C's, to keep clear
-//     of street lights); shopTop (2.95), fasciaY (3.05).
+//     of street lights); shopTop (2.95), fasciaY (3.05); density (clutter, default 1: a perf knob).
 //   seoulDressing.build(layout, ctx) (browser) returns { group, update(t, camPos, camQuat), dispose, stats }: screen-space
 //   cable lines (>= 1.25 px, coverage alpha, lit by S3's grid as a MeshStandardMaterial), hangul labels (road-name
 //   plates, exit signs, tent tarps, the bus stop) and the signal lamps, which follow seoul-life's crossPhase on the take clock.
@@ -83,27 +83,37 @@ const W = (F, lx, ly, lz) => [F.o[0] + F.x[0] * lx + F.y[0] * ly + F.z[0] * lz, 
 const D = (F, lx, ly, lz) => [F.x[0] * lx + F.y[0] * ly + F.z[0] * lz, F.x[1] * lx + F.y[1] * ly + F.z[1] * lz, F.x[2] * lx + F.y[2] * ly + F.z[2] * lz];
 
 // ---------------------------------------------------------------------------------------------------------- accumulator
+// growable Float32 buffer (no GC churn, no array -> typed copy at the end); length is settable for rollbacks
+class FBuf {
+  constructor(n = 4096) { this.a = new Float32Array(n); this.length = 0; }
+  need(k) { if (this.length + k > this.a.length) { const b = new Float32Array(Math.max(this.a.length * 2, this.length + k)); b.set(this.a.subarray(0, this.length)); this.a = b; } }
+  p3(x, y, z) { const a = this.a, i = this.length; a[i] = x; a[i + 1] = y; a[i + 2] = z; this.length = i + 3; }
+  p2(x, y) { const a = this.a, i = this.length; a[i] = x; a[i + 1] = y; this.length = i + 2; }
+  out() { return this.a.slice(0, this.length); }
+}
 class Acc {
-  constructor(spec) { this.p = []; this.n = []; this.uv = []; this.e = spec.emissive ? [] : null; this.c = spec.vcol ? [] : null; }
+  constructor(spec) { this.p = new FBuf(); this.n = new FBuf(); this.uv = new FBuf(); this.e = spec.emissive ? new FBuf() : null; this.c = spec.vcol ? new FBuf() : null; }
   tri(a, b, c, ua, ub, uc, ea, eb, ec, col) {
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
-    this.p.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]); this.n.push(nx, ny, nz, nx, ny, nz, nx, ny, nz); this.uv.push(ua[0], ua[1], ub[0], ub[1], uc[0], uc[1]);
-    if (this.e) { const z = [0, 0, 0], A = ea || z, B = eb || A, C = ec || A; this.e.push(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2]); }
-    if (this.c) { const k = col || [0.5, 0.5, 0.5]; this.c.push(k[0], k[1], k[2], k[0], k[1], k[2], k[0], k[1], k[2]); }
+    const P = this.p, N = this.n, U = this.uv; P.need(9); N.need(9); U.need(6);
+    P.p3(a[0], a[1], a[2]); P.p3(b[0], b[1], b[2]); P.p3(c[0], c[1], c[2]); N.p3(nx, ny, nz); N.p3(nx, ny, nz); N.p3(nx, ny, nz); U.p2(ua[0], ua[1]); U.p2(ub[0], ub[1]); U.p2(uc[0], uc[1]);
+    if (this.e) { const A = ea || Z3, B = eb || A, C = ec || A, E = this.e; E.need(9); E.p3(A[0], A[1], A[2]); E.p3(B[0], B[1], B[2]); E.p3(C[0], C[1], C[2]); }
+    if (this.c) { const k = col || G3, C = this.c; C.need(9); C.p3(k[0], k[1], k[2]); C.p3(k[0], k[1], k[2]); C.p3(k[0], k[1], k[2]); }
   }
   geometry() {
     if (!this.p.length) return null;
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.n, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
-    if (this.e) g.setAttribute('aEm', new THREE.Float32BufferAttribute(this.e, 3));
-    if (this.c) g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3));
+    g.setAttribute('position', new THREE.BufferAttribute(this.p.out(), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(this.n.out(), 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(this.uv.out(), 2));
+    if (this.e) g.setAttribute('aEm', new THREE.BufferAttribute(this.e.out(), 3));
+    if (this.c) g.setAttribute('color', new THREE.BufferAttribute(this.c.out(), 3));
     g.computeBoundingSphere(); g.computeBoundingBox();
     return g;
   }
 }
+const Z3 = [0, 0, 0], G3 = [0.5, 0.5, 0.5];
 
 // ---------------------------------------------------------------------------------------------------------- the block model
 function blockModel(layout) {
@@ -167,11 +177,13 @@ export function geometry(layout, opts = {}) {
   const M = blockModel(layout);
   const gates = gatesOf(opts.lines);
   const shopTop = opts.shopTop ?? 2.95, fasciaY = opts.fasciaY ?? 3.05;
+  const dens = clamp(opts.density ?? 1, 0, 3);   // clutter density (scooters, stools, bags): a perf knob, 1 = the reference look
   const acc = {}; const A = (k) => (acc[k] ||= new Acc(specOf(k)));
-  const col = [];                       // collider positions (non-indexed)
+  const col = new FBuf(1 << 16);       // collider positions (non-indexed)
   const emitters = [], setPieces = [], holes = [], cables = [], labels = [], lamps = [];
   const spPush = setPieces.push.bind(setPieces);
   setPieces.push = (...sps) => { for (const sp of sps) gates.push(...spGates(sp)); return spPush(...sps); };
+  const msParts = {}; let tLap = Date.now(); const lap = (k) => { const t = Date.now(); msParts[k] = t - tLap; tLap = t; };
   const facts = { tris: 0, colTris: 0, items: 0, rejectedByGates: 0, scooters: 0, tents: 0, trees: 0, awnings: 0, cablesExtra: 0, drops: 0, signals: 0, crossings: 0, plates: 0, doors: 0, b1: 0, stairs2f: 0 };
 
   // ---------------- kit state: material key, colour (vcol keys), emission (emissive keys), collidable
@@ -180,7 +192,7 @@ export function geometry(layout, opts = {}) {
   const uvDef = [[0, 0], [1, 0], [1, 1], [0, 1]];
   function tri(a, b, c, ua = [0, 0], ub = [1, 0], uc = [1, 1], e) {
     A(S.key).tri(a, b, c, ua, ub, uc, e ? e[0] : S.em, e ? e[1] : S.em, e ? e[2] : S.em, S.c);
-    if (S.col) col.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+    if (S.col) { col.need(9); col.p3(a[0], a[1], a[2]); col.p3(b[0], b[1], b[2]); col.p3(c[0], c[1], c[2]); }
   }
   // quad p0..p3 facing nrm (winding fixed), uv per corner, optional per-corner emission
   function quad(p0, p1, p2, p3, nrm, uvs = uvDef, e4) {
@@ -243,9 +255,12 @@ export function geometry(layout, opts = {}) {
   // ---------------- items: everything emitted between mark() and commit() is one item; rolled back if it enters a gate
   const lens = () => { const o = {}; for (const [k, a] of Object.entries(acc)) o[k] = [a.p.length, a.n.length, a.uv.length, a.e ? a.e.length : 0, a.c ? a.c.length : 0]; return { o, col: col.length, em: emitters.length, cab: cables.length, lab: labels.length, lamp: lamps.length }; };
   function rollback(m) { for (const [k, a] of Object.entries(acc)) { const L = m.o[k] || [0, 0, 0, 0, 0]; a.p.length = L[0]; a.n.length = L[1]; a.uv.length = L[2]; if (a.e) a.e.length = L[3]; if (a.c) a.c.length = L[4]; } col.length = m.col; emitters.length = m.em; cables.length = m.cab; labels.length = m.lab; lamps.length = m.lamp; }
-  function aabbSince(m) { const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]; for (const [k, a] of Object.entries(acc)) { const s = (m.o[k] || [0])[0]; for (let i = s; i < a.p.length; i += 3) { for (let j = 0; j < 3; j++) { b[j] = Math.min(b[j], a.p[i + j]); b[j + 3] = Math.max(b[j + 3], a.p[i + j]); } } } return b; }
+  function aabbSince(m) { const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]; for (const [k, a] of Object.entries(acc)) { const s = (m.o[k] || [0])[0], P = a.p.a; for (let i = s; i < a.p.length; i += 3) { for (let j = 0; j < 3; j++) { const v = P[i + j]; if (v < b[j]) b[j] = v; if (v > b[j + 3]) b[j + 3] = v; } } } return b; }
   // does the AABB come within `m` of a gate rect? (samples the rect)
-  const gateHit = (b, m = 0.35, skip = null, nG = gates.length) => { for (let gi = 0; gi < nG; gi++) { const g = gates[gi]; if (skip && skip(g)) continue; for (let i = 0; i <= 8; i++) for (let j = 0; j <= 6; j++) { const p = v3.add(v3.add(g.c, v3.mul(g.u, (i / 8 - 0.5) * g.w)), v3.mul(g.v, (j / 6 - 0.5) * g.h)); if (p[0] > b[0] - m && p[0] < b[3] + m && p[1] > b[1] - m && p[1] < b[4] + m && p[2] > b[2] - m && p[2] < b[5] + m) return g; } } return null; };
+  const gSamples = (g) => g._s ||= (() => { const o = []; for (let i = 0; i <= 8; i++) for (let j = 0; j <= 6; j++) o.push(v3.add(v3.add(g.c, v3.mul(g.u, (i / 8 - 0.5) * g.w)), v3.mul(g.v, (j / 6 - 0.5) * g.h))); const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]; for (const p of o) for (let k = 0; k < 3; k++) { bb[k] = Math.min(bb[k], p[k]); bb[k + 3] = Math.max(bb[k + 3], p[k]); } o.bb = bb; return o; })();
+  const gateHit = (b, m = 0.35, skip = null, nG = gates.length) => { for (let gi = 0; gi < nG; gi++) { const g = gates[gi]; if (skip && skip(g)) continue; const S2 = gSamples(g), gb = S2.bb;
+    if (gb[0] > b[3] + m || gb[3] < b[0] - m || gb[1] > b[4] + m || gb[4] < b[1] - m || gb[2] > b[5] + m || gb[5] < b[2] - m) continue;
+    for (const p of S2) if (p[0] > b[0] - m && p[0] < b[3] + m && p[1] > b[1] - m && p[1] < b[4] + m && p[2] > b[2] - m && p[2] < b[5] + m) return g; } return null; };
   // (a set piece registers its own gates inside fn: the item is checked only against the gates that existed before it)
   function item(fn, o = {}) {
     const m = lens(), g0 = gates.length, s0 = setPieces.length, h0 = holes.length;
@@ -324,19 +339,20 @@ export function geometry(layout, opts = {}) {
   }
 
   // a placement search: rectangle (local x0..x1, z0..z1) around a frame at candidate origins near `target`
-  function findSpot(target, dir, rect, test, { radius = 30, step = 1, lat = null } = {}) {
-    let best = null; const [tx, tz] = dir, nx = -tz, nz = tx;
-    for (let a = -radius; a <= radius; a += step) for (let b = -radius; b <= radius; b += step) {
-      if (lat && (b < lat[0] || b > lat[1])) continue;
-      const ox = target[0] + tx * a + nx * b, oz = target[1] + tz * a + nz * b, d = Math.hypot(a, b);
-      if (d > radius || (best && d >= best.d)) continue;
-      const F = frameH([ox, 0, oz], tx, tz);
-      if (rectFree(F, rect[0], rect[1], rect[2], rect[3], test)) best = { o: [ox, oz], d, F };
+  function findSpot(target, dir, rect, test, { radius = 30, step = 1 } = {}) {
+    const [tx, tz] = dir, nx = -tz, nz = tx, cand = [];
+    for (let a = -radius; a <= radius; a += step) for (let b = -radius; b <= radius; b += step) { const d = Math.hypot(a, b); if (d <= radius) cand.push([d, a, b]); }
+    cand.sort((p, q) => p[0] - q[0] || p[1] - q[1] || p[2] - q[2]);
+    for (const [d, a, b] of cand) {
+      const ox = target[0] + tx * a + nx * b, oz = target[1] + tz * a + nz * b, F = frameH([ox, 0, oz], tx, tz);
+      if (!test(ox, oz)) continue;
+      if (rectFree(F, rect[0], rect[1], rect[2], rect[3], test)) return { o: [ox, oz], d, F };
     }
-    return best;
+    return null;
   }
   const sidewalkOK = (pad = 0.4, lotPad = 0.6, occR = 0.4) => (x, z) => M.ribbonD(x, z) > pad && M.lotClear(x, z, lotPad) && occFree(x, z, occR) && inCore(x, z);
 
+  lap('setup');
   // ---- 1. STATION STAIRS: Hongik Univ. Station exits (reference.md: 9 (-7,225), 1 (-28,252), 2 (78,349), 8 (99,319) from
   // 37.5540 N 126.9230 E, x east / y north) -> layout origin.
   const toLayout = (rx, ry) => { const o = layout.origin || { lat: 37.5532, lon: 126.9224 }; return [rx + (126.9230 - o.lon) * 111320 * Math.cos(o.lat * Math.PI / 180), -(ry + (37.5540 - o.lat) * 110574)]; };
@@ -393,6 +409,7 @@ export function geometry(layout, opts = {}) {
     }, { noGate: false, margin: 0.3 });
   }
 
+  lap('exits');
   // ---- 2. Yanghwa-ro median bus stop (the island between the two one-way carriageways, under the screens)
   {
     const pairs = [];
@@ -411,6 +428,9 @@ export function geometry(layout, opts = {}) {
       const ctr = (s) => { const q = M.at(a, s), pb2 = M.project(b, q.x, q.z), dAB = pb2.dist, off = (dAB - a.width / 2 - b.width / 2) / 2 + a.width / 2, sx = pb2.side;
         const nx = -q.tz, nz = q.tx, sgn = Math.sign((pb2.px - q.x) * nx + (pb2.pz - q.z) * nz) || 1; return { x: q.x + nx * off * sgn, z: q.z + nz * off * sgn, tx: q.tx, tz: q.tz, gap: dAB - a.width / 2 - b.width / 2, sx }; };
       const isl = { L: 40, w: 3.0, h: 0.18 }, can = { L: 24, w: 3.8, y: 2.9 };
+      // keep the island's noses off THE CROSSING's zebra (a refuge would be cut there; ours simply stops short)
+      const crg = gates.find((g) => g.name === 'CROSSING');
+      if (crg) { const pc = M.project(a, crg.c[0], crg.c[2]), gap = isl.L / 2 + 5; if (Math.abs(pc.s - sMid) < gap) sMid = pc.s + Math.sign(sMid - pc.s || 1) * gap; }
       let c = ctr(sMid);
       const F = frameH([c.x, 0, c.z], c.tx, c.tz);
       item(() => {
@@ -452,6 +472,7 @@ export function geometry(layout, opts = {}) {
     }
   }
 
+  lap('shelter');
   // ---- 3. UNDER THE STAGE: the Red Road busking canopy on the walking street
   {
     const walks = M.streets.filter((s) => s.kind === 'walking');
@@ -506,15 +527,16 @@ export function geometry(layout, opts = {}) {
         emit({ id: 'dress:stage:panel', kind: 'lightbox', pos: W(F, -1.9, 2.1, zback - sd * 0.65), normal: D(F, 0.4, -0.3, -sd), w: 0.5, h: 0.3, rgb: [1.0, 0.92, 0.82], nits: 1500, range: 10 });
         emit({ id: 'dress:stage:sign', kind: 'lightbox', pos: W(F, 0, 2.47, zback - sd * 0.08), normal: D(F, 0, 0, -sd), w: 3.2, h: 0.55, rgb: [0.95, 0.35, 0.45], nits: 140 });
         occRect(F, -len / 2, len / 2, -dep / 2, dep / 2);
-        const yG = 2.18, gz = zin * 0.45;   // over the audience, under the roof's low edge (2.6 m)
+        const yG = 2.18, gz = zin * 0.45;   // over the audience, under the roof's low edge (2.6 m), inside the festoon line
         setPieces.push({ id: 'under-the-stage', kind: 'stage', name: 'UNDER THE STAGE', street: best.st.id, pos: r3([cx, 0, cz]), dir: r3(D(F, 1, 0, 0)), roof: { low: 2.6, high: 3.1 },
           crowdRing: { c: r3(W(F, 0, 0, zin * 0.9)), r: 3.2 },
-          gates: { pre: { c: r3(W(F, -len / 2 - 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 3.0, h: 0.7 }, gate: { c: r3(W(F, len / 2 + 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 3.0, h: 0.7 } },
+          gates: { pre: { c: r3(W(F, -len / 2 - 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.4, h: 0.7 }, gate: { c: r3(W(F, len / 2 + 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.4, h: 0.7 } },
           note: 'over the busking crowd (heads to 1.8 m) and under the canopy edge (2.6 m); G: a crowd ring at crowdRing' });
       }, { margin: 0.3 });
     }
   }
 
+  lap('stage');
   // ---- 4. CABLE THREAD: low service drops across Hongik-ro 3-gil (lowest points 4.0-4.6 m), two of them framed as windows
   {
     const st = M.streets.find((s) => s.ko === '홍익로3길') || M.streets.find((s) => /Hongik-ro 3-gil/.test(s.name || ''));
@@ -561,6 +583,7 @@ export function geometry(layout, opts = {}) {
     }
   }
 
+  lap('thread');
   // ---- 5. ROOFLINE: a 3.5 m slot between a rooftop stair house and a water tank, on the longest run of similar roofs
   // parallel to lines.json's ROOFLINE (which flies over the walking street at 23.8 m): F1 re-cuts the line along this run.
   {
@@ -619,6 +642,7 @@ export function geometry(layout, opts = {}) {
     }
   }
 
+  lap('roofline');
   // ---- 6. lit rear doors behind every gap (ux #4): 20-40 nits on a side wall of the slot, past the gate (both sides if two-way)
   for (const g of gates) {
     if (g.sp || g.pre || g.w > 2.2 || g.h < 3 || Math.abs(g.n[1]) > 0.5) continue;
@@ -644,6 +668,7 @@ export function geometry(layout, opts = {}) {
     }
   }
 
+  lap('doors');
   // ================================================================================================ STREETSCAPE
   // ---- crossings: zebra paint, stop lines and signal heads at seoul-life's crossings (+ THE CROSSING at the station)
   {
@@ -696,6 +721,7 @@ export function geometry(layout, opts = {}) {
     }
   }
 
+  lap('crossings');
   // ---- trees: ginkgos on the main roads' pavements (Nov: half gold), tree pits with grates
   {
     const R = rng('trees' + seed);
@@ -729,6 +755,7 @@ export function geometry(layout, opts = {}) {
     }
   }
 
+  lap('trees');
   // ---- road-name plates (도로명판) at every pre-gate (design #4): lit navy plate, white hangul, facing the approach
   {
     const done = [];
@@ -768,6 +795,7 @@ export function geometry(layout, opts = {}) {
     }
   }
 
+  lap('plates');
   // ---- pojangmacha tents (color #2: SOURCE_TYPES.tent): orange tarp lit from inside, clear vinyl front, on wide pavements
   // Kerbside rows on Hongik-ro / Wausan-ro pavements (the late-night pocha strip) and single tents at pocha lots. Frame:
   // local x along the kerb (or facade), local +z = away from it (customers come from +z; the vinyl front faces +z).
@@ -832,6 +860,7 @@ export function geometry(layout, opts = {}) {
     emit({ id: 'dress:tent:' + idx, kind: 'tent', pos: W(F, xo, 1.25, hz), normal: D(F, 0, 0, 1), w: 2 * hx, h: 1.6, rgb: [1.0, 0.56, 0.24], nits: 120 });
   }
 
+  lap('tents');
   // ---- paint: 천천히 ("slowly") across alleys where they leave a road, manholes, gutter grates
   const GLYPH = {
     '천': [[0.25, 0.92, 0.42, 0.98], [0.08, 0.8, 0.56, 0.87], ['q', [0.27, 0.8], [0.37, 0.8], [0.14, 0.46], [0.04, 0.46]], ['q', [0.29, 0.73], [0.38, 0.73], [0.6, 0.49], [0.5, 0.49]], [0.72, 0.38, 0.83, 1.0], [0.57, 0.64, 0.72, 0.72], [0.14, 0.05, 0.25, 0.33], [0.14, 0.05, 0.9, 0.13]],
@@ -868,6 +897,7 @@ export function geometry(layout, opts = {}) {
     }
   }
 
+  lap('paint');
   // ================================================================================================ CLUTTER (art #4)
   // facade analysis: each lot's frontage edge, its outward normal and what is in front of it
   const fronts = [];
@@ -880,6 +910,7 @@ export function geometry(layout, opts = {}) {
     const free = M.freeRay(mx + nx * 0.05, mz + nz * 0.05, nx, nz, 30);
     fronts.push({ l, fa, fb, L, tx, tz, nx, nz, mx, mz, st, free, info: opts.lotInfo?.get ? opts.lotInfo.get(l.id) : null });
   }
+  lap('fronts');
   // ---- awnings on ~40 % of shopfronts (retractable fabric, 2.5-2.9 m, under the fascia)
   {
     const R = rng('awn' + seed);
@@ -904,12 +935,14 @@ export function geometry(layout, opts = {}) {
       }, { margin: 0.35 });
     }
   }
+  lap('awnings');
   // ---- B1 basement stairs (pits along the facade, club/bar/karaoke) and steel stairs up to 2F on open side walls
   {
     const R = rng('b1' + seed);
     for (const f of fronts) {
-      if (!/club|bar|karaoke|pocha|restaurant|cafe/.test(f.l.use) || f.L < 7 || !inCore(f.mx, f.mz)) continue;
-      if (R() > (f.l.use === 'club' ? 0.6 : f.l.use === 'bar' || f.l.use === 'karaoke' ? 0.3 : 0.1)) continue;
+      if (!/club|bar|karaoke|pocha|restaurant|cafe/.test(f.l.use) || f.L < 6.5 || !inCore(f.mx, f.mz)) continue;
+      if (M.ribbonD(f.mx + f.nx * 2.3, f.mz + f.nz * 2.3) < 0.1) continue;               // no pavement for a pit here
+      if (R() > (f.l.use === 'club' ? 0.85 : f.l.use === 'bar' || f.l.use === 'karaoke' ? 0.55 : 0.2)) continue;
       // the pit runs along the facade at one end; it needs 1.75 m of pavement off any ribbon plus 1.2 m to walk past
       const end = R() < 0.5 ? 0 : 1, wP = 1.3, run = 15 * 0.28 + 1.3, dir = end ? -1 : 1;
       const sx = end ? f.L - 0.5 : 0.5;
@@ -966,6 +999,7 @@ export function geometry(layout, opts = {}) {
       }
     }
   }
+  lap('stairs');
   // ---- kerbside kit: scooters (clusters at restaurants / bars, ~2 per 10 m of alley), stools + crates, trash bags, cones, cabinets
   const scooter = (F, R) => {
     const body = [srgb(0x111111), srgb(0xe8e8e4), srgb(0xb3241f), srgb(0x5c6066), srgb(0x1d3f7a), srgb(0x2b2b2b)][Math.floor(R() * 6)];
@@ -984,7 +1018,7 @@ export function geometry(layout, opts = {}) {
       if (!f.st || !inCore(f.mx, f.mz)) continue;
       const alley = f.st.kind !== 'main', busy = /restaurant|bar|pocha|cafe|club|conv/.test(f.l.use);
       // scooters: a cluster of 1-4 parked at the frontage, nose to the wall (alleys) or kerbside (main roads)
-      const nClusters = alley ? Math.round(f.L / 10 * (busy ? 0.8 : 0.35) + R() * 0.5) : (busy && R() < 0.3 ? 1 : 0);
+      const nClusters = alley ? Math.round((f.L / 10 * (busy ? 0.8 : 0.35)) * dens + R() * 0.5) : (busy && R() < 0.3 * dens ? 1 : 0);
       for (let k = 0; k < nClusters; k++) {
         const n = 1 + Math.floor(R() * (busy ? 3.5 : 2)), sAt = 0.8 + R() * Math.max(0.1, f.L - 1.6 - n * 0.75);
         for (let j = 0; j < n; j++) {
@@ -999,7 +1033,7 @@ export function geometry(layout, opts = {}) {
         }
       }
       // stools / crates / bottle crates at busy frontages
-      if (busy && R() < 0.45) {
+      if (busy && R() < 0.45 * dens) {
         const s = 0.6 + R() * (f.L - 1.2), x = f.fa[0] + f.tx * s + f.nx * 0.45, z = f.fa[1] + f.tz * s + f.nz * 0.45;
         if (occFree(x, z, 0.4) && M.ribbonD(x, z, true) > 0.3) item(() => {
           const F = frameH([x, 0, z], f.tx, f.tz), n = 1 + Math.floor(R() * 3);
@@ -1009,7 +1043,7 @@ export function geometry(layout, opts = {}) {
         }, { margin: 0.3 }) && occAdd(x, z, 0.6);
       }
       // trash bags + flattened boxes at ~1 in 4 frontages (pick-up piles at the kerb or the wall)
-      if (R() < (alley ? 0.28 : 0.12)) {
+      if (R() < (alley ? 0.28 : 0.12) * dens) {
         const s = R() * f.L, off = alley ? 0.35 : (isFinite(f.free) ? Math.max(0.4, f.free - 0.6) : 0.4), x = f.fa[0] + f.tx * s + f.nx * off, z = f.fa[1] + f.tz * s + f.nz * off;
         if (occFree(x, z, 0.5) && M.ribbonD(x, z, true) > 0.3 && M.lotClear(x, z, 0.2)) item(() => { trashPile(x, z, R); }, { margin: 0.3 }) && occAdd(x, z, 0.6);
       }
@@ -1049,6 +1083,7 @@ export function geometry(layout, opts = {}) {
     if (R() < 0.5) { set('dr_prop', { c: [0.36, 0.25, 0.14] }); const F = frameH([x + 0.35, 0, z + 0.2], R() - 0.5, R() - 0.5); for (let k = 0; k < 2 + Math.floor(R() * 3); k++) boxMM(F, -0.35, k * 0.06, -0.28, 0.35, k * 0.06 + 0.055, 0.28); }
   }
 
+  lap('kit');
   // ================================================================================================ CABLES (art #4)
   // C's spans carry 3-6 lines; real Hongdae spans carry 8-16 (power, telecom bundles, coax). Add 5-10 per span between
   // consecutive poles of a street, and a service drop to every facade on the alleys.
@@ -1090,11 +1125,12 @@ export function geometry(layout, opts = {}) {
     }
   }
 
+  lap('cables');
   // ================================================================================================ output
   const merged = {}; let tris = 0;
   for (const [k, a] of Object.entries(acc)) { const g = a.geometry(); if (g) { merged[k] = g; tris += g.getAttribute('position').count / 3; } }
-  const colTris = new THREE.BufferGeometry(); colTris.setAttribute('position', new THREE.Float32BufferAttribute(col, 3)); colTris.computeBoundingBox();
-  facts.tris = tris; facts.colTris = col.length / 9; facts.emitters = emitters.length; facts.holes = holes.length; facts.cables = cables.length; facts.labels = labels.length; facts.lamps = lamps.length; facts.setPieces = setPieces.map((s) => s.id); facts.ms = Date.now() - t0;
+  const colTris = new THREE.BufferGeometry(); colTris.setAttribute('position', new THREE.BufferAttribute(col.out(), 3)); colTris.computeBoundingBox();
+  facts.tris = tris; facts.colTris = col.length / 9; facts.emitters = emitters.length; facts.holes = holes.length; facts.cables = cables.length; facts.labels = labels.length; facts.lamps = lamps.length; facts.setPieces = setPieces.map((s) => s.id); facts.ms = Date.now() - t0; facts.msParts = msParts;
   const out = { merged, colTris, emitters, setPieces, holes, cables, labels, lamps, facts, materials: DRESS_MATS };
   CACHE.set(layout, out);
   return out;
@@ -1185,8 +1221,8 @@ varying float vCov; varying float vSide; varying float vHw;`)
     tex.generateMipmaps = true; tex.minFilter = THREE.LinearMipmapLinearFilter;
     const P = [], UV = [], C = [], I = [];
     for (const c of cells) {
-      const L = c.L, n = new THREE.Vector3(...L.normal), r = new THREE.Vector3(...L.right), u = new THREE.Vector3().crossVectors(n, r).normalize().multiplyScalar(-1);
-      if (u.y < 0) u.multiplyScalar(-1);
+      // the reader's right when facing the label (looking along -n) is up x n: text is never mirrored, whatever L.right says
+      const L = c.L, n = new THREE.Vector3(...L.normal).normalize(), u = new THREE.Vector3(0, 1, 0), r = new THREE.Vector3().crossVectors(u, n).normalize();
       const o = new THREE.Vector3(...L.pos).addScaledVector(n, 0.003), hw = L.w / 2, hh = L.h / 2, b = P.length / 3;
       for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { const p = o.clone().addScaledVector(r, sx * hw).addScaledVector(u, sy * hh); P.push(p.x, p.y, p.z); UV.push((c.x + (sx > 0 ? c.w : 0)) / AW, 1 - (c.y + (sy > 0 ? 0 : c.h)) / AH); const k = (L.nits || 120) * nit; C.push(k, k, k); }
       I.push(b, b + 1, b + 2, b, b + 2, b + 3);
@@ -1277,5 +1313,11 @@ function paintLabel(g, c, fam) {
   g.restore();
 }
 
-export const seoulDressing = { geometry, build, material, groundTris, DRESS_MATS, NITS };
+// native export (H): the runtime content as plain data (geometry itself goes out through buildGeometry / export-world)
+export function exportData(layout, opts = {}) {
+  const g = CACHE.get(layout) || geometry(layout, opts);
+  return { version: 1, setPieces: g.setPieces, emitters: g.emitters, holes: g.holes, cables: g.cables, labels: g.labels, lamps: g.lamps, materials: DRESS_MATS, facts: g.facts };
+}
+
+export const seoulDressing = { geometry, build, material, groundTris, exportData, DRESS_MATS, NITS };
 export default seoulDressing;

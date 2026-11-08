@@ -65,15 +65,20 @@ for (const h of E.holes) { let hit = false; for (let i = 0; i < h.length; i++) f
 
 // 3. combined collider (C's with the ground cut + E) — the way C merges it
 const posOnly = (g) => { const h = new THREE.BufferGeometry(); h.setAttribute('position', g.getAttribute('position')); return h; };
+const wired = !!C.dressing;   // world-seoul.js already calls geometry() (C merged P2-1): use its collider as is
 const noCol = new Set(['stripe', 'yellow', 'glass', 'shop']);
 const ground = new THREE.BufferGeometry(); { const p = []; for (const [a, b, c] of gt) p.push(a[0], 0, a[1], b[0], 0, b[1], c[0], 0, c[1]); ground.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); }
 // C's 'walk' geometry starts with its full-box ground quad (2 tris): drop those, use the cut ground
-const walk = C.merged.walk, wp = walk.getAttribute('position').array.slice(18), walkRest = new THREE.BufferGeometry(); walkRest.setAttribute('position', new THREE.Float32BufferAttribute(wp, 3));
-ok(Math.abs(walk.getAttribute('position').array[0] - gx0) < 1e-3, "C's ground quad is the first 2 'walk' triangles");
-const parts = Object.entries(C.merged).filter(([k]) => !noCol.has(k) && k !== 'walk').map(([, g]) => posOnly(g));
-parts.push(walkRest, ground, E.colTris);
-const colGeo = mergeGeometries(parts, false), bvh = new MeshBVH(colGeo, { maxLeafTris: 5 });
-console.log(`combined collider ${colGeo.getAttribute('position').count / 3} tris`);
+let colGeo, bvh;
+if (wired) { colGeo = C.colGeo; bvh = C.bvh; ok(C.setPieces?.length === E.setPieces.length, 'wired: world exposes the set pieces'); }
+else {
+  const walk = C.merged.walk, wp = walk.getAttribute('position').array.slice(18), walkRest = new THREE.BufferGeometry(); walkRest.setAttribute('position', new THREE.Float32BufferAttribute(wp, 3));
+  ok(Math.abs(walk.getAttribute('position').array[0] - gx0) < 1e-3, "C's ground quad is the first 2 'walk' triangles");
+  const parts = Object.entries(C.merged).filter(([k]) => !noCol.has(k) && k !== 'walk').map(([, g]) => posOnly(g));
+  parts.push(walkRest, ground, E.colTris);
+  colGeo = mergeGeometries(parts, false); bvh = new MeshBVH(colGeo, { maxLeafTris: 5 });
+}
+console.log(`combined collider ${colGeo.getAttribute('position').count / 3} tris${wired ? ' (world-seoul.js wired)' : ''}`);
 const cp = {};
 const basis = (G) => { const n = new THREE.Vector3(...G.n).normalize(); const u = G.u ? new THREE.Vector3(...G.u) : Math.abs(n.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), n); u.addScaledVector(n, -u.dot(n)).normalize(); return { n, u, v: new THREE.Vector3().crossVectors(n, u) }; };
 const clear = (G, m = 0.25, bv = bvh) => { const { u, v } = basis(G), c = new THREE.Vector3(...G.c); for (let i = 0; i <= 6; i++) for (let j = 0; j <= 4; j++) { const p = c.clone().addScaledVector(u, (i / 6 - 0.5) * G.w).addScaledVector(v, (j / 4 - 0.5) * G.h); const q = bv.closestPointToPoint(p, cp, 0, m); if (q && q.distance < m) return false; } return true; };
@@ -81,7 +86,7 @@ for (const l of lines.lines) { if (l.carve) continue; ok(clear(l), `${l.name} ga
 // set-piece gates: clear of the combined collider (they are E's proposals to F1)
 for (const sp of E.setPieces) for (const [k, g] of Object.entries(sp.gates || {})) {
   const list = g.c ? [[k, g]] : Array.isArray(g) ? g.map((x, i) => [k + i, x]) : Object.entries(g).flatMap(([k2, x]) => (x.c ? [[k + '.' + k2, x]] : Object.entries(x).map(([k3, y]) => [k + '.' + k2 + '.' + k3, y])));
-  for (const [name, G] of list) ok(clear(G, 0.2), `set piece ${sp.id} ${name} clear (0.2 m)`);
+  for (const [name, G] of list) ok(clear(G, 0.25), `set piece ${sp.id} ${name} clear (0.25 m, as test-seoul checks lines)`);
 }
 
 // 4. stairwells closed: from points inside each stairwell, rays in 200 directions must hit something within 40 m
