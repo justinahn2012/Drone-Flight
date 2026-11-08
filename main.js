@@ -317,7 +317,7 @@ function clearWorld() {
     world.scene.background?.dispose?.(); world.scene.environment?.dispose?.();
   }
   world.scene = null; world.bvh = null; world.colliderScene = null; world.bounds = null; world.envelope = null; world.update = null;
-  world.skimBvh = null; world.lines = null; world.takeStart = null;
+  world.skimBvh = null; world.lines = null; world.takeStart = null; world.startPoints = null; world.funnels = null;
 }
 
 async function loadProcWorld(def) {
@@ -325,7 +325,7 @@ async function loadProcWorld(def) {
   const w = await buildBando(renderer, { sky: def.sky, quality: S.quality, onProgress: (f, t) => setLoad(null, f, t) });
   clearWorld();
   Object.assign(world, { scene: w.scene, colliderScene: w.colliderScene, bvh: w.bvh, bounds: w.bounds, envelope: w.envelope, update: w.update, hdr: true });
-  Object.assign(world, { skimBvh: w.skimBvh, lines: w.lines, takeStart: w.takeStart });   // C: the take
+  Object.assign(world, { skimBvh: w.skimBvh, lines: w.lines, takeStart: w.takeStart, startPoints: w.startPoints, funnels: w.funnels });   // C: the take (C1)
   world.spawn.copy(w.spawn); world.yaw = w.yaw;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);
@@ -475,25 +475,32 @@ function findSpawn() {
 }
 
 // free fly (open world): after a crash you go back to where you last were flying clear, not to the start.
-// take: a retry starts at once, hovering by the chimney mouth (the first line); toStart = the spawn and its reveal.
-const safePts = []; let safeT = 0;
+// take: a retry starts at once, hovering over the chimney mouth (the first line); toStart = the spawn and its reveal.
+// startName (START AT on the pause menu): go to that world.startPoints entry; take retries keep going back there until
+// the next START AT or a back-to-start. '' clears it.
+const safePts = []; let safeT = 0, startAt = null;
 function trackSafe(dt, now) {
   safeT += dt; if (safeT < 1.0 || drone.crashed) return; safeT = 0;
   if (world.lastDist > 1.2 && drone.vel.length() < 30) { safePts.push({ t: now, p: drone.pos.clone(), yaw: drone.heading }); if (safePts.length > 30) safePts.shift(); }
 }
-function respawn(toStart = false) {
+const findStart = (name) => { const k = String(name || '').toLowerCase(); return (k && world.startPoints?.find((s) => s.name.toLowerCase() === k)) || null; };
+function respawn(toStart = false, startName = null) {
   drone.setCraft(craftFor(world.def));
   const now = performance.now() / 1000;
   const takeMode = S.game !== 'free';
-  const sp = toStart || takeMode ? null : [...safePts].reverse().find((s) => now - s.t > 2.0);
-  if (sp) drone.reset(sp.p, sp.yaw);
+  if (typeof startName === 'string') startAt = findStart(startName) ? startName : null;
+  if (toStart === true) startAt = null;
+  const named = typeof startName === 'string' ? findStart(startName) : takeMode && !toStart ? findStart(startAt) : null;
+  const sp = named || toStart || takeMode ? null : [...safePts].reverse().find((s) => now - s.t > 2.0);
+  if (named) { drone.reset(named.pos, named.yaw); flightT = 0; }
+  else if (sp) drone.reset(sp.p, sp.yaw);
   else if (takeMode && !toStart && world.takeStart) { drone.reset(world.takeStart.pos, world.takeStart.yaw); flightT = 0; }
   else { drone.reset(world.spawn, world.yaw); flightT = 0; }
-  if (toStart || takeMode) safePts.length = 0;
-  take.reset();
+  if (toStart || takeMode || named) safePts.length = 0;
+  take.reset(); freeTake.reset();
   controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); thrRef = controls.thr;
   camQ.copy(drone.q); fpv.resetExposure = true;
-  replayBuf.length = 0;
+  // the replay buffer is kept: F2's uiRespawn hands it on (lastBuf), so a clip of the take just ended survives a retry
   state = 'fly';
   $('crashBar').classList.add('hidden'); $('banner').classList.add('hidden');
   $('fade').style.opacity = 0;
@@ -506,8 +513,9 @@ const score = {
   reset() { this.total = 0; this.streak = 0; this.mult = 1; this.streakT = 0; },
 };
 try { score.best = +localStorage.getItem('onetake.best') || 0; } catch (e) {}
-// the take (take.js): named lines, FLOW, bank / crash / CUT
-const take = new Take();
+// the take (take.js): named lines, FLOW, bank / crash / CUT. Free fly runs its own free instance: lines still fire
+// (captions, e.free, pts 0) and count as flown, nothing scores or ends.
+const take = new Take(), freeTake = new Take({ free: true });
 const _cp = {};
 // proximity to anything (terrain included): flight turbulence, audio, OLED bars. Scoring uses world.skimBvh.
 function updateProx() {
@@ -523,11 +531,11 @@ function sticksActive(inp, dt) {
   return m > 0.12 || (S.mode !== 'cine' && Math.abs(d) > 0.04);
 }
 const takeEvent = (e) => (typeof onTakeEvent === 'function' ? onTakeEvent : (ev) => defaultTakeUI(ev, pop))(e);
+// one call per physics update (frame or tick): stream E may move it onto the fixed ticks as is
 function updateTake(dt, inp) {
   const on = sticksActive(inp, dt);
-  if (S.game !== takeGame) { takeGame = S.game; take.reset(); }
-  if (S.game === 'free') return;                      // free fly: no take, safe-point respawn
-  for (const e of take.update(dt, drone, world, on)) takeEvent(e);
+  if (S.game !== takeGame) { takeGame = S.game; take.reset(); freeTake.reset(); }
+  for (const e of (S.game === 'free' ? freeTake : take).update(dt, drone, world, on)) takeEvent(e);
 }
 drone.onCrash = (impact) => { audio.thud(impact); };
 
@@ -1037,7 +1045,7 @@ window.addEventListener('popstate', () => {
   if (state === 'fly' || state === 'crash') openMenu();
 });
 window.__onetake = {
-  S, drone, fpv, world, controls, renderer, take, get spark() { return spark; }, startFlight, respawn, applySettings, get state() { return state; },
+  S, drone, fpv, world, controls, renderer, take, freeTake, get spark() { return spark; }, startFlight, respawn, applySettings, get state() { return state; },
   ui: { onTakeEvent, pop, warn, toast, showSummary, hideSummary, saveClip, endReplay, openMenu, bindTake, scoreView, smoothReplay, splitAccent, get replay() { return replay; }, replayBuf, room },
   tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; },
   // test hook (?manual): advance n frames of dtMs each and return the canvas
