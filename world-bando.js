@@ -51,9 +51,10 @@ const MATS = {
   path: { id: 'grass_path_2', tile: 3.5, maps: ['diff'], color: [0.31, 0.345, 0.48], rough: 1, kind: 'track', albedo: [0.088, 0.080, 0.066] },
   // not merged-geometry materials: the paved apron is sampled inside the ground shader; grass and leaves are atlases
   apron: { id: 'asphalt_02', tile: 5.0, maps: ['diff'], color: [1.75, 1.72, 1.72], kind: 'aux', albedo: [0.176, 0.170, 0.152], radius: 9 },   // radius: mean paved reach around footprints (5-12 m)
-  // grass: graphics #2's darker multiplier, then desaturated ~30 % toward its own luminance (Lab C 26-31 -> ~21 at
-  // the same HSV hue; a bluer multiplier alone would push the foliage hue past 70)
-  grass: { model: 'grass_medium_01', tile: 1, maps: ['diff', 'alpha'], color: [1.1, 1.1, 1.86], kind: 'aux', albedo: [0.112, 0.109, 0.052] },
+  // [V2] grass is geometric blades now (shader colour, no texture download); the albedo is the blades' mean (the bake)
+  grass: { model: 'grass_medium_01', tile: 1, maps: [], kind: 'aux', albedo: [0.112, 0.109, 0.052] },
+  // [V2] straw meadow seen from above: the dry patches of the ground shader (detail only, normalised to unit mean)
+  meadow: { id: 'withered_grass', tile: 2.6, maps: ['diff'], kind: 'aux', albedo: [0.185, 0.152, 0.082] },
   leaf: { model: 'tree_small_02', tile: 1, maps: ['leaves_diff', 'leaves_alpha'], color: [1.4, 1.3, 1.5], kind: 'aux', albedo: [0.099, 0.124, 0.035] },
 };
 // [B] treeline crowns get low-poly collision proxies (15.6k tris, appended after the terrain in the collider).
@@ -748,22 +749,6 @@ function canvasTex(w, h, draw, srgb = true) {
   const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); draw(g, w, h);
   const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
 }
-function grassTexture(R) {
-  // a tuft, not a block: blade roots bunched in the middle, tall in the centre, splaying outwards, ragged tops
-  return canvasTex(512, 512, (g, w, h) => {
-    for (let i = 0; i < 170; i++) {
-      const u = (R() + R() + R()) / 3 - 0.5;                 // roots near the centre
-      const x = w / 2 + u * w * 0.55;
-      const tall = 0.25 + 0.75 * (1 - Math.abs(u) * 1.7) * (0.55 + R() * 0.45);
-      const top = h * (1 - Math.max(0.12, tall) * 0.97);
-      const bend = u * 160 + (R() - 0.5) * 50, wd = 2.5 + R() * 4;
-      const t = R(); const col = t < 0.4 ? [64 + R() * 35, 92 + R() * 45, 30 + R() * 22] : t < 0.78 ? [105 + R() * 40, 120 + R() * 40, 45 + R() * 28] : [165 + R() * 45, 155 + R() * 35, 90 + R() * 30];
-      const gr = g.createLinearGradient(0, h, 0, top);
-      gr.addColorStop(0, `rgb(${col[0] * 0.68 | 0},${col[1] * 0.72 | 0},${col[2] * 0.6 | 0})`); gr.addColorStop(1, `rgb(${col[0] | 0},${col[1] | 0},${col[2] | 0})`);
-      g.fillStyle = gr; g.beginPath(); g.moveTo(x - wd / 2, h); g.quadraticCurveTo(x + bend * 0.25, (h + top) / 2, x + bend, top); g.quadraticCurveTo(x + bend * 0.25 + wd * 0.25, (h + top) / 2, x + wd / 2, h); g.fill();
-    }
-  });
-}
 function leafTexture(R) {
   return canvasTex(512, 512, (g, w, h) => {
     for (let i = 0; i < 900; i++) {
@@ -805,6 +790,8 @@ function leafCluster(diffT, alphaT, R) {
   t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.anisotropy = 4; t.needsUpdate = true;
   return t;
 }
+// a 1x1 white texture (unit detail when a scan failed to load)
+function flatTex() { const t = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1); t.needsUpdate = true; return t; }
 // mean linear colour of a loaded texture (for distance fades / normalisation)
 function texMean(t, fallback) {
   try {
@@ -947,9 +934,14 @@ function crownCards() {
 }
 // [B] ground mask over the yard terrain tile (0.625 m texels): R grass density, G paved apron/road,
 // B terrain AO (baked), A grass height. Replaces the per-vertex footprint/path loops of the grass shader.
+// [V2] second mask (same texels), shared by the ground, the track and the blades so they agree: R distance to the
+// nearest track centreline (m / 8; a distance field interpolates linearly, so the ruts and the centre strip are
+// resolved far below a texel), G dry (straw) patch field, B wildflower patches, A lush (damp, dark green) field.
+// R density no longer carries the track: the track profile (bare ruts, short centre strip, ragged verges) is applied
+// per tuft in the grass vertex shader and per pixel in the ground / track shaders, all from that distance.
 const MASK = { N: 512, x0: -165, z0: -150, size: 320 };
 function buildGroundMask(site, terr) {
-  const { N, x0, z0, size } = MASK, d = new Uint8Array(N * N * 4), sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const { N, x0, z0, size } = MASK, d = new Uint8Array(N * N * 4), d2 = new Uint8Array(N * N * 4), sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
   const fh = (i, j) => { let h = Math.imul(i, 374761393) + Math.imul(j, 668265263) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
   // path segments with bounding boxes: only distances below ~7 m matter
   const segs = []; for (const p of PATHS) for (let k = 0; k < p.length - 1; k++) { const [ax, az] = p[k], [bx, bz] = p[k + 1]; segs.push([ax, az, bx - ax, bz - az, Math.min(ax, bx) - 7, Math.max(ax, bx) + 7, Math.min(az, bz) - 7, Math.max(az, bz) + 7, (bx - ax) ** 2 + (bz - az) ** 2]); }
@@ -982,13 +974,19 @@ function buildGroundMask(site, terr) {
     ap = Math.max(ap, (1 - sm(2.0, 3.6, dP + (n2 - 0.5) * 1.4 - vno(x * 0.03 + 11, z * 0.03) * 1.2)) * paved);
     const n3 = vno(x * 0.45 + 1, z * 0.45 + 2);
     let dens = (0.42 + 0.58 * vno(x * 0.09 + 5, z * 0.09)) * (1 - 0.8 * sm(0.7, 0.88, vno(x * 0.035 + 17, z * 0.035 + 3)));
-    dens *= sm(0.0, 1.2, sd) * (1 - 0.88 * sm(0.25, 0.75, ap)) * sm(1.4, 4.4, dP + (n3 - 0.5) * 2.4);
+    dens *= sm(0.0, 1.2, sd) * (1 - 0.88 * sm(0.25, 0.75, ap));
     let ht = 0.45 + 0.8 * vno(x * 0.06 + 9, z * 0.06 + 1) + 0.35 * n3 + 0.5 * (1 - sm(0, 5, sd));
     ht *= 1 - 0.45 * sm(0.3, 0.8, ap);
     d[o] = dens * 255; d[o + 1] = ap * 255; d[o + 2] = Math.min(1, aoAt(x, z)) * 255; d[o + 3] = Math.min(1, ht / 2) * 255;
+    // [V2] straw patches ~30-60 m with ragged 8 m edges (decision 3: straw a minority, ~30 % of the field); flowers in
+    // a few 10-20 m drifts; lush dark green in damp hollows and at the foot of the walls
+    const dry = sm(0.47, 0.72, vno(x * 0.021 + 31, z * 0.021 + 7) * 0.7 + vno(x * 0.11 + 3, z * 0.11 + 9) * 0.3);
+    const flw = sm(0.62, 0.84, vno(x * 0.055 + 51, z * 0.055 + 13));
+    const lush = Math.min(1, sm(0.52, 0.8, vno(x * 0.045 + 71, z * 0.045 + 29)) + 0.6 * (1 - sm(0.5, 5, sd))) * (1 - dry);
+    d2[o] = Math.min(1, dP / 8) * 255; d2[o + 1] = dry * 255; d2[o + 2] = flw * 255; d2[o + 3] = lush * 255;
   }
-  const t = new THREE.DataTexture(d, N, N, THREE.RGBAFormat); t.magFilter = t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; t.needsUpdate = true;
-  return t;
+  const mkT = (a) => { const t = new THREE.DataTexture(a, N, N, THREE.RGBAFormat); t.magFilter = t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; t.needsUpdate = true; return t; };
+  return { t: mkT(d), t2: mkT(d2) };
 }
 
 // ---------------------------------------------------------------- materials
@@ -1072,17 +1070,37 @@ const WP_FRAG = {
     diffuseColor.rgb = weather(diffuseColor.rgb, nwd, vWPos, vAY, vAO);
     diffuseColor.a *= (0.55 + 0.45 * vn(vec2(along * 0.9, vWPos.y * 0.9))) * smoothstep(0.1, 0.3, vn(vec2(along * 5.0, vWPos.y * 5.0))); }`,
   ground: `
-  { vec2 xz = vWPos.xz; float far = smoothstep(40.0, 140.0, distance(vWPos, cameraPosition));
-    vec4 mk = texture2D(uMask, (xz - uMaskO) / uMaskS);
-    vec3 base = mix(diffuseColor.rgb, uGMean, far);                       // no tiling grid from altitude
+  { vec2 xz = vWPos.xz; float dist = distance(vWPos, cameraPosition), far = smoothstep(40.0, 140.0, dist);
+    vec2 muv = (xz - uMaskO) / uMaskS;
+    vec4 mk = texture2D(uMask, muv), m2 = texture2D(uMask2, muv);
+    float inM = smoothstep(0.0, 0.04, min(min(muv.x, muv.y), min(1.0 - muv.x, 1.0 - muv.y)));
+    // [V2] the meadow seen from above. Scanned detail: turf (grass_ground, the 4 m map) and straw (withered_grass),
+    // each times a second sample 2.7x larger and turned 30 deg (no repeat grid from altitude), normalised to unit
+    // mean so the palette sets the colour; half the detail survives to the horizon (no felt). Dry / lush patch
+    // fields are the blades' own (mask2) inside the yard tile, the same noise beyond it.
+    mat2 Rq = mat2(0.866, 0.5, -0.5, 0.866);
+    vec3 gB = vec3(1.0);
+    #ifdef USE_MAP
+    gB = texture2D(map, Rq * xz * 0.093 + 0.37).rgb * diffuse / uGMean;
+    #endif
+    vec3 gD = mix(sqrt(max(diffuseColor.rgb / uGMean, 0.0) * gB), vec3(1.0), far * 0.5);
+    vec3 mD = mix(sqrt(texture2D(uMeadow, xz * uMeadowRep).rgb * texture2D(uMeadow, Rq * xz * (uMeadowRep * 0.37) + 0.61).rgb) / uMMean, vec3(1.0), far * 0.5);
+    float cl = vn(xz * 0.47) * 0.55 + vn(xz * 1.9 + 5.0) * 0.45;           // 0.5-2 m clumps
     float p1 = vn(xz * 0.045) * 0.6 + vn(xz * 0.19) * 0.4;
-    float dry = smoothstep(0.3, 0.75, vn(xz * 0.021 + 7.0) * 0.65 + p1 * 0.35);
-    base = mix(base * vec3(0.92, 1.03, 0.84), lum3(base) * vec3(1.42, 1.16, 0.62), dry * 0.35);
-    base *= 1.0 - 0.45 * mk.r;                                            // soil under the grass is in the blades' shade
-    vec3 dirt = lum3(base) * vec3(1.1, 1.0, 0.84) * (0.8 + 0.3 * p1);
-    float bare = smoothstep(0.66, 0.82, vn(xz * 0.07 + 2.0) * 0.7 + vn(xz * 0.6) * 0.3);
+    float dry = mix(smoothstep(0.47, 0.72, vn(xz * 0.021 + 31.0) * 0.7 + vn(xz * 0.11 + 3.0) * 0.3), m2.g, inM);
+    float lush = mix(smoothstep(0.52, 0.8, vn(xz * 0.045 + 71.0)), m2.a, inM) * (1.0 - dry);
+    float dryF = smoothstep(0.15, 0.85, dry + (cl - 0.5) * 0.6 + (p1 - 0.5) * 0.3);
+    vec3 cG = mix(vec3(0.096, 0.11, 0.036), vec3(0.06, 0.086, 0.027), lush);
+    vec3 meadow = mix(cG * gD, vec3(0.185, 0.152, 0.082) * mD, dryF) * (0.78 + 0.44 * cl);
+    // out to ~8 m the blades stand on it (NEAR tier): there the ground is the shaded thatch between tufts. Further
+    // out they thin away, and the ground IS the meadow: no dark felt under a fading field. Track profile = the VS's.
+    float dP = mix(8.0, m2.r * 8.0, inM);
+    float gDen = mk.r * inM * max(smoothstep(1.1, 2.3, dP), 0.5 * (1.0 - smoothstep(0.3, 0.48, dP))) * smoothstep(0.1, 0.24, abs(dP - 0.8));
+    vec3 base = mix(meadow, meadow * vec3(0.58, 0.55, 0.46), gDen * (1.0 - smoothstep(5.0, 10.0, dist)));
+    vec3 dirt = vec3(0.118, 0.104, 0.078) * (0.74 + 0.5 * cl) * mix(vec3(1.0), gD, 0.6);
+    float bare = smoothstep(0.7, 0.86, vn(xz * 0.07 + 2.0) * 0.7 + vn(xz * 0.6) * 0.3);
     float cov = 1.0 - smoothstep(0.3, 0.78, vAO);                         // under slabs / inside: bare dirt
-    base = mix(base, dirt, max(bare * 0.7, cov));
+    base = mix(base, dirt, max(bare * 0.6, cov));
     // the landscape seen from altitude: green and straw fields, then continuous woodland under the treeline belt
     // (from ~140-175 m out), so the gaps between the crown cards show woodland floor, not a yellow plain
     float big = vn(xz * 0.0045 + 11.0) * 0.7 + vn(xz * 0.017) * 0.3, rr = length(xz - vec2(-5.0, 10.0));
@@ -1097,30 +1115,45 @@ const WP_FRAG = {
     mat2 Rm = rq < 1.0 ? mat2(1.0, 0.0, 0.0, 1.0) : rq < 2.0 ? mat2(0.0, 1.0, -1.0, 0.0) : rq < 3.0 ? mat2(-1.0, 0.0, 0.0, -1.0) : mat2(0.0, -1.0, 1.0, 0.0);
     vec3 at = textureGrad(uApron, Rm * auv + vec2(h21(cid + 1.7), h21(cid + 5.3)), Rm * dFdx(auv), Rm * dFdy(auv)).rgb;   // (outside any branch)
     float al = lum3(at) / uAMean.w;
-    vec3 asph = mix(at * uApronCol, uAMean.rgb, far);
-    asph *= 0.8 + 0.35 * vn(xz * 0.11 + 4.0);                             // patches of old repair and stain
+    vec3 asph = mix(at * uApronCol, uAMean.rgb, far) * 0.85;               // [V2] old asphalt ~0.15 (was a flat white plane)
+    asph *= 0.7 + 0.36 * vn(xz * 0.11 + 4.0) + 0.14 * vn(xz * 0.9 + 6.0); // patches of old repair and stain
+    asph *= 1.0 - 0.28 * smoothstep(0.62, 0.82, vn(xz * 0.27 + 8.0));     // oil and damp
     float crack = (1.0 - smoothstep(0.4, 0.68, al)) * (1.0 - far);         // weeds and moss in the cracks
     asph = mix(asph, vec3(0.045, 0.06, 0.02), crack * 0.45);
     asph = mix(asph, dirt, (1.0 - smoothstep(0.2, 0.75, ap)) * 0.55 + smoothstep(0.7, 0.9, vn(xz * 0.33)) * 0.35);
     diffuseColor.rgb = mix(base, asph, ap); }`,
   track: `
-  { vec4 mk = texture2D(uMask, (vWPos.xz - uMaskO) / uMaskS);
-    float a = diffuseColor.a + (vn(vWPos.xz * 0.9) - 0.5) * 0.6;
-    diffuseColor.a = smoothstep(0.3, 0.65, a) * (1.0 - smoothstep(0.35, 0.6, mk.g));
-    diffuseColor.rgb *= 0.88 + 0.24 * vn(vWPos.xz * 0.2); }`,
+  { vec2 xz = vWPos.xz, muv = (xz - uMaskO) / uMaskS;
+    vec4 mk = texture2D(uMask, muv), m2 = texture2D(uMask2, muv);
+    float dP = m2.r * 8.0, n1 = vn(xz * 0.9), n2 = vn(xz * 2.7);
+    // [V2] a two-track, not a carpet: neutral worn dirt (sat ~0.1), two darker compacted wheel ruts ~0.8 m either side
+    // of the centreline, a grassy centre strip and ragged grassy verges (the blades follow the same profile)
+    vec3 c = diffuseColor.rgb; c = mix(vec3(lum3(c)), c, 0.4) * vec3(1.03, 1.0, 0.93);
+    c *= 0.74 + 0.5 * vn(xz * 0.2) * (0.6 + 0.4 * n1);
+    float rut = 1.0 - smoothstep(0.13, 0.27, abs(dP - 0.8 - (vn(xz * 0.11 + 3.0) - 0.5) * 0.16) + (n2 - 0.5) * 0.07);
+    c *= mix(1.0, 0.64, rut);
+    float strip = 1.0 - smoothstep(0.3, 0.55, dP + (n2 - 0.5) * 0.25);
+    float verge = smoothstep(1.15, 2.4, dP + (n1 - 0.5) * 0.9 + (n2 - 0.5) * 0.3);
+    float a = diffuseColor.a + (n1 - 0.5) * 0.6;
+    diffuseColor.a = smoothstep(0.3, 0.65, a) * (1.0 - max(0.85 * strip, verge) * (1.0 - rut)) * (1.0 - smoothstep(0.35, 0.6, mk.g));
+    diffuseColor.rgb = c; }`,
   bark: `
   diffuseColor.rgb *= mix(0.72, 1.0, smoothstep(0.0, 1.2, vWPos.y - vAY.x));`,
   leaf: '', grass: '', treeline: '',
 };
 // [B] grass lighting (perf #5): diffuse only. No specular environment (the cube-UV radiance taps) and no sun
 // specular at roughness 0.92; the env irradiance still lights it (energy as the physical model's diffuse lobe).
-// The sun is shadowed down the blades (vGv = height on the card): the field gets depth instead of full sun on every blade.
+// The sun is shadowed down the blades (vGv = height in the canopy): the field gets depth instead of full sun on every blade.
+// [V2] blades: wrap lighting (thin, rounded leaves), and the sun through the blade when the camera looks into it
+// (graphics #2: forward scatter x the blade colour, yellowed; vThin = 0.6 for dead straw, 0.4 for broad weeds).
 const GRASS_LIGHTS = `
 #undef RE_Direct
 #define RE_Direct RE_Direct_Grass
 void RE_Direct_Grass( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
-  float dotNL = saturate( dot( geometryNormal, directLight.direction ) );
-  reflectedLight.directDiffuse += dotNL * directLight.color * BRDF_Lambert( material.diffuseColor ) * mix( 0.3, 1.0, smoothstep( 0.05, 0.85, vGv ) );
+  float self = mix( 0.28, 1.0, smoothstep( 0.05, 0.9, vGv ) );
+  float wrap = saturate( ( dot( geometryNormal, directLight.direction ) + 0.35 ) / 1.35 );
+  float bt = pow( saturate( dot( - geometryViewDir, directLight.direction ) ), 3.0 ) * vThin;
+  reflectedLight.directDiffuse += directLight.color * self * ( wrap * BRDF_Lambert( material.diffuseColor ) + bt * 0.35 * material.diffuseColor * vec3( 1.1, 1.25, 0.6 ) );
 }
 #undef RE_IndirectSpecular
 #define RE_IndirectSpecular RE_IndirectSpecular_Grass
@@ -1181,8 +1214,8 @@ ${usesAY ? 'varying vec2 vAY;' : ''}
 ${GLSL_NOISE}
 ${weathers ? GLSL_WEATHER : ''}
 ${kind === 'decal' ? 'uniform sampler2D uWallTex; uniform float uWallRep; uniform float uWallMean; varying float vSeed;' : ''}
-${kind === 'ground' || kind === 'track' ? 'uniform sampler2D uMask; uniform vec2 uMaskO; uniform float uMaskS;' : ''}
-${kind === 'ground' ? 'uniform sampler2D uApron; uniform float uApronRep; uniform vec3 uApronCol; uniform vec3 uGMean; uniform vec4 uAMean;' : ''}
+${kind === 'ground' || kind === 'track' ? 'uniform sampler2D uMask; uniform sampler2D uMask2; uniform vec2 uMaskO; uniform float uMaskS;' : ''}
+${kind === 'ground' ? 'uniform sampler2D uApron; uniform float uApronRep; uniform vec3 uApronCol; uniform vec3 uGMean; uniform vec4 uAMean;\nuniform sampler2D uMeadow; uniform float uMeadowRep; uniform vec3 uMMean;' : ''}
 ${opt.fsHead || ''}`)
       .replace('#include <map_fragment>', `${kind === 'decal' ? WP_FRAG.decalMap : '#include <map_fragment>'}
 ${kind === 'track' ? '' : WP_FRAG[kind]}
@@ -1242,6 +1275,28 @@ void main() {
   vec3 fdn = normalize(cross(dFdx(vVP), dFdy(vVP))); a *= smoothstep(uEdge.x, uEdge.y, abs(dot(fdn, normalize(vVP))));
   ${near ? 'a *= smoothstep(0.25, 0.8, length(vVP));' : ''}
   if (a < uAT) discard;
+  float vZ = vVP.z;
+  float d = clamp(log2(max(vZ, 0.02) / 0.02) / 12.28771238, 0.0, 1.0); float hi = floor(d * 255.0) / 255.0;
+  gl_FragColor = vec4(hi, fract(d * 255.0), 0.0, 1.0);
+}`,
+    side: THREE.DoubleSide,
+  });
+}
+// [V2] the same contract for opaque geometry (the grass blades): no alpha, the identical packed log depth.
+function depthC2Opaque({ vsHead = '', vsMain = '', uniforms = {} }) {
+  return new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: `uniform float uTime;
+${vsHead}
+varying vec3 vVP;
+void main() {
+  vec3 transformed = position;
+  ${vsMain}
+  vec4 mv = modelViewMatrix * vec4(transformed, 1.0);
+  vVP = -mv.xyz; gl_Position = projectionMatrix * mv;
+}`,
+    fragmentShader: `varying vec3 vVP;
+void main() {
   float vZ = vVP.z;
   float d = clamp(log2(max(vZ, 0.02) / 0.02) / 12.28771238, 0.0, 1.0); float hi = floor(d * 255.0) / 255.0;
   gl_FragColor = vec4(hi, fract(d * 255.0), 0.0, 1.0);
@@ -2437,16 +2492,18 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const bStats = { ms: {} }; globalThis.__bandoStats = bStats;    // [B] counts + CPU ms per block, for the smoke harness / integrator
   let tLap = performance.now(); const lap = (k) => { const n = performance.now(); bStats.ms[k] = Math.round(n - tLap); tLap = n; };
   // [B] ground mask (grass density, paved apron, terrain AO, grass height) shared by the ground, tracks and grass
-  const gmask = buildGroundMask(site, terr);
-  const maskU = { uMask: { value: gmask }, uMaskO: { value: new THREE.Vector2(MASK.x0, MASK.z0) }, uMaskS: { value: MASK.size } };
+  const { t: gmask, t2: gmask2 } = buildGroundMask(site, terr);
+  const maskU = { uMask: { value: gmask }, uMask2: { value: gmask2 }, uMaskO: { value: new THREE.Vector2(MASK.x0, MASK.z0) }, uMaskS: { value: MASK.size } };
   const lin3 = (a) => new THREE.Color().setRGB(a[0], a[1], a[2]);
   const meanOf = (key) => { const m = MATS[key], t = texOf[key]?.diff, raw = t ? texMean(t, null) : null; return raw ? { raw, col: raw.map((v, i) => v * m.color[i]) } : { raw: [0.1, 0.1, 0.1], col: m.albedo }; };
   const kindU = (key) => {
     const m = MATS[key];
     if (m.kind === 'ground') {
-      const gm = meanOf('ground'), am = meanOf('apron'), at = texOf.apron?.diff;
+      const gm = meanOf('ground'), am = meanOf('apron'), at = texOf.apron?.diff, mt = texOf.meadow?.diff, mm = mt && texMean(mt, null);
+      if (mt) { mt.repeat.set(1, 1); mt.anisotropy = 8; }
       return { ...maskU, uApron: { value: at || gmask }, uApronRep: { value: 1 / MATS.apron.tile }, uApronCol: { value: lin3(MATS.apron.color) },
-        uGMean: { value: lin3(gm.col) }, uAMean: { value: new THREE.Vector4(...am.col, Math.max(0.02, 0.2126 * am.raw[0] + 0.7152 * am.raw[1] + 0.0722 * am.raw[2])) } };
+        uGMean: { value: lin3(gm.col) }, uAMean: { value: new THREE.Vector4(...am.col, Math.max(0.02, 0.2126 * am.raw[0] + 0.7152 * am.raw[1] + 0.0722 * am.raw[2])) },
+        uMeadow: { value: mm ? mt : flatTex() }, uMeadowRep: { value: 1 / MATS.meadow.tile }, uMMean: { value: mm ? lin3(mm.map((v) => Math.max(v, 1e-3))) : new THREE.Color(1, 1, 1) } };
     }
     return m.kind === 'track' ? maskU : {};
   };
@@ -2619,114 +2676,185 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   }
 
   lap('graffiti');
-  // [B] grass: photographed clumps (Poly Haven grass_medium_01: its 5 whole clumps, graphics #3; round 2's 9 sub-rects
-  // sliced 8 of them in half) on trapezoid cross cards, one tuft per world-anchored base cell (no swimming),
-  // green with a little straw (decision 3: <= 30 % straw). Lit diffuse-only with the sun shaded down the blades.
-  // Perf (pixel-identical): cells are stored in rings around the camera cell, so the draw is front-to-back from every
-  // heading; instanceCount stops at the fade radius; the vertex shader drops tufts outside the 4 side frustum planes.
-  // A load-time mask replaces the per-vertex footprint/path loops. Altitude: hashes come from the integer base-cell
-  // index, so level-2 tufts are exactly a subset of level-1 tufts; the others shrink away before the switch, width and
-  // radius change continuously, and the field fades out above ~30 m AGL (the ground shader carries it from there).
-  const gN = { low: 150, auto: 210, high: 260 }[quality] || 210, gCell = 0.34, baseR = gN * gCell * 0.5;   // narrow tufts, denser cells
-  const GRECTS = [[205, 765, 478, 898], [598, 772, 842, 872], [28, 888, 206, 998], [238, 905, 508, 999], [588, 882, 812, 1000]];
-  const gtx = texOf.grass || {}, atlasOK = !!(gtx.diff && gtx.alpha);
-  const grassU = { uOrigin: { value: new THREE.Vector2() }, uCam: { value: new THREE.Vector3() }, uCell: { value: gCell }, uCell0: { value: gCell }, uR: { value: baseR },
-    uWide: { value: 1 }, uOddK: { value: 1 }, uFade: { value: 1 }, uFr: { value: [0, 1, 2, 3].map(() => new THREE.Vector4(0, 0, 0, 1e6)) },
-    uRects: { value: GRECTS.map(([x0, y0, x1, y1]) => (atlasOK ? new THREE.Vector4(x0 / 1024, 1 - y1 / 1024, (x1 - x0) / 1024, (y1 - y0) / 1024) : new THREE.Vector4(0, 0, 1, 1))) }, ...maskU };
-  // shared by the grass material and its blur-depth twin (contract C2)
+  // [V2] grass: geometric blades (Ghost of Tsushima style), built entirely in the vertex shader. Two instanced tiers on
+  // world-anchored cells (no swimming; every random number comes from the integer base cell, so a tuft is the same
+  // tuft in both tiers and the depth twin):
+  //   NEAR  every 0.34 m base cell is a tuft of GQ.nb curved blades, 4 segments (9 verts): taper, lean, curl, twist;
+  //         dead straw blades by the dry field, seed stalks with a spindle head, a few flower heads, broadleaf weed
+  //         rosettes. Out to a hashed 3D distance per tuft (5.5-8 m at auto), so there is no LOD ring.
+  //   MID   every 4th cell (the level-2 subset) is a tuft of 7 wider 2-segment blades (5 verts) standing in for its
+  //         2x2 block: it takes over from that cell's near tuft at the cell's switch distance, while the other 3
+  //         cells' near tufts shrink away in the metre before theirs. Thins out per tuft at 22-32 m; beyond, the ground
+  //         shader is the meadow (WP_FRAG.ground: the same dry / lush fields, so there is no felt when it fades).
+  // Blades are opaque: no alpha test, so the A18's hidden-surface removal shades ~1 grass fragment per pixel (the
+  // alpha-tested cards were 1.3-2.9 fragments/px in skims). Widths never drop under 1 px (uPix). Wind: a per-blade
+  // flutter plus gusts that travel downwind across the field. The track profile (bare wheel ruts, a short sparse
+  // centre strip, verges rising over ~4 m) comes from the path distance field in mask2, as in the ground and track.
+  const GQS = { low: { nb: 10, near: [4.5, 6.5], mid: 24 }, auto: { nb: 13, near: [5.5, 8], mid: 32 }, high: { nb: 15, near: [6, 8.5], mid: 34 } };
+  const GQ = GQS[quality] || GQS.auto, gCell = 0.34;
+  const gShared = { uCam: { value: new THREE.Vector3() }, uCell0: { value: gCell }, uPix: { value: 0.003 },
+    uFr: { value: [0, 1, 2, 3].map(() => new THREE.Vector4(0, 0, 0, 1e6)) }, uWind: { value: new THREE.Vector4(0.8, 0.6, 0.3, 3.5) }, ...maskU };
+  // uLod = (tier 0 near / 1 mid, switch from, switch to (3D m), blades per tuft); uLod2 = (root radius m, width scale,
+  // thin-out from, to (3D m)); uWind = (direction xz, strength, gust travel m/s)
+  const tierU = (cell, lod, lod2) => ({ ...gShared, uOrigin: { value: new THREE.Vector2() }, uCell: { value: cell }, uR: { value: 10 },
+    uLod: { value: new THREE.Vector4(...lod) }, uLod2: { value: new THREE.Vector4(...lod2) } });
+  const nearU = tierU(gCell, [0, GQ.near[0], GQ.near[1], GQ.nb], [0.09, 1, 1e4, 1e4]);
+  const midU = tierU(gCell * 2, [1, GQ.near[0], GQ.near[1], 7], [0.22, 2.2, GQ.mid - 10, GQ.mid]);
+  // shared by both tiers and the blur-depth twin (contract C2)
   const GRASS_VS_HEAD = `attribute vec2 aCell;
-uniform vec2 uOrigin; uniform vec3 uCam; uniform float uCell; uniform float uCell0; uniform float uR; uniform float uWide; uniform float uOddK; uniform float uFade;
-uniform vec4 uRects[5]; uniform vec4 uFr[4];
-uniform sampler2D uMask; uniform vec2 uMaskO; uniform float uMaskS;
-float gh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float gvn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(gh(i), gh(i + vec2(1, 0)), f.x), mix(gh(i + vec2(0, 1)), gh(i + vec2(1, 1)), f.x), f.y); }
-float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95.0, abs(z - 10.0) - 85.0), 0.0);
+uniform vec2 uOrigin; uniform vec3 uCam; uniform float uCell; uniform float uCell0; uniform float uR; uniform float uPix;
+uniform vec4 uLod; uniform vec4 uLod2; uniform vec4 uWind; uniform vec4 uFr[4];
+uniform sampler2D uMask; uniform sampler2D uMask2; uniform vec2 uMaskO; uniform float uMaskS;
+uint gPcg(uint v) { uint s = v * 747796405u + 2891336453u; uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u; return (w >> 22u) ^ w; }
+vec4 gU4(uint h) { return vec4(uvec4(h, h >> 8u, h >> 16u, h >> 24u) & 255u) * (1.0 / 255.0); }
+float gh(vec2 p) { vec3 q = fract(p.xyx * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+float gvn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(gh(i), gh(i + vec2(1, 0)), f.x), mix(gh(i + vec2(0, 1)), gh(i + vec2(1, 1)), f.x), f.y); }
+float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95.0, abs(z - 10.0) - 85.0), 0.0);
   float n = sin(x * 0.021) * cos(z * 0.017) * 1.2 + sin(x * 0.053 + z * 0.041) * 0.45 + sin(z * 0.11 - x * 0.07) * 0.15;
   float ramp = min(1.0, d / 40.0); return n * ramp + min(d, 180.0) * 0.012 * ramp - 0.05 * (1.0 - ramp); }`;
   const GRASS_VS_CORE = `
-  vec2 bi = floor((uOrigin + aCell * uCell) / uCell0 + 0.5);            // integer base-cell index: same tuft at every level
-  vec2 bp = bi * uCell0 + (vec2(gh(bi), gh(bi + 17.3)) - 0.5) * uCell0 * 0.95;
-  vec4 mk = textureLod(uMask, (bp - uMaskO) / uMaskS, 0.0);
-  float r1 = gh(bi + 7.7), r2 = gh(bi + 3.3), r3 = gh(bi + 11.1), r4 = gh(bi + 23.9), r5 = gh(bi + 5.5);
+  // ---- the tuft (instance): integer base cell -> 3 x 4 random bytes
+  vec2 bi = floor((uOrigin + aCell * uCell) / uCell0 + 0.5);
+  ivec2 ib = ivec2(bi);
+  uint th0 = gPcg(uint(ib.x + 32768) * 65599u + gPcg(uint(ib.y + 32768)));
+  uint th1 = gPcg(th0), th2 = gPcg(th1);
+  vec4 tA = gU4(th0), tB = gU4(th1), tC = gU4(th2);
+  vec2 bp = bi * uCell0 + (tA.xy - 0.5) * uCell0 * 0.9;
+  vec2 muv = (bp - uMaskO) / uMaskS;
+  vec4 mk = textureLod(uMask, muv, 0.0), m2 = textureLod(uMask2, muv, 0.0);
+  float gy = terrH(bp);
+  vec3 toT = vec3(bp.x, gy + 0.25, bp.y) - uCam;
+  float d3 = length(toT), dh = length(toT.xz);
+  // track profile from the distance field: bare ruts, a short sparse centre strip, ragged verges rising over ~4 m
+  float dP = m2.r * 8.0 + (tA.z - 0.5) * 0.3;
+  float rut = 1.0 - smoothstep(0.1, 0.24, abs(dP - 0.8));
+  float strip = 1.0 - smoothstep(0.3, 0.48, dP);
+  float verge = smoothstep(1.1, 2.3, dP + (gvn(bp * 1.1) - 0.5) * 1.0);
+  float edge = min(min(muv.x, muv.y), min(1.0 - muv.x, 1.0 - muv.y));
+  float dens = mk.r * max(verge, 0.5 * strip) * (1.0 - rut) * smoothstep(0.0, 0.02, edge);
+  float weed = step(0.955, tC.x) * (1.0 - strip);
+  float H = (0.3 + 0.62 * mk.a) * (0.72 + 0.56 * tA.w) * mix(0.42, 1.0, smoothstep(1.4, 5.0, dP)) * mix(1.0, 0.5, strip);
+  // tier: near shows the tuft inside its switch distance sw, mid shows member tufts beyond it; non-members shrink
+  // away in the 1.2 m before theirs; the mid tier thins out per tuft at fo; nothing within 0.35-1 m of the lens
   float member = step(mod(bi.x, 2.0) + mod(bi.y, 2.0), 0.5);
-  float dcam = distance(bp, uCam.xz);
-  // (r5 + 0.005: the fp32 hash is quantised to 1/256, so r5 == 0 happens and would keep tufts where density is 0)
-  // near fade 0.6-1.5 m: blades at the lens would float as crisp sticks against the sky (the blur can't smear them)
-  float keep = (1.0 - smoothstep(uR * 0.7, uR, dcam)) * step(r5 + 0.005, mk.r) * mix(uOddK, 1.0, member) * uFade * smoothstep(0.6, 1.5, dcam);
-  vec4 rc = uRects[int(r4 * 4.999)];
-  float hh = (0.32 + 0.8 * pow(r1, 1.3)) * (0.45 + 1.1 * mk.a) * keep;
-  // the clumps are ~30 cm grass: squeeze them ~3x horizontally so blades stay blade-thin on 0.4-1.6 m tufts
-  float wd = hh * (rc.z / rc.w) * 0.32 * (0.85 + 0.3 * r2) * uWide;
-  vec3 gbase = vec3(bp.x, terrH(bp) - 0.04, bp.y);
-  vec3 gc = gbase + vec3(0.0, hh * 0.5, 0.0); float grad = 0.62 * wd + 0.5 * hh + 0.12;
-  bool cull = keep < 0.002;
-  for (int i = 0; i < 4; i++) cull = cull || dot(uFr[i].xyz, gc) + uFr[i].w < -grad;
+  float sw = mix(uLod.y, uLod.z, tB.x), fo = mix(uLod2.z, uLod2.w, tB.y);
+  float scl = uLod.x < 0.5 ? (1.0 - step(sw, d3)) * (1.0 - (1.0 - member) * smoothstep(sw - 1.2, sw, d3))
+                           : member * step(sw, d3) * (1.0 - smoothstep(fo - 3.0, fo, d3));
+  scl *= step(tB.z + 0.004, dens) * (1.0 - smoothstep(uR - 1.5, uR, dh)) * smoothstep(0.35, 1.0, d3);
+  vec3 gc = vec3(bp.x, gy + H * 0.5, bp.y); float rad = H * 1.1 + uLod2.x + 0.2;
+  bool cull = scl < 0.01;
+  for (int i = 0; i < 4; i++) cull = cull || dot(uFr[i].xyz, gc) + uFr[i].w < -rad;
   if (cull) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
-  float ang = r3 * 6.2832, ca = cos(ang), sa = sin(ang);
-  vec3 lp = vec3(position.x * wd, position.y * hh, position.z * wd);
-  lp = vec3(ca * lp.x - sa * lp.z, lp.y, sa * lp.x + ca * lp.z);
-  float sway = sin(uTime * 1.9 + bp.x * 0.31 + bp.y * 0.23) + 0.4 * sin(uTime * 4.3 + bp.x * 1.7);
-  lp.x += sway * 0.06 * lp.y; lp.z += sway * 0.035 * lp.y;
-  transformed = lp + gbase;
-  vec2 gUv = rc.xy + uv * rc.zw;`;
-  let grass, ringR = null, grassDepth = null;
-  {
-    const card = new THREE.InstancedBufferGeometry();
-    const P = [], UV = [], N = [], I = [], bw = 0.72;                      // trapezoid: base 0.72 x the top width
-    for (let k = 0; k < 3; k++) {
-      const a = k * Math.PI / 3 + 0.2, cx = Math.cos(a) * 0.5, cz = Math.sin(a) * 0.5, b = P.length / 3;
-      P.push(-cx * bw, 0, -cz * bw, cx * bw, 0, cz * bw, cx, 1, cz, -cx, 1, -cz); UV.push(0.5 - bw / 2, 0, 0.5 + bw / 2, 0, 1, 1, 0, 1); N.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
-      I.push(b, b + 1, b + 2, b, b + 2, b + 3);
+  // ---- the blade (vertex): position = (side -1/+1 or 0 at the tip, t along the blade, blade index)
+  float k = position.z, t = position.y, side = position.x;
+  uint bh0 = gPcg(th2 ^ (uint(k) * 2654435769u + 374761393u));
+  vec4 bA = gU4(bh0), bB = gU4(gPcg(bh0));
+  float fk = (k + 0.5) / uLod.w;
+  float dryT = clamp(m2.g * (0.55 + 0.6 * tB.w) + 0.12 * tC.z, 0.0, 1.0);
+  float flower = step(tC.y, 0.07 * m2.b + 0.004) * (1.0 - weed) * (1.0 - step(0.5, k));        // blade 0 of a flowering tuft
+  float stalk = max(step(bA.x, mix(0.04, 0.2, dryT)) * (1.0 - weed) * step(0.5, k), flower);    // seed stalks ripen with the field
+  float ang = tA.x * 6.2832 + k * 2.39996 + (bA.y - 0.5) * 0.8;                                  // golden-angle spread, jittered
+  vec2 dir = vec2(cos(ang), sin(ang));
+  float rr = uLod2.x * sqrt(fk) * (0.45 + 0.75 * bA.z) * mix(1.0, 0.3, weed) * mix(1.0, 0.4, stalk);
+  float bh = mix(H * (0.55 + 0.5 * bA.w) * (1.0 - 0.3 * fk), H * (1.12 + 0.35 * bB.x), stalk);
+  bh = mix(bh, 0.08 + H * 0.12 + 0.06 * bA.w, weed);
+  float lean = mix(mix(0.1 + 0.55 * fk * fk + 0.25 * bB.y, 0.05 + 0.12 * bB.y, stalk), 1.05 + 0.3 * bB.y, weed);   // outer blades splay
+  float curl = mix(mix((0.2 + 0.8 * bB.z) * (0.5 + fk), 0.1, stalk), 0.3, weed);
+  // wind: gusts travel downwind across the field (a 16 m noise field moving at uWind.w m/s) plus a per-blade flutter
+  float gust = smoothstep(0.3, 0.85, gvn((bp - uWind.xy * (uTime * uWind.w)) * 0.06));
+  float fl = sin(uTime * 2.6 + dot(bp, vec2(1.3, 0.9)) + k * 1.9) * 0.6 + sin(uTime * 6.1 + k * 3.7 + bp.y * 2.3) * 0.25;
+  vec3 W = (vec3(uWind.x, 0.0, uWind.y) * uWind.z * (0.3 + 1.5 * gust) + vec3(dir.x, 0.0, dir.y) * fl * 0.07) * mix(1.0, 0.15, weed);
+  float a1 = min(lean + curl, 2.4);
+  vec3 P0 = vec3(dir.x * rr, 0.0, dir.y * rr);
+  vec3 P1 = P0 + vec3(dir.x * sin(lean), cos(lean), dir.y * sin(lean)) * (bh * 0.55) + W * (bh * 0.2);
+  vec3 P2 = P1 + vec3(dir.x * sin(a1), cos(a1), dir.y * sin(a1)) * (bh * 0.5) + W * (bh * 0.6);
+  P2.y = max(P2.y - dot(W, W) * bh * 0.3, 0.02);
+  vec3 bpos = mix(mix(P0, P1, t), mix(P1, P2, t), t);
+  vec3 btan = normalize(mix(P1 - P0, P2 - P1, t) + vec3(0.0, 1e-4, 0.0));
+  float tw = (bB.w - 0.5) * 1.4;
+  vec3 wax = vec3(-dir.y, 0.0, dir.x) * cos(tw) + vec3(dir.x, 0.0, dir.y) * sin(tw);
+  // width: leaves taper to a point, stalks are thin with a spindle seed head, weeds are broad; never under 1 px
+  float bw = mix((0.006 + 0.007 * bA.w) * (1.0 - 0.8 * pow(t, 2.2)), 0.0022 + 0.012 * smoothstep(0.62, 0.8, t), stalk);
+  bw = mix(bw, (0.03 + 0.03 * bA.w) * sin(3.1416 * min(t * 1.15, 1.0)) + 0.004, weed);
+  bw = max(bw * uLod2.y, uPix * d3);
+  vec3 lpos = bpos + wax * (side * bw * 0.5);
+  transformed = vec3(bp.x, gy - 0.03, bp.y) + lpos * scl;
+  // a canopy normal: the blade face, rounded across its width, bent toward the sky (both faces lit alike)
+  vec3 gFn = normalize(cross(wax, btan)); gFn *= gFn.y < 0.0 ? -1.0 : 1.0;
+  vec3 gNrm = normalize(gFn + wax * (side * 0.5) + vec3(0.0, 0.7, 0.0));
+  float gHt = clamp(lpos.y / max(H, 0.05), 0.0, 1.0);`;
+  const GRASS_VARY = '\nvarying vec3 vGCol; varying float vGv; varying float vThin;';
+  // visible material only: normal + colour (linear albedo). Tuft greens (yellow-green .. lush dark), dead straw
+  // blades by the dry field (green tufts keep 10 %), ripening seed stalks, dark roots, dry tips, flower heads
+  // (white / yellow / violet), dark broadleaf weeds. Mean ~ MATS.grass.albedo (the light bake's grass).
+  const GRASS_SHADE = `
+  objectNormal = gNrm; transformedNormal = normalMatrix * gNrm;
+  #ifndef FLAT_SHADED
+  vNormal = normalize(transformedNormal);
+  #endif
+  vec3 gG = mix(mix(vec3(0.085, 0.112, 0.032), vec3(0.135, 0.14, 0.04), tB.w * tB.w), vec3(0.052, 0.082, 0.022), m2.a * (0.4 + 0.6 * tC.w));
+  float dead = step(bB.x, mix(0.1, 0.8, dryT));
+  vec3 col = mix(gG * (0.8 + 0.4 * bA.z), mix(vec3(0.23, 0.18, 0.09), vec3(0.15, 0.125, 0.075), bA.y) * (0.85 + 0.3 * bB.z), dead);
+  col = mix(col, vec3(0.24, 0.19, 0.1) * (0.8 + 0.4 * bA.z), stalk * (1.0 - flower) * (0.55 + 0.45 * dryT));
+  col = mix(col, vec3(0.045, 0.075, 0.025) * (0.85 + 0.3 * bA.z), weed);
+  col *= mix(0.5, 1.0, smoothstep(0.0, 0.55, t));
+  col = mix(col, vec3(0.25, 0.2, 0.1), smoothstep(0.7, 1.0, t) * (0.2 + 0.5 * dryT) * (1.0 - dead) * (1.0 - weed) * (1.0 - stalk));
+  col = mix(col, tC.w < 0.45 ? vec3(0.62, 0.6, 0.55) : tC.w < 0.8 ? vec3(0.62, 0.45, 0.04) : vec3(0.28, 0.1, 0.34), flower * smoothstep(0.66, 0.8, t));
+  vGCol = col; vGv = gHt; vThin = mix(1.0, 0.6, dead) * mix(1.0, 0.4, weed);
+  float gAO = mix(0.4, 1.0, smoothstep(0.0, 0.85, gHt)) * (0.3 + 0.7 * mk.b);`;
+  // blade strips: per blade 2 verts per level + 1 tip vertex; position = (side, t, blade index)
+  const bladeGeo = (nb, lv) => {
+    const P = [], I = [], L = lv.length;
+    for (let k = 0; k < nb; k++) {
+      const b = P.length / 3;
+      for (let l = 0; l < L - 1; l++) P.push(-1, lv[l], k, 1, lv[l], k);
+      P.push(0, 1, k);
+      for (let l = 0; l < L - 2; l++) { const a = b + l * 2; I.push(a, a + 1, a + 3, a, a + 3, a + 2); }
+      const a = b + (L - 2) * 2; I.push(a, a + 1, a + 2);
     }
-    card.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); card.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2));
-    card.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3)); card.setIndex(I);
-    card.setAttribute('ao', new THREE.Float32BufferAttribute(new Array(12).fill(1), 1));
+    const g = new THREE.InstancedBufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setIndex(I);
+    return g;
+  };
+  const ringCount = (ringR, r) => { let lo = 0, hi = ringR.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ringR[m] <= r) lo = m + 1; else hi = m; } return lo; };
+  const fr = new THREE.Frustum(), pm = new THREE.Matrix4();
+  const setFr = (r, s, cam) => {   // side planes of whichever camera draws (scene or blur depth) + its pixel footprint
+    pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse); fr.setFromProjectionMatrix(pm);
+    for (let i = 0; i < 4; i++) { const p = fr.planes[i]; gShared.uFr.value[i].set(p.normal.x, p.normal.y, p.normal.z, p.constant); }
+    const rt = r.getRenderTarget(), h = rt ? rt.height : r.domElement.height;
+    if (cam.isPerspectiveCamera) gShared.uPix.value = 2 * Math.tan(cam.fov * Math.PI / 360) / Math.max(1, h);
+  };
+  const tiers = {};
+  let grassDepth = null;
+  for (const [name, U, nb, lv, rMax] of [['near', nearU, GQ.nb, [0, 0.4, 0.7, 0.88, 1], GQ.near[1] + 1], ['mid', midU, 7, [0, 0.62, 1], GQ.mid + 1]]) {
+    const cell = U.uCell.value, gN = 2 * Math.ceil((rMax + 2) / cell), g = bladeGeo(nb, lv);
+    // cells in rings around the camera cell: instanceCount stops at the tier's radius
     const order = []; for (let i = 0; i < gN; i++) for (let j = 0; j < gN; j++) order.push([i, j, Math.hypot(i - gN / 2, j - gN / 2)]);
     order.sort((a, b) => a[2] - b[2]);
-    const cells = new Float32Array(gN * gN * 2); ringR = new Float32Array(order.length);
+    const cells = new Float32Array(order.length * 2), ringR = new Float32Array(order.length);
     order.forEach(([i, j, r], k) => { cells[k * 2] = i; cells[k * 2 + 1] = j; ringR[k] = r; });
-    card.setAttribute('aCell', new THREE.InstancedBufferAttribute(cells, 2));
-    card.instanceCount = gN * gN;
-    const gm = new THREE.MeshStandardMaterial({ map: atlasOK ? gtx.diff : grassTexture(rng(1501)), alphaMap: atlasOK ? gtx.alpha : null, alphaTest: 0.38, alphaToCoverage: true,
-      side: THREE.DoubleSide, roughness: 0.92, metalness: 0, color: atlasOK ? lin3(MATS.grass.color) : new THREE.Color(1, 1, 1) });
-    if (atlasOK) [gtx.diff, gtx.alpha].forEach((t) => { t.repeat.set(1, 1); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; });
-    weatherPatch(gm, { kind: 'grass', aoExpr: 'gAO', uniforms: grassU, fsLights: GRASS_LIGHTS, diffuseOnly: true,
-      vsHead: GRASS_VS_HEAD + '\nvarying vec3 vTint; varying float vDry; varying float vGv;',
-      vsBegin: GRASS_VS_CORE + `
-  #ifdef USE_MAP
-  vMapUv = gUv;
-  #endif
-  #ifdef USE_ALPHAMAP
-  vAlphaMapUv = gUv;
-  #endif
-  // straw: x0.4 and a later onset (decision 3), so dry tufts stay a minority patch, not the field
-  vDry = 0.4 * clamp(smoothstep(0.40, 0.85, gvn(bp * 0.035 + 3.0) * 0.65 + gvn(bp * 0.21) * 0.35) * (0.45 + 0.55 * r2) + 0.2 * r1 * r1, 0.0, 1.0);
-  vTint = vec3(0.9 + r2 * 0.22, 0.93 + r1 * 0.16, 0.8 + r3 * 0.25);
-  vGv = uv.y;
-  float gAO = mix(0.5, 1.0, uv.y) * (0.3 + 0.7 * mk.b);`,
-      fsHead: 'varying vec3 vTint; varying float vDry; varying float vGv;',
-      fsMap: `
-  diffuseColor.rgb = mix(diffuseColor.rgb, lum3(diffuseColor.rgb) * vec3(1.3, 1.15, 0.8), vDry) * vTint;`,
-      fsAlpha: `
-  #ifdef USE_MAP
-  { vec2 tx = vMapUv * 1024.0; diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
-  #endif` }, uniforms);
-    grass = new THREE.Mesh(card, gm); grass.frustumCulled = false; grass.receiveShadow = true; grass.renderOrder = 1; scene.add(grass);
-    const fr = new THREE.Frustum(), pm = new THREE.Matrix4();
-    const setFr = (r, s, cam) => {
-      pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse); fr.setFromProjectionMatrix(pm);
-      for (let i = 0; i < 4; i++) { const p = fr.planes[i]; grassU.uFr.value[i].set(p.normal.x, p.normal.y, p.normal.z, p.constant); }
-    };
-    grass.onBeforeRender = setFr;
-    // [B] C2 blur depth: the same tufts, only the ring within ~8 m (its own instanceCount), alpha-tested like the grass
-    const dcard = new THREE.InstancedBufferGeometry();
-    for (const k of ['position', 'uv', 'aCell']) dcard.setAttribute(k, card.getAttribute(k));
-    dcard.setIndex(card.index); dcard.instanceCount = 0;
-    grassDepth = new THREE.Mesh(dcard, depthC2Mat({ vsHead: GRASS_VS_HEAD, vsMain: GRASS_VS_CORE + '\n  vUv = gUv;', uniforms: { ...grassU, uTime: uniforms.uTime },
-      alphaTex: atlasOK ? gtx.alpha : gm.map, alphaCh: atlasOK ? 1 : 0, alphaTest: 0.38, texN: 1024, edge: [0.22, 0.5] }));
+    g.setAttribute('aCell', new THREE.InstancedBufferAttribute(cells, 2)); g.instanceCount = 0;
+    const m = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 1, metalness: 0 });
+    weatherPatch(m, { kind: 'grass', key: 'blade', aoExpr: 'gAO', uniforms: U, fsLights: GRASS_LIGHTS, diffuseOnly: true,
+      vsHead: GRASS_VS_HEAD + GRASS_VARY, vsBegin: GRASS_VS_CORE + GRASS_SHADE, fsHead: GRASS_VARY, fsMap: '\n  diffuseColor.rgb = vGCol;' }, uniforms);
+    const mesh = new THREE.Mesh(g, m); mesh.frustumCulled = false; mesh.receiveShadow = true; mesh.renderOrder = 1; mesh.name = 'grass-' + name;
+    mesh.onBeforeRender = setFr; scene.add(mesh);
+    tiers[name] = { mesh, U, gN, ringR, cell, verts: nb * (2 * lv.length - 1) };
+  }
+  {   // [B] C2 blur depth: the near blades within ~6 m, the same vertex shader, opaque
+    const ng = tiers.near.mesh.geometry, dg = new THREE.InstancedBufferGeometry();
+    for (const k of ['position', 'aCell']) dg.setAttribute(k, ng.getAttribute(k));
+    dg.setIndex(ng.index); dg.instanceCount = 0;
+    grassDepth = new THREE.Mesh(dg, depthC2Opaque({ vsHead: GRASS_VS_HEAD, vsMain: GRASS_VS_CORE, uniforms: { ...nearU, uTime: uniforms.uTime } }));
     grassDepth.frustumCulled = false; grassDepth.onBeforeRender = setFr;   // planes for this camera, whichever pass runs first
   }
-  const ringCount = (r) => { let lo = 0, hi = ringR.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ringR[m] <= r) lo = m + 1; else hi = m; } return lo; };
+  const setTier = (T, p, r) => {
+    const c = T.cell; T.U.uOrigin.value.set(Math.floor(p.x / c) * c - (T.gN / 2) * c, Math.floor(p.z / c) * c - (T.gN / 2) * c);
+    T.U.uR.value = r; T.mesh.visible = r > 0.8;
+    T.mesh.geometry.instanceCount = T.mesh.visible ? Math.min(T.gN * T.gN, ringCount(T.ringR, r / c + 1.5)) : 0;
+  };
+  bStats.grass = { near: { blades: GQ.nb, vertsPerTuft: tiers.near.verts, cells: tiers.near.gN ** 2, switch: GQ.near }, mid: { blades: 7, vertsPerTuft: tiers.mid.verts, cells: tiers.mid.gN ** 2, out: GQ.mid } };
+  scene.userData.grass = { shared: gShared, near: nearU, mid: midU, tiers };   // live tuning (wind, LOD)
   lap('grass');
   // [B] trees, wall thickets, field shrubs and saplings on slab edges: leaf-card balls with the photographed leaves,
   // merged per ~75 m tile (frustum culling in the scene, shadow and blur-depth passes). Normals point out of the whole
@@ -2964,22 +3092,16 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     if (rs) { if (mats.slab) mats.slab.aRingShadowTex = rs.tex; console.info('ring shadow', rs.info); }
     else { uniforms.aSky.uRingSM.value = fs.tex; uniforms.aSky.uRingG.value.w = 0; console.info('ring shadow: no treeline object, off'); }
   }
-  let grassLevel = 1;
   const update = (camPos, dt, camQuat) => {
     uniforms.uTime.value += dt;
-    // [B] grass LOD: level 2 (2x cells) is a subset of level 1; non-members shrink away between 8 and 11 m AGL,
-    // the switch happens at 14 m (back at 11), width/radius change continuously, the field fades out at 24-32 m
-    grassU.uCam.value.copy(camPos);
-    const alt = camPos.y - terrainHeight(camPos.x, camPos.z), sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-    if (grassLevel === 1 && alt > 14) grassLevel = 2; else if (grassLevel === 2 && alt < 11) grassLevel = 1;
-    const cell = gCell * grassLevel;
-    grassU.uCell.value = cell; grassU.uOddK.value = 1 - sm(8, 11, alt); grassU.uWide.value = 1 + 0.45 * sm(8, 26, alt); grassU.uFade.value = 1 - sm(24, 32, alt);
-    grassU.uR.value = Math.min(baseR * (1 + sm(14, 30, alt)), gN * cell * 0.5);
-    grassU.uOrigin.value.set(Math.floor(camPos.x / cell) * cell - (gN / 2) * cell, Math.floor(camPos.z / cell) * cell - (gN / 2) * cell);
-    grass.visible = alt < 32.5;
-    grass.geometry.instanceCount = Math.min(gN * gN, ringCount(grassU.uR.value / cell + 2.2));
-    // [B] C2 depth: the grass ring within ~8 m, the leaf tiles within 40 m
-    grassDepth.visible = grass.visible; grassDepth.geometry.instanceCount = Math.min(grass.geometry.instanceCount, ringCount(8 / cell + 1.5));
+    // [V2] grass tiers: each ring stops where no tuft can still be inside the tier's 3D range (the near tier is off
+    // above ~8 m AGL, the mid tier above ~32 m; the ground shader is the meadow from there)
+    gShared.uCam.value.copy(camPos);
+    const alt = Math.max(0, camPos.y - terrainHeight(camPos.x, camPos.z) - 0.3);
+    setTier(tiers.near, camPos, Math.sqrt(Math.max(0, GQ.near[1] ** 2 - alt * alt)) + 0.5);
+    setTier(tiers.mid, camPos, Math.sqrt(Math.max(0, GQ.mid ** 2 - alt * alt)) + 1);
+    // [B] C2 depth: the near blades within ~6 m, the leaf tiles within 40 m
+    grassDepth.visible = tiers.near.mesh.visible; grassDepth.geometry.instanceCount = Math.min(tiers.near.mesh.geometry.instanceCount, ringCount(tiers.near.ringR, 6 / gCell + 1.5));
     for (const m of leafTiles) { _ds.copy(m.geometry.boundingSphere); m.visible = _ds.distanceToPoint(camPos) < 40; }
     // [A2] live shadow map follows the camera (lead 0: a heading-dependent centre re-rendered on every turn);
     // re-render only when its snapped centre moves
