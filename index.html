@@ -353,10 +353,25 @@ body.dev .dev{display:revert!important}
 #clip .cuts .pill.on{color:#000;background:var(--ink);border-color:var(--ink)}
 #clip .cuts .pill:disabled{opacity:.35}
 #clip .meta{margin-top:8px;font:12px var(--mono);color:var(--mute)}
+/* F24: modal phases (choose a cut -> render -> done); the 9:16 stage holds the cut card, the render preview or the video */
+#clip .stage{position:relative;height:min(60vh,720px);aspect-ratio:9/16;max-width:100%;margin:0 auto;border-radius:10px;overflow:hidden;background:#000}
+#clip .stage>video,#clip .stage>canvas,#clip .stage>.pick{position:absolute;inset:0;width:100%;height:100%;margin:0;border-radius:0}
+#clip .stage>.pick{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:16px;background:linear-gradient(#15171a,#0a0b0c);text-align:center}
+#clip .pick b{font:900 26px var(--mono);letter-spacing:.08em;color:var(--ink)}
+#clip .pick span{font:600 40px var(--mono);color:var(--ink)}
+#clip .pick small{font:12px/1.4 var(--mono);color:var(--mute)}
+#clip .stage>.prog{position:absolute;left:12px;right:12px;bottom:12px;height:4px;border-radius:2px;background:rgba(255,255,255,.18)}
+#clip .prog i{display:block;height:100%;width:0;border-radius:2px;background:#E75211}
+#clip .opts{margin-top:6px}
+#clip .opts .pill{min-height:36px}
+#clip[data-phase="choose"] .stage>:not(.pick),#clip[data-phase="render"] .stage>video,#clip[data-phase="render"] .stage>.pick,
+#clip[data-phase="done"] .stage>:not(video){display:none}
+#clip .hidden{display:none}
 /* landscape phone: the 9:16 preview takes the full height, actions in a column beside it */
 @media (orientation:landscape) and (max-height:500px){
   #clip .box{width:auto;max-width:94vw;display:grid;grid-template-columns:auto minmax(0,320px);gap:16px;align-items:center;text-align:left}
   #clip video{height:calc(100vh - 32px - var(--st) - var(--sb));max-height:none;margin:0}
+  #clip .stage{height:calc(100vh - 32px - var(--st) - var(--sb));margin:0}
   #clip .row,#clip .cuts{justify-content:flex-start;margin-top:10px}
   #clip .meta{margin-top:10px}
 }
@@ -367,7 +382,8 @@ body.dev .dev{display:revert!important}
     "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
     "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
     "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.4.0/dist/spark.module.min.js",
-    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.1/build/index.module.js"
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.1/build/index.module.js",
+    "mp4-muxer": "https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.mjs"
   }
 }
 </script>
@@ -524,11 +540,17 @@ body.dev .dev{display:revert!important}
   <div id="ldTip"></div>
 </div></div>
 
-<div id="clip" class="hidden ui"><div class="box">
-  <video id="clipVid" playsinline controls loop muted></video>
+<div id="clip" class="hidden ui" data-phase="choose"><div class="box">
+  <div class="stage">
+    <video id="clipVid" playsinline controls loop muted></video>
+    <canvas id="clipPrev" width="270" height="480"></canvas>
+    <div class="pick"><b id="clipPickN">SHORT</b><span id="clipPickD"></span><small id="clipPickH"></small></div>
+    <div class="prog"><i id="clipProgB"></i></div>
+  </div>
   <div class="side">
     <div class="cuts" id="clipCuts"><button class="pill" data-cut="short">SHORT</button><button class="pill" data-cut="last">LAST 20 S</button><button class="pill" data-cut="full">FULL TAKE</button></div>
-    <div class="row"><button class="pill rec" id="clipShare">SAVE VIDEO</button><a class="pill" id="clipSave" download>DOWNLOAD</a><button class="pill" id="clipClose">CLOSE</button></div>
+    <div class="cuts opts" id="clipOpts"><button class="pill" data-lay="full">FULL FRAME</button><button class="pill" data-lay="radio">WITH STICKS</button><button class="pill" id="clipHQ">HQ</button></div>
+    <div class="row"><button class="pill rec" id="clipMake">MAKE CLIP</button><button class="pill rec" id="clipShare">SAVE VIDEO</button><a class="pill" id="clipSave" download>DOWNLOAD</a><button class="pill" id="clipClose">CLOSE</button></div>
     <div class="meta" id="clipMeta"></div>
   </div>
 </div></div>
