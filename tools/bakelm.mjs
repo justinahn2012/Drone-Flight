@@ -660,8 +660,8 @@ function closest2D(px, py, ax, ay, bx, by, cx, cy) {   // closest point of trian
 // [A4] cross-bilateral (lighting #3): x exp(-d^2 / 2 s^2) on the texels' openness (rays escaping 40 m), back-hit share
 // and, when g.range > 0, log2 luminance of the first array (the sunny irradiance), so a real step (a beam side under the
 // table next to its sunlit end, a column foot against the floor) is not smeared across the step. Guides are per sample.
-const DN = { sOpen: 0.18, sBack: 0.12 };
 function denoise(PP, arrs, comps, r, sigma, g = null) {
+  const DN = { sOpen: 0.18, sBack: 0.12 };   // (inside: main() runs at module top level, before later consts exist)
   const { smp, W, H, valid } = PP, { NS, SPIX, SCH, SN, chartOf, pixS } = smp, WH = W * H;
   const K = Array.from({ length: 2 * r + 1 }, (_, i) => Math.exp(-((i - r) ** 2) / (2 * sigma * sigma)));
   const nC = arrs.length * comps, val = new Float32Array(WH * nC), wgt = new Float32Array(WH), tv = new Float32Array(WH * nC), tw = new Float32Array(WH);
