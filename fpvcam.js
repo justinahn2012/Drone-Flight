@@ -113,9 +113,10 @@ void main(){
   fragColor = vec4(acc / n, 1.0);
 }`;
 
-// Screen-space AO, half res, from the collider (+ depthScene) depth: volumetric obscurance (Loos & Sloan) with
-// 4 paired line samples = 8 taps. Exact for planes (pairs sum to 1/2), so no normals are needed; a sample in front of
-// its whole column is a separate occluder and borrows its pair's mirror. 4x4 Bayer rotation, cancelled by the blur.
+// Screen-space AO, half res, from the collider (+ depthScene) depth. SAO-style: normal from the flatter neighbour per
+// axis (no smear across silhouettes), 8 Vogel-spiral taps in a world-size disc, cosine term with a range falloff so
+// a pole metres in front of a wall leaves no halo. A 90 deg floor/wall corner lands near the physical 0.5.
+// 4x4 Bayer spiral offset, cancelled by the bilateral 4x4 pass.
 const SSAO_FS = /* glsl */`precision highp float;
 ${COMMON}
 in vec2 vUv;
@@ -123,35 +124,44 @@ out vec4 fragColor;
 uniform sampler2D tDepth;
 uniform vec2 uDVp;        // depth viewport, texels
 uniform vec2 uProj;
-uniform float uR;         // sphere radius (m)
-uniform float uMaxPx;     // radius cap (texels): near the lens the sphere shrinks instead of thrashing the cache
-float zAt(vec2 p){ vec4 c = texelFetch(tDepth, ivec2(clamp(p, vec2(0.0), uDVp - 1.0)), 0); return 0.02 * exp2((c.r + c.g / 255.0) * LOGR); }
+uniform float uR;         // radius (m)
+uniform float uMaxPx;     // radius cap (texels): near the lens the disc shrinks instead of thrashing the cache
+uniform float uStrength;
+vec3 posAt(vec2 p){
+  ivec2 ip = ivec2(clamp(p, vec2(0.0), uDVp - 1.0));
+  vec4 c = texelFetch(tDepth, ip, 0);
+  return vec3(((vec2(ip) + 0.5) / uDVp * 2.0 - 1.0) / uProj, -1.0) * (0.02 * exp2((c.r + c.g / 255.0) * LOGR));
+}
 float bayer2(vec2 a){ a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
 void main(){
-  vec2 px = floor(gl_FragCoord.xy);
+  vec2 px = floor(gl_FragCoord.xy) + 0.5;
   vec4 c0 = texelFetch(tDepth, ivec2(px), 0);
   float z = decodeDepth(c0);
+  vec3 P = vec3((px / uDVp * 2.0 - 1.0) / uProj, -1.0) * z;
   vec2 kxy = 0.5 * uProj * uDVp / z;                  // texels per metre at this depth
   float R = uR, rpx = R * kxy.y;
   if (rpx > uMaxPx) { R *= uMaxPx / rpx; rpx = uMaxPx; }
   float fade = smoothstep(1.5, 4.0, rpx) * (1.0 - smoothstep(40.0, 80.0, z));
   float ao = 1.0;
   if (fade > 0.0) {
+    vec3 x1 = posAt(px + vec2(1.0, 0.0)) - P, x0 = P - posAt(px - vec2(1.0, 0.0));
+    vec3 y1 = posAt(px + vec2(0.0, 1.0)) - P, y0 = P - posAt(px - vec2(0.0, 1.0));
+    // flatter side per axis; at the viewport edge the clamped side is a zero vector, so take the other one
+    vec3 dx = (dot(x0, x0) == 0.0 || (abs(x1.z) < abs(x0.z) && dot(x1, x1) > 0.0)) ? x1 : x0;
+    vec3 dy = (dot(y0, y0) == 0.0 || (abs(y1.z) < abs(y0.z) && dot(y1, y1) > 0.0)) ? y1 : y0;
+    vec3 cn = cross(dx, dy);
+    vec3 n = dot(cn, cn) > 1e-14 ? normalize(cn) : -normalize(P);
+    if (dot(n, P) > 0.0) n = -n;
     float nz = bayer2(0.5 * px) * 0.25 + bayer2(px) + 0.03125;   // 4x4 Bayer, 1/32 .. 31/32
-    float occ = 0.0, wsum = 0.0;
-    for (int k = 0; k < 4; k++) {
-      float fk = float(k);
-      float an = (nz + fk) * 0.7853982;               // 4 pairs, 45 deg apart: the whole circle
-      float rr = R * sqrt((fk + nz) * 0.25);           // area-uniform radii
-      float h = sqrt(max(R * R - rr * rr, 1e-6));      // half height of the sphere column at that offset
-      vec2 o = vec2(cos(an), sin(an)) * rr * kxy;
-      float z1 = zAt(px + 0.5 + o), z2 = zAt(px + 0.5 - o);
-      float a1 = clamp((z + h - z1) / (2.0 * h), 0.0, 1.0), a2 = clamp((z + h - z2) / (2.0 * h), 0.0, 1.0);
-      bool f1 = z1 < z - h, f2 = z2 < z - h;
-      if (f1 && f2) { a1 = 0.5; a2 = 0.5; } else if (f1) a1 = 1.0 - a2; else if (f2) a2 = 1.0 - a1;
-      occ += (a1 + a2) * h; wsum += 2.0 * h;
+    float sum = 0.0, R2 = R * R;
+    for (int k = 0; k < 8; k++) {
+      float t = (float(k) + nz) * 0.125;
+      float an = (float(k) + nz) * 2.3999632;          // golden angle spiral
+      vec3 v = posAt(px + vec2(cos(an), sin(an)) * (sqrt(t) * R) * kxy) - P;
+      float vv = dot(v, v), fall = max(0.0, 1.0 - vv / R2);
+      sum += fall * fall * max(0.0, dot(v, n) * inversesqrt(vv + 1e-4 * R2) - 0.1);
     }
-    ao = mix(1.0, clamp(2.0 - 2.0 * occ / wsum, 0.0, 1.0), fade);
+    ao = mix(1.0, max(0.0, 1.0 - uStrength * sum * 0.125), fade);
   }
   fragColor = vec4(ao, c0.r, c0.g, 1.0);               // depth rides along for the bilateral blur
 }`;
@@ -458,6 +468,7 @@ export class FPVCamera {
       msaa: 4,                 // scene MSAA for mesh worlds (0 = off); used only where RGBA16F multisampling is supported
       ssao: 1,                 // contact AO for mesh worlds that expose world.aoUniforms (0 = off)
       aoRadius: 0.5,           // m
+      aoStrength: 2.5,         // 2.5: a 90 deg corner reads ~0.5 (the cosine-weighted sky it really loses)
     };
     this._applyGrade(GRADES.ldr);
     // dynamic resolution
@@ -504,7 +515,7 @@ export class FPVCamera {
     });
     this.ssao = pass(SSAO_FS, {
       tDepth: { value: null }, uDVp: { value: new THREE.Vector2(1, 1) }, uProj: { value: new THREE.Vector2(1, 1) },
-      uR: { value: 0.5 }, uMaxPx: { value: 24 },
+      uR: { value: 0.5 }, uMaxPx: { value: 24 }, uStrength: { value: 2.5 },
     });
     this.aoBlur = pass(AOBLUR_FS, { tAO: { value: null }, uDVp: { value: new THREE.Vector2(1, 1) } });
     const lensU = () => ({ uHalf: { value: new THREE.Vector2(1, 1) }, uF: { value: 1 }, uK: { value: 0.5 }, uSrcTan: { value: new THREE.Vector2(1, 1) } });
@@ -760,7 +771,7 @@ export class FPVCamera {
     if (aoOn) {
       const su = this.ssao.u;
       su.tDepth.value = this.depthRT.texture; su.uDVp.value.set(dw, dh); su.uProj.value.set(P[0], P[5]);
-      su.uR.value = lk.aoRadius || 0.5; su.uMaxPx.value = Math.max(6, dh * 0.07);
+      su.uR.value = lk.aoRadius || 0.5; su.uMaxPx.value = Math.max(6, dh * 0.07); su.uStrength.value = lk.aoStrength ?? 2.5;
       this.aoRT.viewport.set(0, 0, dw, dh);
       r.setRenderTarget(this.aoRT); r.clear(true, false, false); r.render(this.ssao.scene, this.quadCam);
       const au = this.aoBlur.u;
@@ -928,7 +939,7 @@ export class FPVCamera {
       bloom: { amount: lk.bloom, threshold: 1.0, cap: lk.bloomCap, resolution: 1 / 8, iterations: 2, kernelWeights: [0.2270270270, 0.3162162162, 0.0702702703], kernelOffsets: [0, 1.3846153846, 3.2307692308], whiteBalanced: true, space: lk.meterLens ? 'output' : 'render' },
       grain: { amount: lk.grain, ev: lk.grainEv, clumpPx: lk.grainPx, chroma: 0.35, model: 'sigma = grain * exp2(max(ev + ev0, 0) * slope) * sqrt(luma + 0.025)', dither: 1 / 255 },
       sharpen: { amount: lk.sharpen, hdrScale: 0.8, kernel: '4-neighbour luma unsharp' },
-      ssao: { enabled: lk.ssao, radius: lk.aoRadius, taps: 8, resolution: 0.5, method: 'volumetric obscurance, paired samples', blur: '4x4 bilateral (1/3 stop)', apply: 'indirect *= mix(1, ao, 0.8) (world shader, contract C3)' },
+      ssao: { enabled: lk.ssao, radius: lk.aoRadius, strength: lk.aoStrength, taps: 8, resolution: 0.5, method: 'SAO-style: depth-derived normal, cos term, (1-vv/R^2)^2 falloff, bias 0.1, golden-angle spiral', blur: '4x4 bilateral (1/3 stop)', apply: 'indirect *= mix(1, ao, 0.8) (world shader, contract C3)' },
       msaa: { requested: lk.msaa, samples: this.samples, offBelowBlurScale: MSAA_OFF_BELOW, onAboveBlurScale: MSAA_ON_ABOVE },
       look, grades: GRADES, lenses: LENSES, shutters: SHUTTERS,
     });
