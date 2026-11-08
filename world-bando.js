@@ -2421,7 +2421,7 @@ export function buildGeometry(R = rng(7), seed = 7) {
   const skimBvh = new MeshBVH(treeCols.length ? mergeGeometries([solidGeo, ...treeCols.map(posOnly)], false) : solidGeo, { maxLeafTris: 5 });   // [V1] + the trees' tubes
   terr.userData.lm = lightmapUV2(merged, terr, pathG);   // [A1] lightmap uv2 on merged/terr/pathG (append-only; layout on terr.userData.lm)
 
-  return { site, terr, far, pathG, treeSpots, vegTrees, treeline, merged, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart, startPoints: site.startPoints, funnels: site.funnels };
+  return { site, terr, far, pathG, treeSpots, vegTrees, treeColVerts: treeCols.reduce((n, g) => n + g.attributes.position.count, 0), treeline, merged, solidGeo, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart, startPoints: site.startPoints, funnels: site.funnels };
 }
 
 // ---------------------------------------------------------------- build everything

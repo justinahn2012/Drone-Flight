@@ -85,7 +85,8 @@ export function renderSet(geo, MATS = {}) {
  */
 export function colliderRanges(geo, warn = () => {}) {
   const col = geo.colGeo, P = col.attributes.position.array, N = col.attributes.position.count;
-  const solid = geo.skimBvh?.geometry?.attributes.position, terr = geo.terr.attributes.position, far = geo.far.attributes.position;
+  const solid = (geo.solidGeo || geo.skimBvh?.geometry)?.attributes.position,   // [V1] skimBvh = solids + tree tubes now
+    terr = geo.terr.attributes.position, far = geo.far.attributes.position;
   if (!solid) { warn('collider ranges: no skimBvh geometry'); return null; }
   const same = (src, v0) => { const a = attrArray(src); if ((v0 + src.count) * 3 > P.length) return false; for (let i = 0; i < a.length; i++) if (P[v0 * 3 + i] !== a[i]) return false; return true; };
   const r = {}; let v = 0;
@@ -93,7 +94,9 @@ export function colliderRanges(geo, warn = () => {}) {
     if (!same(src, v)) { warn(`collider ranges: "${k}" block doesn't match its source; composition changed? ranges omitted`); return null; }
     r[k] = [v, v + src.count]; v += src.count;
   }
-  r.proxies = [v, N];   // site.colliders: treeline crown proxies (collision only, never drawn)
+  const tv = geo.treeColVerts || 0;
+  r.proxies = [v, N - tv];   // site.colliders: treeline crown proxies (collision only, never drawn)
+  if (tv) r.trees = [N - tv, N];   // [V1] the trees' trunk/limb tubes (collide, never drawn; in the skim set)
   return r;
 }
 
@@ -178,7 +181,7 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
   const colInfo = {
     vertices: col.attributes.position.count, triangles: col.index.count / 3, bounds: boundsOf(attrArray(col.attributes.position)), hash: hCol,
     ranges, triangleCounts: ranges ? triCounts(col.index.array, ranges) : null,
-    skim: 'triangles whose first vertex lies in ranges.solid (world.skimBvh: structures + trunks, no terrain / grass)',
+    skim: 'triangles whose first vertex lies in ranges.solid or ranges.trees (world.skimBvh: structures + tree trunks, no terrain / grass)',
     note: 'double-sided; index in three-mesh-bvh order (MeshBVH reorders it in place); proxies = site.colliders (treeline crown proxies, never drawn)',
   };
   CW.mesh('collider', colAttrs, col.index.array, { extras: { kind: 'collider' }, primExtras: { ranges, triangleCounts: colInfo.triangleCounts } });
