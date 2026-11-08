@@ -602,9 +602,10 @@ function clipEvent(e) {
   if (e.type === 'start') startNow = true;
   capEv = e.type === 'line' || e.type === 'repeat' ? e : null;
 }
-// seconds from the line's pre-gate crossing (C1: e.t0) to now. t0 is read on take.js's own clock (the one its pre-gate
-// records use, take._now), or against e.t when the event carries both; else the take time or the page clock.
+// seconds from the line's pre-gate crossing to now. C1: line/repeat events carry {t0, ago, t} (t0, t on the take's
+// stats.time clock, ago = t - t0). Older/partial events: t0 against e.t, the take's clocks, or the page clock.
 function lineLag(e) {
+  if (typeof e?.ago === 'number' && isFinite(e.ago)) return Math.max(0, Math.min(15, e.ago));
   const t0 = e?.t0; if (typeof t0 !== 'number' || !isFinite(t0)) return 0;
   const tk = curTake();
   for (const c of [e.t, tk?._now, tk?.stats?.time, performance.now() / 1000]) {
