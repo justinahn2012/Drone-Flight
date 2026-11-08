@@ -1091,7 +1091,7 @@ const WP_FRAG = {
     float lush = mix(smoothstep(0.52, 0.8, vn(xz * 0.045 + 71.0)), m2.a, inM) * (1.0 - dry);
     float dryF = smoothstep(0.15, 0.85, dry + (cl - 0.5) * 0.6 + (p1 - 0.5) * 0.3);
     vec3 cG = mix(vec3(0.074, 0.086, 0.032), vec3(0.048, 0.07, 0.024), lush);
-    vec3 meadow = mix(cG * gD, vec3(0.15, 0.13, 0.078) * mD, dryF) * (0.66 + 0.68 * cl * cl);
+    vec3 meadow = mix(cG * gD, vec3(0.15, 0.13, 0.078) * mD, dryF) * (0.66 + 0.68 * cl * cl) * (0.78 + 0.44 * vn(xz * 0.12 + 17.0));   // + 5-15 m swells
     // out to ~8 m the blades stand on it (NEAR tier): there the ground is the shaded thatch between tufts. Further
     // out they thin away, and the ground IS the meadow: no dark felt under a fading field. Track profile = the VS's.
     float dP = mix(8.0, m2.r * 8.0, inM);
@@ -1128,7 +1128,7 @@ const WP_FRAG = {
     float dP = m2.r * 8.0, n1 = vn(xz * 0.9), n2 = vn(xz * 2.7);
     // [V2] a two-track, not a carpet: neutral worn dirt (sat ~0.1), two darker compacted wheel ruts ~0.8 m either side
     // of the centreline, a grassy centre strip and ragged grassy verges (the blades follow the same profile)
-    vec3 c = diffuseColor.rgb; c = mix(vec3(lum3(c)), c, 0.4) * vec3(1.03, 1.0, 0.93);
+    vec3 c = diffuseColor.rgb; c = mix(vec3(lum3(c)), c, 0.25) * vec3(1.26, 1.22, 1.12);   // worn dirt reads ~1.5x the meadow (ref 237)
     c *= 0.74 + 0.5 * vn(xz * 0.2) * (0.6 + 0.4 * n1);
     float rut = 1.0 - smoothstep(0.13, 0.27, abs(dP - 0.8 - (vn(xz * 0.11 + 3.0) - 0.5) * 0.16) + (n2 - 0.5) * 0.07);
     c *= mix(1.0, 0.64, rut);
