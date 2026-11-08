@@ -86,11 +86,11 @@ scene.add(new THREE.HemisphereLight(0x30344a, 0x0a0806, num('amb', 14)));
 
 // --- signs ---
 let signs = null; const lights = new THREE.Group(); scene.add(lights);
-function rebuild() {
+async function rebuild() {
   if (signs) { scene.remove(signs.group); signs.dispose(); }
   lights.clear();
   const push = num('push', -1);
-  signs = seoulSigns.build(layout, { seed: num('seed', 1), neonPush: push >= 0 ? push : undefined, moire: num('moire', 0.6), fontBase: './seoul/fonts/',
+  signs = await seoulSigns.build(layout, { seed: num('seed', 1), neonPush: push >= 0 ? push : undefined, moire: num('moire', 0.6), fontBase: './seoul/fonts/',
     onFonts: () => draw() });
   scene.add(signs.group);
   // harness-only spill: screens as rect lights, the brightest static signs as point lights (S3 does this properly)
@@ -102,7 +102,7 @@ function rebuild() {
   for (const { e } of stat) { const c = new THREE.Color(...e.rgb); const l = new THREE.PointLight(c, e.nits * e.w * e.h * 0.0008, 14, 2);
     l.position.set(e.pos[0] + e.normal[0] * 0.6, e.pos[1], e.pos[2] + e.normal[2] * 0.6); lights.add(l); }
   const s = signs.stats;
-  document.getElementById('stats').textContent = `layout ${path}\nsigns ${s.total}  emitters ${s.emitters}  screens ${s.screens}\nlit ${(s.litShare * 100).toFixed(0)}%  neon ${(s.neonShare * 100).toFixed(1)}%  atlas ${s.atlas}px @ ${s.pxPerM} px/m\ndraw calls ${s.drawCalls}  tris ${s.tris}  build ${s.buildMs} ms\n` +
+  document.getElementById('stats').textContent = `layout ${path}\nsigns ${s.total}  emitters ${s.emitters}  screens ${s.screens}\nlit ${(s.litShare * 100).toFixed(0)}%  neon ${(s.neonShare * 100).toFixed(1)}%  msdf ${s.msdf.size}px @ ${s.msdf.pxPerEm} px/em\ndraw calls ${s.drawCalls}  tris ${s.tris}  glyphs ${s.glyphs}  gpu ${s.gpuMB} MB  build ${s.buildMs} ms\n` +
     Object.entries(s.colourShare).map(([k, v]) => `${k} ${(v * 100).toFixed(0)}%`).join('  ');
   window.__signs = signs;
 }
@@ -122,6 +122,9 @@ const CAMS = {
   'screen-mid': [[s0.pos[0] + 6, s0.pos[1] - 2, s0.pos[2] + 22], [s0.pos[0], s0.pos[1], s0.pos[2]]],
   fascia: [[-80, 3.4, -1.5], [-80, 3.6, 5]], fascia2: [[-100, 4.5, 1.5], [-102, 5, -5]],
   east: [[34, 3.5, 1], [0, 7, -2]], blade: [[-24, 7, 4], [-40, 9, -5]], high: [[0, 70, 130], [0, 5, 20]],
+  // the game's seoulsnap shots (real layout): walk0/180 Eoulmadang-ro, club90 Wausan-ro 19-gil, station2 Yanghwa-ro
+  g_walk0: [[-36, 3, -23], [-36, 4.2, -40]], g_walk180: [[-36, 3, -23], [-36, 4.2, -6]], g_club90: [[63.7, 3, 129.6], [46, 4.2, 129.6]],
+  g_station2: [[31.8, 8, -309], [31.8, 8, -290]], g_close: [[-38.5, 3.1, -26], [-41, 3.0, -27.5]],
 };
 const camSel = document.getElementById('cam');
 for (const k of Object.keys(CAMS)) camSel.add(new Option(k, k));
@@ -134,12 +137,12 @@ let ev = num('exp', -2.5); renderer.toneMappingExposure = Math.pow(2, ev);
 bind('exp', ev, (v) => { renderer.toneMappingExposure = Math.pow(2, v); });
 bind('moire', num('moire', 0.6), (v) => signs.setMoire(v));
 bind('bloom', num('bloom', 0.2), (v) => { bloom.strength = v; });
-bind('push', num('push', -0.05), (v) => { Q.set('push', v < 0 ? '' : v); rebuild(); });
+bind('push', num('push', -0.05), (v) => { Q.set('push', v < 0 ? '' : v); rebuild().then(draw); });
 document.getElementById('hide').onclick = () => document.getElementById('ui').classList.add('hide');
 if (Q.get('ui') === '0') document.getElementById('ui').classList.add('hide');
 
 await loadFonts('./seoul/fonts/');
-rebuild();
+await rebuild();
 const t0 = performance.now(); const tFixed = Q.has('t') ? +Q.get('t') : null;
 function draw() {
   const t = tFixed ?? (performance.now() - t0) / 1000;

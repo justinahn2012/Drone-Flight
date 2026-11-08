@@ -1,28 +1,32 @@
-// seoul-signs.js — S2: Hongdae signs and LED video screens (contracts L1 / L2 / L3 in review/SEOUL-BUILD.md).
+// seoul-signs.js — Hongdae signs and LED video screens (contracts L1 / L2 / L3 in review/SEOUL-BUILD.md; phase 2 stream B).
 //
 //   import { seoulSigns } from './seoul-signs.js';
-//   const signs = seoulSigns.build(layout, { seed, neonPush, nitScale, fontBase, quality });
+//   const signs = await seoulSigns.build(layout, { seed, neonPush, nitScale, renderer, quality });
 //   scene.add(signs.group);  lights.attach(world, signs.emitters);  each frame: signs.update(t, camPos);
+//   seoulSigns.exportData(layout, opts) -> { signs, screens }   (pure, node-safe: signs.json / screens.json for native)
 //
-// What it makes (all seeded and deterministic; geometry, counts and emitters do not depend on fonts or the canvas):
-//   signs   : 10 types: fascia light box, channel letters, vertical blade stack (돌출), window vinyl, neon tube,
-//             rooftop sign, sidewalk standing box (입간판), LED dot scroller (전광판), round projecting box, flex banner
-//             (unlit). Invented shop names in real Korean, typeset per sign type in OFL faces (seoul/fonts).
-//   screens : LED video panels with procedural invented content (no brands / IP), rendered as a real LED panel:
-//             SMD pixel grid up close, moire at mid range, louvre angle falloff, rolling-shutter refresh bands, and an
-//             animated mean colour on the emitter record so S3 can spill it onto the street.
-//   colour  : the T5 census mix, recoloured by `neonPush` 0..1 per street (faces and tubes only; geometry, counts and
-//             lit share stay census). See CENSUS / SHIPPED below.
-//   units   : emitters carry luminance in nits (cd/m^2). Materials output nits * nitScale in scene radiance
-//             (default NIT_SCALE = 0.01, i.e. 1.0 scene = 100 nits). signs.setNitScale(k) retunes at runtime.
+// Phase 2 (panel 1: art #1, graphics #2, lighting #2, colour #2/#5, perf #6, native #2):
+//   * The letters are the light, not the box. Every face is a list of elements: a box ground (light-box diffuser at
+//     25-35 % of its letters, or a dark galva panel that only reflects), MSDF glyph runs (fill, neon tube on the outline,
+//     exposed LED dots), bulb / LED borders and window film. Element kinds and their shading are listed in K below.
+//   * Text is a multi-channel signed-distance glyph atlas (seoul/signs/msdf.png, 2048^2, 8 OFL faces at 36 px/em; made
+//     by tools/seoul-msdf.py), laid out per sign at any size: sharp at 0.3 m, ~21 MB of GPU memory instead of the
+//     4096^2 canvas atlas (89 MB + 64 MB canvas) that held 4,200 signs at 25 px/m. No Canvas2D is needed for signs.
+//   * Luminance (cd/m^2) follows the panel's binding table: channel-letter / neon cores 600-2000, light-box letters
+//     100-220 with a diffuser profile (centre +20 %, edges -30 %, LED rows at grazing angles), box ground 25-35 % of the
+//     letters, window vinyl x0.3 of an 8-25 nit room, LED screens 180-350 with content whose mean is ~0.3 of peak.
+//   * All faces draw with ONE MeshStandardMaterial (patched by seoul-light: haze + the city light grid on the unlit
+//     parts), opaque, depth-writing, alpha-to-coverage edges; meshes are split into 80 m tiles so they frustum-cull.
+//     The 120 LED screens are one instanced mesh (one draw) with per-instance program state.
 //
 // Emitter record (L3): { id, pos, normal, w, h, rgb (linear, luminance-normalised: Y = 1), nits (mean over w*h),
 //                        kind, flicker?, animated }. Animated records (screens, scrollers) are mutated in place by update().
 import * as THREE from 'three';
 import { Rng } from './rng.js';
+import { MSDF } from './seoul/signs/msdf-meta.js';
 
 export const NIT_SCALE = 0.01;
-export const SIGNS_VERSION = 1;
+export const SIGNS_VERSION = 2;
 
 // ---------------------------------------------------------------------------------------------------------------
 // 1) colour: census vs shipped (T5 table), by category
@@ -31,8 +35,8 @@ export const COLOR_CATS = ['white', 'red', 'blue', 'ygo', 'pink', 'cyan', 'viole
 export const CENSUS =  [0.45, 0.20, 0.15, 0.12, 0.04, 0.03, 0.01];
 export const SHIPPED = [0.25, 0.14, 0.10, 0.08, 0.20, 0.14, 0.09];
 export const NEON_SHARE = [0.04, 0.15];        // neon-tube share of nightlife-able signs at push 0 / 1
-// default push by street kind (T5: hero streets 1.0, side alleys 0.4); street.neonPush overrides
-export const PUSH_BY_KIND = { club: 1.0, walking: 1.0, main: 0.6, alley: 0.4 };
+// default push by street kind; street.neonPush overrides. Phase 2 (colour #2): club/walking 1.0 -> 0.6, main 0.6 -> 0.4
+export const PUSH_BY_KIND = { club: 0.6, walking: 0.6, main: 0.4, alley: 0.4 };
 // how strongly a tenant takes the push: nightlife soaks it up, convenience stores keep chain colours
 const USE_PUSH = { club: 1.35, bar: 1.3, pocha: 1.2, karaoke: 1.3, motel: 1.25, pc: 1.0, hotel: 0.8, cafe: 0.9, restaurant: 0.7,
   shop: 0.7, office: 0.4, conv: 0.0 };
@@ -41,6 +45,7 @@ const srgb = (h) => { const c = new THREE.Color(h); return [c.r, c.g, c.b]; };  
 const HEX = {
   white: '#f2f6ff', warm: '#ffe0b0', red: '#ff2414', blue: '#1e56ff', yellow: '#ffc414', orange: '#ff7410', green: '#14d860',
   pink: '#ff3c9c', magenta: '#ff28d2', cyan: '#18e4ff', teal: '#10d8b0', violet: '#8a3cff', amber: '#ffa010',
+  paleYellow: '#fff1b8', paleBlue: '#e2f2ff', bulb: '#ffc98a', roomWarm: '#ffd7a0', roomCool: '#e6efff', roomFluo: '#eaffef',
 };
 // category -> concrete light colours (weights)
 const CAT_HUES = {
@@ -51,13 +56,18 @@ const CAT_HUES = {
 export const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 const norm1 = (c) => { const y = Math.max(lum(c), 1e-4); return [c[0] / y, c[1] / y, c[2] / y]; };
 
-// luminance by type (nits, the lit face / tube surface, not the rect mean). G5 / L5: channel 300-1500, boxes 150-600.
+// Luminance, cd/m^2 (panel 1 binding table). Letters/cores are what clips; grounds and rooms sit well below them.
 export const NITS = {
-  lightbox: [150, 300], lightboxColour: [120, 250], channel: [300, 900], channelColour: [250, 700],   // [integ6] S3's clip pass: fascia boxes capped 150-300, channel 300-900
-  neon: [900, 2200], window: [40, 120], scroller: [400, 900], screen: [350, 700], screenSmall: [250, 500], banner: [0, 0],
+  boxLetters: [110, 220], boxLettersColour: [100, 200],   // light-box letters: the brightest part of a box face (100-220)
+  ground: [0.25, 0.35],                                    // lit box ground behind the letters, as a share of the letters
+  channel: [600, 1200], channelColour: [600, 1500],        // LED channel letters / galva LED letters (cores 600-2000)
+  neon: [900, 2000], bulb: [800, 2000],                    // tube cores, bulb and exposed-LED dots (point sources)
+  scroller: [300, 600],                                    // LED dot board: mean of an "on" cell (dots peak at 2.6x)
+  room: [8, 25], vinyl: 0.3,                               // window film: the lit room behind; vinyl transmits x0.3
+  screen: [180, 350], screenSmall: [180, 300], banner: [0, 0],
 };
-// share of the rect that actually emits, for the emitter's mean nits
-const COVER = { lightbox: 0.92, channel: 0.42, neon: 0.13, window: 0.35, scroller: 0.3, screen: 1 };
+// galva / painted panels behind LED letters (sRGB albedo; they only reflect)
+const GALVA = ['#1a1a1c', '#26272a', '#101828', '#2e2219', '#102118', '#3a1212', '#5a5a5c', '#0c0c0e'];
 
 // ---------------------------------------------------------------------------------------------------------------
 // 2) invented names (real Korean; no brands). The font subsetter (tools/seoul-fonts.py) reads every hangul in this file.
@@ -78,14 +88,15 @@ const USE_WORDS = {
   pocha: ['포차', '포장마차', '실내포차', '꼬치', '닭발', '오뎅바', '전집', '막걸리'],
   restaurant: ['삼겹살', '갈비', '곱창', '막창', '닭갈비', '족발', '보쌈', '국밥', '김밥', '분식', '떡볶이', '냉면', '칼국수', '마라탕',
     '라멘', '돈까스', '치킨', '횟집', '쌀국수', '부대찌개', '고기집', '숯불구이'],
-  cafe: ['카페', '커피', '디저트', '베이커리', '브런치', '보드게임카페', '룸카페', '만화카페', 'CAFE', 'COFFEE', 'BAKERY'],
-  shop: ['소품샵', '안경', '화장품', '휴대폰', '네일', '헤어', '미용실', '셀프사진관', '타투', '빈티지', '문구', 'SHOP', 'STUDIO'],
+  cafe: ['카페', '커피', '디저트', '베이커리', '브런치', '보드게임카페', '룸카페', '만화카페', '방탈출카페', '사주카페', '타로카페', 'CAFE', 'COFFEE', 'BAKERY'],
+  shop: ['소품샵', '안경', '화장품', '휴대폰', '네일', '헤어', '미용실', '셀프사진관', '타투', '빈티지', '문구', '인형뽑기', '속눈썹', '코인빨래방', 'SHOP', 'STUDIO'],
   conv: ['편의점', '마트', '24시 편의점'],
   karaoke: ['코인노래방', '노래연습장', '노래방', '코인노래연습장'],
-  pc: ['PC방', 'PC CAFE', '게임존', '오락실', '이스포츠'],
+  pc: ['PC방', 'PC CAFE', '게임존', '오락실', '이스포츠', 'VR방'],
   motel: ['모텔', '무인텔', 'MOTEL', 'HOTEL'],
   hotel: ['호텔', '게스트하우스', 'HOTEL', 'GUEST HOUSE', '스테이'],
-  office: ['학원', '부동산', '세무회계', '법무사', '치과', '의원', '약국', '연습실', '댄스학원', '실용음악학원', '스튜디오', '공방'],
+  office: ['학원', '부동산', '세무회계', '법무사', '치과', '의원', '약국', '연습실', '댄스학원', '실용음악학원', '스튜디오', '공방', '당구장', '스크린골프',
+    '필라테스', '헬스장', '피부과', '한의원', '영어학원', '보컬학원'],
 };
 // upper-floor tenants (what sits above the ground-floor shop), by building use
 const UPPER_USES = {
@@ -119,15 +130,17 @@ const range = (r, a, b) => a + (b - a) * r.next();
 function pickW(u, pairs) { let s = 0; for (const [, w] of pairs) s += w; let x = u * s; for (const p of pairs) { x -= p[1]; if (x <= 0) return p[0]; } return pairs[pairs.length - 1][0]; }
 export function mixDist(push) { return CENSUS.map((c, i) => c + (SHIPPED[i] - c) * push); }
 function invCdf(u, dist) { let x = u; for (let i = 0; i < dist.length; i++) { x -= dist[i]; if (x <= 0) return i; } return dist.length - 1; }
+const lerp = (a, b, k) => a + (b - a) * k;
 
 // lit share at ~midnight by tenant use (T5 census: 20-30 % of signs unlit; Hongdae nightlife keeps its own lit)
 const LIT_P = { club: 0.97, bar: 0.95, pocha: 0.95, karaoke: 0.96, pc: 0.95, motel: 0.97, hotel: 0.9, conv: 1.0, restaurant: 0.75,
   cafe: 0.6, shop: 0.45, office: 0.15 };
 const NIGHT_USES = new Set(['club', 'bar', 'pocha', 'karaoke', 'motel']);
+const BOX_STYLES = new Set(['fascia', 'blade', 'stand', 'round']);
 
 // ---------------------------------------------------------------------------------------------------------------
 // 4) the generator: layout -> sign specs (pure data; node-testable). A spec is one physical sign.
-//    spec: { id, type, lot, use, lit, cat, hue, nits, flicker?, text: {...}, font, geo: {...}, design: {...} }
+//    spec: { id, type, style, design, lot, use, lit, cat, hue, rgb, nits (letter / core luminance), groundK, bulbs, geo, ... }
 // ---------------------------------------------------------------------------------------------------------------
 function facadeFrame(lot) {
   const fp = lot.footprint; let cx = 0, cz = 0; for (const p of fp) { cx += p[0]; cz += p[1]; } cx /= fp.length; cz /= fp.length;
@@ -160,6 +173,25 @@ function signColour(uCat, uHue, push, use) {
   return { cat, hue, rgb: srgb(HEX[hue]) };
 }
 
+// face design per sign (how the light is made). Real Hongdae: LED letters on galva panels and dark-ground flex boxes
+// have replaced most white flex boxes; coloured flex boxes keep a dimmer ground behind bright letters.
+function chooseDesign(style, cat, use, u) {
+  if (style === 'neon') return 'neon';
+  if (style === 'channel' || style === 'roof') return 'channel';
+  if (style === 'window') return u < 0.55 ? 'vinylA' : 'vinylB';
+  if (style === 'banner' || style === 'scroller') return style;
+  if ((style === 'fascia' || style === 'blade') && (use === 'pocha' || use === 'karaoke' || use === 'bar' || use === 'pc') && u < 0.2) return 'dots';
+  if (use === 'conv') return 'flex';
+  if (cat === 'white') return u < 0.55 ? 'galva' : 'blackflex';
+  return u < 0.72 ? 'flex' : 'galva';
+}
+function designNits(design, cat, u) {
+  const R = design === 'neon' ? NITS.neon : design === 'channel' || design === 'galva' ? (cat === 'white' ? NITS.channel : NITS.channelColour)
+    : design === 'dots' ? NITS.bulb : design === 'vinylA' || design === 'vinylB' ? NITS.room : design === 'scroller' ? NITS.scroller
+      : design === 'banner' ? NITS.banner : (cat === 'white' ? NITS.boxLetters : NITS.boxLettersColour);
+  return R[0] + (R[1] - R[0]) * u;
+}
+
 export function generateSigns(layout, opts = {}) {
   const seed = (opts.seed ?? 0x5e0a1) >>> 0, pushOverride = opts.neonPush, pushScale = opts.neonPushScale ?? 1;
   const streets = new Map((layout.streets || []).map((s) => [s.id, s]));
@@ -184,6 +216,7 @@ export function generateSigns(layout, opts = {}) {
     const add = (type, t, geo, extra = {}) => {
       // fixed colour draws per sign, whatever the push, so geometry/count/lit never move with push
       const uCat = rc.next(), uHue = rc.next(), uNeon = rc.next(), uNit = rc.next(), uFlk = rc.next(), uAcc = rc.next();
+      const uDes = rc.next(), uBulb = rc.next(), uGr = rc.next(), uLet = rc.next();
       const c = signColour(uCat, uHue, push, t.use);
       const nightlife = NIGHT_USES.has(t.use) || t.use === 'restaurant' && lot.use === 'pocha';
       const pn = Math.min(1, push * (USE_PUSH[t.use] ?? 0.8));
@@ -191,22 +224,26 @@ export function generateSigns(layout, opts = {}) {
       // neon-tube share (T5: <5 % census -> 15 % hero) re-skins small nightlife faces as tube lettering on a black board
       if (nightlife && (type === 'fascia' || type === 'round' || type === 'window') && uNeon < (NEON_SHARE[0] + (NEON_SHARE[1] - NEON_SHARE[0]) * pn) * 3.4) style = 'neon';
       const acc = pickW(uAcc, [['white', 0.5], ['red', 0.2], ['blue', 0.15], ['yellow', 0.15]]);
-      const kindNits = style === 'neon' ? NITS.neon : style === 'channel' || style === 'roof' ? (c.cat === 'white' ? NITS.channel : NITS.channelColour)
-        : style === 'window' ? NITS.window : style === 'scroller' ? NITS.scroller : style === 'banner' ? NITS.banner
-        : (c.cat === 'white' ? NITS.lightbox : NITS.lightboxColour);
-      const nits = kindNits[0] + (kindNits[1] - kindNits[0]) * uNit;
-      // ~3 % of lit tubes/boxes are failing: irregular flicker (S3 can light it; the face flickers in-shader)
+      const design = chooseDesign(style, c.cat, t.use, uDes);
+      const nits = designNits(design, c.cat, uNit);
+      // ~3 % of lit tubes/boxes are failing: irregular flicker (seoul-light can light it; the face flickers in-shader)
       const flicker = t.lit && (style === 'neon' ? uFlk < 0.08 : uFlk < 0.02) ? { hz: 6 + uFlk * 60, depth: 0.7 } : null;
-      specs.push({ id: `${lot.id}:${type}${k++}`, type, style, lot: lot.id, street: lot.street, use: t.use, floor: t.f, lit: t.lit,
-        cat: c.cat, hue: c.hue, rgb: c.rgb, accent: srgb(HEX[acc]), nits, flicker, name: t.name, phone: t.phone, tag: t.tag, frame: F, geo,
+      // bulb / LED borders on ~30 % of nightlife boxes (art #1)
+      const bulbs = BOX_STYLES.has(style) && (nightlife || t.use === 'pc') && design !== 'dots' && uBulb < 0.3
+        ? (uBulb < 0.11 ? 'chase' : uBulb < 0.19 ? 'bulbs' : 'led') : null;
+      const letter = pickW(uLet, [['white', 0.58], ['paleYellow', 0.24], ['paleBlue', 0.18]]);
+      specs.push({ id: `${lot.id}:${type}${k++}`, type, style, design, lot: lot.id, street: lot.street, use: t.use, floor: t.f, lit: t.lit,
+        cat: c.cat, hue: c.hue, rgb: c.rgb, accent: srgb(HEX[acc]), accentName: acc, letter, nits, groundK: lerp(NITS.ground[0], NITS.ground[1], uGr),
+        bulbs, galva: GALVA[Math.floor(uGr * GALVA.length) % GALVA.length], flicker, name: t.name, phone: t.phone, tag: t.tag, frame: F, geo,
         push, seed: r.next() * 1e9 >>> 0, ...extra });
     };
     const g = tenants[0];
     const L = F.L, fh = F.fh;
-    // --- ground floor: fascia light box (most) or channel letters on a raceway (cafes, conv, clubs often) ---
-    const fasciaW = Math.min(L - 0.3, L * range(r, 0.82, 0.97)), fasciaH = range(r, 0.85, 1.25);
+    // --- ground floor: fascia light box (most) or channel letters on a raceway (cafes, conv, clubs, restaurants, bars) ---
+    // art #1: fasciaW 0.82-0.97 L -> 0.55-0.85 L; channel share 0.2 -> 0.45 for restaurants and bars
+    const fasciaW = Math.min(L - 0.3, L * range(r, 0.55, 0.85)), fasciaH = range(r, 0.85, 1.25);
     const fasciaY = Math.min(fh - fasciaH - 0.15, range(r, 2.55, 2.95));
-    const channel = r.next() < ({ cafe: 0.55, club: 0.5, shop: 0.4, hotel: 0.7 }[g.use] ?? 0.2);
+    const channel = r.next() < ({ cafe: 0.55, club: 0.5, shop: 0.4, hotel: 0.7, restaurant: 0.45, bar: 0.45, pocha: 0.45 }[g.use] ?? 0.25);
     add(channel ? 'channel' : 'fascia', g, { u: (L - fasciaW) / 2, y: fasciaY, w: fasciaW, h: fasciaH, d: channel ? 0.12 : 0.28 });
     // --- second fascia on the side-return or a smaller box over the door (pocha / restaurants stack boxes) ---
     if (r.next() < 0.35 && L > 6) add('fascia', g, { u: range(r, 0.2, 0.6), y: fasciaY - 0.95, w: Math.min(2.4, L * 0.25), h: 0.7, d: 0.2, small: true });
@@ -215,17 +252,16 @@ export function generateSigns(layout, opts = {}) {
       const sw = Math.min(L * 0.5, range(r, 1.6, 3.2));
       add('scroller', g, { u: range(r, 0.3, Math.max(0.35, L - sw - 0.3)), y: fasciaY - 0.36, w: sw, h: 0.26, d: 0.06 }, { scrollRow: Math.floor(r.next() * SCROLL_TEXT.length) });
     }
-    // --- sidewalk standing sign (입간판): rotating cylinder / box, 1.2 m in front ---
-    if (r.next() < ({ cafe: 0.6, bar: 0.7, pocha: 0.7, restaurant: 0.75, karaoke: 0.8, pc: 0.6, shop: 0.4, club: 0.5 }[g.use] ?? 0.15))
+    // --- sidewalk standing sign (입간판): ~one per two shops ---
+    if (r.next() < ({ cafe: 0.6, bar: 0.75, pocha: 0.75, restaurant: 0.75, karaoke: 0.8, pc: 0.6, shop: 0.45, club: 0.5, conv: 0.3 }[g.use] ?? 0.25))
       add('stand', g, { u: range(r, 0.6, Math.max(0.7, L - 0.6)), y: 0.15, w: 0.55, h: range(r, 1.1, 1.5), d: 0.55, out: range(r, 0.8, 1.4) });
-    // --- upper floors: spandrel boxes, window vinyl, channel letters ---
+    // --- upper floors: spandrel boxes, window vinyl (on ~70 % of floors; lit with the tenant), channel letters ---
     for (let f = 1; f < nFloors; f++) {
       const t = tenants[f]; if (t.use === 'motel' || t.use === 'hotel') continue;
       const y0 = f * fh;
       const v = r.next();
-      if (v < 0.55) add('fascia', t, { u: L * range(r, 0.04, 0.12), y: y0 + fh - range(r, 1.05, 1.3), w: L * range(r, 0.7, 0.9), h: range(r, 0.75, 1.0), d: 0.22 });
+      if (v < 0.55) add('fascia', t, { u: L * range(r, 0.06, 0.16), y: y0 + fh - range(r, 1.05, 1.3), w: L * range(r, 0.5, 0.8), h: range(r, 0.75, 1.0), d: 0.22 });
       else if (v < 0.75) add('channel', t, { u: L * range(r, 0.08, 0.2), y: y0 + fh - 1.0, w: L * range(r, 0.55, 0.8), h: 0.8, d: 0.1 });
-      // window vinyl: hangul and floor number on the glass, lit by the room behind
       if (r.next() < 0.7) {
         const nw = r.next() < 0.5 ? 1 : 2;
         for (let j = 0; j < nw; j++) {
@@ -235,15 +271,15 @@ export function generateSigns(layout, opts = {}) {
       }
       if (r.next() < 0.12 && t.lit === false) add('banner', t, { u: L * 0.15, y: y0 + 0.5, w: L * 0.7, h: 0.8, d: 0.02 });
     }
-    // --- vertical blade stack (돌출간판): one tenant box per floor, at the facade edge ---
+    // --- vertical blade stacks (돌출간판): one tenant box per floor at the facade edge; a second stack on ~30 % ---
     if (nFloors >= 3 && r.next() < 0.75) {
       const side = r.next() < 0.5 ? 0.35 : L - 0.35, out = range(r, 0.45, 0.9), bw = range(r, 0.55, 0.75);
-      for (let f = 1; f < nFloors; f++) {
-        const t = tenants[f];
-        add('blade', t, { u: side, y: f * fh + 0.25, w: bw, h: fh - 0.5, d: 0.32, out });
-      }
+      for (let f = 1; f < nFloors; f++) add('blade', tenants[f], { u: side, y: f * fh + 0.25, w: bw, h: fh - 0.5, d: 0.32, out });
       if (lot.use === 'motel' || lot.use === 'hotel') { // one tall continuous blade for the whole building name
         add('blade', tenants[0], { u: L - side, y: fh + 0.2, w: 0.9, h: Math.min(10, (nFloors - 1) * fh - 0.4), d: 0.4, out: 1.0, tall: true });
+      } else if (r.next() < 0.3 && L > 5) {
+        const side2 = L - side, out2 = range(r, 0.45, 0.8), bw2 = range(r, 0.5, 0.7);
+        for (let f = 1; f < nFloors; f++) add('blade', tenants[f], { u: side2, y: f * fh + 0.3, w: bw2, h: fh - 0.6, d: 0.3, out: out2 });
       }
     }
     // --- round projecting box (원형돌출) at 2F for cafes/restaurants ---
@@ -251,17 +287,16 @@ export function generateSigns(layout, opts = {}) {
       add('round', g, { u: r.next() < 0.5 ? 0.5 : L - 0.5, y: fh + 0.4, w: 0.8, h: 0.8, d: 0.18, out: 0.6 });
     // --- neon in the ground-floor window (bars, pocha, clubs) ---
     if (NIGHT_USES.has(g.use) && r.next() < 0.5) add('neon', g, { u: range(r, 0.5, Math.max(0.6, L - 2.2)), y: 1.0, w: range(r, 1.2, 1.8), h: range(r, 0.5, 0.8), d: 0.05 }, { neonText: pick(r, NEON_WORDS) });
-    // --- rooftop sign on taller buildings: steel frame with letters or a box ---
+    // --- rooftop sign on taller buildings: steel frame with letters ---
     if (nFloors >= 5 && r.next() < 0.45) {
       const t = lot.use === 'office' ? tenants[nFloors - 1] : tenants[0];
       const rw = Math.min(L * 0.85, range(r, 6, 11));
       add('roof', t, { u: (L - rw) / 2, y: F.top + 0.6, w: rw, h: range(r, 1.6, 2.6), d: 0.3, out: -1.2 });
     }
-    // --- motels: the classic heart/neon outline blade is covered by the tall blade; add a fascia with 휴게/숙박 tag ---
+    // --- motels: fascia with the 휴게/숙박 tag ---
     if (lot.use === 'motel' || lot.use === 'hotel') add('fascia', g, { u: L * 0.1, y: fh * 2 - 1.1, w: L * 0.8, h: 0.9, d: 0.25 });
   }
   // --- LED screens: from the layout, plus small door screens synthesised for cafes / shops / clubs on hero streets ---
-  const lotsById = new Map((layout.lots || []).map((l) => [l.id, l]));
   (layout.screens || []).forEach((s, i) => screens.push({ ...s, idx: i, seed: (seed ^ hashStr(s.id)) >>> 0 }));
   for (const lot of layout.lots || []) {
     const st = streets.get(lot.street); if (!st || st.kind === 'alley') continue;
@@ -272,79 +307,103 @@ export function generateSigns(layout, opts = {}) {
     screens.push({ id: `${lot.id}:door`, lot: lot.id, pos: [F.o[0] + F.r[0] * cu + F.n[0] * 0.03, y + h / 2, F.o[1] + F.r[1] * cu + F.n[1] * 0.03],
       normal: [F.n[0], 0, F.n[1]], w, h, kind: 'small', idx: screens.length, seed: (seed ^ hashStr(lot.id + '#door')) >>> 0, synth: true });
   }
-  void lotsById;
   return { specs, screens };
 }
 
-// stats for tests / report: lit share, colour shares of lit signs, counts by type
+// stats for tests / report: lit share, colour shares of lit signs, counts by type and design
 export function signStats(specs) {
-  const byType = {}, cat = Object.fromEntries(COLOR_CATS.map((c) => [c, 0])); let lit = 0, litN = 0, neon = 0, eligible = 0;
+  const byType = {}, byDesign = {}, cat = Object.fromEntries(COLOR_CATS.map((c) => [c, 0])); let lit = 0, litN = 0, neon = 0, eligible = 0, bulbs = 0, nlBoxes = 0;
   for (const s of specs) {
-    byType[s.style] = (byType[s.style] || 0) + 1;
+    byType[s.style] = (byType[s.style] || 0) + 1; byDesign[s.design] = (byDesign[s.design] || 0) + 1;
+    if (s.bulbs) bulbs++;
+    if (BOX_STYLES.has(s.style) && (NIGHT_USES.has(s.use) || s.use === 'pc') && s.design !== 'dots') nlBoxes++;
     if (s.type === 'banner') continue; eligible++;
     if (s.lit) { lit++; litN++; cat[s.cat]++; if (s.style === 'neon') neon++; }
   }
   const share = Object.fromEntries(Object.entries(cat).map(([k, v]) => [k, +(v / Math.max(1, litN)).toFixed(3)]));
-  return { total: specs.length, byType, litShare: +(lit / Math.max(1, eligible)).toFixed(3), colourShare: share, neonShare: +(neon / Math.max(1, litN)).toFixed(3) };
+  return { total: specs.length, byType, byDesign, litShare: +(lit / Math.max(1, eligible)).toFixed(3), colourShare: share,
+    neonShare: +(neon / Math.max(1, litN)).toFixed(3), bulbShare: +(bulbs / Math.max(1, nlBoxes)).toFixed(3) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// 5) geometry: each spec -> housing boxes + face quads (atlas regions). Faces carry per-vertex nits + flicker.
+// 5) MSDF text layout -> face elements (local metres, origin at the face centre, x right, y up)
 // ---------------------------------------------------------------------------------------------------------------
-class Buf {
-  constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.f = []; }
-  quad(P, N, UV, C, Fk) { // P: 4 corners (bl, br, tr, tl), two triangles
-    const idx = [0, 1, 2, 0, 2, 3];
-    for (const i of idx) { this.p.push(...P[i]); this.n.push(...N); this.uv.push(...(UV ? UV[i] : [0, 0])); this.c.push(...C); this.f.push(...(Fk || [0, 0, 0])); }
+// element kinds (the shader in section 7 switches on these; native ports implement the same list):
+//   BOX   light-box ground: diffuser profile (centre +20 %, edges -30 %), LED rows stronger at grazing angles, p.z=1 round
+//   PANEL flat panel (galva, black board, band, tube border): emits col, reflects alb
+//   FILL  MSDF glyph fill; p.x=1: LED letter profile (edges dimmer)
+//   TUBE  MSDF neon tube centred on the glyph outline, half width p.x em
+//   DOTS  MSDF glyph filled with exposed LED dots at pitch p.x em on a dark letter body
+//   BULBS border strip of bulbs / LEDs: uv.x metres along, p = (pitch m, mode 0 static | 1 chase | 2 LED, strip width m)
+//   ROOM  lit room behind window film: ceiling-light gradient, p.z=1 blinds
+export const K = { BOX: 0, PANEL: 1, FILL: 2, TUBE: 3, DOTS: 4, BULBS: 5, ROOM: 6 };
+const AW = MSDF.size[0], AH = MSDF.size[1];
+const FACE_IDX = new Map(MSDF.faces.map((f, i) => [f.name, i]));
+const GLYPH_OFS = MSDF.faces.map((f) => { const m = new Map(); [...f.chars].forEach((c, i) => m.set(c, i * 10)); return m; });
+const FALLBACK_FACES = ['S2 Sans', 'S2 Gothic', 'S2 BlackHan'].map((n) => FACE_IDX.get(n));
+const missingGlyphs = new Set();
+function glyphOf(fi, ch) {
+  for (const f of [fi, ...FALLBACK_FACES]) {
+    const o = GLYPH_OFS[f]?.get(ch); if (o === undefined) continue;
+    const g = MSDF.faces[f].g; if (g[o + 7] === 0 && g[o + 8] === 0) continue;   // no outline in the atlas
+    return { adv: g[o] / 1000, l: g[o + 1] / 1000, b: g[o + 2] / 1000, r: g[o + 3] / 1000, t: g[o + 4] / 1000,
+      u0: g[o + 5] / AW, v1: g[o + 6] / AH, u1: g[o + 7] / AW, v0: g[o + 8] / AH, ink: g[o + 9] / 1000 };
   }
-  geometry() {
-    if (!this.p.length) return null;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.n, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3));
-    g.setAttribute('flk', new THREE.Float32BufferAttribute(this.f, 3));
-    g.computeBoundingSphere();
-    return g;
+  missingGlyphs.add(ch); return null;
+}
+const HANGUL = /[가-힣]/;
+// lay one line of text into the box centred (cx, cy), size (w, h). Letter height = h * k (hangul height, or cap height
+// for Latin-only runs); too long -> condense horizontally to 55 % (as Korean sign shops do), then shrink.
+function textRun(els, text, face, cx, cy, w, h, o = {}) {
+  if (!text) return null;
+  const fi = FACE_IDX.get(face) ?? FACE_IDX.get('S2 Sans'); const F = MSDF.faces[fi];
+  const track = o.track ?? 0.03; const items = []; let adv = 0;
+  for (const ch of text) {
+    if (ch === ' ') { items.push(null); adv += 0.3; continue; }
+    const g = glyphOf(fi, ch); items.push(g || false); adv += g ? g.adv + track : 0.5;
   }
+  if (adv <= 0) return null;
+  const latin = !HANGUL.test(text);
+  let em = (h * (o.k ?? 0.74)) / (latin ? F.cap : F.hh);
+  let sx = Math.min(1, w / (adv * em)); const minSx = o.minSx ?? 0.55;
+  if (sx < minSx) { em *= sx / minSx; sx = Math.min(1, w / (adv * em)); }
+  const base = cy - (latin ? F.cap / 2 : F.mid) * em, tw = adv * em * sx;
+  let x = o.align === 'l' ? cx - w / 2 : o.align === 'r' ? cx + w / 2 - tw : cx - tw / 2;
+  let ink = 0; const start = els.length;
+  for (const g of items) {
+    if (!g) { x += (g === null ? 0.3 : 0.5) * em * sx; continue; }
+    const x0 = x + g.l * em * sx, x1 = x + g.r * em * sx, y0 = base + g.b * em, y1 = base + g.t * em;
+    const gi = g.ink * em * em * sx, area = (x1 - x0) * (y1 - y0);
+    els.push({ k: o.kind ?? K.FILL, layer: o.layer ?? 1, z: o.z ?? 0, q: [x0, y0, x1, y0, x1, y1, x0, y1], uv: [g.u0, g.v0, g.u1, g.v0, g.u1, g.v1, g.u0, g.v1],
+      col: o.col || [0, 0, 0], alb: o.alb || [0.5, 0.5, 0.5], p: [o.pitchM ? o.pitchM / em : (o.p0 ?? 0), 0, area > 0 ? Math.min(1, gi / area) : 0], ink: gi, glyph: true });
+    ink += gi; x += (g.adv + track) * em * sx;
+  }
+  return { ink, w: tw, em, start, end: els.length };
 }
-const UP = [0, 1, 0];
-const add3 = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-// face quad: centre c, normal m (horizontal or not), width w along r = up x m, height h along up; uv rect [u0,v0,u1,v1]
-function faceQuad(buf, c, m, w, h, uvr, col, fk) {
-  const r = cross(UP, m); const rl = Math.hypot(...r) || 1; r[0] /= rl; r[1] /= rl; r[2] /= rl;
-  const bl = add3(add3(c, r, -w / 2), UP, -h / 2), br = add3(add3(c, r, w / 2), UP, -h / 2);
-  const tr = add3(add3(c, r, w / 2), UP, h / 2), tl = add3(add3(c, r, -w / 2), UP, h / 2);
-  const UV = uvr ? [[uvr[0], uvr[1]], [uvr[2], uvr[1]], [uvr[2], uvr[3]], [uvr[0], uvr[3]]] : null;
-  buf.quad([bl, br, tr, tl], m, UV, col, fk);
+// one syllable per row (blade signs, 입간판)
+function vStack(els, text, face, cx, cy, w, h, o = {}) {
+  const chars = [...text.replace(/ /g, '')]; if (!chars.length) return 0;
+  const cell = Math.min(w * 0.88, h / chars.length), top = cy + (cell * chars.length) / 2; let ink = 0;
+  chars.forEach((ch, i) => { const r = textRun(els, ch, face, cx, top - (i + 0.5) * cell, cell, cell, { k: 0.8, ...o }); if (r) ink += r.ink; });
+  return ink;
 }
-// axis box: centre c, frame (r, up, n), half sizes (hw, hh, hd); colour per face; skip front if noFront
-function box(buf, c, r, n, hw, hh, hd, col, noFront = false) {
-  const P = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
-  const F = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1], n], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1], [-n[0], 0, -n[2]]],
-    [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1], [r[0], 0, r[2]]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1], [-r[0], 0, -r[2]]],
-    [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1], [0, 1, 0]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [0, -1, 0]]];
-  F.forEach((f, i) => { if (noFront && i === 0) return; buf.quad(f.slice(0, 4).map((s) => P(...s)), f[4], null, col); });
+// rotate elements [a, b) by 90 deg clockwise about (cx, cy): Latin names on blades read top to bottom
+function rotCW(els, a, b, cx, cy) {
+  for (let i = a; i < b; i++) { const q = els[i].q; for (let j = 0; j < 8; j += 2) { const x = q[j], y = q[j + 1]; q[j] = cx + (y - cy); q[j + 1] = cy - (x - cx); } }
+}
+function rect(els, k, x0, y0, x1, y1, col, alb, p, layer = 0, z = 0) {
+  els.push({ k, layer, z, q: [x0, y0, x1, y0, x1, y1, x0, y1], uv: [0, 0, 1, 0, 1, 1, 0, 1], col, alb, p: p || [x1 - x0, y1 - y0, 0] });
+}
+// bulb / LED border: four strips just outside (x0, y0)-(x1, y1); uv.x runs along in metres
+function bulbBorder(els, x0, y0, x1, y1, col, mode, pitch) {
+  const t = 0.055, alb = [0.03, 0.03, 0.03];
+  const strip = (ax, ay, bx, by, vert) => { const len = vert ? by - ay : bx - ax;
+    els.push({ k: K.BULBS, layer: 1, z: 0.01, q: [ax, ay, bx, ay, bx, by, ax, by], uv: vert ? [0, 0, 0, 1, len, 1, len, 0] : [0, 0, len, 0, len, 1, 0, 1],
+      col, alb, p: [pitch, mode, t], bulb: true }); };
+  strip(x0 - t, y0 - t, x1 + t, y0, false); strip(x0 - t, y1, x1 + t, y1 + t, false);
+  strip(x0 - t, y0, x0, y1, true); strip(x1, y0, x1 + t, y1, true);
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// 6) atlas: shelf packer + Canvas2D painter (fonts from seoul/fonts, system fallbacks)
-// ---------------------------------------------------------------------------------------------------------------
-export const FONTS = [ // family (as drawn), file in seoul/fonts (renamed OFL subsets; see seoul/fonts/FONTS.txt)
-  ['S2 BlackHan', 'S2-BlackHanSans.woff2'], ['S2 DoHyeon', 'S2-DoHyeon.woff2'], ['S2 Jua', 'S2-Jua.woff2'], ['S2 Brush', 'S2-BrushScript.woff2'],
-  ['S2 Pen', 'S2-PenScript.woff2'], ['S2 Gothic', 'S2-GothicA1Black.woff2'], ['S2 Serif', 'S2-NotoSerifKR900.woff2'], ['S2 Sans', 'S2-NotoSansKR800.woff2'],
-];
-const FALLBACK = '"Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
-let fontsPromise = null;
-export function loadFonts(base = './seoul/fonts/') {
-  if (fontsPromise) return fontsPromise;
-  if (typeof FontFace === 'undefined' || typeof document === 'undefined') return (fontsPromise = Promise.resolve(false));
-  fontsPromise = Promise.all(FONTS.map(([fam, file]) => new FontFace(fam, `url(${base}${file})`).load().then((f) => { document.fonts.add(f); return true; }, () => false)))
-    .then((r) => r.every(Boolean));
-  return fontsPromise;
-}
 const fontFor = (spec, rr) => {
   const s = spec.style, u = spec.use;
   if (s === 'neon') return rr < 0.5 ? 'S2 Brush' : 'S2 Pen';
@@ -354,151 +413,164 @@ const fontFor = (spec, rr) => {
   if (u === 'office') return rr < 0.6 ? 'S2 Sans' : 'S2 Gothic';
   return rr < 0.45 ? 'S2 BlackHan' : rr < 0.7 ? 'S2 DoHyeon' : rr < 0.85 ? 'S2 Gothic' : 'S2 Sans';
 };
+const E = (lit, c, nits) => { if (!lit || !(nits > 0)) return [0, 0, 0]; const n = norm1(c); return [n[0] * nits, n[1] * nits, n[2] * nits]; };
+const scaleC = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
 
-function packShelves(items, size) { // items: {w,h} px (padding included) -> sets x,y; returns false if overflow
-  const order = items.map((_, i) => i).sort((a, b) => items[b].h - items[a].h || items[b].w - items[a].w);
-  let x = 0, y = 0, rowH = 0;
-  for (const i of order) {
-    const it = items[i]; if (it.w > size) it.w = size;
-    if (x + it.w > size) { x = 0; y += rowH; rowH = 0; }
-    if (y + it.h > size) return false;
-    it.x = x; it.y = y; x += it.w; rowH = Math.max(rowH, it.h);
-  }
-  return true;
-}
-
-const css = (c, k = 1) => { const t = new THREE.Color(c[0] * k, c[1] * k, c[2] * k); return '#' + t.getHexString(); }; // linear -> sRGB hex
-function fitText(g, text, family, weight, x, y, w, h, opts = {}) {
-  // draw text centred in (x,y,w,h); shrink height-first, then condense horizontally (as Korean sign shops do) down to 55 %
-  if (!text) return;
-  let size = h * (opts.k ?? 0.78);
-  g.font = `${weight || ''} ${size}px "${family}", ${FALLBACK}`;
-  let m = g.measureText(text).width; let sx = 1;
-  if (m > w) { sx = w / m; if (sx < 0.55) { size *= sx / 0.55; g.font = `${weight || ''} ${size}px "${family}", ${FALLBACK}`; m = g.measureText(text).width; sx = Math.min(1, w / m); } }
-  g.save(); g.translate(x + w / 2, y + h / 2 + size * (opts.dy ?? 0.04)); g.scale(sx, 1);
-  g.textAlign = opts.align || 'center'; g.textBaseline = 'middle';
-  if (opts.stroke) { g.lineJoin = 'round'; g.lineWidth = opts.stroke; g.strokeStyle = opts.strokeStyle; g.strokeText(text, 0, 0); }
-  if (opts.glow) { g.shadowColor = opts.glow; g.shadowBlur = opts.glowBlur || size * 0.25; }
-  g.fillStyle = opts.fill || '#fff'; g.fillText(text, 0, 0);
-  g.restore();
-}
-function verticalText(g, text, family, x, y, w, h, fill, opts = {}) { // one syllable per row (blade signs)
-  const chars = [...text.replace(/ /g, '')]; if (!chars.length) return;
-  const cell = Math.min(w * 0.92, h / chars.length);
-  const y0 = y + (h - cell * chars.length) / 2;
-  chars.forEach((ch, i) => fitText(g, ch, family, '', x + (w - cell) / 2, y0 + i * cell, cell, cell, { fill, k: 0.86, ...opts }));
-}
-
-// paint one design into its region. All colours here are sRGB display values; the material reads them as sRGB.
-function paintSign(g, s, x, y, w, h, R) {
-  const rr = R.next(), fam = fontFor(s, rr);
-  const col = css(s.rgb), acc = css(s.accent);
-  const lit = s.lit; const nm = s.name;
-  g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip();
-  const diffuser = (bg) => { // light box face: flat with faint LED-row hot bands and darker frame edge
-    g.fillStyle = bg; g.fillRect(x, y, w, h);
-    if (lit) {
-      const rows = Math.max(2, Math.round(h / 40));
-      for (let i = 0; i < rows; i++) { const gy = y + (i + 0.5) * h / rows; const gr = g.createLinearGradient(0, gy - h / rows / 2, 0, gy + h / rows / 2);
-        gr.addColorStop(0, 'rgba(0,0,0,0.10)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.10)'); gr.addColorStop(1, 'rgba(0,0,0,0.10)'); g.fillStyle = gr; g.fillRect(x, gy - h / rows / 2, w, h / rows); }
-    }
-    const e = Math.max(2, Math.min(w, h) * 0.05); const gr = g.createLinearGradient(x, 0, x + e * 3, 0);
-    g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(x, y, e, h); g.fillRect(x + w - e, y, e, h); g.fillRect(x, y, w, e * 0.6); g.fillRect(x, y + h - e * 0.6, w, e * 0.6);
-    void gr;
+// one face design -> { els, nits: emitter mean over w*h, rgb, letterNits, groundNits }
+export function designFace(s, w, h) {
+  const R = new Rng(s.seed ^ 0x51a7); const rr = R.next(), fam = fontFor(s, rr);
+  const els = []; const lit = s.lit && s.design !== 'banner'; const nm = s.name;
+  const hx = w / 2, hy = h / 2, N = s.nits;
+  const hueC = s.cat === 'white' ? srgb(HEX[s.hue]) : s.rgb;
+  const letterC = srgb(HEX[s.letter] || HEX.white);
+  let groundNits = 0, letterNits = N;
+  const lettersOn = (design) => {           // letter colour, emission, albedo per design
+    if (design === 'flex') return { col: E(lit, letterC, N), alb: [0.8, 0.8, 0.78] };
+    if (design === 'blackflex') return { col: E(lit, hueC, N), alb: scaleC(hueC, 0.6) };
+    return { col: E(lit, hueC, N), alb: scaleC(hueC, 0.55) };   // galva / channel: LED letters in the light colour
   };
-  const whiteBox = s.cat === 'white';
-  // text colour: white boxes get coloured vinyl (accent; never white-on-white), coloured boxes get white letters
-  const vinyl = whiteBox ? (s.accent[0] + s.accent[1] + s.accent[2] > 2.4 ? css(srgb(HEX.red)) : acc) : '#ffffff';
-  const bg = whiteBox ? col : css(s.rgb, 0.92);
+  const ground = (design, round) => {
+    if (design === 'flex') { groundNits = N * s.groundK; rect(els, K.BOX, -hx, -hy, hx, hy, E(lit, s.rgb, groundNits), scaleC(s.rgb, 0.5), [w, h, round ? 1 : 0]); }
+    else if (design === 'blackflex') { groundNits = N * 0.03; rect(els, K.BOX, -hx, -hy, hx, hy, E(lit, scaleC(hueC, 0.5).map((v) => v + 0.02), groundNits), [0.035, 0.035, 0.04], [w, h, round ? 1 : 0]); }
+    else { const g = srgb(s.galva); rect(els, K.PANEL, -hx, -hy, hx, hy, [0, 0, 0], g, [w, h, round ? 1 : 0]); }
+  };
+  const design = s.design;
   switch (s.style) {
-    case 'fascia': case 'stand': {
-      diffuser(bg);
-      if (s.style === 'stand') { verticalText(g, nm.main.replace(/[A-Z ]/g, '').slice(0, 5) || nm.main.slice(0, 5), fam, x, y + h * 0.04, w, h * 0.92, vinyl); break; }
-      const hasSub = !!nm.sub, sub = nm.sub;
-      const mainW = w * (hasSub ? 0.66 : 0.8), pad = w * 0.04;
+    case 'fascia': case 'round': {
+      if (design === 'dots') { // exposed LED bulbs inside letter-shaped bodies on a dark board (포차, 노래방)
+        rect(els, K.PANEL, -hx, -hy, hx, hy, [0, 0, 0], [0.025, 0.025, 0.03]);
+        const bc = s.cat === 'white' ? srgb(HEX.bulb) : s.rgb;
+        textRun(els, nm.sub && nm.main.length < 5 ? nm.main + nm.sub : nm.main, 'S2 BlackHan', 0, 0, w * 0.9, h * 0.86, { k: 0.8, kind: K.DOTS, col: E(lit, bc, N), alb: [0.05, 0.05, 0.05], pitchM: 0.036 });
+        letterNits = N; break;
+      }
+      const round = s.style === 'round'; ground(design, round);
+      const L = lettersOn(design);
+      if (round) { textRun(els, (nm.sub || nm.main).slice(0, 4), fam, 0, 0, w * 0.66, h * 0.4, { col: L.col, alb: L.alb, p0: design === 'galva' ? 1 : 0 }); break; }
+      const pad = w * 0.04, hasSub = !!nm.sub && w > h * 2.2;
       if (hasSub) {
-        fitText(g, nm.main, fam, '', x + pad, y + h * 0.06, mainW, h * 0.88, { fill: vinyl });
-        // category word in a contrasting band at right; phone underneath (typical 가로형 layout)
-        const bx = x + pad + mainW + w * 0.02, bw = w - (bx - x) - pad;
-        g.fillStyle = whiteBox ? vinyl : 'rgba(255,255,255,0.92)'; g.fillRect(bx, y + h * 0.16, bw, h * 0.46);
-        fitText(g, sub, 'S2 Sans', '800', bx, y + h * 0.16, bw, h * 0.46, { fill: whiteBox ? '#fff' : css(s.rgb, 0.8), k: 0.7 });
-        fitText(g, s.phone, 'S2 Sans', '800', bx, y + h * 0.66, bw, h * 0.24, { fill: vinyl, k: 0.8 });
+        const mainW = w * 0.64;
+        textRun(els, nm.main, fam, -hx + pad + mainW / 2, 0, mainW, h * 0.86, { col: L.col, alb: L.alb, p0: design === 'galva' ? 1 : 0 });
+        // category word on a band at the right end, phone underneath (typical 가로형 layout); the band is a ground, not a light
+        const bx0 = -hx + pad + mainW + w * 0.02, bx1 = hx - pad, by0 = hy - h * 0.62, by1 = hy - h * 0.16;
+        const bandC = s.accentName !== 'white' && s.accentName !== s.hue ? s.accent : hueC;
+        const bandN = design === 'flex' ? groundNits * 0.9 : 0;
+        rect(els, design === 'flex' ? K.BOX : K.PANEL, bx0, by0, bx1, by1, E(lit, bandC, bandN), design === 'flex' ? scaleC(bandC, 0.5) : scaleC(bandC, 0.35), [bx1 - bx0, by1 - by0, 0], 1);
+        textRun(els, nm.sub, 'S2 Sans', (bx0 + bx1) / 2, (by0 + by1) / 2, (bx1 - bx0) * 0.9, by1 - by0, { k: 0.66, layer: 2, col: E(lit, letterC, N * 0.9), alb: [0.8, 0.8, 0.8] });
+        textRun(els, s.phone, 'S2 Sans', (bx0 + bx1) / 2, -hy + h * 0.2, bx1 - bx0, h * 0.22, { k: 0.8, col: E(lit, letterC, N * 0.7), alb: [0.7, 0.7, 0.7] });
       } else {
-        fitText(g, nm.main, fam, '', x + w * 0.1, y + h * 0.08, mainW, h * 0.84, { fill: vinyl });
-        if (w > h * 4) { fitText(g, s.tag, 'S2 Sans', '800', x + w * 0.02, y + h * 0.25, w * 0.08, h * 0.5, { fill: vinyl, k: 0.55 });
-          fitText(g, s.floor ? `${s.floor + 1}F` : '1F', 'S2 Sans', '800', x + w * 0.9, y + h * 0.2, w * 0.08, h * 0.6, { fill: vinyl, k: 0.7 }); }
+        const text = nm.sub ? `${nm.main} ${nm.sub}` : nm.main;
+        textRun(els, text, fam, 0, 0, w * 0.78, h * 0.84, { col: L.col, alb: L.alb, p0: design === 'galva' ? 1 : 0 });
+        if (w > h * 4) {
+          textRun(els, s.tag, 'S2 Sans', -hx + w * 0.06, 0, w * 0.09, h * 0.42, { k: 0.6, col: E(lit, letterC, N * 0.6), alb: [0.7, 0.7, 0.7] });
+          textRun(els, s.floor ? `${s.floor + 1}F` : '1F', 'S2 Sans', hx - w * 0.05, 0, w * 0.07, h * 0.5, { k: 0.7, col: E(lit, letterC, N * 0.6), alb: [0.7, 0.7, 0.7] });
+        }
+      }
+      break;
+    }
+    case 'blade': case 'stand': {
+      if (design === 'dots') {
+        rect(els, K.PANEL, -hx, -hy, hx, hy, [0, 0, 0], [0.025, 0.025, 0.03]);
+        const bc = s.cat === 'white' ? srgb(HEX.bulb) : s.rgb; const t = (nm.main + (nm.sub || '')).replace(/[^가-힣0-9A-Z]/g, '').slice(0, 6);
+        if (t) vStack(els, t, 'S2 BlackHan', 0, -h * 0.02, w, h * 0.92, { kind: K.DOTS, col: E(lit, bc, N), alb: [0.05, 0.05, 0.05], pitchM: 0.034 });
+        break;
+      }
+      ground(design, false); const L = lettersOn(design);
+      const full = s.geo.tall ? nm.main : (nm.sub ? nm.main + nm.sub : nm.main);
+      const hangul = full.replace(/[^가-힣0-9]/g, '');
+      if (s.style === 'stand') { vStack(els, (hangul || full).slice(0, 5), fam, 0, 0, w, h * 0.92, { col: L.col, alb: L.alb }); break; }
+      if (hangul.length >= 2 || !/[A-Z]/.test(full)) {
+        // floor tag on a band at the top, name stacked one syllable per row
+        const by0 = hy - h * 0.12, by1 = hy - h * 0.02;
+        rect(els, design === 'flex' ? K.BOX : K.PANEL, -hx * 0.84, by0, hx * 0.84, by1, E(lit, design === 'flex' ? scaleC(s.rgb, 1) : hueC, design === 'flex' ? groundNits * 0.7 : 0),
+          design === 'flex' ? scaleC(s.rgb, 0.35) : [0.06, 0.06, 0.06], [w * 0.84, by1 - by0, 0], 1);
+        textRun(els, s.geo.tall ? s.tag : `${s.floor + 1}층`, 'S2 Sans', 0, (by0 + by1) / 2, w * 0.8, by1 - by0, { k: 0.66, layer: 2, col: E(lit, letterC, N * 0.85), alb: [0.8, 0.8, 0.8] });
+        vStack(els, (hangul || full).slice(0, 7), fam, 0, -h * 0.07, w, h * 0.84, { col: L.col, alb: L.alb, p0: design === 'galva' ? 1 : 0 });
+      } else {
+        const a = els.length; const r = textRun(els, full, fam, 0, 0, h * 0.9, w * 0.9, { col: L.col, alb: L.alb, k: 0.7 }); if (r) rotCW(els, a, els.length, 0, 0);
       }
       break;
     }
     case 'channel': case 'roof': {
-      // transparent background (alpha-tested): the letters are the sign. Faces in the light colour with a thin darker trim.
+      // letters are the sign: LED channel letters on a raceway (fascia) or a steel frame (roof); returns 6 cm behind
       const text = nm.sub && nm.main.length < 6 ? `${nm.main} ${nm.sub}` : nm.main;
-      fitText(g, text, fam, '', x + w * 0.02, y + h * 0.04, w * 0.96, h * 0.92, { fill: col, stroke: Math.max(2, h * 0.04), strokeStyle: css(s.rgb, 0.35), k: 0.86 });
-      break;
-    }
-    case 'blade': {
-      diffuser(bg);
-      // tenant: floor tag on top, name stacked vertically
-      const t = s.geo.tall ? nm.main : (nm.sub ? nm.main + nm.sub : nm.main);
-      const hangul = t.replace(/[^가-힣0-9]/g, '');
-      if (hangul.length >= 2 || !/[A-Z]/.test(t)) { g.fillStyle = whiteBox ? vinyl : 'rgba(255,255,255,0.95)'; g.fillRect(x + w * 0.08, y + h * 0.02, w * 0.84, h * 0.1);
-        fitText(g, s.geo.tall ? s.tag : `${s.floor + 1}층`, 'S2 Sans', '800', x + w * 0.08, y + h * 0.02, w * 0.84, h * 0.1, { fill: whiteBox ? '#fff' : css(s.rgb, 0.7), k: 0.7 });
-        verticalText(g, (hangul || t).slice(0, 7), fam, x, y + h * 0.14, w, h * 0.84, vinyl); }
-      else { g.save(); g.translate(x + w / 2, y + h / 2); g.rotate(-Math.PI / 2); fitText(g, t, fam, '', -h / 2 + h * 0.05, -w / 2, h * 0.9, w, { fill: vinyl }); g.restore(); }
-      break;
-    }
-    case 'window': {
-      // vinyl letters on glass: transparent glass (alpha 0), letters semi-opaque white/colour lit by the room
-      fitText(g, nm.sub ? `${nm.main} ${nm.sub}` : nm.main, fam, '', x + w * 0.04, y + h * 0.05, w * 0.92, h * 0.55, { fill: whiteBox ? '#f4f2ea' : col, k: 0.85 });
-      fitText(g, `${s.floor + 1}층 · ${s.tag}`, 'S2 Sans', '800', x + w * 0.1, y + h * 0.62, w * 0.8, h * 0.3, { fill: whiteBox ? '#f4f2ea' : col, k: 0.7 });
+      const r = textRun(els, text, fam, 0, 0, w * 0.96, h * 0.95, { k: 0.86, col: E(lit, hueC, N), alb: scaleC(hueC, 0.55), p0: 1 });
+      if (r && s.style === 'channel') for (let i = r.start; i < r.end; i++) { const e = els[i]; els.push({ ...e, q: e.q.slice(), layer: 0, z: -0.06, col: [0, 0, 0], alb: [0.03, 0.03, 0.035], p: [0, 0, e.p[2]], ink: 0, ret: true }); }
       break;
     }
     case 'neon': {
-      // black board; tube = saturated colour halo + near-white core (real neon clips white at the centre of the tube)
-      g.fillStyle = '#000'; g.fillRect(x, y, w, h);
+      // black acrylic board, tubes along the letter outlines; re-skinned boxes get a tube frame in the accent colour
+      rect(els, K.PANEL, -hx, -hy, hx, hy, [0, 0, 0], [0.018, 0.018, 0.02]);
       const text = s.neonText || (nm.sub || nm.main);
-      const tube = Math.max(2, h * 0.045);
       const tf = s.neonText ? fam : 'S2 Pen';
-      for (const [lw, st, a] of [[tube * 3.2, col, 0.18], [tube * 1.8, col, 0.55], [tube, col, 1], [tube * 0.45, css([1, 1, 1].map((v, i) => 0.55 + 0.45 * s.rgb[i])), 1]]) {
-        g.globalAlpha = a; g.save(); g.translate(x + w / 2, y + h / 2); g.font = `${h * 0.62}px "${tf}", ${FALLBACK}`;
-        const m = g.measureText(text).width; const sx = Math.min(1, (w * 0.9) / m); g.scale(sx, 1);
-        g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round'; g.lineCap = 'round'; g.lineWidth = lw / sx; g.strokeStyle = st;
-        g.strokeText(text, 0, 0); g.restore();
-      }
-      g.globalAlpha = 1;
-      if (s.type !== 'neon') { // re-skinned box: also frame it with a tube border
-        g.strokeStyle = css(s.accent); g.globalAlpha = 0.8; g.lineWidth = tube; g.strokeRect(x + h * 0.08, y + h * 0.08, w - h * 0.16, h - h * 0.16); g.globalAlpha = 1;
+      textRun(els, text, tf, 0, 0, w * 0.88, h * 0.8, { k: 0.78, kind: K.TUBE, col: E(lit, s.rgb, N), alb: scaleC(s.rgb, 0.3), p0: 0.045 });
+      if (s.type !== 'neon') {
+        const ins = Math.min(w, h) * 0.08, tw = 0.016, ac = E(lit, s.accentName === 'white' ? s.rgb : s.accent, N * 0.8), al = [0.2, 0.2, 0.2];
+        rect(els, K.PANEL, -hx + ins, -hy + ins, hx - ins, -hy + ins + tw, ac, al, null, 1); rect(els, K.PANEL, -hx + ins, hy - ins - tw, hx - ins, hy - ins, ac, al, null, 1);
+        rect(els, K.PANEL, -hx + ins, -hy + ins, -hx + ins + tw, hy - ins, ac, al, null, 1); rect(els, K.PANEL, hx - ins - tw, -hy + ins, hx - ins, hy - ins, ac, al, null, 1);
       }
       break;
     }
-    case 'round': {
-      g.fillStyle = 'rgba(0,0,0,0)'; g.clearRect(x, y, w, h);
-      g.beginPath(); g.arc(x + w / 2, y + h / 2, Math.min(w, h) * 0.48, 0, Math.PI * 2); g.fillStyle = bg; g.fill();
-      g.lineWidth = Math.min(w, h) * 0.04; g.strokeStyle = 'rgba(0,0,0,0.25)'; g.stroke();
-      fitText(g, (nm.sub || nm.main).slice(0, 4), fam, '', x + w * 0.16, y + h * 0.3, w * 0.68, h * 0.4, { fill: vinyl });
+    case 'window': {
+      // film on a lit room's glass: A = applied vinyl letters (x0.3 of the room), B = coloured film with clear cut-out letters
+      const roomC = srgb(HEX[s.use === 'pc' || s.use === 'office' ? (rr < 0.7 ? 'roomCool' : 'roomFluo') : s.use === 'karaoke' ? 'roomFluo' : (rr < 0.6 ? 'roomWarm' : 'roomCool')]);
+      const vinylC = s.cat === 'white' ? [0.95, 0.95, 0.92] : s.rgb;
+      const text = nm.sub ? `${nm.main} ${nm.sub}` : nm.main, sub = `${s.floor + 1}층 · ${s.tag}`;
+      if (design === 'vinylA') {
+        groundNits = N; rect(els, K.ROOM, -hx, -hy, hx, hy, E(lit, roomC, N), [0.04, 0.045, 0.05], [w, h, rr > 0.75 ? 1 : 0]);
+        const o = { col: E(lit, vinylC, N * NITS.vinyl), alb: scaleC(vinylC, 0.75) };
+        textRun(els, text, fam, 0, hy - h * 0.34, w * 0.92, h * 0.55, { k: 0.82, ...o });
+        textRun(els, sub, 'S2 Sans', 0, -hy + h * 0.22, w * 0.8, h * 0.28, { k: 0.7, ...o });
+        letterNits = N * NITS.vinyl;
+      } else {
+        groundNits = N * NITS.vinyl; rect(els, K.ROOM, -hx, -hy, hx, hy, E(lit, vinylC, groundNits), scaleC(vinylC, 0.45), [w, h, 0]);
+        const o = { col: E(lit, roomC, N), alb: [0.05, 0.05, 0.05] };
+        textRun(els, text, fam, 0, hy - h * 0.34, w * 0.92, h * 0.55, { k: 0.82, ...o });
+        textRun(els, sub, 'S2 Sans', 0, -hy + h * 0.22, w * 0.8, h * 0.28, { k: 0.7, ...o });
+      }
       break;
     }
     case 'banner': {
-      g.fillStyle = pick(R, ['#d8d2c4', '#e8e1cf', '#c9d6e0', '#f0e6c8']); g.fillRect(x, y, w, h);
-      fitText(g, pick(R, BANNER_WORDS), 'S2 BlackHan', '', x + w * 0.04, y + h * 0.1, w * 0.92, h * 0.8, { fill: pick(R, ['#c81e1e', '#1d3fa8', '#111']) });
-      break;
+      const cl = srgb(pick(R, ['#d8d2c4', '#e8e1cf', '#c9d6e0', '#f0e6c8'])).map((v) => v * 0.8);
+      rect(els, K.PANEL, -hx, -hy, hx, hy, [0, 0, 0], cl);
+      textRun(els, pick(R, BANNER_WORDS), 'S2 BlackHan', 0, 0, w * 0.92, h * 0.8, { k: 0.74, col: [0, 0, 0], alb: srgb(pick(R, ['#c81e1e', '#1d3fa8', '#111111'])) });
+      letterNits = 0; break;
     }
     default: break;
   }
-  g.restore();
+  if (s.bulbs && lit) {
+    const mode = s.bulbs === 'chase' ? 1 : s.bulbs === 'bulbs' ? 0 : 2;
+    const c = mode === 2 ? (s.accentName === 'white' ? s.rgb : s.accent) : srgb(HEX.bulb);
+    bulbBorder(els, -hx, -hy, hx, hy, E(true, c, NITS.bulb[0] + (NITS.bulb[1] - NITS.bulb[0]) * ((s.seed % 997) / 997)), mode, mode === 2 ? 0.05 : 0.11);
+  }
+  // emitter mean over w*h (what lights the street): letters by their ink, grounds minus the ink they carry, bulbs by fill
+  let Y = 0; const C = [0, 0, 0]; let inkLit = 0;
+  for (const e of els) if (e.glyph && !e.ret && lum(e.col) > 0) inkLit += e.ink;
+  for (const e of els) {
+    const ly = lum(e.col); if (!(ly > 0)) continue;
+    let a;
+    if (e.glyph) a = e.ink * (e.k === K.TUBE ? 0.45 : e.k === K.DOTS ? 0.3 : 1);
+    else if (e.bulb) a = Math.abs((e.q[2] - e.q[0]) * (e.q[5] - e.q[1])) * 0.16;
+    else { a = Math.abs((e.q[2] - e.q[0]) * (e.q[5] - e.q[1])); if (e.layer === 0) a = Math.max(0, a - inkLit); }
+    Y += ly * a; C[0] += e.col[0] * a; C[1] += e.col[1] * a; C[2] += e.col[2] * a;
+  }
+  const area = Math.max(1e-4, w * h);
+  return { els, nits: Y / area, rgb: Y > 0 ? norm1(C) : [1, 1, 1], letterNits: lit ? letterNits : 0, groundNits: lit ? groundNits : 0 };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// 7) LED screens: content programs + panel model (shader), mean colour on the CPU for the spill emitter
+// 6) LED screens: content programs, playlists, CPU mean colour for the spill emitter
 // ---------------------------------------------------------------------------------------------------------------
-// palettes (sRGB hex) for screen programs; invented campaigns only
+// palettes (sRGB hex) for screen programs; invented campaigns only. c0/c1 are grounds (never near-white: a screen at
+// 180-350 nits must not read as a white plate), c2 is the accent; text is white.
 const SCREEN_PALETTES = [
   ['#1b6dff', '#21e6ff', '#ffffff'], ['#ff2fa0', '#7a2cff', '#ffd2f0'], ['#0b0b18', '#ff3cbe', '#2be8ff'], ['#ffb21a', '#ff3a1a', '#fff2c0'],
   ['#12c86a', '#d8ff3a', '#ffffff'], ['#0a1440', '#3a7bff', '#ffffff'], ['#ff6a3c', '#ffd23a', '#2a0a3a'], ['#00b4d8', '#ff4f9a', '#fafafa'],
-  ['#e8e8f0', '#1a1a2a', '#ff2a4a'], ['#5a1aff', '#ff2ad2', '#fff'],
+  ['#ff2a4a', '#1a1a2a', '#e8e8f0'], ['#5a1aff', '#ff2ad2', '#ffffff'],
 ];
 // program ids (keep in sync with the GLSL below)
 export const PROG = { GRADIENT: 0, STAGE: 1, EVENT: 2, BUBBLES: 3, GRIDGAME: 4, CLOCK: 5, WIPE: 6, PSA: 7 };
+// content level of grounds relative to the white text peak (colour #5: mean ~0.3 x peak, soft knee)
+export const SCREEN_BG = 0.3;
 // text rows used by each program (main, sub)
 const PROG_TEXT = { 0: [[0, 1], [11, 12]], 1: [[2, 3]], 2: [[4, 5]], 3: [[6, 7]], 4: [[8, 9]], 5: [[10, -1]], 6: [[11, 12], [15, 16]], 7: [[13, 14]] };
 
@@ -516,142 +588,112 @@ function makePlaylist(seed, kind) {
 }
 const fract = (x) => x - Math.floor(x);
 const mix3 = (a, b, k) => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
-// approximate mean linear colour of a program frame (mirrors the shader's area weights); for the light-spill emitter
+const W1 = [1, 1, 1];
+// approximate mean linear colour of a program frame relative to the peak (mirrors the shader's area weights)
 export function programMean(seg, lt) {
-  const [c0, c1, c2] = seg.pal; const W = [1, 1, 1];
+  const [c0, c1, c2] = seg.pal; const B = SCREEN_BG;
   switch (seg.prog) {
-    case 0: { const k = 0.5 + 0.25 * Math.sin(lt * 0.9 + seg.seed); return mix3(mix3(c0, c1, k), c2, 0.12); }
-    case 1: { const beat = Math.pow(fract(lt * 2.0), 3); return mix3([0.01, 0.01, 0.02], mix3(c0, c1, 0.5 + 0.5 * Math.sin(lt)), 0.18 + 0.25 * (1 - beat)); }
-    case 2: return mix3(c0, W, 0.15);
-    case 3: return mix3(mix3(c0, [0, 0, 0], 0.35), c2, 0.1);
-    case 4: return mix3([0.02, 0.0, 0.05], c1, 0.22);
-    case 5: return mix3([0.004, 0.01, 0.04], W, 0.12);
-    case 6: { const w = Math.min(1, lt / 1.2); const ph = Math.floor(lt / 2.5) % 3; const cs = [c0, c1, c2]; return mix3(cs[(ph + 2) % 3], cs[ph], w); }
-    case 7: return mix3(c0, W, 0.2);
-    default: return c0;
+    case 0: { const k = 0.5 + 0.25 * Math.sin(lt * 0.9 + seg.seed); return mix3(scaleC(mix3(mix3(c0, c1, k), c2, 0.12), B), W1, 0.07); }
+    case 1: { const beat = Math.pow(fract(lt * 2.0), 3); return mix3(mix3([0.01, 0.01, 0.02], scaleC(mix3(c0, c1, 0.5 + 0.5 * Math.sin(lt)), 0.6), 0.18 + 0.25 * (1 - beat)), W1, 0.05); }
+    case 2: return mix3(scaleC(c0, 0.875 * B), W1, 0.1);
+    case 3: return mix3(scaleC(c0, 0.625 * B), W1, 0.07);
+    case 4: return mix3(mix3([0.02, 0.0, 0.05], scaleC(c1, 0.7), 0.16), c2, 0.05);
+    case 5: return mix3([0.004, 0.01, 0.04], W1, 0.12);
+    case 6: { const w = Math.min(1, lt / 1.2); const ph = Math.floor(lt / 2.5) % 3; const cs = [c0, c1, scaleC(c2, 0.4)]; return mix3(scaleC(mix3(cs[(ph + 2) % 3], cs[ph], w), B), W1, 0.08); }
+    case 7: return mix3(scaleC(c0, 0.8 * B), W1, 0.1);
+    default: return scaleC(c0, B);
   }
 }
 
-const SCREEN_VERT = /* glsl */`
-varying vec2 vUv; varying vec3 vN; varying vec3 vW;
-void main(){ vUv = uv; vN = normalize(mat3(modelMatrix) * normal); vec4 w = modelMatrix * vec4(position,1.0); vW = w.xyz;
-  gl_Position = projectionMatrix * viewMatrix * w; }`;
-const SCREEN_FRAG = /* glsl */`
-precision highp float;
-varying vec2 vUv; varying vec3 vN; varying vec3 vW;
-uniform float uT, uLT, uNits, uNit, uMoire, uBandDepth, uBandN, uBandRate, uViewH, uSeed, uBlack, uCut;
-uniform vec2 uRes;          // LED pixels (cols, rows)
-uniform int uProg;
-uniform vec3 uC0, uC1, uC2;
-uniform vec2 uRow;          // text rows (main, sub); -1 = none
-uniform sampler2D uText; uniform float uRows;
+// GLSL: content programs in linear [0,1] at LED-pixel-quantised uv (globals set per fragment from the instance)
+export const SCREEN_CONTENT_GLSL = /* glsl */`
+int gProg; float gSeed, gCut, gT; vec3 gC0, gC1, gC2; vec2 gRow, gRes;
+uniform sampler2D uText; uniform float uRows, uT, uBg;
 float sdn(float a, float b, float x){ return 1.0 - smoothstep(b, a, x); } // falling edge, a > b
 float h21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
-float txt(vec2 uv, float row){ // uv in [0,1]^2 of the text box -> alpha
+float txt(vec2 uv, float row){
   if (row < 0.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 0.0;
   return texture2D(uText, vec2(uv.x, (row + 1.0 - uv.y) / uRows)).a; }
-vec3 srgbToLin(vec3 c){ return pow(c, vec3(2.2)); }
-// content in linear [0,1] at LED-pixel-quantised uv
 vec3 content(vec2 uv, float t){
-  vec3 c = vec3(0.0); float a = 0.0; float asp = uRes.x / uRes.y;
-  if (uProg == 0) { // flowing gradient ad + product line
-    float f = sin(uv.x*3.0 + t*0.7 + uSeed) + sin(uv.y*4.0 - t*0.5) + sin((uv.x+uv.y)*2.5 + t*0.9);
-    c = mix(uC0, uC1, 0.5 + 0.25*f); c = mix(c, uC2, smoothstep(1.2, 2.6, f) * 0.6);
+  vec3 c = vec3(0.0); float a = 0.0; float asp = gRes.x / gRes.y;
+  if (gProg == 0) { // flowing gradient ad + product line
+    float f = sin(uv.x*3.0 + t*0.7 + gSeed) + sin(uv.y*4.0 - t*0.5) + sin((uv.x+uv.y)*2.5 + t*0.9);
+    c = mix(gC0, gC1, 0.5 + 0.25*f); c = mix(c, gC2, smoothstep(1.2, 2.6, f) * 0.6); c *= uBg;
     float slide = clamp(t * 1.4, 0.0, 1.0); slide = 1.0 - pow(1.0 - slide, 3.0);
-    a = txt(vec2((uv.x - 0.08) / 0.84 + (1.0 - slide), (uv.y - 0.45) / 0.3), uRow.x);
-    float b = txt(vec2((uv.x - 0.2) / 0.6, (uv.y - 0.22) / 0.16), uRow.y) * smoothstep(0.8, 1.4, t);
+    a = txt(vec2((uv.x - 0.08) / 0.84 + (1.0 - slide), (uv.y - 0.45) / 0.3), gRow.x);
+    float b = txt(vec2((uv.x - 0.2) / 0.6, (uv.y - 0.22) / 0.16), gRow.y) * smoothstep(0.8, 1.4, t);
     c = mix(c, vec3(1.0), max(a, b));
-  } else if (uProg == 1) { // stage: beams + equaliser + title
+  } else if (gProg == 1) { // stage: beams + equaliser + title
     c = vec3(0.01, 0.008, 0.02);
-    for (int i = 0; i < 5; i++) { float fi = float(i); float ang = sin(t*0.8 + fi*1.7 + uSeed) * 0.6;
+    for (int i = 0; i < 5; i++) { float fi = float(i); float ang = sin(t*0.8 + fi*1.7 + gSeed) * 0.6;
       vec2 o = vec2(0.1 + fi*0.2, -0.05); vec2 d = uv - o; float aa = atan(d.x, d.y) - ang;
-      c += mix(uC0, uC1, fi/4.0) * sdn(0.09, 0.0, abs(aa)) * (0.7 - 0.5*length(d)); }
+      c += mix(gC0, gC1, fi/4.0) * 0.6 * sdn(0.09, 0.0, abs(aa)) * (0.7 - 0.5*length(d)); }
     float bars = floor(uv.x * 24.0); float hgt = 0.08 + 0.22 * abs(sin(t*3.0 + bars*0.7 + sin(bars*1.3 + t)));
     float beat = pow(fract(t*2.0), 3.0);
-    c += mix(uC1, uC2, uv.y*3.0) * step(uv.y, hgt) * step(0.15, fract(uv.x*24.0)) * (0.6 + 0.4*(1.0-beat));
-    a = txt(vec2((uv.x - 0.1) / 0.8, (uv.y - 0.62) / 0.22), uRow.x); float b = txt(vec2((uv.x - 0.12)/0.76, (uv.y - 0.42)/0.18), uRow.y);
+    c += mix(gC1, gC2, uv.y*3.0) * 0.55 * step(uv.y, hgt) * step(0.15, fract(uv.x*24.0)) * (0.6 + 0.4*(1.0-beat));
+    a = txt(vec2((uv.x - 0.1) / 0.8, (uv.y - 0.62) / 0.22), gRow.x); float b = txt(vec2((uv.x - 0.12)/0.76, (uv.y - 0.42)/0.18), gRow.y);
     c = mix(c, vec3(1.0), max(a, b * smoothstep(0.5, 1.0, t)));
-  } else if (uProg == 2) { // event: big D-day, confetti
-    c = uC0 * (0.75 + 0.25*uv.y);
+  } else if (gProg == 2) { // event: big D-day, confetti
+    c = gC0 * (0.75 + 0.25*uv.y) * uBg;
     vec2 g = vec2(uv.x * asp, uv.y) * 14.0; g.y += t * 2.5; vec2 id = floor(g); float hh = h21(id);
     vec2 fp = fract(g) - 0.5; float conf = step(0.82, hh) * step(max(abs(fp.x), abs(fp.y)), 0.18 + 0.1*sin(t*5.0 + hh*20.0));
-    c = mix(c, mix(uC1, uC2, fract(hh*7.0)), conf);
-    a = txt(vec2((uv.x - 0.06) / 0.88, (uv.y - 0.6) / 0.24), uRow.x);
-    float big = txt(vec2((uv.x - 0.3) / 0.4, (uv.y - 0.12) / 0.42), uRow.y) * (0.85 + 0.15*step(0.5, fract(t*1.5)));
+    c = mix(c, mix(gC1, gC2, fract(hh*7.0)) * 0.7, conf);
+    a = txt(vec2((uv.x - 0.06) / 0.88, (uv.y - 0.6) / 0.24), gRow.x);
+    float big = txt(vec2((uv.x - 0.3) / 0.4, (uv.y - 0.12) / 0.42), gRow.y) * (0.85 + 0.15*step(0.5, fract(t*1.5)));
     c = mix(c, vec3(1.0), max(a, big));
-  } else if (uProg == 3) { // drink: deep gradient, rising bubbles
-    c = mix(uC0 * 0.25, uC0, uv.y);
+  } else if (gProg == 3) { // drink: deep gradient, rising bubbles
+    c = mix(gC0 * 0.25, gC0, uv.y) * uBg;
     for (int i = 0; i < 3; i++) { float s = 8.0 + float(i)*6.0; vec2 g = vec2(uv.x*asp, uv.y - t*(0.12 + 0.05*float(i))) * s;
       vec2 id = floor(g); vec2 fp = fract(g) - 0.5 - (vec2(h21(id), h21(id+3.1)) - 0.5) * 0.5; float r = 0.12 + 0.18*h21(id+7.7);
-      c += uC2 * 0.55 * step(0.55, h21(id+1.3)) * sdn(r, r - 0.06, length(fp)) * smoothstep(r - 0.12, r, length(fp)); }
-    a = txt(vec2((uv.x - 0.1) / 0.8, (uv.y - 0.5) / 0.3), uRow.x); float b = txt(vec2((uv.x - 0.2)/0.6, (uv.y - 0.28)/0.16), uRow.y);
+      c += gC2 * 0.4 * step(0.55, h21(id+1.3)) * sdn(r, r - 0.06, length(fp)) * smoothstep(r - 0.12, r, length(fp)); }
+    a = txt(vec2((uv.x - 0.1) / 0.8, (uv.y - 0.5) / 0.3), gRow.x); float b = txt(vec2((uv.x - 0.2)/0.6, (uv.y - 0.28)/0.16), gRow.y);
     c = mix(c, vec3(1.0), max(a, b));
-  } else if (uProg == 4) { // game pre-registration: perspective grid, title
-    c = mix(vec3(0.02, 0.0, 0.05), uC0 * 0.4, uv.y);
+  } else if (gProg == 4) { // game pre-registration: perspective grid, title
+    c = mix(vec3(0.02, 0.0, 0.05), gC0 * 0.4 * uBg, uv.y);
     float hz = 0.42; if (uv.y < hz) { float z = 1.0 / max(hz - uv.y, 1e-3); float gx = (uv.x - 0.5) * z; float gz = z + t * 4.0;
       float line = max(sdn(0.06*z*0.05, 0.0, abs(fract(gx) - 0.5) - 0.47), smoothstep(0.0, 0.03, fract(gz*0.5) - 0.96));
-      c += uC1 * line * smoothstep(0.0, 0.25, hz - uv.y + 0.05); }
-    c += uC1 * 0.6 * sdn(0.012, 0.0, abs(uv.y - hz));
-    a = txt(vec2((uv.x - 0.05) / 0.9, (uv.y - 0.58) / 0.24), uRow.x); float b = txt(vec2((uv.x - 0.25)/0.5, (uv.y - 0.82)/0.12), uRow.y) * step(0.5, fract(t*1.2));
-    c = mix(c, uC2, max(a, b));
-  } else if (uProg == 5) { // clock + weather (public info)
+      c += gC1 * 0.7 * line * smoothstep(0.0, 0.25, hz - uv.y + 0.05); }
+    c += gC1 * 0.42 * sdn(0.012, 0.0, abs(uv.y - hz));
+    a = txt(vec2((uv.x - 0.05) / 0.9, (uv.y - 0.58) / 0.24), gRow.x); float b = txt(vec2((uv.x - 0.25)/0.5, (uv.y - 0.82)/0.12), gRow.y) * step(0.5, fract(t*1.2));
+    c = mix(c, mix(gC2, vec3(1.0), 0.5), max(a, b));
+  } else if (gProg == 5) { // clock + weather (public info)
     c = mix(vec3(0.004, 0.01, 0.05), vec3(0.01, 0.03, 0.12), uv.y);
-    // HH:MM from uT (starts 23:41), digits sampled from the digit strip row (last row: "0123456789:")
     float mins = 41.0 + floor(uT / 60.0); float hh = mod(23.0 + floor(mins / 60.0), 24.0); float mm = mod(mins, 60.0);
-    float d[5]; d[0] = floor(hh/10.0); d[1] = mod(hh,10.0); d[2] = 10.0; d[3] = floor(mm/10.0); d[4] = mod(mm,10.0);
     vec2 box = vec2((uv.x - 0.2) / 0.6, (uv.y - 0.36) / 0.44);
     if (box.x > 0.0 && box.x < 1.0 && box.y > 0.0 && box.y < 1.0) { float k = floor(box.x * 5.0); float lx = fract(box.x * 5.0);
-      float dig = k < 0.5 ? d[0] : k < 1.5 ? d[1] : k < 2.5 ? d[2] : k < 3.5 ? d[3] : d[4];
+      float dig = k < 0.5 ? floor(hh/10.0) : k < 1.5 ? mod(hh,10.0) : k < 2.5 ? 10.0 : k < 3.5 ? floor(mm/10.0) : mod(mm,10.0);
       float blink = (k > 1.5 && k < 2.5) ? step(0.5, fract(uT)) : 1.0;
       a = blink * texture2D(uText, vec2((dig + 0.5 + (lx - 0.5) * 0.95) / 11.0, (uRows - 1.0 + 1.0 - box.y) / uRows)).a; }
-    float b = txt(vec2((uv.x - 0.1)/0.8, (uv.y - 0.1)/0.18), uRow.x);
+    float b = txt(vec2((uv.x - 0.1)/0.8, (uv.y - 0.1)/0.18), gRow.x);
     c = mix(c, vec3(1.0), max(a, b * 0.9));
-  } else if (uProg == 6) { // fashion: diagonal colour-block wipes
+  } else if (gProg == 6) { // fashion: diagonal colour-block wipes (accent dimmed: never a white field)
     float ph = floor(t / 2.5); float lt = t - ph*2.5; float w = clamp(lt / 1.2, 0.0, 1.0);
-    int pi = int(mod(ph, 3.0)); vec3 cs0 = pi == 0 ? uC0 : pi == 1 ? uC1 : uC2; vec3 cs1 = pi == 0 ? uC2 : pi == 1 ? uC0 : uC1;
-    float edge = uv.x + uv.y*0.4; c = mix(cs1, cs0, step(edge, w * 1.5));
-    a = txt(vec2((uv.x - 0.08) / 0.84, (uv.y - 0.5) / 0.28), uRow.x); float b = txt(vec2((uv.x - 0.15)/0.7, (uv.y - 0.25)/0.16), uRow.y);
-    vec3 tc = dot(c, vec3(0.3, 0.6, 0.1)) > 0.5 ? vec3(0.02) : vec3(1.0);
-    c = mix(c, tc, max(a, b));
+    vec3 cA = gC2 * 0.4; int pi = int(mod(ph, 3.0)); vec3 cs0 = pi == 0 ? gC0 : pi == 1 ? gC1 : cA; vec3 cs1 = pi == 0 ? cA : pi == 1 ? gC0 : gC1;
+    float edge = uv.x + uv.y*0.4; c = mix(cs1, cs0, step(edge, w * 1.5)) * uBg;
+    a = txt(vec2((uv.x - 0.08) / 0.84, (uv.y - 0.5) / 0.28), gRow.x); float b = txt(vec2((uv.x - 0.15)/0.7, (uv.y - 0.25)/0.16), gRow.y);
+    c = mix(c, vec3(1.0), max(a, b));
   } else { // PSA: calm flat panel
-    c = mix(uC0, uC0 * 0.6, uv.y);
-    a = txt(vec2((uv.x - 0.08) / 0.84, (uv.y - 0.5) / 0.28), uRow.x); float b = txt(vec2((uv.x - 0.15)/0.7, (uv.y - 0.25)/0.16), uRow.y);
+    c = mix(gC0, gC0 * 0.6, uv.y) * uBg;
+    a = txt(vec2((uv.x - 0.08) / 0.84, (uv.y - 0.5) / 0.28), gRow.x); float b = txt(vec2((uv.x - 0.15)/0.7, (uv.y - 0.25)/0.16), gRow.y);
     c = mix(c, vec3(1.0), max(a, b));
   }
-  c *= 1.0 - 0.85 * uCut; // one dark frame on a cut (players switch playlists)
+  c *= 1.0 - 0.85 * gCut; // one dark frame on a cut (players switch playlists)
   return clamp(c, 0.0, 1.0);
-}
-void main(){
-  vec2 cell = vUv * uRes; vec2 id = floor(cell); vec2 f = fract(cell);
-  vec3 col = content((id + 0.5) / uRes, uLT);
-  // SMD panel: RGB dies in a triangle inside each pixel, black louvred face. fill ~ mean coverage of the mask.
-  vec2 q = f - 0.5;
-  float rr = 0.13;
-  float mR = sdn(rr, rr*0.55, length(q - vec2(-0.14, 0.09)));
-  float mG = sdn(rr, rr*0.55, length(q - vec2( 0.14, 0.09)));
-  float mB = sdn(rr, rr*0.55, length(q - vec2( 0.0, -0.13)));
-  vec3 mask = vec3(mR, mG, mB);
-  const float FILL = 0.0385;  // area of one die / pixel area (pi * ~0.11^2), so mask/FILL averages to 1
-  // The camera integrates each sensor pixel over its area (box filter) and then samples. A die grid of period P sensor px
-  // keeps its fundamental at amplitude |sinc(1/P)|; sampled below Nyquist that cosine aliases into a smooth beat: the
-  // moire. Each colour's dies sit at a different offset, so the beats are phase-shifted per channel (colour fringes).
-  vec2 px2 = max(fwidth(cell), vec2(1e-4)); float px = max(px2.x, px2.y);   // LED pixels per sensor pixel
-  float resolve = sdn(0.75, 0.3, px);                                // 1 = dies resolved (closer than ~1.5 px per LED)
+}`;
+// SMD panel model per fragment: dies resolved up close, sensor-box-filter moire at mid range, louvre falloff, rolling
+// refresh bands. Inputs: cell = uv * res; returns the multiplier on the content colour.
+const SCREEN_PANEL_GLSL = /* glsl */`
+vec3 ledPanel(vec2 cell, float moire){
+  vec2 f = fract(cell); vec2 q = f - 0.5; float rr = 0.13;
+  vec3 mask = vec3(sdn(rr, rr*0.55, length(q - vec2(-0.14, 0.09))), sdn(rr, rr*0.55, length(q - vec2( 0.14, 0.09))), sdn(rr, rr*0.55, length(q - vec2( 0.0, -0.13))));
+  const float FILL = 0.0385;
+  vec2 px2 = max(fwidth(cell), vec2(1e-4)); float px = max(px2.x, px2.y);
+  float resolve = sdn(0.75, 0.3, px);
   vec2 sx = 3.14159265 * px2; vec2 att = abs(sin(sx) / sx) * (vec2(1.0) - smoothstep(vec2(1.5), vec2(4.0), px2));
-  float k = 0.85 * uMoire;
+  float k = 0.85 * moire;
   vec3 ox = vec3(-0.14, 0.14, 0.0), oy = vec3(0.09, 0.09, -0.13);
   vec3 far = (1.0 + k * att.x * cos(6.2831853 * (cell.x - 0.5 - ox))) * (1.0 + k * att.y * cos(6.2831853 * (cell.y - 0.5 - oy)));
-  vec3 near = mask / FILL;
-  vec3 m = mix(far, near, resolve);
-  // louvre / viewing angle: horizontal +-70 deg ok, from above the louvres shade the dies
-  vec3 V = normalize(cameraPosition - vW); float nd = max(dot(vN, V), 0.0);
-  float above = clamp(V.y, -1.0, 1.0);
-  float ang = mix(0.35, 1.0, sqrt(nd)) * mix(1.0, 0.45, smoothstep(0.35, 0.9, above));
-  // rolling-shutter refresh bands (sensor rows: screen-space y) from the panel's scan/PWM rate
-  float band = 1.0 - uBandDepth * (0.5 + 0.5 * sin(6.2831853 * (gl_FragCoord.y / uViewH * uBandN + uT * uBandRate)));
-  vec3 lin = col * m * ang * band;
-  lin += vec3(uBlack);  // black level: louvre face reflects a little, dies leak
-  gl_FragColor = vec4(lin * uNits * uNit, 1.0);
+  return mix(far, mask / FILL, resolve);
 }`;
 
 // LED dot scroller (전광판): one merged mesh; per-vertex row/speed/colour/dot count
@@ -676,147 +718,374 @@ void main(){
 }`;
 
 // ---------------------------------------------------------------------------------------------------------------
-// 8) build
+// 7) CPU data: specs -> faces (elements), housing boxes, emitters, screens, scrollers. Pure and node-safe; build()
+//    turns it into GPU meshes and exportData() into signs.json / screens.json for the native port.
 // ---------------------------------------------------------------------------------------------------------------
+const HOUSE = [0.035, 0.036, 0.04], STEEL = [0.06, 0.06, 0.065], RACE = [0.02, 0.02, 0.022];
+const UP = [0, 1, 0];
+const add3 = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const r3 = (v) => v.map((x) => +x.toFixed(3));
+
+export function buildData(layout, opts = {}) {
+  missingGlyphs.clear();
+  const { specs, screens } = generateSigns(layout, opts);
+  const faces = [], boxes = [], emitters = [], scrollers = [];
+  const pos3 = (F, u, y, d) => [F.o[0] + F.r[0] * u + F.n[0] * d, y, F.o[1] + F.r[1] * u + F.n[1] * d];
+  const kindOf = { fascia: 'lightbox', stand: 'lightbox', blade: 'lightbox', round: 'lightbox', channel: 'channel', roof: 'channel', window: 'store', neon: 'neon', banner: 'lightbox' };
+  const B = (c, r, n, hw, hh, hd, col, noFront = false, collide = true) => boxes.push({ c: r3(c), r: r3(r), n: r3(n), hw, hh, hd, col, noFront, collide });
+  let glyphs = 0, elements = 0;
+  for (const s of specs) {
+    const F = s.frame, G = s.geo; const n = [F.n[0], 0, F.n[1]], r = [F.r[0], 0, F.r[1]];
+    if (s.style === 'scroller') {
+      const c = pos3(F, G.u + G.w / 2, G.y + G.h / 2, 0.08);
+      B(add3(c, n, -0.04), r, n, G.w / 2 + 0.04, G.h / 2 + 0.04, 0.04, RACE, true);
+      const hue = pick(new Rng(s.seed), [['red', 0.6], ['amber', 0.25], ['green', 0.15]].flatMap(([h, w]) => Array(Math.round(w * 20)).fill(h)));
+      const cl = srgb(HEX[s.lit ? hue : 'red']);
+      scrollers.push({ id: s.id, c, n, w: G.w, h: G.h, row: s.scrollRow, speed: 7 + (s.seed % 6), cols: Math.round(G.w / (G.h / 16)), phase: s.seed % 500, rgb: cl, nits: s.lit ? s.nits : 0 });
+      if (s.lit) emitters.push({ id: s.id, pos: r3(c), normal: n, w: G.w, h: G.h, rgb: norm1(cl).map((v) => +v.toFixed(4)), nits: Math.round(s.nits * 0.3), kind: 'screen', animated: true, use: s.use, lot: s.lot });
+      continue;
+    }
+    const fw = s.type === 'stand' ? G.w * 0.92 : G.w, fhh = s.type === 'stand' ? G.h * 0.94 : G.h;
+    const D = designFace(s, fw, fhh);
+    const fk = s.flicker ? [s.flicker.hz, (s.seed % 1000) / 1000] : [0, 0];
+    const lit = s.lit && s.style !== 'banner' && D.nits > 0;
+    let nf = 0;
+    const face = (c, m) => {
+      faces.push({ id: s.id, c: r3(c), m: r3(m), w: fw, h: fhh, els: D.els, flk: fk });
+      glyphs += D.els.filter((e) => e.glyph).length; elements += D.els.length;
+      if (lit) emitters.push({ id: `${s.id}${nf ? ':' + (nf + 1) : ''}`, pos: r3(c), normal: r3(m), w: +fw.toFixed(3), h: +fhh.toFixed(3),
+        rgb: D.rgb.map((v) => +v.toFixed(4)), nits: Math.round(D.nits), kind: kindOf[s.style], ...(s.flicker ? { flicker: s.flicker } : {}), animated: false, use: s.use, lot: s.lot });
+      nf++;
+    };
+    if (s.type === 'blade' || s.type === 'round') {
+      // perpendicular to the facade: double-sided, faces normal +-r; two steel arms to the wall
+      const c = pos3(F, G.u, G.y + G.h / 2, G.out + G.w / 2);
+      B(c, n, [-r[0], 0, -r[2]], G.w / 2 + 0.03, G.h / 2 + 0.03, G.d / 2, HOUSE, false);
+      B(pos3(F, G.u, G.y + G.h - 0.1, G.out / 2), r, n, 0.03, 0.03, G.out / 2, STEEL, false, false);
+      B(pos3(F, G.u, G.y + 0.1, G.out / 2), r, n, 0.03, 0.03, G.out / 2, STEEL, false, false);
+      for (const sg of [1, -1]) { const m = [r[0] * sg, 0, r[2] * sg]; face(add3(c, m, G.d / 2 + 0.031 + 0.002), m); }
+    } else if (s.type === 'stand') {
+      const c = pos3(F, G.u, G.y + G.h / 2, G.out);
+      B([c[0], 0.075, c[2]], r, n, 0.32, 0.075, 0.32, RACE);
+      B(c, r, n, G.w / 2, G.h / 2, G.d / 2, HOUSE, false);
+      for (const m of [n, [-n[0], 0, -n[2]]]) face(add3(c, m, G.d / 2 + 0.003), m);
+    } else if (s.type === 'roof') {
+      const c = pos3(F, G.u + G.w / 2, G.y + G.h / 2, G.out);
+      for (const k of [0.1, 0.5, 0.9]) B(pos3(F, G.u + G.w * k, (F.top + G.y + G.h) / 2, G.out - 0.35), r, n, 0.05, (G.y + G.h - F.top) / 2, 0.05, STEEL);
+      B(pos3(F, G.u + G.w / 2, G.y + G.h * 0.25, G.out - 0.35), r, n, G.w / 2, 0.04, 0.04, STEEL);
+      B(pos3(F, G.u + G.w / 2, G.y + G.h * 0.75, G.out - 0.35), r, n, G.w / 2, 0.04, 0.04, STEEL);
+      face(add3(c, n, 0.02), n);
+    } else {
+      const c = pos3(F, G.u + G.w / 2, G.y + G.h / 2, G.d / 2 + 0.02);
+      if (s.style === 'channel') { // raceway bar behind letters; letters stand 0.1 m proud
+        B(pos3(F, G.u + G.w / 2, G.y + G.h * 0.45, 0.06), r, n, G.w * 0.48, 0.06, 0.04, RACE);
+        face(add3(c, n, G.d / 2), n);
+      } else if (s.type === 'window' || s.type === 'banner') {
+        face(pos3(F, G.u + G.w / 2, G.y + G.h / 2, 0.025), n);
+      } else {
+        if (G.d > 0.07) B(c, r, n, G.w / 2 + 0.03, G.h / 2 + 0.03, G.d / 2, HOUSE, true);
+        else B(add3(c, n, -0.01), r, n, G.w / 2 + 0.03, G.h / 2 + 0.03, 0.012, RACE, true, false); // neon backboard
+        face(add3(c, n, G.d / 2 + 0.002), n);
+      }
+    }
+  }
+  // --- LED screens ---
+  const scr = [];
+  for (const sc of screens) {
+    const pl = makePlaylist(sc.seed, sc.kind);
+    const pitch = sc.kind === 'billboard' ? 0.016 : sc.kind === 'facade' ? 0.010 : 0.0025;      // m per LED pixel
+    const res = [Math.round(sc.w / pitch), Math.round(sc.h / pitch)];
+    const r = new Rng(sc.seed ^ 0x9e37);
+    const scanHz = sc.kind === 'small' ? pick(r, [960, 1920, 3840]) : pick(r, [240, 480, 960, 1920]);
+    const bandDepth = { 240: 0.42, 480: 0.3, 960: 0.18, 1920: 0.09, 3840: 0.04 }[scanHz];
+    const nitsRange = sc.kind === 'small' ? NITS.screenSmall : NITS.screen; const nits = nitsRange[0] + (nitsRange[1] - nitsRange[0]) * r.next();
+    const bandRate = 0.35 + r.next() * 0.9, seedU = r.next() * 10;
+    const nl = Math.hypot(sc.normal[0], sc.normal[2]) || 1; const N = [sc.normal[0] / nl, 0, sc.normal[2] / nl];
+    const fr = [N[2], 0, -N[0]], cab = [sc.pos[0] - N[0] * 0.25, sc.pos[1], sc.pos[2] - N[2] * 0.25];
+    B(cab, fr, N, sc.w / 2 + 0.12, sc.h / 2 + 0.12, 0.2, HOUSE, false, sc.kind !== 'small');
+    if (sc.kind === 'billboard') { const bot = sc.pos[1] - sc.h / 2; const lot = (layout.lots || []).find((l) => l.id === sc.lot); const roof = lot ? lot.floors * (lot.floorH || 3.2) : bot - 3;
+      for (const k of [-0.4, 0, 0.4]) B([cab[0] + fr[0] * sc.w * k - N[0] * 0.6, (bot + roof) / 2, cab[2] + fr[2] * sc.w * k - N[2] * 0.6], fr, N, 0.08, Math.max(0.1, (bot - roof) / 2), 0.08, STEEL); }
+    const em = { id: sc.id, pos: r3([sc.pos[0] + N[0] * 0.05, sc.pos[1], sc.pos[2] + N[2] * 0.05]), normal: N, w: sc.w, h: sc.h,
+      rgb: [1, 1, 1], nits: 0, kind: 'screen', animated: true, lot: sc.lot, screenKind: sc.kind };
+    emitters.push(em);
+    scr.push({ id: sc.id, lot: sc.lot, kind: sc.kind, pos: sc.pos, normal: N, w: sc.w, h: sc.h, pitch, res, scanHz, bandDepth, bandRate, seedU, nits, playlist: pl, em });
+  }
+  const stats = { ...signStats(specs), faces: faces.length, elements, glyphs, boxes: boxes.length, emitters: emitters.length, screens: scr.length,
+    scrollers: scrollers.length, missingGlyphs: [...missingGlyphs].join(''), msdf: { size: MSDF.size[0], pxPerEm: MSDF.px, range: MSDF.range } };
+  return { specs, faces, boxes, emitters, screens: scr, scrollers, stats };
+}
+
+// screen state at time t (pure): program, local time, cut, palette, rows, emitter mean colour / nits
+function screenState(o, t) {
+  const pl = o.playlist; const lt0 = fract((t + pl.phase) / pl.len) * pl.len;
+  let seg = pl.list[0]; for (const s of pl.list) if (lt0 >= s.t0) seg = s;
+  const lt = lt0 - seg.t0; const cut = lt < 1 / 30 ? 1 : 0;
+  const m = programMean(seg, lt); const y = lum(m);
+  return { seg, lt, cut, rgb: norm1(m), nits: o.nits * y * (1 - 0.85 * cut) };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// 8) native export (native #2): signs.json + screens.json. Positions in metres (x east, y up, z south), luminance in
+//    cd/m^2, element quads in face-local metres (x right, y up) with atlas uvs; shading per kind is K above.
+// ---------------------------------------------------------------------------------------------------------------
+export function exportData(layout, opts = {}) {
+  const D = buildData(layout, opts);
+  const rq = (a) => a.map((v) => Math.round(v * 1e4) / 1e4);
+  const designs = new Map(); const faceRecs = [];
+  for (const f of D.faces) {
+    let di = designs.get(f.els); if (di === undefined) { di = designs.size; designs.set(f.els, di); }
+    faceRecs.push({ id: f.id, c: f.c, n: f.m, w: +f.w.toFixed(3), h: +f.h.toFixed(3), design: di, flicker: f.flk[0] ? { hz: +f.flk[0].toFixed(2), phase: f.flk[1], depth: 0.7 } : null });
+  }
+  const designList = [...designs.keys()].map((els) => els.map((e) => ({ k: e.k, layer: e.layer, z: e.z || 0, q: rq(e.q), uv: rq(e.uv),
+    col: e.col.map((v) => +v.toFixed(2)), alb: e.alb.map((v) => +v.toFixed(3)), p: e.p.map((v) => +(+v).toFixed(4)) })));
+  const signs = {
+    version: SIGNS_VERSION, units: { length: 'm', luminance: 'cd/m^2', frame: 'x east, y up, z south' },
+    kinds: K, kindDoc: 'BOX light-box ground (diffuser: centre +20 %, edges -30 %, LED rows 0.12 m at grazing angles; p=[w,h,round]); PANEL flat (emits col, reflects alb); FILL MSDF glyph fill (p.x=1 LED edge profile; p.z = mean coverage of the quad); TUBE neon tube on the glyph outline (p.x half width, em); DOTS exposed LEDs inside the glyph (p.x pitch, em); BULBS border strip (uv.x metres along; p=[pitch m, 0 static|1 chase|2 LED, width m]); ROOM lit room behind window film (ceiling gradient; p.z=1 blinds). layer: draw order on the face plane (pull toward the eye 6e-4 x depth per layer); z: offset along the normal (m). Face frame: right = up x n.',
+    msdf: { image: MSDF.image, meta: 'seoul/signs/msdf-meta.js', size: MSDF.size, pxPerEm: MSDF.px, range: MSDF.range, median: 'max(min(r,g),min(max(r,g),b)) - 0.5, x range px' },
+    faces: faceRecs, designs: designList,
+    housings: D.boxes.map((b) => ({ c: b.c, r: b.r, n: b.n, half: [+b.hw.toFixed(3), +b.hh.toFixed(3), +b.hd.toFixed(3)], albedo: b.col, noFront: b.noFront, collide: b.collide })),
+    scrollers: D.scrollers.map((s) => ({ id: s.id, c: r3(s.c), n: s.n, w: s.w, h: s.h, text: SCROLL_TEXT[s.row], speed: s.speed, cols: s.cols, rows: 16, phase: s.phase, rgb: s.rgb.map((v) => +v.toFixed(4)), nits: Math.round(s.nits) })),
+    emitters: D.emitters.filter((e) => !e.screenKind), stats: D.stats,
+  };
+  const screens = {
+    version: SIGNS_VERSION, programs: PROG, text: SCREEN_TEXT, bg: SCREEN_BG, contentGLSL: SCREEN_CONTENT_GLSL, panelGLSL: SCREEN_PANEL_GLSL,
+    doc: 'emission = content(uv quantised to res) * ledPanel(uv*res) * louvre * band * nits; louvre = mix(0.35,1,sqrt(n.v)) * mix(1,0.45,smoothstep(0.35,0.9,v.y)); band = 1 - bandDepth*(0.5+0.5 sin(2pi(rowY/viewH * scanHz*0.011 + t*bandRate))); black level 0.0015. Playlist segments loop from phase; a cut darkens one frame by 85 %.',
+    screens: D.screens.map((o) => ({ id: o.id, lot: o.lot, kind: o.kind, pos: o.pos, normal: o.normal, w: o.w, h: o.h, pitch: o.pitch, res: o.res, scanHz: o.scanHz,
+      bandDepth: o.bandDepth, bandRate: +o.bandRate.toFixed(4), seed: +o.seedU.toFixed(4), nits: Math.round(o.nits), phase: +o.playlist.phase.toFixed(3), len: +o.playlist.len.toFixed(3),
+      playlist: o.playlist.list.map((s) => ({ prog: s.prog, t0: +s.t0.toFixed(3), dur: +s.dur.toFixed(3), pal: s.pal.map((c) => c.map((v) => +v.toFixed(4))), text: s.text, seed: +s.seed.toFixed(4) })) })),
+  };
+  return { signs, screens };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// 9) GPU: fonts (screen / scroller text only), the face material, tiles, screens, scrollers
+// ---------------------------------------------------------------------------------------------------------------
+export const FONTS = [ // family (as drawn), file in seoul/fonts (renamed OFL subsets; see seoul/fonts/FONTS.txt)
+  ['S2 BlackHan', 'S2-BlackHanSans.woff2'], ['S2 DoHyeon', 'S2-DoHyeon.woff2'], ['S2 Jua', 'S2-Jua.woff2'], ['S2 Brush', 'S2-BrushScript.woff2'],
+  ['S2 Pen', 'S2-PenScript.woff2'], ['S2 Gothic', 'S2-GothicA1Black.woff2'], ['S2 Serif', 'S2-NotoSerifKR900.woff2'], ['S2 Sans', 'S2-NotoSansKR800.woff2'],
+];
+const FALLBACK = '"Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
+let fontsPromise = null;
+export function loadFonts(base = './seoul/fonts/') {
+  if (fontsPromise) return fontsPromise;
+  if (typeof FontFace === 'undefined' || typeof document === 'undefined') return (fontsPromise = Promise.resolve(false));
+  // screens and scrollers only need three faces now (sign faces are MSDF)
+  fontsPromise = Promise.all(FONTS.filter(([f]) => /BlackHan|DoHyeon|Gothic|Sans/.test(f)).map(([fam, file]) => new FontFace(fam, `url(${base}${file})`).load().then((f) => { document.fonts.add(f); return true; }, () => false)))
+    .then((r) => r.every(Boolean));
+  return fontsPromise;
+}
+function fitText(g, text, family, weight, x, y, w, h, opts = {}) {
+  if (!text) return;
+  let size = h * (opts.k ?? 0.78);
+  g.font = `${weight || ''} ${size}px "${family}", ${FALLBACK}`;
+  let m = g.measureText(text).width; let sx = 1;
+  if (m > w) { sx = w / m; if (sx < 0.55) { size *= sx / 0.55; g.font = `${weight || ''} ${size}px "${family}", ${FALLBACK}`; m = g.measureText(text).width; sx = Math.min(1, w / m); } }
+  g.save(); g.translate(x + w / 2, y + h / 2 + size * 0.04); g.scale(sx, 1);
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = opts.fill || '#fff'; g.fillText(text, 0, 0);
+  g.restore();
+}
 function makeCanvas(w, h) {
-  if (typeof OffscreenCanvas !== 'undefined' && typeof document === 'undefined') return new OffscreenCanvas(w, h);
   if (typeof document === 'undefined') return null;
   const c = document.createElement('canvas'); c.width = w; c.height = h; return c;
 }
 
-export function build(layout, ctx = {}) {
-  const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  const nit = { value: ctx.nitScale ?? ctx.NIT ?? NIT_SCALE };   // S1 passes ctx.NIT (scene radiance per cd/m^2)
-  const uTime = { value: 0 };
-  const { specs, screens } = generateSigns(layout, ctx);
-  const group = new THREE.Group(); group.name = 'seoul-signs';
-  const emitters = [];
-  const litBuf = new Buf(), offBuf = new Buf(), neonBuf = new Buf(), houseBuf = new Buf(), scrollItems = [];
-  const atlasItems = []; // { spec, wpx, hpx } per design
-  const quality = ctx.quality || 'high';
-  const ATLAS = ctx.atlasSize || (quality === 'low' ? 2048 : 4096);
-  let density = ctx.pxPerM || (quality === 'low' ? 64 : 110);
-
-  // housing colours (linear albedo, multiplied by S3's light; kept dark)
-  const HOUSE = [0.035, 0.036, 0.04], STEEL = [0.06, 0.06, 0.065], RACE = [0.02, 0.02, 0.022];
-  const pos3 = (F, u, y, d) => [F.o[0] + F.r[0] * u + F.n[0] * d, y, F.o[1] + F.r[1] * u + F.n[1] * d];
-
-  for (const s of specs) {
-    if (s.style === 'scroller') { scrollItems.push(s); continue; }
-    const F = s.frame, G = s.geo; const n = [F.n[0], 0, F.n[1]], r = [F.r[0], 0, F.r[1]];
-    const item = { spec: s, quads: [] }; atlasItems.push(item);
-    const fk = s.flicker ? [s.flicker.hz, s.flicker.depth, (s.seed % 1000) / 1000] : [0, 0, 0];
-    const lit = s.lit && s.style !== 'banner';
-    const faceNits = lit ? s.nits / Math.max(0.05, lum(s.style === 'channel' || s.style === 'roof' || s.style === 'neon' ? s.rgb : (s.cat === 'white' ? [1, 1, 1] : s.rgb))) : 0;
-    const col = lit ? [faceNits, faceNits, faceNits] : [1, 1, 1];
-    const tgt = s.style === 'neon' ? neonBuf : lit ? litBuf : offBuf;
-    const emit = (c, m, w, h, kind, cover) => { if (!lit) return;
-      emitters.push({ id: `${s.id}${item.quads.length > 1 ? ':' + item.quads.length : ''}`, pos: c.map((v) => +v.toFixed(3)), normal: m.map((v) => +v.toFixed(3)), w: +w.toFixed(3), h: +h.toFixed(3),
-        rgb: norm1(s.cat === 'white' && s.style !== 'neon' && s.style !== 'channel' ? srgb(HEX[s.hue]) : s.rgb).map((v) => +v.toFixed(4)),
-        nits: Math.round(s.nits * cover), kind, ...(s.flicker ? { flicker: s.flicker } : {}), animated: false, use: s.use, lot: s.lot }); };
-    const kindOf = { fascia: 'lightbox', stand: 'lightbox', blade: 'lightbox', round: 'lightbox', channel: 'channel', roof: 'channel', window: 'store', neon: 'neon', banner: 'lightbox' };
-    const cover = COVER[{ fascia: 'lightbox', stand: 'lightbox', blade: 'lightbox', round: 'lightbox', channel: 'channel', roof: 'channel', window: 'window', neon: 'neon' }[s.style]] ?? 1;
-    item.w = G.w; item.h = G.h;
-    if (s.type === 'blade' || s.type === 'round') {
-      // perpendicular to the facade: plane spanned by n and up, double-sided faces normal +-r
-      const c = pos3(F, G.u, G.y + G.h / 2, G.out + G.w / 2);
-      box(houseBuf, c, n, [-r[0], 0, -r[2]], G.w / 2 + 0.03, G.h / 2 + 0.03, G.d / 2, HOUSE, false);
-      // support arm to the wall
-      box(houseBuf, pos3(F, G.u, G.y + G.h - 0.1, G.out / 2), r, n, 0.03, 0.03, G.out / 2, STEEL);
-      box(houseBuf, pos3(F, G.u, G.y + 0.1, G.out / 2), r, n, 0.03, 0.03, G.out / 2, STEEL);
-      for (const sg of [1, -1]) { const m = [r[0] * sg, 0, r[2] * sg]; const fc = add3(c, m, G.d / 2 + 0.031 + 0.002);
-        item.quads.push({ buf: tgt, c: fc, m, w: G.w, h: G.h, col, fk }); emit(fc, m, G.w, G.h, kindOf[s.style], cover); }
-    } else if (s.type === 'stand') {
-      const c = pos3(F, G.u, G.y + G.h / 2, G.out);
-      box(houseBuf, [c[0], 0.075, c[2]], r, n, 0.32, 0.075, 0.32, RACE);
-      box(houseBuf, c, r, n, G.w / 2, G.h / 2, G.d / 2, HOUSE, false);
-      for (const m of [n, [-n[0], 0, -n[2]]]) { const fc = add3(c, m, G.d / 2 + 0.003); item.quads.push({ buf: tgt, c: fc, m, w: G.w * 0.92, h: G.h * 0.94, col, fk }); emit(fc, m, G.w, G.h, 'lightbox', cover); }
-    } else if (s.type === 'roof') {
-      const c = pos3(F, G.u + G.w / 2, G.y + G.h / 2, G.out);
-      // steel frame: legs + bracing behind the letters
-      for (const k of [0.1, 0.5, 0.9]) box(houseBuf, pos3(F, G.u + G.w * k, (F.top + G.y + G.h) / 2, G.out - 0.35), r, n, 0.05, (G.y + G.h - F.top) / 2, 0.05, STEEL);
-      box(houseBuf, pos3(F, G.u + G.w / 2, G.y + G.h * 0.25, G.out - 0.35), r, n, G.w / 2, 0.04, 0.04, STEEL);
-      box(houseBuf, pos3(F, G.u + G.w / 2, G.y + G.h * 0.75, G.out - 0.35), r, n, G.w / 2, 0.04, 0.04, STEEL);
-      const fc = add3(c, n, 0.02); item.quads.push({ buf: tgt, c: fc, m: n, w: G.w, h: G.h, col, fk, back: STEEL }); emit(fc, n, G.w, G.h, 'channel', cover);
-    } else {
-      const c = pos3(F, G.u + G.w / 2, G.y + G.h / 2, G.d / 2 + 0.02);
-      if (s.style === 'channel') { // raceway bar behind letters; letters stand 0.1 m proud
-        box(houseBuf, pos3(F, G.u + G.w / 2, G.y + G.h * 0.45, 0.06), r, n, G.w * 0.48, 0.06, 0.04, RACE);
-        const fc = add3(c, n, G.d / 2); item.quads.push({ buf: tgt, c: fc, m: n, w: G.w, h: G.h, col, fk, back: RACE }); emit(fc, n, G.w, G.h, 'channel', cover);
-      } else if (s.type === 'window' || s.type === 'banner') {
-        const fc = pos3(F, G.u + G.w / 2, G.y + G.h / 2, 0.025); item.quads.push({ buf: tgt, c: fc, m: n, w: G.w, h: G.h, col, fk }); emit(fc, n, G.w, G.h, kindOf[s.style], cover);
+// --- sign faces: one MeshStandardMaterial; per-vertex element attributes; MSDF glyphs; alpha-to-coverage edges ---
+const FACE_VERT_HEAD = /* glsl */`
+attribute vec2 aUv; attribute vec3 aCol; attribute vec4 aAlb; attribute vec4 aK; attribute vec2 aF;
+varying vec2 vSUv; varying vec3 vSCol; varying vec3 vSAlb; varying vec4 vSK;
+uniform float uTime;`;
+const FACE_VERT_BODY = /* glsl */`
+  { float layer = floor(aK.x / 16.0);
+    mvPosition.xyz *= 1.0 - layer * 6.0e-4;            // decal layers on the face plane: pull toward the eye (no z-fight to ~500 m)
+    gl_Position = projectionMatrix * mvPosition;
+    vSUv = aUv; vSAlb = aAlb.rgb; vSK = vec4(aK.x - layer * 16.0, aK.yzw);
+    float fl = 1.0;
+    if (aF.x > 0.0) { float tt = uTime * aF.x + aF.y * 37.0; float nz = fract(sin(floor(tt) * 12.9898 + aF.y * 78.233) * 43758.5453);
+      fl = 1.0 - 0.7 * step(0.55, nz) * (0.6 + 0.4 * fract(tt * 3.7)); }
+    vSCol = aCol * fl; }`;
+const FACE_FRAG_HEAD = /* glsl */`
+varying vec2 vSUv; varying vec3 vSCol; varying vec3 vSAlb; varying vec4 vSK;
+uniform sampler2D uAtlas; uniform vec4 uAtlasP; uniform float uNit, uTime, uMS;
+float sgMed(vec3 s){ return max(min(s.r, s.g), min(max(s.r, s.g), s.b)); }`;
+const FACE_FRAG_BODY = /* glsl */`
+  vec3 sgEm = vec3(0.0); float sgA = 1.0;
+  { int kind = int(vSK.x + 0.5);
+    vec3 fN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
+    float facing = abs(dot(fN, normalize(vViewPosition)));
+    // MSDF terms (sampled for every kind: uniform control flow for the derivatives)
+    vec3 ms = texture2D(uAtlas, vSUv, -0.5).rgb;
+    float sd = sgMed(ms) - 0.5;                                   // signed distance, range units (+ inside)
+    vec2 tx = vSUv * uAtlasP.xy; vec2 fw = fwidth(tx); float tpp = max(max(fw.x, fw.y), 1e-5);   // atlas texels per screen px
+    float dEm = sd * uAtlasP.z / uAtlasP.w;                       // em
+    float emPx = uAtlasP.w / tpp;                                 // em size on screen, px
+    float far = smoothstep(7.0, 2.5, emPx) * uMS;                 // too small to resolve: fade to the mean coverage (MSAA only)
+    vec2 u = vSUv; vec2 sz = vSK.yz;
+    if (kind == 0) {          // light-box ground: diffuser profile + LED rows
+      vec2 c = u * 2.0 - 1.0; float ex = min(u.x, 1.0 - u.x) * sz.x, ey = min(u.y, 1.0 - u.y) * sz.y;
+      float edge = smoothstep(0.0, 0.12, min(ex, ey));
+      float prof = 0.7 + 0.5 * edge * (1.0 - 0.35 * c.y * c.y - 0.15 * c.x * c.x);
+      float rows = 0.5 + 0.5 * cos(6.2831853 * u.y * sz.y / 0.12);
+      prof *= 1.0 + mix(0.06, 0.32, 1.0 - facing) * (rows - 0.5);
+      sgEm = vSCol * prof;
+      if (vSK.w > 0.5) { float r = length(c); sgA = 1.0 - smoothstep(1.0 - fwidth(r), 1.0, r); }
+    } else if (kind == 1) {   // flat panel
+      sgEm = vSCol;
+    } else if (kind == 6) {   // lit room behind film: ceiling light, optional blinds, darker frame
+      float ex = min(u.x, 1.0 - u.x) * sz.x, ey = min(u.y, 1.0 - u.y) * sz.y;
+      float prof = 0.72 + 0.5 * u.y * u.y;
+      if (vSK.w > 0.5) prof *= 0.8 + 0.2 * step(0.35, fract(u.y * sz.y / 0.045));
+      prof *= 0.55 + 0.45 * smoothstep(0.0, 0.06, min(ex, ey));
+      sgEm = vSCol * prof;
+    } else if (kind == 5) {   // bulb / LED border strip
+      float pitch = vSK.y; float i = floor(u.x / pitch);
+      vec2 f = vec2((fract(u.x / pitch) - 0.5) * pitch, (u.y - 0.5) * vSK.w);
+      float rad = vSK.z > 1.5 ? 0.009 : 0.017; float d = length(f);
+      float core = 1.0 - smoothstep(rad * 0.45, rad, d);
+      float on = 1.0;
+      if (vSK.z > 0.5 && vSK.z < 1.5) on = step(0.5, mod(i + floor(uTime * 5.0), 3.0));             // chase
+      if (vSK.z > 1.5) on = 0.35 + 0.65 * step(0.5, mod(i + floor(uTime * 8.0), 4.0) * 0.5);          // LED run
+      float ppp = pitch / max(fwidth(u.x), 1e-5);
+      sgEm = vSCol * mix(core * on, 0.16 * (vSK.z > 0.5 ? 0.66 : 1.0), smoothstep(4.0, 1.5, ppp));
+    } else {                  // glyphs
+      float cov;
+      if (kind == 3) {        // neon tube on the outline
+        float hw = vSK.y; float dd = hw - abs(dEm);
+        cov = clamp(dd * emPx + 0.5, 0.0, 1.0);
+        float e = clamp(1.0 - abs(dEm) / hw, 0.0, 1.0);
+        sgEm = vSCol * (0.45 + 0.75 * e);
+        cov = mix(cov, vSK.w * 0.6, far);
       } else {
-        if (G.d > 0.07) box(houseBuf, c, r, n, G.w / 2 + 0.03, G.h / 2 + 0.03, G.d / 2, HOUSE, true);
-        else box(houseBuf, add3(c, n, -0.01), r, n, G.w / 2 + 0.03, G.h / 2 + 0.03, 0.012, RACE, true); // neon backboard
-        const fc = add3(c, n, G.d / 2 + 0.002); item.quads.push({ buf: tgt, c: fc, m: n, w: G.w, h: G.h, col, fk }); emit(fc, n, G.w, G.h, kindOf[s.style], cover);
+        cov = clamp(sd * uAtlasP.z / tpp + 0.5, 0.0, 1.0);
+        cov = mix(cov, vSK.w, far);
+        if (kind == 2) {
+          sgEm = vSCol * (vSK.y > 0.5 ? mix(0.8, 1.06, smoothstep(0.0, 0.05, dEm)) : 1.0);
+        } else {              // exposed LED dots inside the letter body
+          float pt = vSK.y * uAtlasP.w; vec2 f = fract(tx / pt) - 0.5;
+          float dotm = 1.0 - smoothstep(0.17, 0.3, length(f));
+          sgEm = vSCol * mix(dotm, 0.22, smoothstep(4.0, 1.5, pt / tpp));
+        }
       }
+      sgA = cov;
     }
-  }
+    if (uMS < 0.5) { if (sgA < 0.5) discard; sgA = 1.0; } else if (sgA < 0.02) discard;
+    diffuseColor = vec4(vSAlb, sgA); }`;
 
-  // --- atlas packing: px per metre, shrink until it fits ---
-  const PAD = 4;
-  for (let attempt = 0; attempt < 12; attempt++) {
-    for (const it of atlasItems) {
-      // texel budget by how close and how readable the sign gets: windows, banners and unlit faces get less
-      const tw = ({ window: 0.55, banner: 0.5, blade: 0.9 }[it.spec.style] ?? 1) * (it.spec.lit ? 1 : 0.7);
-      const wpx = Math.max(16, Math.round(it.w * density * tw)), hpx = Math.max(16, Math.round(it.h * density * tw));
-      const k = Math.min(1, 1024 / wpx, 1024 / hpx);  // cap one face at 1024 px
-      it.pw = Math.round(wpx * k); it.ph = Math.round(hpx * k); it.wp = it.pw + PAD * 2; it.hp = it.ph + PAD * 2;
-    }
-    const boxes = atlasItems.map((it) => ({ w: it.wp, h: it.hp }));
-    if (packShelves(boxes, ATLAS)) { atlasItems.forEach((it, i) => { it.x = boxes[i].x + PAD; it.y = boxes[i].y + PAD; }); break; }
-    density *= 0.85;
-  }
-  for (const it of atlasItems) {
-    const uvr = [it.x / ATLAS, 1 - (it.y + it.ph) / ATLAS, (it.x + it.pw) / ATLAS, 1 - it.y / ATLAS];
-    for (const q of it.quads) {
-      if (q.back) faceQuad(houseBuf, add3(q.c, q.m, -0.04), q.m, q.w, q.h, null, q.back); // dark returns behind letters (parallax)
-      faceQuad(q.buf, q.c, q.m, q.w, q.h, uvr, q.col, q.fk);
-    }
-  }
+// --- LED screens: one instanced mesh; static + per-frame instance attributes ---
+const SCR_VERT_HEAD = /* glsl */`
+attribute vec4 iP; attribute vec4 iA; attribute vec4 iR; attribute vec4 iB; attribute vec4 iD; attribute vec4 iE; attribute vec3 iC0; attribute vec3 iC1; attribute vec3 iC2;
+varying vec2 vQUv; varying vec4 vQ0; varying vec4 vQ1; varying vec4 vQ2; varying vec3 vQC0; varying vec3 vQC1; varying vec3 vQC2; varying vec3 vQW; varying vec3 vQN;`;
+const SCR_FRAG_HEAD = /* glsl */`
+varying vec2 vQUv; varying vec4 vQ0; varying vec4 vQ1; varying vec4 vQ2; varying vec3 vQC0; varying vec3 vQC1; varying vec3 vQC2; varying vec3 vQW; varying vec3 vQN;
+uniform float uNit, uMoire, uViewH, uBlack;
+${SCREEN_CONTENT_GLSL}
+${SCREEN_PANEL_GLSL}`;
+const SCR_FRAG_BODY = /* glsl */`
+  vec3 scrEm;
+  { gProg = int(vQ0.x + 0.5); gT = vQ0.y; gCut = vQ0.z; gSeed = vQ0.w; gRes = vQ1.xy; gRow = vQ2.zw; gC0 = vQC0; gC1 = vQC1; gC2 = vQC2;
+    vec2 cell = vQUv * gRes; vec2 id = floor(cell);
+    vec3 col = content((id + 0.5) / gRes, gT);
+    vec3 m = ledPanel(cell, uMoire);
+    vec3 V = normalize(cameraPosition - vQW); float nd = max(dot(vQN, V), 0.0);
+    float ang = mix(0.35, 1.0, sqrt(nd)) * mix(1.0, 0.45, smoothstep(0.35, 0.9, V.y));
+    float band = 1.0 - vQ1.w * (0.5 + 0.5 * sin(6.2831853 * (gl_FragCoord.y / uViewH * vQ2.x + uT * vQ2.y)));
+    scrEm = (col * m * ang * band + vec3(uBlack)) * vQ1.z * uNit;
+    diffuseColor.rgb = vec3(0.012); }`;
 
-  // --- atlas canvas ---
-  const canvas = makeCanvas(ATLAS, ATLAS);
-  const atlasTex = canvas ? new THREE.CanvasTexture(canvas) : null;
-  const paintAtlas = () => {
-    if (!canvas) return 0;
-    const t = (typeof performance !== 'undefined' ? performance.now() : 0);
-    const g = canvas.getContext('2d'); g.clearRect(0, 0, ATLAS, ATLAS);
-    for (const it of atlasItems) {
-      const R = new Rng(it.spec.seed);
-      // bleed pad for mips: fill the padded rect with the design's edge colour first (channel/neon/window keep alpha 0 / black)
-      paintSign(g, it.spec, it.x, it.y, it.pw, it.ph, R);
-    }
-    if (atlasTex) { atlasTex.needsUpdate = true; }
-    return (typeof performance !== 'undefined' ? performance.now() : 0) - t;
+export async function build(layout, ctx = {}) {
+  const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const nit = { value: ctx.nitScale ?? ctx.NIT ?? NIT_SCALE };   // world-seoul passes nitScale = NITS (0.1 scene units per cd/m^2)
+  const uTime = { value: 0 }, uMS = { value: 1 };
+  const D = buildData(layout, ctx);
+  const group = new THREE.Group(); group.name = 'seoul-signs';
+  const emitters = D.emitters;
+  const browser = typeof document !== 'undefined';
+
+  // --- MSDF atlas (browser only: node builds geometry + emitters without textures) ---
+  let atlas = null;
+  if (browser && ctx.atlas !== false) {
+    const url = (ctx.signsBase ?? './seoul/signs/') + 'msdf.png';
+    atlas = await new Promise((res) => {
+      const tex = new THREE.TextureLoader().load(url, () => res(tex), undefined, () => { console.warn('seoul-signs: atlas missing', url); res(tex); });
+      setTimeout(() => res(tex), ctx.atlasTimeout ?? 15000);
+    });
+    atlas.flipY = false; atlas.colorSpace = THREE.NoColorSpace; atlas.generateMipmaps = true; atlas.premultiplyAlpha = false;
+    atlas.minFilter = THREE.LinearMipmapLinearFilter; atlas.magFilter = THREE.LinearFilter;
+    atlas.anisotropy = ctx.anisotropy ?? (ctx.renderer ? Math.min(16, ctx.renderer.capabilities.getMaxAnisotropy()) : 16);
+    atlas.needsUpdate = true;
+  }
+  const uAtlas = { value: atlas }, uAtlasP = { value: new THREE.Vector4(MSDF.size[0], MSDF.size[1], MSDF.range, MSDF.px) };
+
+  const faceMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.42, metalness: 0, flatShading: true, alphaToCoverage: true, fog: false });
+  faceMat.name = 'seoul-signs-faces';
+  faceMat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uAtlas, uAtlasP, uNit: nit, uTime, uMS });
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>\n${FACE_VERT_HEAD}`)
+      .replace('#include <project_vertex>', `#include <project_vertex>\n${FACE_VERT_BODY}`);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\n${FACE_FRAG_HEAD}`)
+      .replace('#include <map_fragment>', `#include <map_fragment>\n${FACE_FRAG_BODY}`)
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance = sgEm * uNit;');
   };
-  if (atlasTex) { atlasTex.colorSpace = THREE.SRGBColorSpace; atlasTex.anisotropy = ctx.anisotropy ?? (ctx.renderer ? Math.min(8, ctx.renderer.capabilities.getMaxAnisotropy()) : 8); atlasTex.generateMipmaps = true; atlasTex.minFilter = THREE.LinearMipmapLinearFilter; }
-
-  // --- materials ---
-  const flickerPatch = (m) => {
-    m.onBeforeCompile = (sh) => {
-      sh.uniforms.uTime = uTime; sh.uniforms.uNit = nit;
-      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute vec3 flk; uniform float uTime; uniform float uNit;')
-        .replace('#include <color_vertex>', `#include <color_vertex>
-          float fl = 1.0;
-          if (flk.y > 0.0) { float tt = uTime * flk.x + flk.z * 37.0; float n = fract(sin(floor(tt) * 12.9898 + flk.z * 78.233) * 43758.5453);
-            fl = 1.0 - flk.y * step(0.55, n) * (0.6 + 0.4 * fract(tt * 3.7)); }
-          vColor.rgb *= fl * uNit;`);
-    };
-    m.customProgramCacheKey = () => 'seoul-signs-flk';
-    return m;
-  };
-  const litMat = flickerPatch(new THREE.MeshBasicMaterial({ map: atlasTex, vertexColors: true, alphaTest: 0.35, side: THREE.FrontSide, fog: false }));
-  const neonMat = flickerPatch(new THREE.MeshBasicMaterial({ map: atlasTex, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
-  const offMat = new THREE.MeshStandardMaterial({ map: atlasTex, color: new THREE.Color(0.55, 0.55, 0.55), roughness: 0.55, metalness: 0, alphaTest: 0.35 });
+  faceMat.customProgramCacheKey = () => 'seoul-signs-msdf-2';
   const houseMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.2 });
-  const meshes = {};
-  const addMesh = (name, buf, mat, order = 0) => { const g = buf.geometry(); if (!g) return; if (mat === offMat || mat === houseMat) g.deleteAttribute('flk');
-    const m = new THREE.Mesh(g, mat); m.name = 'signs-' + name; m.renderOrder = order; m.matrixAutoUpdate = false; group.add(m); meshes[name] = m; };
-  addMesh('housing', houseBuf, houseMat); addMesh('lit', litBuf, litMat); addMesh('off', offBuf, offMat); addMesh('neon', neonBuf, neonMat, 2);
+  houseMat.name = 'seoul-signs-housing';
 
-  // --- text atlas for screens + scrollers ---
-  const TROWS = SCREEN_TEXT.length, TW = 1024, TH = 96;
+  // --- tiles (80 m): faces + housings, so the city's signs frustum-cull ---
+  const TILE = ctx.tileSize ?? 80; const tiles = new Map();
+  const tileOf = (p) => { const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`; let t = tiles.get(k); if (!t) { t = { key: k, f: { p: [], uv: [], col: [], alb: [], k: [], fl: [], idx: [], n: 0 }, h: { p: [], n: [], c: [] } }; tiles.set(k, t); } return t; };
+  for (const f of D.faces) {
+    const T = tileOf(f.c).f; const m = f.m; const rr = cross(UP, m); const rl = Math.hypot(...rr) || 1; rr[0] /= rl; rr[1] /= rl; rr[2] /= rl;
+    for (const e of f.els) {
+      const base = T.n; const z = e.z || 0;
+      for (let j = 0; j < 4; j++) {
+        const x = e.q[j * 2], y = e.q[j * 2 + 1];
+        T.p.push(f.c[0] + rr[0] * x + m[0] * z, f.c[1] + y, f.c[2] + rr[2] * x + m[2] * z);
+        T.uv.push(e.uv[j * 2], e.uv[j * 2 + 1]); T.col.push(e.col[0], e.col[1], e.col[2]);
+        T.alb.push(Math.round(Math.min(1, e.alb[0]) * 255), Math.round(Math.min(1, e.alb[1]) * 255), Math.round(Math.min(1, e.alb[2]) * 255), 255);
+        T.k.push(e.k + 16 * (e.layer || 0), e.p[0], e.p[1], e.p[2]); T.fl.push(f.flk[0], f.flk[1]);
+      }
+      T.idx.push(base, base + 1, base + 2, base, base + 2, base + 3); T.n += 4;
+    }
+  }
+  const colP = [];
+  const boxInto = (H, b, P) => {
+    const { c, r, n, hw, hh, hd, col } = b;
+    const Pt = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
+    const Fc = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1], n], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1], [-n[0], 0, -n[2]]],
+      [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1], [r[0], 0, r[2]]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1], [-r[0], 0, -r[2]]],
+      [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1], [0, 1, 0]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [0, -1, 0]]];
+    Fc.forEach((fc, i) => { const q = fc.slice(0, 4).map((s) => Pt(...s));
+      for (const j of [0, 1, 2, 0, 2, 3]) { if (H && !(b.noFront && i === 0)) { H.p.push(...q[j]); H.n.push(...fc[4]); H.c.push(...col); } if (P) P.push(...q[j]); } });
+  };
+  for (const b of D.boxes) boxInto(tileOf(b.c).h, b, b.collide ? colP : null);
+  const meshes = []; let tris = 0;
+  for (const t of [...tiles.values()].sort((a, b) => (a.key < b.key ? -1 : 1))) {
+    if (t.f.n) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(t.f.p, 3));
+      g.setAttribute('aUv', new THREE.Float32BufferAttribute(t.f.uv, 2));
+      g.setAttribute('aCol', new THREE.Float32BufferAttribute(t.f.col, 3));
+      g.setAttribute('aAlb', new THREE.Uint8BufferAttribute(t.f.alb, 4, true));
+      g.setAttribute('aK', new THREE.Float32BufferAttribute(t.f.k, 4));
+      g.setAttribute('aF', new THREE.Float32BufferAttribute(t.f.fl, 2));
+      g.setIndex(t.f.n > 65535 ? new THREE.Uint32BufferAttribute(t.f.idx, 1) : new THREE.Uint16BufferAttribute(t.f.idx, 1));
+      g.computeBoundingSphere(); g.computeBoundingBox();
+      const m = new THREE.Mesh(g, faceMat); m.name = `signs-faces-${t.key}`; m.matrixAutoUpdate = false;
+      m.onBeforeRender = (renderer) => { const rt = renderer.getRenderTarget(); uMS.value = rt && rt.samples > 0 ? 1 : 0; };
+      group.add(m); meshes.push(m); tris += t.f.idx.length / 3;
+    }
+    if (t.h.p.length) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(t.h.p, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(t.h.n, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(t.h.c, 3)); g.computeBoundingSphere();
+      const m = new THREE.Mesh(g, houseMat); m.name = `signs-housing-${t.key}`; m.matrixAutoUpdate = false; group.add(m); meshes.push(m); tris += t.h.p.length / 9;
+    }
+  }
+  // collider triangles for the integrator (blades, boxes, stands, cabinets): not added to any collider here
+  const collider = new THREE.BufferGeometry(); collider.setAttribute('position', new THREE.Float32BufferAttribute(colP, 3));
+
+  // --- text atlases for screens + scrollers (Canvas2D, small) ---
+  const TROWS = SCREEN_TEXT.length, TW = 1024, TH = 64;
   const tcan = makeCanvas(TW, TROWS * TH); const textTex = tcan ? new THREE.CanvasTexture(tcan) : null;
   const SROWS = SCROLL_TEXT.length, SW = 2048, SH = 16;
   const scan = makeCanvas(SW, SROWS * SH); const scrollTex = scan ? new THREE.CanvasTexture(scan) : null;
@@ -827,116 +1096,101 @@ export function build(layout, ctx = {}) {
       const g = tcan.getContext('2d'); g.clearRect(0, 0, TW, TROWS * TH);
       SCREEN_TEXT.forEach((s, i) => {
         if (i === TROWS - 1) { for (let k = 0; k < 11; k++) fitText(g, s[k], 'S2 Gothic', '', k * TW / 11, i * TH, TW / 11, TH, { k: 0.95 }); }
-        else fitText(g, s, i % 2 ? 'S2 Sans' : 'S2 BlackHan', i % 2 ? '800' : '', 8, i * TH + 4, TW - 16, TH - 8, { k: 0.8 });
+        else fitText(g, s, i % 2 ? 'S2 Sans' : 'S2 BlackHan', i % 2 ? '800' : '', 8, i * TH + 3, TW - 16, TH - 6, { k: 0.8 });
       });
       textTex.needsUpdate = true;
     }
     if (scan) {
       const g = scan.getContext('2d'); g.clearRect(0, 0, SW, SROWS * SH); g.textBaseline = 'middle';
       SCROLL_TEXT.forEach((s, i) => { g.font = `15px "S2 DoHyeon", ${FALLBACK}`; g.fillStyle = '#fff'; g.fillText(s + s + s, 0, i * SH + SH / 2 + 1); });
-      // hard-threshold so dots are on/off like a real 16-row matrix
       const im = g.getImageData(0, 0, SW, SROWS * SH); for (let i = 3; i < im.data.length; i += 4) im.data[i] = im.data[i] > 110 ? 255 : 0; g.putImageData(im, 0, 0);
       scrollTex.needsUpdate = true;
     }
   };
 
-  // --- scrollers mesh ---
-  if (scrollItems.length) {
-    const p = [], uv = [], aS = [], aC = [], nrm = [];
-    for (const s of scrollItems) {
-      const F = s.frame, G = s.geo, n = [F.n[0], 0, F.n[1]], r = [F.r[0], 0, F.r[1]];
-      const c = pos3(F, G.u + G.w / 2, G.y + G.h / 2, 0.08);
-      box(houseBuf, add3(c, n, -0.04), r, n, G.w / 2 + 0.04, G.h / 2 + 0.04, 0.04, RACE, true); // (housing built before mesh? add below)
-      const cols = Math.round(G.w / (G.h / 16));
-      const hue = s.lit ? pick(new Rng(s.seed), [['red', 0.6], ['amber', 0.25], ['green', 0.15]].flatMap(([h, w]) => Array(Math.round(w * 20)).fill(h))) : 'red';
-      const cl = srgb(HEX[hue]); const k = s.lit ? s.nits / Math.max(0.05, lum(cl)) : 0;
-      const rr = cross(UP, n); const P = [add3(add3(c, rr, -G.w / 2), UP, -G.h / 2), add3(add3(c, rr, G.w / 2), UP, -G.h / 2), add3(add3(c, rr, G.w / 2), UP, G.h / 2), add3(add3(c, rr, -G.w / 2), UP, G.h / 2)];
+  // --- scrollers: one mesh ---
+  if (D.scrollers.length) {
+    const p = [], uv = [], aS = [], aC = [];
+    for (const s of D.scrollers) {
+      const rr = cross(UP, s.n), c = s.c, k = s.nits / Math.max(0.05, lum(s.rgb));
+      const P = [add3(add3(c, rr, -s.w / 2), UP, -s.h / 2), add3(add3(c, rr, s.w / 2), UP, -s.h / 2), add3(add3(c, rr, s.w / 2), UP, s.h / 2), add3(add3(c, rr, -s.w / 2), UP, s.h / 2)];
       const U = [[0, 0], [1, 0], [1, 1], [0, 1]];
-      for (const i of [0, 1, 2, 0, 2, 3]) { p.push(...P[i]); uv.push(...U[i]); nrm.push(...n); aS.push(s.scrollRow, 7 + (s.seed % 6), cols, s.seed % 500); aC.push(cl[0] * k, cl[1] * k, cl[2] * k); }
-      if (s.lit) emitters.push({ id: s.id, pos: c.map((v) => +v.toFixed(3)), normal: n, w: G.w, h: G.h, rgb: norm1(cl).map((v) => +v.toFixed(4)), nits: Math.round(s.nits * COVER.scroller), kind: 'screen', animated: true, use: s.use, lot: s.lot });
+      for (const i of [0, 1, 2, 0, 2, 3]) { p.push(...P[i]); uv.push(...U[i]); aS.push(s.row, s.speed, s.cols, s.phase); aC.push(s.rgb[0] * k, s.rgb[1] * k, s.rgb[2] * k); }
     }
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     g.setAttribute('aS', new THREE.Float32BufferAttribute(aS, 4)); g.setAttribute('aC', new THREE.Float32BufferAttribute(aC, 3)); g.computeBoundingSphere();
     const m = new THREE.Mesh(g, new THREE.ShaderMaterial({ vertexShader: SCROLL_VERT, fragmentShader: SCROLL_FRAG, extensions: { derivatives: true },
       uniforms: { uText: { value: scrollTex }, uT: uTime, uRows: { value: SROWS }, uTexW: { value: SW }, uNit: nit } }));
-    m.name = 'signs-scrollers'; m.matrixAutoUpdate = false; group.add(m); meshes.scrollers = m;
-    // the scroller housings were appended to houseBuf after its mesh was built: rebuild housing geometry
-    if (meshes.housing) { meshes.housing.geometry.dispose(); const hg = houseBuf.geometry(); hg.deleteAttribute('flk'); meshes.housing.geometry = hg; }
+    m.name = 'signs-scrollers'; m.matrixAutoUpdate = false; group.add(m); meshes.push(m); tris += p.length / 9;
   }
 
-  // --- LED screens ---
-  const screenObjs = [];
-  for (const sc of screens) {
-    const pl = makePlaylist(sc.seed, sc.kind);
-    const pitch = sc.kind === 'billboard' ? 0.016 : sc.kind === 'facade' ? 0.010 : 0.0025;      // m per LED pixel
-    const res = [Math.round(sc.w / pitch), Math.round(sc.h / pitch)];
-    const r = new Rng(sc.seed ^ 0x9e37);
-    const scanHz = sc.kind === 'small' ? pick(r, [960, 1920, 3840]) : pick(r, [240, 480, 960, 1920]);
-    const bandDepth = { 240: 0.42, 480: 0.3, 960: 0.18, 1920: 0.09, 3840: 0.04 }[scanHz];
-    const nitsRange = sc.kind === 'small' ? NITS.screenSmall : NITS.screen; const nits = nitsRange[0] + (nitsRange[1] - nitsRange[0]) * r.next();
-    const u = {
-      uT: { value: 0 }, uLT: { value: 0 }, uNits: { value: nits }, uNit: nit, uMoire: { value: ctx.moire ?? 0.6 }, uBandDepth: { value: bandDepth },
-      uBandN: { value: scanHz * (ctx.readout ?? 0.011) }, uBandRate: { value: 0.35 + r.next() * 0.9 }, uViewH: { value: 1080 }, uSeed: { value: r.next() * 10 },
-      uBlack: { value: 0.0015 }, uCut: { value: 0 }, uRes: { value: new THREE.Vector2(res[0], res[1]) }, uProg: { value: 0 },
-      uC0: { value: new THREE.Vector3() }, uC1: { value: new THREE.Vector3() }, uC2: { value: new THREE.Vector3() }, uRow: { value: new THREE.Vector2(-1, -1) },
-      uText: { value: textTex }, uRows: { value: TROWS },
+  // --- LED screens: one instanced mesh (perf #6: was one material + draw per screen) ---
+  const S = D.screens, NS = S.length;
+  const scrU = { uNit: nit, uMoire: { value: ctx.moire ?? 0.6 }, uViewH: { value: 1080 }, uBlack: { value: 0.0015 }, uText: { value: textTex }, uRows: { value: TROWS }, uT: uTime, uBg: { value: SCREEN_BG } };
+  let scrMesh = null, dyn = null;
+  if (NS) {
+    const plane = new THREE.PlaneGeometry(1, 1);
+    const ig = new THREE.InstancedBufferGeometry(); ig.index = plane.index;
+    for (const k of ['position', 'normal', 'uv']) ig.setAttribute(k, plane.attributes[k]);
+    const A = (name, size, fill, dynamic = false) => { const arr = new Float32Array(NS * size); S.forEach((o, i) => fill(o, arr, i * size)); const at = new THREE.InstancedBufferAttribute(arr, size); if (dynamic) at.setUsage(THREE.DynamicDrawUsage); ig.setAttribute(name, at); return at; };
+    A('iP', 4, (o, a, j) => { a[j] = o.pos[0]; a[j + 1] = o.pos[1]; a[j + 2] = o.pos[2]; a[j + 3] = o.nits; });
+    A('iA', 4, (o, a, j) => { a[j] = o.normal[0]; a[j + 1] = o.normal[2]; a[j + 2] = o.w; a[j + 3] = o.h; });
+    A('iR', 4, (o, a, j) => { a[j] = o.res[0]; a[j + 1] = o.res[1]; a[j + 2] = o.seedU; a[j + 3] = o.bandDepth; });
+    A('iB', 4, (o, a, j) => { a[j] = o.scanHz * (ctx.readout ?? 0.011); a[j + 1] = o.bandRate; });
+    dyn = { iD: A('iD', 4, () => {}, true), iE: A('iE', 4, () => {}, true), iC0: A('iC0', 3, () => {}, true), iC1: A('iC1', 3, () => {}, true), iC2: A('iC2', 3, () => {}, true) };
+    ig.instanceCount = NS;
+    const smat = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.55, metalness: 0, fog: false });
+    smat.name = 'seoul-screens';
+    smat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, scrU);
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>\n${SCR_VERT_HEAD}`)
+        .replace('#include <beginnormal_vertex>', 'vec3 objectNormal = vec3(iA.x, 0.0, iA.y);')
+        .replace('#include <begin_vertex>', `vec3 qn = vec3(iA.x, 0.0, iA.y); vec3 qr = vec3(iA.y, 0.0, -iA.x);
+  vec3 transformed = iP.xyz + qr * (position.x * iA.z) + vec3(0.0, position.y * iA.w, 0.0) + qn * 0.05;
+  vQUv = uv; vQ0 = vec4(iD.xyz, iR.z); vQ1 = vec4(iR.xy, iP.w, iR.w); vQ2 = vec4(iB.xy, iD.w, iE.x); vQC0 = iC0; vQC1 = iC1; vQC2 = iC2; vQW = transformed; vQN = qn;`);
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\n${SCR_FRAG_HEAD}`)
+        .replace('#include <map_fragment>', `#include <map_fragment>\n${SCR_FRAG_BODY}`)
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance = scrEm;');
     };
-    const mat = new THREE.ShaderMaterial({ vertexShader: SCREEN_VERT, fragmentShader: SCREEN_FRAG, uniforms: u, extensions: { derivatives: true } });
-    const geo = new THREE.PlaneGeometry(sc.w, sc.h);
-    const mesh = new THREE.Mesh(geo, mat); mesh.name = 'screen-' + sc.id;
-    const nn = new THREE.Vector3(sc.normal[0], sc.normal[1] || 0, sc.normal[2]).normalize();
-    mesh.position.set(sc.pos[0], sc.pos[1], sc.pos[2]).addScaledVector(nn, 0.05);
-    mesh.lookAt(mesh.position.clone().add(nn));
-    mesh.onBeforeRender = (renderer) => { const rt = renderer.getRenderTarget(); u.uViewH.value = rt ? rt.height : renderer.domElement.height; };
-    group.add(mesh);
-    // cabinet behind the panel, and a truss for rooftop billboards
-    const fr = [nn.z, 0, -nn.x], c = [sc.pos[0] - nn.x * 0.25, sc.pos[1], sc.pos[2] - nn.z * 0.25]; // cabinet front 10 cm behind the panel
-    box(houseBuf, c, fr, [nn.x, 0, nn.z], sc.w / 2 + 0.12, sc.h / 2 + 0.12, 0.2, HOUSE);
-    if (sc.kind === 'billboard') { const bot = sc.pos[1] - sc.h / 2; const lot = (layout.lots || []).find((l) => l.id === sc.lot); const roof = lot ? lot.floors * (lot.floorH || 3.2) : bot - 3;
-      for (const k of [-0.4, 0, 0.4]) box(houseBuf, [c[0] + fr[0] * sc.w * k - nn.x * 0.6, (bot + roof) / 2, c[2] + fr[2] * sc.w * k - nn.z * 0.6], fr, [nn.x, 0, nn.z], 0.08, Math.max(0.1, (bot - roof) / 2), 0.08, STEEL); }
-    const em = { id: sc.id, pos: [sc.pos[0] + nn.x * 0.05, sc.pos[1], sc.pos[2] + nn.z * 0.05].map((v) => +v.toFixed(3)), normal: [nn.x, 0, nn.z], w: sc.w, h: sc.h,
-      rgb: [1, 1, 1], nits: 0, kind: 'screen', animated: true, lot: sc.lot, screenKind: sc.kind };
-    emitters.push(em);
-    screenObjs.push({ sc, pl, u, mesh, em, nits, res, scanHz });
+    smat.customProgramCacheKey = () => 'seoul-screens-2';
+    scrMesh = new THREE.Mesh(ig, smat); scrMesh.name = 'signs-screens'; scrMesh.frustumCulled = false; scrMesh.matrixAutoUpdate = false;
+    scrMesh.onBeforeRender = (renderer) => { const rt = renderer.getRenderTarget(); scrU.uViewH.value = rt ? rt.height : renderer.domElement.height; };
+    group.add(scrMesh); meshes.push(scrMesh); tris += 2 * NS;
   }
-  if (meshes.housing && screens.length) { meshes.housing.geometry.dispose(); const hg = houseBuf.geometry(); hg.deleteAttribute('flk'); meshes.housing.geometry = hg; }
 
-  const tmp = [0, 0, 0];
   function update(t, camPos) {
     uTime.value = t;
-    for (const o of screenObjs) {
-      const { pl, u, em } = o; const lt0 = fract((t + pl.phase) / pl.len) * pl.len;
-      let seg = pl.list[0]; for (const s of pl.list) if (lt0 >= s.t0) seg = s;
-      const lt = lt0 - seg.t0;
-      u.uT.value = t; u.uLT.value = lt; u.uProg.value = seg.prog; u.uCut.value = lt < 1 / 30 ? 1 : 0;
-      u.uC0.value.set(...seg.pal[0]); u.uC1.value.set(...seg.pal[1]); u.uC2.value.set(...seg.pal[2]);
-      u.uRow.value.set(seg.text[0], seg.text[1]);
-      const m = programMean(seg, lt); const y = lum(m);
-      tmp[0] = m[0]; tmp[1] = m[1]; tmp[2] = m[2];
-      const nn = norm1(tmp); em.rgb[0] = nn[0]; em.rgb[1] = nn[1]; em.rgb[2] = nn[2];
-      em.nits = Math.round(o.nits * y * (1 - 0.85 * u.uCut.value) + 0.5);
+    if (!dyn) return;
+    const d = dyn.iD.array, e = dyn.iE.array, c0 = dyn.iC0.array, c1 = dyn.iC1.array, c2 = dyn.iC2.array;
+    for (let i = 0; i < NS; i++) {
+      const o = S[i]; const st = screenState(o, t); const sg = st.seg;
+      d[i * 4] = sg.prog; d[i * 4 + 1] = st.lt; d[i * 4 + 2] = st.cut; d[i * 4 + 3] = sg.text[0]; e[i * 4] = sg.text[1];
+      c0.set(sg.pal[0], i * 3); c1.set(sg.pal[1], i * 3); c2.set(sg.pal[2], i * 3);
+      const em = o.em; em.rgb[0] = st.rgb[0]; em.rgb[1] = st.rgb[1]; em.rgb[2] = st.rgb[2]; em.nits = Math.round(st.nits + 0.5);
     }
+    for (const k in dyn) dyn[k].needsUpdate = true;
     void camPos;
   }
 
   let fontsReady = false;
-  const repaint = () => { const ms = paintAtlas(); paintText(); return ms; };
-  const paintMs = repaint();
-  if (ctx.loadFonts !== false && canvas) loadFonts(ctx.fontBase).then((ok) => { fontsReady = ok; repaint(); if (ctx.onFonts) ctx.onFonts(ok); });
+  paintText();
+  if (ctx.loadFonts !== false && browser) loadFonts(ctx.fontBase).then((ok) => { fontsReady = ok; paintText(); if (ctx.onFonts) ctx.onFonts(ok); });
 
-  const stats = { ...signStats(specs), emitters: emitters.length, screens: screens.length, atlas: ATLAS, pxPerM: +density.toFixed(1),
-    drawCalls: group.children.length, tris: group.children.reduce((a, m) => a + (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3, 0),
-    buildMs: Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0), paintMs: Math.round(paintMs) };
+  const gpuBytes = meshes.reduce((a, m) => a + Object.values(m.geometry.attributes).reduce((s, at) => s + at.array.byteLength, 0) + (m.geometry.index ? m.geometry.index.array.byteLength : 0), 0)
+    + (atlas ? MSDF.size[0] * MSDF.size[1] * 4 * 4 / 3 : 0) + TW * TROWS * TH * 4 + SW * SROWS * SH * 4;
+  const stats = { ...D.stats, drawCalls: meshes.length, tris: Math.round(tris), gpuMB: +(gpuBytes / 1048576).toFixed(1),
+    buildMs: Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0) };
   update(0);
   return {
-    group, emitters, update, specs, screens: screenObjs, stats, atlas: atlasTex, canvas,
+    group, emitters, update, specs: D.specs, screens: S, stats, atlas, collider, data: D,
     setNitScale(k) { nit.value = k; }, get nitScale() { return nit.value; },
-    setMoire(k) { for (const o of screenObjs) o.u.uMoire.value = k; },
-    get fontsReady() { return fontsReady; }, repaint,
-    dispose() { group.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); atlasTex?.dispose(); textTex?.dispose(); scrollTex?.dispose(); },
+    setMoire(k) { scrU.uMoire.value = k; },
+    get fontsReady() { return fontsReady; }, repaint: paintText,
+    exportData: () => exportData(layout, ctx),
+    dispose() { group.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); collider.dispose(); atlas?.dispose(); textTex?.dispose(); scrollTex?.dispose(); },
   };
 }
 
-export const seoulSigns = { build, generateSigns, signStats, loadFonts, NIT_SCALE, CENSUS, SHIPPED, PUSH_BY_KIND };
+export const seoulSigns = { build, buildData, exportData, generateSigns, signStats, designFace, loadFonts, NIT_SCALE, NITS, CENSUS, SHIPPED, PUSH_BY_KIND, K };
 export default seoulSigns;
