@@ -22,7 +22,11 @@ const COMMON = /* glsl */`
 #define LOGR 12.28771238   // log2(5000): depth encodes 0.02 m .. 100 m
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 float decodeDepth(vec4 c){ float d = c.r + c.g / 255.0; return 0.02 * exp2(d * LOGR); }
+#ifdef NIGHT
+float decodeEv(vec4 c){ return c.r; }      // [S3] night: half-float AE state (r ev, g ev rate, b metered mean, a pin)
+#else
 float decodeEv(vec4 c){ return mix(-5.0, 5.0, c.r + c.g / 255.0); }
+#endif
 vec4 encodeEv(float ev){ float v = clamp((ev + 5.0) / 10.0, 0.0, 1.0); float hi = floor(v * 255.0) / 255.0; return vec4(hi, fract(v * 255.0), 0.0, 1.0); }
 vec3 srgb2lin(vec3 c){ return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
 vec3 lin2srgb(vec3 c){ c = max(c, 0.0); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
@@ -386,6 +390,150 @@ void main(){
   fragColor = vec4(c.rgb, 1.0);
 }`;
 
+// [S3] Night camera (GRADES.night, plan-L5 2A-2E + plan-G5 2E-2F). Compiled only into the night variants of DOWN/FINAL (RawShaderMaterial
+// defines {NIGHT: 1}) and the night meter: with the night preset off, the bando programs are the exact same GLSL as before.
+const NIGHT_FINAL_HEAD = /* glsl */`
+uniform sampler2D tHalo;  // wide halation, 1/16 res, from the bloom chain
+uniform float uHalo;
+uniform vec3 uHaloTint;   // red-orange bias, luma 1
+uniform vec3 uNightK;     // x: exposed level that clips, y: white-core amount, z: Oklab L of the AE target after the curve
+uniform float uRetro;     // retrowave grade, 0 = pure camera
+uniform float uRetroVib;  // neon vibrance at uRetro 1
+uniform float uRetroCA;   // extra lateral CA (already x uRetro)
+uniform vec3 uNoise;      // x: shot sigma at mid-grey, y: read sigma (linear, both at full analog gain), z: chroma share
+uniform vec3 uNoiseRGB;   // chroma noise per channel (blue noisiest)
+uniform vec2 uNoiseEv;    // x: EV where base ISO ends, y: analog gain stops available
+float cbrt1(float x){ return sign(x) * pow(abs(x), 1.0 / 3.0); }
+vec3 okLab(vec3 c){
+  float l = cbrt1(dot(c, vec3(0.4122214708, 0.5363325363, 0.0514459929)));
+  float m = cbrt1(dot(c, vec3(0.2119034982, 0.6806995451, 0.1073969566)));
+  float s = cbrt1(dot(c, vec3(0.0883024619, 0.2817188376, 0.6299787005)));
+  return vec3(dot(vec3(l, m, s), vec3(0.2104542553, 0.7936177850, -0.0040720468)),
+              dot(vec3(l, m, s), vec3(1.9779984951, -2.4285922050, 0.4505937099)),
+              dot(vec3(l, m, s), vec3(0.0259040371, 0.7827717662, -0.8086757660)));
+}
+vec3 okLabInv(vec3 q){
+  float l = q.x + 0.3963377774 * q.y + 0.2158037573 * q.z;
+  float m = q.x - 0.1055613458 * q.y - 0.0638541728 * q.z;
+  float s = q.x - 0.0894841775 * q.y - 1.2914855480 * q.z;
+  vec3 c = vec3(l * l * l, m * m * m, s * s * s);
+  return vec3(dot(c, vec3(4.0767416621, -3.3077115913, 0.2309699292)),
+              dot(c, vec3(-1.2684380046, 2.6097574011, -0.3413193965)),
+              dot(c, vec3(-0.0041960863, -0.7034186147, 1.7076147010)));
+}
+`;
+const NIGHT_FINAL_BODY = /* glsl */`
+  // white cores: far past the clip the sensor's other channels saturate too (plus demosaic / highlight recovery), so a red LED
+  // face goes pink-white and its colour survives only in the halo (plan-L5 2B: the single most important night cue)
+  {
+    float over = log2(max(max(eCore.r, max(eCore.g, eCore.b)), 1e-6) / uNightK.x);
+    float core = smoothstep(1.0, 3.0, over) * uNightK.y;
+    t = mix(t, vec3(1.0), core * smoothstep(0.6, 1.0, max(t.r, max(t.g, t.b))));
+  }
+  // retrowave grade (plan-G5 2F): one knob, linear light, after the clip, before the sensor noise (the grain is never graded)
+  if (uRetro > 0.0) {
+    vec3 lab = okLab(max(t, 0.0));
+    float Lt = uNightK.z;
+    // 1) split-tone: upper shadows toward cyan (205 deg), the deepest toward blue-violet (255 deg); +0.06 chroma at uRetro 1
+    float ws = 1.0 - smoothstep(0.35 * Lt, 0.8 * Lt, lab.x);
+    float hS = mix(4.45, 3.58, smoothstep(0.0, 0.6 * Lt, lab.x));
+    lab.yz += vec2(cos(hS), sin(hS)) * (0.06 * uRetro * ws * (0.35 + 0.65 * smoothstep(0.0, 0.3 * Lt, lab.x)));
+    // 2) magenta roll-off: +1..+3 EV over the target shoulders into white through pink-magenta (330 deg); clipped cores stay white
+    float evo = log2(max(dot(e, LUMA), 1e-6) / 0.24);
+    float wc = 1.0 - smoothstep(0.92, 1.0, min(t.r, min(t.g, t.b)));
+    float wh = smoothstep(0.7, 1.6, evo) * (1.0 - smoothstep(2.6, 3.4, evo)) * wc;
+    lab.yz += vec2(0.866, -0.5) * (0.05 * uRetro * wh);
+    // 3) neon vibrance: bright AND already saturated pixels only (skin, asphalt and grey concrete are left alone)
+    float C = length(lab.yz);
+    float wn = smoothstep(0.8 * Lt, 1.3 * Lt, lab.x) * smoothstep(0.05, 0.12, C) * wc;
+    lab.yz *= 1.0 + uRetroVib * uRetro * wn;
+    t = clamp(okLabInv(lab), 0.0, 1.0);
+  }
+  // sensor noise in linear (plan-L5 2E): shot ~ sqrt(signal x gain), read ~ gain; blue noisiest; luma clumped by the ISP
+  // (grainPx), chroma in NR-smeared 2x blotches. Gain: analog gain past base ISO from where AE sits, plus the ISP's push
+  // while AE is pinned (it lifts the toe too: pinEv/pinToe)
+  {
+    float G = exp2(clamp(ev - uNoiseEv.x, 0.0, uNoiseEv.y) - uNoiseEv.y) * exp2(X.a);   // 1 at full analog gain, up to 2 pinned
+    float Ls = max(dot(t, LUMA), 0.0);
+    float sg = sqrt(uNoise.x * uNoise.x * (Ls / 0.18) * G + uNoise.y * uNoise.y * G * G);
+    vec2 gp = floor(gl_FragCoord.xy / uGrainPx), gq = floor(gl_FragCoord.xy / (2.0 * uGrainPx));
+    float fr = mod(uFrame, 997.0);
+    float nl = (hash(vec3(gp, fr)) + hash(vec3(gp + 41.0, fr)) - 1.0) * 2.449;
+    float c1 = (hash(vec3(gq.yx + 17.0, fr)) + hash(vec3(gq + 7.0, fr)) - 1.0) * 2.449;
+    float c2 = (hash(vec3(gq + 29.0, fr)) + hash(vec3(gq.yx + 3.0, fr)) - 1.0) * 2.449;
+    vec3 cv = vec3(c1 * uNoiseRGB.r, -0.5 * (c1 + c2) * uNoiseRGB.g, c2 * uNoiseRGB.b);
+    cv -= dot(cv, LUMA);
+    t = max(t + sg * (vec3(nl) + cv * uNoise.z), 0.0);
+  }
+`;
+
+// [S3] night auto-exposure (plan-L5 2A): 16x12 taps of the lens-mapped 1/8 frame; the brightest share (sign cores) is
+// rejected through a log histogram, then a centre-weighted log average; asymmetric second-order adaptation (darken fast,
+// brighten slow, zeta ~0.7 overshoot = the visible hunt) with a deadband. State is a half-float texel: ev, ev rate, mean, pin.
+const METER_N_FS = /* glsl */`precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D tSmall;
+uniform sampler2D tPrev;
+uniform float uDt;
+uniform float uBias;
+uniform float uReset;
+uniform float uLock;
+uniform float uLockEv;
+uniform float uEvMin;
+uniform float uEvMax;
+uniform float uClipL;     // sensor clip in exposed units (meter saturates there)
+uniform vec4 uAe;         // x: tau darken (s), y: tau brighten (s), z: zeta, w: deadband (EV)
+uniform float uReject;    // brightest share of taps dropped
+void main(){
+  vec4 P = texelFetch(tPrev, ivec2(0), 0);
+  float prevEv = P.r, vel = P.g;
+  float Ls[192];
+  float hist[24];
+  for (int i = 0; i < 24; i++) hist[i] = 0.0;
+  float aAll = 0.0;
+  for (int y = 0; y < 12; y++) for (int x = 0; x < 16; x++) {
+    vec2 uv = (vec2(float(x), float(y)) + 0.5) / vec2(16.0, 12.0);
+    float L = max(texture(tSmall, uv).a, 0.0);
+    aAll += L;
+    L = min(L, uClipL * exp2(-prevEv));            // the sensor saturates: a blown face reads as clip, not as its nits
+    Ls[y * 16 + x] = L;
+    hist[int(clamp(floor(log2(L + 1e-7) + 18.0), 0.0, 23.0))] += 1.0;
+  }
+  // cut: the lowest bin edge above which at most uReject of the taps sit
+  float cum = 0.0, cut = 1e9, lim = uReject * 192.0;
+  for (int b = 23; b >= 0; b--) { if (cum + hist[b] > lim) break; cum += hist[b]; cut = exp2(float(b) - 18.0); }
+  float lsum = 0.0, asum = 0.0, wsum = 0.0;
+  for (int y = 0; y < 12; y++) for (int x = 0; x < 16; x++) {
+    float L = Ls[y * 16 + x];
+    if (L >= cut) continue;
+    vec2 uv = (vec2(float(x), float(y)) + 0.5) / vec2(16.0, 12.0);
+    vec2 d = (uv - vec2(0.5, 0.45)) * vec2(1.6, 2.0);
+    float w = exp(-dot(d, d) * 1.6);
+    lsum += w * log2(L + 1e-5); asum += w * L; wsum += w;
+  }
+  float avg = wsum > 0.0 ? exp2(mix(lsum / wsum, log2(asum / wsum + 1e-5), 0.15)) : 1.0;
+  float want = log2(0.24 / avg) + uBias;
+  float target = clamp(want, uEvMin, uEvMax);
+  if (uLock > 0.5) target = uLockEv;
+  float d = target - prevEv;
+  float tgt = prevEv + sign(d) * max(abs(d) - uAe.w, 0.0);          // deadband: a 0.15 EV wobble doesn't move the iris
+  float ev = prevEv;
+  if (uReset > 0.5) { ev = target; vel = 0.0; }
+  else {
+    float w = 1.0 / (uAe.z * (tgt < prevEv ? uAe.x : uAe.y));      // 2nd order: ~1/(zeta w) = the tau of each direction
+    int n = int(clamp(ceil(uDt * 240.0), 1.0, 24.0));
+    float h = uDt / float(n);
+    for (int i = 0; i < 24; i++) { if (i >= n) break;
+      float acc = w * w * (tgt - ev) - 2.0 * uAe.z * w * vel;
+      vel += acc * h; ev += vel * h; }
+    ev = clamp(ev, uEvMin - 0.6, uEvMax + 0.3);
+  }
+  float pin = clamp((want - uEvMax) * 0.25, 0.0, 1.0);
+  float pk = uReset > 0.5 ? 1.0 : 1.0 - exp(-uDt * 2.5);
+  fragColor = vec4(ev, vel, 0.5 * aAll / 192.0 * exp2(ev), P.a + (pin - P.a) * pk);
+}`;
+
 const FINAL_FS = /* glsl */`precision highp float;
 ${COMMON}
 ${LENS}
@@ -427,6 +575,9 @@ uniform float uChroma;    // chroma block half-size, output px (0 = off)
 uniform float uSharpPx;   // unsharp offset, source px
 uniform vec2 uPinEv;      // pin depth (EV wanted past evMax) where toe/contrast start / finish relaxing
 uniform vec2 uPinK;       // x: toe relax, y: contrast relax (0..1)
+#ifdef NIGHT
+${NIGHT_FINAL_HEAD}
+#endif
 
 vec3 tex(vec2 s){ vec2 h = 0.5 / uSrcPx; return texture(tSrc, clamp(s, h, 1.0 - h) * uScale).rgb; }
 // sensor-like response: ~linear toe, exponential shoulder that clips skies/windows
@@ -439,7 +590,11 @@ void main(){
   float r, th;
   vec2 d = lensD(vUv, r, th);
   float rn = r / uRc;
+#ifdef NIGHT
+  float car = (uCA + uRetroCA) * rn * rn;
+#else
   float car = uCA * rn * rn;
+#endif
   vec2 sG = 0.5 + d, sR = 0.5 + d * (1.0 + car), sB = 0.5 + d * (1.0 - car);
   vec2 jx = dFdx(sG), jy = dFdy(sG);                    // source uv per output px (chroma block)
   vec2 px = 1.0 / uSrcPx;
@@ -478,6 +633,10 @@ void main(){
   vec3 wbm = mix(uWB, uWBShade, smoothstep(1.5, 3.0, ev));
   vec3 e = (uHdr > 0.5 ? lin : invTone(lin, uInv)) * exp2(ev) * wbm;
   e += texture(tBloom, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uBloom;   // halation / glare (HDR: WB'd in its bright pass)
+#ifdef NIGHT
+  vec3 eCore = e;                                                          // pre-halo exposure: the clip/core test reads the source, not its glow
+  e += texture(tHalo, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uHalo * uHaloTint;   // wide warm halation (lens glow + sensor scatter)
+#endif
   float vig = pow(max(cos(th), 0.0), 2.2);                                 // optical cos^n falloff
   e *= mix(1.0, vig, uVig);
   if (con != 1.0) e *= pow(max(dot(e, LUMA), 1e-6) / 0.24, con - 1.0);     // camera contrast about the AE target
@@ -486,6 +645,9 @@ void main(){
   if (toe > 0.0) t = t * t / (t + toe) * (1.0 + toe);                       // sensor toe (real blacks)
   float l = dot(t, LUMA);
   t = max(mix(vec3(l), t, uSat * mix(uShSat, 1.0, smoothstep(0.01, 0.16, l))), 0.0);
+#ifdef NIGHT
+${NIGHT_FINAL_BODY}
+#endif
   vec3 o = lin2srgb(t);
   if (uSel.x + uSel.y > 0.0) {
     // selective colour in display space, opponent (cb, cr) about luma: deepen/rotate blue sky, yellow the greens
@@ -503,6 +665,7 @@ void main(){
   }
   o = mix(o, o * o * (3.0 - 2.0 * o), 0.22);          // mild display S-curve
   o = o * (1.0 - uLift) + uLift;
+#ifndef NIGHT
   // signal-dependent sensor noise: shot noise ~ sqrt(signal), scaled by analog gain (positive EV), clumped by NR/codec
   float gain = exp2(max(ev + uGrainEv.x, 0.0) * uGrainEv.y);
   vec2 gp = floor(gl_FragCoord.xy / uGrainPx);
@@ -510,6 +673,7 @@ void main(){
   float nc = hash(vec3(gp.yx + 17.0, mod(uFrame, 991.0))) - 0.5;
   float sigma = uGrain * gain * sqrt(l + 0.025);
   o += n * sigma + vec3(nc, -nc, nc * 0.5) * sigma * 0.35;
+#endif
   o += (ign(gl_FragCoord.xy + uFrame) - 0.5) / 255.0;
   fragColor = vec4(clamp(o, 0.0, 1.0), 1.0);
 }`;
@@ -517,10 +681,10 @@ void main(){
 const TRI = new THREE.BufferGeometry();
 TRI.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
 
-function pass(fs, uniforms) {
+function pass(fs, uniforms, defines) {
   const mat = new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3, vertexShader: VS, fragmentShader: fs, uniforms,
-    depthTest: false, depthWrite: false,
+    depthTest: false, depthWrite: false, ...(defines ? { defines } : {}),
   });
   const mesh = new THREE.Mesh(TRI, mat);
   mesh.frustumCulled = false;
@@ -561,7 +725,23 @@ export const GRADES = {
   hdr: { wb: [1.036, 0.994, 0.956], wbShade: [1.125, 0.978, 0.845], evBias: -0.30, lift: 0, clipEv: 3.0, con: 1.3, toe: 0.012, veil: 0.05, shadowSat: 0.85,
     skySel: 1, greenSel: 0, skyBoost: 0.35, skyRot: -0.40, skyDark: 0.04, bloom: 0.15, bloomCap: 2, grain: 0.005, grainEv: [1, 0.15], grainPx: 2, meterLens: 1,
     sharpen: 0.3, sharpPx: 2, recon: 0.6, chromaPx: 0.5, hlEv: null, hlFrac: 0.04, hlGain: 0.5, hlMax: 1, pinEv: [0.8, 1.8], pinToe: 1, pinCon: 1, mbRecon: 1, lensMask: 1 },
+  // [S3] Night (Neon Seoul, contract L5; plan-L5 + plan-G5 2E-F). A sensor model, not a look: GoPro/O4 at ISO 3200-6400, 1/60 s,
+  // WB fixed ~4800 K, 11 ms readout. Applied on top of GRADES.hdr by fpv.setLook('night') (scene units: 1 = 10 cd/m2, see
+  // seoul-light.js NITS). `night: 1` selects the night programs (half-float AE state, white cores, halation, linear sensor noise,
+  // retrowave stage); every key below is otherwise read by the shared pipeline exactly as for bando.
+  //   retro: the retrowave grade knob (0 = pure camera; ships 0.3; ?retro= overrides); retroVib: neon vibrance at retro 1;
+  //   retroCA: extra edge CA at retro 1 (off by default, Justin decides); halo/haloR/haloTint: wide warm halation (x(1+0.8 retro),
+  //   radius x(1+0.3 retro)); core: white-core amount; bloomKnee: bright pass starts this many EV under the clip;
+  //   noise: [shot sigma at mid-grey, read sigma, chroma share] in linear at full analog gain; noiseRGB: chroma noise per channel; noiseSpan: analog gain stops
+  //   (base ISO ends at evMax - noiseSpan); ae: [tau darken s, tau brighten s, zeta, deadband EV]; aeReject: brightest tap share
+  //   the meter ignores; evMin..evMax: 6 stops.
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.94, 1.0, 1.08], wbShade: null, evBias: -1.5, lift: 0, clipEv: 2.2, con: 1.2, toe: 0.05,
+    veil: 0.03, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0, bloom: 0.025, bloomCap: 24, bloomKnee: 0.5, halo: 0.035, haloR: 1, haloTint: [1.0, 0.62, 0.45],
+    core: 1, grain: 0, grainEv: [0, 0], grainPx: 2, noise: [0.010, 0.0011, 1.6], noiseRGB: [1.1, 0.8, 1.5], noiseSpan: 6, meterLens: 1, sharpen: 0.22, sharpPx: 2,
+    recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,
+    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.02, shutter: 1 / 60, readout: 0.011 },
 };
+const NIGHT_KEYS = Object.keys(GRADES.night);
 const TAU = Math.PI * 2;
 const JELLO_RATIO = [1, 1.077, 0.93], JELLO_AXIS = [1, 0.8, 0.5];
 // low band: frame wobble from prop wash / hits (FPV #7). Per-axis detune so pitch/yaw/roll beat instead of moving as one.
@@ -728,13 +908,52 @@ export class FPVCamera {
 
   // HDR worlds (lit meshes) hand us scene-linear radiance in half-float; splat worlds hand us display sRGB.
   // Switching applies that world type's camera-response defaults (GRADES); callers override keys afterwards.
-  readEv(renderer) { const b = new Uint8Array(4); renderer.readRenderTargetPixels(this.exp[this.expIdx], 0, 0, 1, 1, b); return -5 + 10 * (b[0] / 255 + b[1] / 255 / 255); }
+  readEv(renderer) {
+    if (this.look.night && this._nightP) { try { const b = new Uint16Array(4); renderer.readRenderTargetPixels(this._nightP.exp[this._nightP.idx], 0, 0, 1, 1, b); return THREE.DataUtils.fromHalfFloat(b[0]); } catch (e) { return NaN; } }
+    const b = new Uint8Array(4); renderer.readRenderTargetPixels(this.exp[this.expIdx], 0, 0, 1, 1, b); return -5 + 10 * (b[0] / 255 + b[1] / 255 / 255); }
   setHDR(on) {
     on = !!on;
+    if (this.look.night) this._leaveNight();      // [S3] a world switch always drops the night preset
     if (this.hdr === on) return;
     this.hdr = on; this.resetExposure = true;
     this._applyGrade(on ? GRADES.hdr : GRADES.ldr);
     if (this.outW > 2) this.resize(this.outW, this.outH);
+  }
+
+  // [S3] contract L5: main.js applies the manifest look ('night' for Seoul, 'hdr' / 'ldr' otherwise) after fpv.setHDR().
+  setLook(name) {
+    if (name === 'night') {
+      if (!this.hdr) this.setHDR(true);
+      if (!this.look.night) this._preNight = Object.fromEntries(NIGHT_KEYS.map((k) => [k, Array.isArray(this.look[k]) ? this.look[k].slice() : this.look[k]]));
+      this._applyGrade(GRADES.night);
+      try { const q = new URLSearchParams(globalThis.location?.search || ''); if (q.has('retro') && Number.isFinite(+q.get('retro'))) this.look.retro = Math.max(0, Math.min(1, +q.get('retro'))); } catch (e) {}
+      this.resetExposure = true;
+    } else {
+      if (this.look.night) this._leaveNight();
+      if (name === 'ldr' || name === 'hdr') { if (this.hdr !== (name === 'hdr')) this.setHDR(name === 'hdr'); }
+    }
+  }
+  _leaveNight() {
+    const pre = this._preNight || {};
+    for (const k of NIGHT_KEYS) { if (k in pre && pre[k] !== undefined) this.look[k] = pre[k]; else delete this.look[k]; }
+    this.look.night = 0; this._preNight = null; this.resetExposure = true;
+  }
+  // [S3] night programs + state, built on first use (bando never allocates them)
+  _initNight() {
+    if (this._nightP) return this._nightP;
+    const D = { NIGHT: 1 }, V2 = THREE.Vector2, V3 = THREE.Vector3;
+    const nfU = { ...this.final.u, tHalo: { value: null }, uHalo: { value: 0 }, uHaloTint: { value: new V3(1, 1, 1) }, uNightK: { value: new V3(1, 1, 0.5) },
+      uRetro: { value: 0 }, uRetroVib: { value: 0 }, uRetroCA: { value: 0 }, uNoise: { value: new V3() }, uNoiseRGB: { value: new V3(1, 1, 1) }, uNoiseEv: { value: new V2(0, 6) } };
+    const bl = () => pass(BLOOM_FS, { tSrc: { value: null }, uDir: { value: new V2() } });
+    this._nightP = {
+      down: pass(DOWN_FS, this.down.u, D), final: pass(FINAL_FS, nfU, D),
+      meter: pass(METER_N_FS, { tSmall: { value: null }, tPrev: { value: null }, uDt: { value: 0.016 }, uBias: { value: 0 }, uReset: { value: 1 }, uLock: { value: 0 },
+        uLockEv: { value: 0 }, uEvMin: { value: -4.5 }, uEvMax: { value: 1.5 }, uClipL: { value: 1 }, uAe: { value: new THREE.Vector4(0.25, 0.8, 0.7, 0.15) }, uReject: { value: 0.02 } }),
+      copy: bl(), haloH: bl(), haloV: bl(),
+      exp: [rt(1, 1, { filter: THREE.NearestFilter, type: THREE.HalfFloatType }), rt(1, 1, { filter: THREE.NearestFilter, type: THREE.HalfFloatType })], idx: 0,
+      haloA: null, haloB: null,
+    };
+    return this._nightP;
   }
 
   setQualityRange(min, max) {
@@ -842,6 +1061,7 @@ export class FPVCamera {
     const prev = r.getRenderTarget();
     try {
       for (const p of [this.blur, this.tile, this.nbr, this.ssao, this.aoBlur, this.down, this.meter, this.bloomH, this.final]) r.compile(p.scene, this.quadCam);
+      if (this.look.night) { const N = this._initNight(); for (const p of [N.down, N.final, N.meter]) r.compile(p.scene, this.quadCam); }
       if (!this._warmScene) {
         this._warmScene = new THREE.Scene();
         for (const m of [this.depthMat, this.sentinel.material, this.lensMask.material]) { const o = new THREE.Mesh(TRI, m); o.frustumCulled = false; this._warmScene.add(o); }
@@ -1099,20 +1319,31 @@ export class FPVCamera {
 
     // 5) downsample (metering luma + bloom bright-pass), taps mapped through the lens: the meter and the halos see the
     //    displayed frame (output space), not the rectilinear render's corners and edge margins
-    const prevExp = this.exp[this.expIdx], nextExp = this.exp[1 - this.expIdx];
+    const NI = !!(lk.night && this.hdr), NP = NI ? this._initNight() : null;      // [S3] night programs (L5)
+    const prevExp = NI ? NP.exp[NP.idx] : this.exp[this.expIdx], nextExp = NI ? NP.exp[1 - NP.idx] : this.exp[1 - this.expIdx];
     const H = this.hdr ? 1 : 0, LS = this.hdr ? 16 : 1, F16 = this.f16 ? 1 : 0, LM = lk.meterLens ? 1 : 0;
     const du = this.down.u;
     du.tSrc.value = this.blurRT.texture; du.tExp.value = prevExp.texture;
     du.uScale.value.set(vw / this.blurRT.width, vh / this.blurRT.height);
     du.uTexel.value.set(1 / this.smallRT.width, 1 / this.smallRT.height);
     du.uClampLo.value.set(0.5 / vw, 0.5 / vh);
-    du.uInv.value = lk.invTone; du.uThresh.value = 1.0;
+    du.uInv.value = lk.invTone; du.uThresh.value = NI ? 0.24 * Math.pow(2, (lk.clipEv ?? 3) - (lk.bloomKnee ?? 0.5)) : 1.0;
     du.uHdr.value = H; du.uLumScale.value = LS; du.uF16.value = F16; du.uLens.value = LM; du.uBloomCap.value = lk.bloomCap ?? 16;
     du.uWB.value.fromArray(lk.wb); du.uWBShade.value.fromArray(lk.wbShade || lk.wb);
     du.uHalf.value.set(L.hw, L.hh); du.uF.value = L.F; du.uK.value = L.k; du.uSrcTan.value.set(L.tx, L.ty);
-    r.setRenderTarget(this.smallRT); r.clear(true, false, false); r.render(this.down.scene, this.quadCam);
+    r.setRenderTarget(this.smallRT); r.clear(true, false, false); r.render((NI ? NP.down : this.down).scene, this.quadCam);
 
     // 6) auto-exposure with lag (GPU-side, no readback stalls)
+    if (NI) {
+      const nu = NP.meter.u;
+      nu.tSmall.value = this.smallRT.texture; nu.tPrev.value = prevExp.texture; nu.uDt.value = tdt; nu.uBias.value = lk.evBias || 0;
+      nu.uReset.value = this.resetExposure ? 1 : 0; this.resetExposure = false; this.final.u.uHdr.value = H;
+      nu.uLock.value = lk.aeLock ? 1 : 0; nu.uLockEv.value = lk.aeLockEv || 0;
+      nu.uEvMin.value = lk.evMin; nu.uEvMax.value = lk.evMax; nu.uClipL.value = 0.24 * Math.pow(2, lk.clipEv ?? 3);
+      nu.uAe.value.fromArray(lk.ae || [0.25, 0.8, 0.7, 0.15]); nu.uReject.value = lk.aeReject ?? 0.02;
+      r.setRenderTarget(nextExp); r.clear(true, false, false); r.render(NP.meter.scene, this.quadCam);
+      NP.idx = 1 - NP.idx;
+    } else {
     const mu = this.meter.u;
     mu.tSmall.value = this.smallRT.texture; mu.tPrev.value = prevExp.texture;
     mu.uDt.value = tdt; mu.uBias.value = lk.evBias; mu.uInv.value = lk.invTone;
@@ -1122,6 +1353,7 @@ export class FPVCamera {
     mu.uHl.value.set(Number.isFinite(lk.hlEv) ? lk.hlEv : (Number.isFinite(lk.clipEv) ? lk.clipEv / (lk.con || 1) : 3), lk.hlGain || 0, lk.hlFrac || 0.04, lk.hlMax ?? 1);
     r.setRenderTarget(nextExp); r.clear(true, false, false); r.render(this.meter.scene, this.quadCam);
     this.expIdx = 1 - this.expIdx;
+    }
 
     // 7) bloom: separable 9-tap gaussian at unit tap spacing (the linear-sampling offsets assume it), run twice
     const bw = this.smallRT.width, bh = this.smallRT.height;
@@ -1132,6 +1364,23 @@ export class FPVCamera {
       this.bloomV.u.tSrc.value = this.bloomA.texture; this.bloomV.u.uDir.value.set(0, 1 / bh);
       r.setRenderTarget(this.bloomB); r.clear(true, false, false); r.render(this.bloomV.scene, this.quadCam);
       src = this.bloomB;
+    }
+    if (NI) {
+      // [S3] wide halation: the bloom result at 1/16, blurred twice more (radius x haloR x (1 + 0.3 retro)); tinted in FINAL
+      const hw = Math.max(8, Math.ceil(bw / 2)), hh = Math.max(5, Math.ceil(bh / 2));
+      if (!NP.haloA || NP.haloA.width !== hw || NP.haloA.height !== hh) {
+        NP.haloA?.dispose(); NP.haloB?.dispose();
+        NP.haloA = rt(hw, hh, { type: THREE.HalfFloatType }); NP.haloB = rt(hw, hh, { type: THREE.HalfFloatType });
+      }
+      NP.copy.u.tSrc.value = this.bloomB.texture; NP.copy.u.uDir.value.set(0, 0);
+      r.setRenderTarget(NP.haloB); r.clear(true, false, false); r.render(NP.copy.scene, this.quadCam);
+      const rr = (lk.haloR ?? 1) * (1 + 0.3 * (lk.retro || 0));
+      for (let it = 0; it < 2; it++) {
+        NP.haloH.u.tSrc.value = NP.haloB.texture; NP.haloH.u.uDir.value.set(rr / hw, 0);
+        r.setRenderTarget(NP.haloA); r.clear(true, false, false); r.render(NP.haloH.scene, this.quadCam);
+        NP.haloV.u.tSrc.value = NP.haloA.texture; NP.haloV.u.uDir.value.set(0, rr / hh);
+        r.setRenderTarget(NP.haloB); r.clear(true, false, false); r.render(NP.haloV.scene, this.quadCam);
+      }
     }
 
     // 8) lens + colour science + sensor -> screen
@@ -1154,10 +1403,23 @@ export class FPVCamera {
     fu.uRecon.value = lk.recon || 0; fu.uChroma.value = lk.chromaPx || 0; fu.uSharpPx.value = lk.sharpPx || 1;
     fu.uPinEv.value.fromArray(lk.pinEv || [0.5, 1.5]); fu.uPinK.value.set(lk.pinToe || 0, lk.pinCon || 0);
     fu.uLetter.value = lk.letterbox; fu.uWB.value.fromArray(lk.wb); fu.uWBShade.value.fromArray(lk.wbShade || lk.wb); fu.uLift.value = lk.lift;
+    if (NI) {
+      const nf = NP.final.u, rt0 = lk.retro || 0, ex = lk.expo;
+      nf.tHalo.value = NP.haloB.texture; nf.uHalo.value = (lk.halo ?? 0.3) * (1 + 0.8 * rt0);
+      const ht = lk.haloTint || [1, 0.62, 0.45], hl = 0.2126 * ht[0] + 0.7152 * ht[1] + 0.0722 * ht[2];
+      nf.uHaloTint.value.set(ht[0] / hl, ht[1] / hl, ht[2] / hl);
+      // AE target grey through the camera curve + toe -> Oklab L (the grade's shadow/highlight pivots)
+      let tg = (1 - Math.exp(-1.25 * 0.24 * ex)) * fu.uWhite.value; tg = Math.min(1, tg); const to = lk.toe || 0; if (to > 0) tg = tg * tg / (tg + to) * (1 + to);
+      nf.uNightK.value.set(0.24 * Math.pow(2, ce ?? 3), lk.core ?? 1, Math.cbrt(tg));
+      nf.uRetro.value = rt0; nf.uRetroVib.value = lk.retroVib ?? 0.5; nf.uRetroCA.value = (lk.retroCA || 0) * rt0 * 0.004;
+      nf.uNoise.value.fromArray(lk.noise || [0.010, 0.0011, 1.6]); nf.uNoiseRGB.value.fromArray(lk.noiseRGB || [1.1, 0.8, 1.5]);
+      nf.uNoiseEv.value.set(lk.evMax - (lk.noiseSpan ?? 6), lk.noiseSpan ?? 6);
+      fu.uVeil.value = (lk.veil || 0) * (1 + rt0);
+    }
     r.setRenderTarget(null);
     r.setViewport(0, 0, this.outW, this.outH);
     r.clear(true, false, false);
-    r.render(this.final.scene, this.quadCam);
+    r.render((NI ? NP.final : this.final).scene, this.quadCam);
   }
 
   // Camera profile as plain JSON (contract C5): every constant and live setting the native port needs to rebuild this
@@ -1212,7 +1474,10 @@ export class FPVCamera {
     if (want.has('scene')) S.scene = rd(this.sceneRT, vw, vh);
     if (want.has('blur')) S.blur = rd(this.blurRT, vw, vh);
     if (want.has('small')) S.small = rd(this.smallRT, this.smallRT.width, this.smallRT.height);
-    if (want.has('exp')) { const e = rd(this.exp[this.expIdx], 1, 1); if (e) S.exp = { ev: -5 + 10 * (e.data[0] + e.data[1] / 255), veilMean: e.data[2] }; }
+    if (want.has('exp')) {
+      if (this.look.night && this._nightP) { const e = rd(this._nightP.exp[this._nightP.idx], 1, 1); if (e) S.exp = { ev: e.data[0], evRate: e.data[1], veilMean: e.data[2], pin: e.data[3] }; }
+      else { const e = rd(this.exp[this.expIdx], 1, 1); if (e) S.exp = { ev: -5 + 10 * (e.data[0] + e.data[1] / 255), veilMean: e.data[2] }; }
+    }
     if (want.has('bloom')) S.bloom = rd(this.bloomB, this.bloomB.width, this.bloomB.height);
     this.frame = keep.frame; this.time = keep.time; this._jph = keep.jph; this._j2ph = keep.j2ph;
     return { profile: this.profile(), frame, dt, viewport: [vw, vh], msaa: this.msaaActive, stages: S };
