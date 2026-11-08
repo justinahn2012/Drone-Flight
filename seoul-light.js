@@ -498,7 +498,7 @@ export function attach(world, emitters = [], ctx = {}) {
   metas.forEach((m, i) => pack(m, tL.image.data, i, i >= animBase ? i - animBase + 1 : 0));
 
   // ------------------------------------------------------------------------------------- static bin + volume
-  const tB0 = now();
+  const tB0 = now(), marks = { pre: +(tB0 - T00).toFixed(0) };
   const NC = gw * gh, kS = new Float32Array(NC * K), kI = new Int32Array(NC * K).fill(-1), kV = new Uint8Array(NC * K), kN = new Uint8Array(NC);
   // probe interior flags (inside a building at that height) and per-probe accumulators
   const NP = NC * NL, inner = new Uint8Array(NP);
@@ -599,7 +599,7 @@ export function attach(world, emitters = [], ctx = {}) {
     }
     return out;
   };
-  const EgL = [blur(Eg, 0), blur(Eg, 1), blur(Eg, 2), blur(Eg, 4)];
+  const EgL = [blur(Eg, 0), blur(Eg, 1), blur(Eg, 2), blur(Eg, 4)]; marks.blur = +(now() - tV0).toFixed(0);
   const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.zenith[j] + NIGHT_SKY.horizon[j]) * NS * Math.PI);   // pi L of the dome
   const skyLum = lumaOf(skyL);
   const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4), ok = new Uint8Array(NP);
@@ -633,6 +633,7 @@ export function attach(world, emitters = [], ctx = {}) {
     }
   }
   })();
+  marks.assemble = +(now() - tV0).toFixed(0);
   // interior probes: average of filled 8-neighbours, a few passes (facade fragments interpolate toward them)
   { const addP = new Int32Array(NP), addV = new Float32Array(NP * 8);
     for (let pass = 0; pass < 8; pass++) {
@@ -651,6 +652,7 @@ export function attach(world, emitters = [], ctx = {}) {
       if (!na) break;
     } }
   for (let p = 0; p < NP; p++) if (!ok[p]) { VA[p * 4] = skyL[0] * 0.1; VA[p * 4 + 1] = skyL[1] * 0.1; VA[p * 4 + 2] = skyL[2] * 0.1; VB[p * 4 + 1] = 1; }
+  marks.fill = +(now() - tV0).toFixed(0);
   const vol3 = (src) => {   // [cz][cx][k] -> 3D texture (x = cx, y = cz, z = layer)
     const d = new Uint16Array(NP * 4);
     for (let k = 0; k < NL; k++) for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) {
@@ -747,6 +749,7 @@ export function attach(world, emitters = [], ctx = {}) {
       olds.push(o);
     }
     for (const o of olds) { scene.remove(o); o.geometry.dispose(); }
+    marks.split = +(now() - tc0).toFixed(0);
     // the collider for fpvcam's depth pass and the mirror: cells (shared positions, a cell-sorted index)
     const cs = world.colliderScene;
     const cm = cs?.children?.find((c) => c.isMesh && c.geometry?.getAttribute('position'));
@@ -1179,7 +1182,7 @@ export function attach(world, emitters = [], ctx = {}) {
     binMs: +binMs.toFixed(1), volMs: +volMs.toFixed(1), attachMs: 0, pairs, occludedPairs: occl,
     cells: cellsUsed, mean: +(used / Math.max(1, cellsUsed)).toFixed(2), full, volume: volStat,
     materials: nMat, wetMaterials: nWet, mirror: mirror.on, cull: { meshes: cull.meshes, from: cull.from, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
-    pools: !!pool.mesh, airlight: air.n, update: uStats,
+    pools: !!pool.mesh, airlight: air.n, update: uStats, marks,
   };
   function exportData() {   // native #2: the model (exportParams) + this level's grid and baked volume
     return {
