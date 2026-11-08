@@ -1078,11 +1078,14 @@ const LIGHT_MAPS_DIFFUSE = `
 // orientation for three's shadow depth pass and the far/ring shadow proxies.
 const VEG_GLSL = `
 uniform vec4 uWind;
-attribute float aSway;
 #ifdef VEG_CARDS
 attribute vec3 aCenter;
-attribute vec2 aOff;
-attribute float aOcc;
+attribute vec4 aCard;   // (offset u, offset v, sway, crown occlusion): one slot, the cards sit at WebGL's 16-attribute limit
+#define aOff aCard.xy
+#define aSway aCard.z
+#define aOcc aCard.w
+#else
+attribute float aSway;
 #endif
 vec3 vegWind(vec3 p, vec3 c, float fl) {
   vec3 ip = vec3(0.0);
@@ -2803,8 +2806,13 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     const mkGeo = (name) => {
       const m = man.meshes[name]; if (!m) return null;
       if (!base[name]) {
-        base[name] = { a: Object.fromEntries(Object.entries(m.attrs).map(([k, [o, n, it]]) => [k, new THREE.BufferAttribute(new Float32Array(veg.bin, o, n), it)])),
-          i: new THREE.BufferAttribute(new Uint16Array(veg.bin, m.index[0], m.index[1]), 1) };
+        const a = Object.fromEntries(Object.entries(m.attrs).map(([k, [o, n, it]]) => [k, new THREE.BufferAttribute(new Float32Array(veg.bin, o, n), it)]));
+        if (a.aOff) {   // cards: pack offset, sway and occlusion into one vec4 (aCard)
+          const n = a.aOff.count, c = new Float32Array(n * 4);
+          for (let i = 0; i < n; i++) { c[i * 4] = a.aOff.array[i * 2]; c[i * 4 + 1] = a.aOff.array[i * 2 + 1]; c[i * 4 + 2] = a.aSway.array[i]; c[i * 4 + 3] = a.aOcc.array[i]; }
+          a.aCard = new THREE.BufferAttribute(c, 4); delete a.aOff; delete a.aSway; delete a.aOcc;
+        }
+        base[name] = { a, i: new THREE.BufferAttribute(new Uint16Array(veg.bin, m.index[0], m.index[1]), 1) };
       }
       const g = new THREE.BufferGeometry(); for (const [k, a] of Object.entries(base[name].a)) g.setAttribute(k, a); g.setIndex(base[name].i);
       g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5); return g;
