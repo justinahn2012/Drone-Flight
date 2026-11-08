@@ -291,7 +291,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
     const rh = { bay: typ === 'villa' ? 2.6 + R() * 1.0 : 2.4 + R() * 1.7, ratio: 0.42 + R() * 0.38, h: 1.15 + R() * 0.65, sill: 0.75 + R() * 0.25, paneW: 1.5 + R() * 1.1,
       ribbonTop: 1 + Math.floor(R() * 3), bands: R() < 0.55, depth: 3.5 + R() * 2.5 };
     // tenants: one per upper floor; lit floors are whole floors
-    const pLow = comm ? 0.55 : 0.42, pHigh = Math.max(0.08, (l.use === 'hotel' ? 0.35 : 0.16) + (hash(l.id + 'ph') - 0.5) * 0.08);
+    const pLow = comm ? 0.61 : 0.46, pHigh = Math.max(0.06, (l.use === 'hotel' ? 0.22 : 0.13) + (hash(l.id + 'ph') - 0.5) * 0.08);   // x 0.9 per window below
     for (let f = 1; f < l.floors; f++) { let use = draw(UPPER[skind] || UPPER.alley, R()); if (l.use === 'hotel' || l.use === 'motel') use = l.use; info.floors[f] = { f, lit: R() < (f <= 3 ? pLow : pHigh), use }; }
     // walls + parapet
     for (let i = 0; i < P.length; i++) {
@@ -355,7 +355,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
         if (W.stair) { lit = R() < 0.6; o = { nits: [8, 15], cct: 6000 }; room = ROOM.stair; }
         else if (W.small) { lit = R() < 0.3; o = TENANT.home; room = R() < 0.5 ? ROOM.home : ROOM.study; if (R() < 0.5) fr = FRONT.frosted; }
         else {
-          o = TENANT[T?.use] || TENANT.home; room = o.room[Math.floor(R() * o.room.length)]; lit = !!T?.lit;
+          o = TENANT[T?.use] || TENANT.home; room = o.room[Math.floor(R() * o.room.length)]; lit = !!T?.lit && R() < 0.9;
           const r = R();
           if (lit && r < 0.15) fr = FRONT.blinds;                                       // a lit floor with this blind down
           else if (o === TENANT.home) fr = r < 0.5 ? FRONT.curtain : r < 0.65 ? FRONT.blinds : 0;
