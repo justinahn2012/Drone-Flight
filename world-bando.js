@@ -61,7 +61,7 @@ const MATS = {
 const RING_COLLIDE = true;
 // [V1] trunk + thick-limb skeletons of the real tree models (model units; tools: /tmp/v1/tools/bake.mjs, from veg.json):
 // [x0,y0,z0,r0, x1,y1,z1,r1] tapered segments. buildGeometry turns them into collision tubes per tree instance.
-const VEG_SKEL = {"A":{"H":4.557,"segs":[[0,0.1,0,0.078,0.146,1.3,0.151,0.068],[0.146,1.3,0.151,0.068,0.57,2.3,-0.06,0.039],[0.146,1.3,0.151,0.068,0.166,1.7,0.318,0.064],[0.166,1.7,0.318,0.064,0.115,1.9,0.421,0.074],[0.115,1.9,0.421,0.074,-0.006,2.5,0.74,0.081],[0.115,1.9,0.421,0.074,0.01,2.7,-0.025,0.034],[0.115,1.9,0.421,0.074,0.288,2.1,0.401,0.021],[0.57,2.3,-0.06,0.039,0.598,2.7,-0.289,0.024],[0.598,2.7,-0.289,0.024,0.645,2.9,-0.344,0.046]]},"B":{"H":5.027,"segs":[[0,0.1,0,0.289,-0.117,0.5,-0.185,0.221],[-0.117,0.5,-0.185,0.221,-0.141,0.7,-0.227,0.23],[-0.141,0.7,-0.227,0.23,-0.124,0.9,-0.236,0.222],[-0.124,0.9,-0.236,0.222,-0.235,1.3,0.1,0.173],[-0.124,0.9,-0.236,0.222,-0.011,1.1,-0.519,0.162],[-0.011,1.1,-0.519,0.162,-0.052,1.3,-0.599,0.137],[-0.052,1.3,-0.599,0.137,-0.029,1.5,-0.682,0.154],[-0.235,1.3,0.1,0.173,-0.222,1.5,0.327,0.143],[-0.235,1.3,0.1,0.173,-0.578,1.7,-0.423,0.083],[-0.222,1.5,0.327,0.143,-0.101,1.9,0.586,0.174],[-0.029,1.5,-0.682,0.154,-0.016,1.7,-0.861,0.217],[-0.029,1.5,-0.682,0.154,0.052,1.7,-0.435,0.046],[-0.016,1.7,-0.861,0.217,-0.165,1.9,-0.8,0.106],[-0.578,1.7,-0.423,0.083,-0.477,1.9,-0.34,0.041],[-0.101,1.9,0.586,0.174,-0.258,2.3,0.968,0.144],[-0.165,1.9,-0.8,0.106,-0.266,2.1,-0.807,0.169],[-0.101,1.9,0.586,0.174,0.234,2.1,0.454,0.082],[-0.266,2.1,-0.807,0.169,-0.412,2.3,-0.981,0.016],[-0.258,2.3,0.968,0.144,-0.293,2.5,0.862,0.079],[-0.293,2.5,0.862,0.079,-0.312,2.7,0.931,0.086],[-0.312,2.7,0.931,0.086,-0.284,2.9,1.093,0.102],[-0.284,2.9,1.093,0.102,-0.452,3.1,1.152,0.04]]}};
+const VEG_SKEL = {"A":{"crown":{"c":[0.2,3.454,0.459],"r":[0.978,0.989,1.703]},"H":4.557,"segs":[[0,0.1,0,0.078,0.146,1.3,0.151,0.068],[0.146,1.3,0.151,0.068,0.57,2.3,-0.06,0.039],[0.146,1.3,0.151,0.068,0.166,1.7,0.318,0.064],[0.166,1.7,0.318,0.064,0.115,1.9,0.421,0.074],[0.115,1.9,0.421,0.074,-0.006,2.5,0.74,0.081],[0.115,1.9,0.421,0.074,0.01,2.7,-0.025,0.034],[0.115,1.9,0.421,0.074,0.288,2.1,0.401,0.021],[0.57,2.3,-0.06,0.039,0.598,2.7,-0.289,0.024],[0.598,2.7,-0.289,0.024,0.645,2.9,-0.344,0.046]]},"B":{"crown":{"c":[0.299,2.751,-0.213],"r":[1.577,1.463,1.71]},"H":5.027,"segs":[[0,0.1,0,0.289,-0.117,0.5,-0.185,0.221],[-0.117,0.5,-0.185,0.221,-0.141,0.7,-0.227,0.23],[-0.141,0.7,-0.227,0.23,-0.124,0.9,-0.236,0.222],[-0.124,0.9,-0.236,0.222,-0.235,1.3,0.1,0.173],[-0.124,0.9,-0.236,0.222,-0.011,1.1,-0.519,0.162],[-0.011,1.1,-0.519,0.162,-0.052,1.3,-0.599,0.137],[-0.052,1.3,-0.599,0.137,-0.029,1.5,-0.682,0.154],[-0.235,1.3,0.1,0.173,-0.222,1.5,0.327,0.143],[-0.235,1.3,0.1,0.173,-0.578,1.7,-0.423,0.083],[-0.222,1.5,0.327,0.143,-0.101,1.9,0.586,0.174],[-0.029,1.5,-0.682,0.154,-0.016,1.7,-0.861,0.217],[-0.029,1.5,-0.682,0.154,0.052,1.7,-0.435,0.046],[-0.016,1.7,-0.861,0.217,-0.165,1.9,-0.8,0.106],[-0.578,1.7,-0.423,0.083,-0.477,1.9,-0.34,0.041],[-0.101,1.9,0.586,0.174,-0.258,2.3,0.968,0.144],[-0.165,1.9,-0.8,0.106,-0.266,2.1,-0.807,0.169],[-0.101,1.9,0.586,0.174,0.234,2.1,0.454,0.082],[-0.266,2.1,-0.807,0.169,-0.412,2.3,-0.981,0.016],[-0.258,2.3,0.968,0.144,-0.293,2.5,0.862,0.079],[-0.293,2.5,0.862,0.079,-0.312,2.7,0.931,0.086],[-0.312,2.7,0.931,0.086,-0.284,2.9,1.093,0.102],[-0.284,2.9,1.093,0.102,-0.452,3.1,1.152,0.04]]}};
 const texURL = (m, map) => m.model ? `${PH}/Models/jpg/1k/${m.model}/${m.model}_${map}_1k.jpg` : `${PH}/Textures/jpg/1k/${m.id}/${m.id}_${map}_1k.jpg`;
 
 function rng(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
@@ -1114,14 +1114,14 @@ const VEG_CARD_VS = `
   transformed = vegWind(transformed, aCenter, 1.0);`;
 // [V1] leaf lighting: wrap diffuse (light reaches round the crown), sun transmission toward the viewer (backlit leaves
 // glow yellow-green instead of going black; the shadow map already darkens leaves inside the crown) and a little
-// waxy specular. uLeafL = (transmission, wrap, specular, -).
+// waxy specular. uLeafL = (transmission, wrap, specular, crown occlusion on direct light).
 const VEG_LEAF_LIGHTS = `
 uniform vec4 uLeafL;
 #undef RE_Direct
 #define RE_Direct RE_Direct_Leaf
 void RE_Direct_Leaf( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
   float ndl = dot( geometryNormal, directLight.direction );
-  vec3 lam = BRDF_Lambert( material.diffuseColor );
+  vec3 lam = BRDF_Lambert( material.diffuseColor ) * mix( 1.0, vAO, uLeafL.w );   // leaves deep in the crown see less sun
   reflectedLight.directDiffuse += saturate( ( ndl + uLeafL.y ) / ( 1.0 + uLeafL.y ) ) * directLight.color * lam;
   float vdl = saturate( dot( -geometryViewDir, directLight.direction ) );
   float tr = uLeafL.x * ( 1.4 * pow( vdl, 4.0 ) + 0.4 * saturate( -ndl ) );
@@ -2327,7 +2327,7 @@ export function buildGeometry(R = rng(7), seed = 7) {
   // treeSpots (same bases as the baked lightmap's trunks), each with 1-3 younger neighbours, so trees come in clumps.
   // Trunks and thick limbs collide: tapered hex tubes along the model skeleton (VEG_SKEL), in site.colliders.
   // Own rng streams: the TR/TS sequences above (and so merged.bark) are untouched.
-  const vegTrees = [], treeCols = [];
+  const vegTrees = [], treeCols = [], vegProx = [];
   {
     const VR = rng(1111), _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3();
     const tube = (a, b, r0, r1, M) => {   // 6-sided open tube a->b (world), radii r0/r1
@@ -2346,6 +2346,8 @@ export function buildGeometry(R = rng(7), seed = 7) {
         _a.set(q[0], q[1] <= 0.15 ? -0.3 / s : q[1], q[2]).applyMatrix4(_m); _b.set(q[4], q[5], q[6]).applyMatrix4(_m);
         tube(_a.clone(), _b.clone(), Math.max(r0, 0.03), Math.max(r1, 0.03), _m);
       }
+      // [A4 C10] crown proxy for the lightmap bake: an ellipsoid at 80 % of the crown (half-transparent foliage)
+      if (h > 4) { const c = K.crown, g = new THREE.IcosahedronGeometry(1, 1); g.scale(c.r[0] * 0.8, c.r[1] * 0.8, c.r[2] * 0.8); g.translate(c.c[0], c.c[1], c.c[2]); g.applyMatrix4(_m); vegProx.push(indexify(g)); }
       return t;
     };
     const free = (x, z, m) => !vegTrees.some((t) => Math.hypot(t.x - x, t.z - z) < m);
@@ -2424,7 +2426,9 @@ export function buildGeometry(R = rng(7), seed = 7) {
   const skimBvh = new MeshBVH(treeCols.length ? mergeGeometries([solidGeo, ...treeCols.map(posOnly)], false) : solidGeo, { maxLeafTris: 5 });   // [V1] + the trees' tubes
   terr.userData.lm = lightmapUV2(merged, terr, pathG);   // [A1] lightmap uv2 on merged/terr/pathG (append-only; layout on terr.userData.lm)
 
-  return { site, terr, far, pathG, treeSpots, vegTrees, treeColVerts: treeCols.reduce((n, g) => n + g.attributes.position.count, 0), treeline, merged, solidGeo, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart, startPoints: site.startPoints, funnels: site.funnels };
+  return { site, terr, far, pathG, treeSpots, vegTrees, treeColVerts: treeCols.reduce((n, g) => n + g.attributes.position.count, 0),
+    vegProxies: vegProx.length ? { geometry: mergeGeometries(vegProx.map((g) => { const q = new THREE.BufferGeometry(); q.setAttribute('position', g.attributes.position); q.setIndex(g.index); return q; }), false), occ: 0.6, opacity: 0.55, albedo: MATS.leaf.albedo } : null,   // [V1] for A4's bake (C10)
+    treeline, merged, solidGeo, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart, startPoints: site.startPoints, funnels: site.funnels };
 }
 
 // ---------------------------------------------------------------- build everything
@@ -2796,7 +2800,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   // the reveal track and the yard, saplings on slab edges. The treeline ring is the same cards at LOD 3.
   const foliageStats = bStats.foliage = {}, leafTiles = [];
   let vegUpdate = () => {}, vegFill = null;
-  const uWind = { value: new THREE.Vector4(0.22, 0.14, 1, 0) }, uLeafL = { value: new THREE.Vector4(1.0, 0.5, 0.35, 0) };
+  const uWind = { value: new THREE.Vector4(0.22, 0.14, 1, 0) }, uLeafL = { value: new THREE.Vector4(0.6, 0.35, 0.3, 0.55) };
   const veg = await vegP;
   if (!veg) console.warn('[V1] vegetation assets missing (veg.json/veg.bin/atlas): no trees or shrubs');
   if (veg) {
@@ -3025,7 +3029,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
         sh.fragmentShader = sh.fragmentShader.replace('#include <alphatest_fragment>', alphaBoost + '\n#include <alphatest_fragment>');
       };
       tdm.customProgramCacheKey = () => 'vegTreelineDepth';
-      const greens = [[0.86, 0.9, 0.92], [0.95, 0.95, 0.88], [0.78, 0.84, 0.9], [1.0, 0.96, 0.78]];
+      const greens = [[0.66, 0.72, 0.76], [0.78, 0.8, 0.72], [0.56, 0.64, 0.72], [0.84, 0.8, 0.62]];
       const byT = { A: [], B: [] }; list.forEach((t) => byT[t.tint * 7 % 1 < 0.45 ? 'A' : 'B'].push(t));
       const M = new THREE.Matrix4(), qq = new THREE.Quaternion(), col = new THREE.Color(), P = new THREE.Vector3(), S = new THREE.Vector3();
       for (const [t, arr] of Object.entries(byT)) {
@@ -3138,6 +3142,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   prog(0.98, 'Ready');
   BAKE = null;   // [A] the probe solution was only needed while building (decals); free it
   if (lm) lm.irr.pix = null;   // [A1] the CPU copy of the lightmap (14 MB) served the build-time probes only
+  scene.userData.vegShadowLod = vegFill;   // [V1] static shadow maps: vegShadowLod(1) = every plant at LOD 1 (fixed cards), vegShadowLod(-1) = back to the camera LODs
   scene.userData.aLight = aLight; scene.userData.lightBake = bake.stats; scene.userData.aoUniforms = uniforms.aAO;   // [A] live tuning hooks (uSunB, uSkyB, uFarOn, uHaze...)
   // [A2] sky/shadow hooks: ring map uniforms, live-map re-render count (for perf checks), the world sun
   scene.userData.aSky = { u: uniforms.aSky, shadowUpdates: () => shN, sunDir: sunDir.clone(), rotY: skyDef.rotY || 0, bgI };
