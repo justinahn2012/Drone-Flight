@@ -478,5 +478,26 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
   }
 }
 
+// [S0] per-level progress: bando keeps the original keys, another level gets its own (@id) and they never mix
+{
+  const TL = await import(DIR + '/take.js');
+  if (typeof TL.setProgressLevel === 'function') {
+    TL.setProgressLevel('bando'); resetProgress();
+    store['onetake.lines'] = JSON.stringify({ 'CHIMNEY DIVE': { n: 2, flow: 3, pts: 9000 } }); store['onetake.best'] = '150000';
+    TL.setProgressLevel('bando');
+    const tb = new Take();
+    ok(tb.best === 150000, 'bando best from onetake.best (the original key)');
+    TL.setProgressLevel('seoul-hongdae'); tb.reloadBest();
+    ok(tb.best === 0 && TL.progressLevel() === 'seoul-hongdae', 'another level starts with no best');
+    store['onetake.best@seoul-hongdae'] = '7000'; tb.reloadBest();
+    ok(tb.best === 7000, 'its best is onetake.best@seoul-hongdae');
+    resetProgress();
+    ok(!('onetake.best@seoul-hongdae' in store) && store['onetake.best'] === '150000' && 'onetake.lines' in store, 'resetting one level leaves bando alone');
+    TL.setProgressLevel('bando'); tb.reloadBest();
+    ok(tb.best === 150000, 'back on bando: its best again');
+    resetProgress();
+  }
+}
+
 console.log(`take tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

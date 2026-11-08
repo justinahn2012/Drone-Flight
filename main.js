@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshBVH } from 'three-mesh-bvh';
-import { FPVCamera, LENSES, SHUTTERS } from './fpvcam.js';
+import { FPVCamera, LENSES, SHUTTERS, GRADES } from './fpvcam.js';
 import { Drone, CRAFTS } from './flight.js';
 import { InputLog, quantize, worldHash } from './inputlog.js';
 import { Controls } from './controls.js';
@@ -15,9 +15,25 @@ import { GhostKeeper } from './ghost.js';   // C12 (D5): best take as a ghost, C
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
 const WORLDS = [
-  { id: 'yard', name: 'Silo Yard', note: 'Open bando · silos, chimney, factory hall · sunny', craft: 'freestyle5', proc: true, sky: 'sunny' },
-  { id: 'yard-overcast', name: 'Silo Yard · Overcast', note: 'Same site under flat grey sky', craft: 'freestyle5', proc: true, sky: 'overcast' },
+  { id: 'yard', name: 'Silo Yard', note: 'Open bando · silos, chimney, factory hall · sunny', craft: 'freestyle5', proc: true, sky: 'sunny', level: 'bando' },
+  { id: 'yard-overcast', name: 'Silo Yard · Overcast', note: 'Same site under flat grey sky', craft: 'freestyle5', proc: true, sky: 'overcast', level: 'bando' },
 ];
+// [S0] level manifest (levels.json, contract L4): [{id, name, note, lede, module, build, args, look, sky, grade, craft, tag...}].
+// Bando is the 'yard' / 'yard-overcast' worlds (its Sky seg); every other level is one more procedural world, loaded by
+// id from its module. A missing or broken levels.json leaves bando alone (the built-in entry below).
+const LEVEL_BANDO = { id: 'bando', name: 'Silo Yard', module: './world-bando.js', build: 'buildBando', args: ['renderer', 'opts'], look: 'day', sky: 'sunny', craft: 'freestyle5' };
+let LEVELS = [LEVEL_BANDO];
+try {
+  const alt = new URLSearchParams(location.search).get('levels');   // [S0] tests/tools: ?levels=tests/levels.test.json (same origin only)
+  const r = await fetch(new URL(alt && /^[\w./-]+\.json$/.test(alt) && !alt.includes('..') ? alt : 'levels.json', import.meta.url), { cache: 'no-cache' });
+  const j = r.ok ? await r.json() : null;
+  if (Array.isArray(j) && j.length) LEVELS = j.filter((l) => l && typeof l.id === 'string' && (l.id === 'bando' || (l.module && l.build)));
+  if (!LEVELS.some((l) => l.id === 'bando')) LEVELS.unshift(LEVEL_BANDO);
+} catch (e) { console.warn('[S0] levels.json unreadable: bando only', e?.message || e); }
+const levelOf = (id) => LEVELS.find((l) => l.id === id) || null;
+const levelByName = (k) => { k = String(k || '').toLowerCase(); return LEVELS.find((l) => l.id === k || (l.alias || []).includes(k)) || null; };
+for (const l of LEVELS) if (l.id !== 'bando') WORLDS.push({ id: l.id, name: l.name || l.id, note: l.note || '', craft: l.craft || 'freestyle5', proc: true, sky: l.sky || 'night', level: l.id, tag: l.tag || '' });
+const levelIdOf = (worldId) => WORLDS.find((w) => w.id === worldId)?.level || null;
 // [D] max: render scale ceiling (auto 1.2: the MSAA/shadow-split savings go into centre sharpness, 0.46 -> 0.59 px/px);
 // msaa: scene MSAA samples (0 = off); ao: contact SSAO (0 = off)
 const QUALITY = {
@@ -35,7 +51,7 @@ const STAB_REPLAY = { off: 0, light: 0.06, heavy: 0.12 };
 const DEF = { v: 3, world: 'yard', mode: 'cine', craft: 'auto', shutter: 'nd16', lens: 'ref', stab: 'light', tilt: -1, frame: 'full', quality: 'auto', splats: '500k', fps: '60', hud: 'osd', sound: 'on', game: 'take', caps: 'on' };
 let S = { ...DEF };
 try { const saved = JSON.parse(localStorage.getItem('onetake.settings') || '{}'); if (saved.v !== 3) { delete saved.tilt; delete saved.world; saved.v = 3; } Object.assign(S, saved); } catch (e) {}
-if (!['yard', 'yard-overcast', 'url'].includes(S.world)) S.world = 'yard';   // a saved 'file' world can't reload (the file input is empty): no dead-end FLY
+if (!['yard', 'yard-overcast', 'url'].includes(S.world) && !WORLDS.some((w) => w.id === S.world)) S.world = 'yard';   // a saved 'file' world can't reload (the file input is empty): no dead-end FLY; [S0] manifest levels can
 if (S.hud === 'on') S.hud = 'osd';                                            // overlay is now OSD | Minimal | Clean
 if (!['take', 'free'].includes(S.game)) S.game = 'take';
 if (!['on', 'mix', 'off'].includes(S.sound)) S.sound = 'on';                 // C6: On | Mix with music | Off
@@ -46,6 +62,12 @@ document.body.classList.toggle('dev', DEV);
 if (params.get('splat')) {
   WORLDS.unshift({ id: 'url', name: params.get('name') || 'Your World', note: 'From link', craft: params.get('craft') || 'freestyle5', splat: params.get('splat'), collider: params.get('collider') || null, flip: params.get('flip') !== '0' });
   S.world = 'url';
+}
+// [S0] ?level=<id or alias> deep-links a level (seoul-hongdae, seoul, bando); ?level=bando&sky=overcast picks bando's sky
+{
+  const L = params.get('level') ? levelByName(params.get('level')) : null;
+  if (L) S.world = L.id === 'bando' ? (params.get('sky') === 'overcast' ? 'yard-overcast' : 'yard') : L.id;
+  else if (params.get('level')) console.warn('[S0] unknown level', params.get('level'), 'levels:', LEVELS.map((l) => l.id).join(', '));
 }
 
 // ---------------- renderer & scenes
@@ -159,10 +181,11 @@ function buildWorlds() {
   $('yardCard').classList.toggle('on', S.world === 'yard' || S.world === 'yard-overcast');
   const box = $('worlds'); box.innerHTML = '';
   for (const w of WORLDS) {
-    if (w.proc) continue;
+    if (w.proc && w.level === 'bando') continue;
     const b = document.createElement('button');
-    b.className = 'world' + (w.id === S.world ? ' on' : '');
-    b.innerHTML = `<b>${esc(w.name)}</b><small>${esc(w.note)} · ${CRAFTS[w.craft]?.label || ''}</small>`;
+    b.className = 'world' + (w.level ? ' level' : '') + (w.id === S.world ? ' on' : '');   // [S0] manifest levels: one card each
+    b.dataset.level = w.level || '';
+    b.innerHTML = `<b>${esc(w.name)}${w.tag ? `<em>${esc(w.tag)}</em>` : ''}</b><small>${esc(w.note)} · ${CRAFTS[w.craft]?.label || ''}</small>`;
     b.onclick = () => { S.world = w.id; buildWorlds(); $('custom').classList.remove('open'); save(); };
     box.appendChild(b);
   }
@@ -173,6 +196,10 @@ function buildWorlds() {
     c.onclick = () => { S.world = 'file'; buildWorlds(); $('custom').classList.add('open'); };
     box.appendChild(c);
   }
+  // [S0] the lede and the LINES checklist follow the selected level (its own PROG / BEST / stars)
+  const L = levelOf(levelIdOf(S.world) || 'bando');
+  if (L?.lede && $('lede')) $('lede').textContent = L.lede;
+  if (state === 'menu' && !loadedId) { setProgressLevel(L?.id || 'bando'); renderProgress(); }
 }
 $('yardCard').addEventListener('click', (e) => {
   if (e.target.closest('.seg')) return;
@@ -347,35 +374,91 @@ function loadError(title, msg, back) {
 $('ldBack').onclick = () => { $('loading').classList.add('hidden'); openMenu(); };
 $('ldReload').onclick = () => location.reload();
 
+// [S0] full dispose on a level switch: the level's own dispose() first (audio buffers, workers, timers), then every
+// geometry, material, texture and render target its scene, depth scene and collider scene hold (world-core.js
+// disposeObject), the background / environment. lastDispose = the counts (window.__onetake.mem()).
+let coreMod = null, lastDispose = null;
 function clearWorld() {
   if (world.mesh) { splatScene.remove(world.mesh); world.mesh.dispose?.(); world.mesh = null; }
   if (world.scene) {
-    world.scene.traverse((o) => { o.geometry?.dispose?.(); const m = o.material; (Array.isArray(m) ? m : m ? [m] : []).forEach((mm) => { Object.values(mm).forEach((v) => v?.isTexture && v.dispose()); mm.dispose(); }); });
-    world.scene.background?.dispose?.(); world.scene.environment?.dispose?.();
+    try { world.dispose?.(); } catch (e) { console.warn('[S0] world.dispose threw', e); }
+    const d = coreMod?.disposeObject;
+    if (d) {
+      const seen = d(world.scene);
+      for (const sc of [world.depthScene, world.colliderScene]) if (sc && sc !== world.scene) d(sc, seen);
+      lastDispose = { level: world.level || null, geometries: seen.geo.size, materials: seen.mat.size, textures: seen.tex.size, targets: seen.rt.size };
+      console.info('[S0] disposed', JSON.stringify(lastDispose), 'renderer.info.memory', JSON.stringify(renderer.info.memory));
+    } else {
+      world.scene.traverse((o) => { o.geometry?.dispose?.(); const m = o.material; (Array.isArray(m) ? m : m ? [m] : []).forEach((mm) => { Object.values(mm).forEach((v) => v?.isTexture && v.dispose()); mm.dispose(); }); });
+      world.scene.background?.dispose?.(); world.scene.environment?.dispose?.();
+    }
   }
   world.scene = null; world.bvh = null; world.colliderScene = null; world.bounds = null; world.envelope = null; world.update = null;
   world.skimBvh = null; world.lines = null; world.takeStart = null; world.startPoints = null; world.funnels = null;
   world.grassAt = null;                                                                    // [F24] C7
+  world.depthScene = null; world.aoUniforms = null; world.dispose = null; world.level = null; world.audio = null;   // [S0]
 }
 
+// [S0] the camera look of a level (contract L5). 'day' = bando's HDR look line below (unchanged); 'night' = S3's
+// GRADES.night via fpv.setLook('night') when fpvcam has it, else GRADES.night applied as a grade, else NIGHT_FALLBACK;
+// then the manifest's `grade` overrides (e.g. {"retro": 0.3}: the retrowave knob). Coming back to 'day' from another look
+// re-applies GRADES.hdr first, so no night key survives into bando.
+const NIGHT_FALLBACK = { evMin: -9, evMax: 2.5, evBias: 0, wb: [1, 1, 1], wbShade: null, hlMax: 0.6, bloom: 0.35, bloomCap: 8, grain: 0.012, saturation: 1.05 };
+let curLook = 'day', dayLook = null;   // dayLook: fpv.look as the day look left it (restored, keys and all, on the way back)
+const copyLook = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Array.isArray(v) ? v.slice() : v]));
+function applyLook(level, def) {
+  const look = level?.look || 'day';
+  if (look === 'day') {
+    if (curLook !== 'day') {
+      fpv.setLook?.('day');
+      if (dayLook) { for (const k of Object.keys(fpv.look)) if (!(k in dayLook)) delete fpv.look[k]; Object.assign(fpv.look, copyLook(dayLook)); }
+      if (GRADES.hdr) fpv._applyGrade?.(GRADES.hdr);
+      fpv.resetExposure = true;
+    }
+    curLook = 'day';
+    // [D] HDR look (colorist r2/r3, PLAN4 decision 1): evMax 4.4 (integration: chimney walls to luma ~9–18); WB fitted to the puresky sun+sky (grey card R/G 1.015,
+    // B/G 0.95); overcast shade WB = its WB (no sepia hall); with GRADES.hdr clipEv 3.0.
+    // [L5] evBias sunny -0.10 (colour #4: p50 113 -> ~120, clip ~2 %; -0.20 measured only 116). Overcast evBias +0.2 and the highlight meter
+    // capped at hlMax 0.4 EV (was 1 EV): 30-40 % of its taps are the bright cloud deck, so it took the full EV off and the
+    // ground sat ~1.5 EV under (oc_01 lower-half p50 45, ref 237: 139). Both skies set every key, so a sky switch can't
+    // inherit the other's. The integrator retunes this line against the golden stills; every other knob is a GRADES.hdr key.
+    fpv.setHDR(true);   // (already on: a no-op; tools/camera-profile.mjs lifts the look line after this call)
+    Object.assign(fpv.look, { evMin: -5.5, evMax: 4.4, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.036, 0.994, 0.956],
+      wbShade: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.125, 0.978, 0.845], evBias: def.sky === 'overcast' ? 0.2 : -0.10, hlMax: def.sky === 'overcast' ? 0.4 : 1 });
+  } else {
+    if (curLook === 'day') dayLook = copyLook(fpv.look);
+    if (typeof fpv.setLook === 'function') fpv.setLook(look);
+    else if (GRADES[look]) fpv._applyGrade?.(GRADES[look]);
+    else { if (look === 'night') console.warn('[S0] GRADES.night not in fpvcam.js yet: fallback night look'); Object.assign(fpv.look, NIGHT_FALLBACK); }
+    curLook = look; fpv.resetExposure = true;
+  }
+  if (level?.grade && typeof level.grade === 'object') for (const [k, v] of Object.entries(level.grade)) fpv.look[k] = Array.isArray(v) ? v.slice() : v;
+}
+
+// [S0] build a procedural level by manifest id: import(level.module)[level.build](...level.args), args from
+// 'renderer' | 'scene' (a fresh THREE.Scene the module fills, contract L2) | 'opts' ({sky, quality, seed, level, onProgress}).
+// The old world is disposed before the new one builds (one world in memory at a time on the phone).
 async function loadProcWorld(def) {
-  const { buildBando } = await import('./world-bando.js');
-  const w = await buildBando(renderer, { sky: def.sky, quality: S.quality, onProgress: (f, t) => setLoad(null, f, t) });
-  clearWorld();
-  Object.assign(world, { scene: w.scene, colliderScene: w.colliderScene, bvh: w.bvh, bounds: w.bounds, envelope: w.envelope, update: w.update, hdr: true });
-  Object.assign(world, { skimBvh: w.skimBvh, lines: w.lines, takeStart: w.takeStart, startPoints: w.startPoints, funnels: w.funnels });   // C: the take (C1)
+  const level = levelOf(def.level || 'bando') || LEVEL_BANDO;
+  let mod;
+  try { [mod, coreMod] = await Promise.all([import(level.module), coreMod || import('./world-core.js')]); }
+  catch (e) { throw new Error(`${level.name || level.id} is not in this build yet (${level.module}: ${e.message || e})`); }
+  const build = mod[level.build];
+  if (typeof build !== 'function') throw new Error(`${level.module} has no ${level.build}()`);
+  clearWorld(); loadedId = null;
+  const scene0 = new THREE.Scene(), opts = { sky: def.sky, quality: S.quality, level: level.id, layout: level.layout, onProgress: (f, t) => setLoad(null, f, t) };
+  const args = (Array.isArray(level.args) ? level.args : ['renderer', 'scene', 'opts']).map((a) => (a === 'renderer' ? renderer : a === 'scene' ? scene0 : a === 'opts' ? opts : undefined));
+  const w = await build(...args);
+  if (!w || !(w.scene || scene0.children.length)) throw new Error(`${level.build}() returned no world`);
+  const wScene = w.scene || scene0;
+  Object.assign(world, { scene: wScene, colliderScene: w.colliderScene || (w.colGeo ? coreMod.colliderScene(w.colGeo) : null), bvh: w.bvh || null, bounds: w.bounds || null, envelope: w.envelope || null, update: w.update || null, hdr: true });
+  Object.assign(world, { skimBvh: w.skimBvh || w.bvh || null, lines: w.lines || [], takeStart: w.takeStart || null, startPoints: w.startPoints || null, funnels: w.funnels || null });   // C: the take (C1)
   world.grassAt = typeof w.grassAt === 'function' ? w.grassAt : null;                     // [F24] C7 (V2, optional): grass height (m) at x, z
-  world.spawn.copy(w.spawn); world.yaw = w.yaw;
+  world.level = level.id; world.dispose = typeof w.dispose === 'function' ? w.dispose : null; world.audio = w.audio || null;   // [S0]
+  world.spawn.copy(w.spawn?.isVector3 ? w.spawn : w.spawn?.pos ? new THREE.Vector3(...(w.spawn.pos.toArray?.() ?? w.spawn.pos)) : new THREE.Vector3(0, 2, 0)); world.yaw = w.yaw ?? w.spawn?.yaw ?? 0;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);
-  // [D] HDR look (colorist r2/r3, PLAN4 decision 1): evMax 4.4 (integration: chimney walls to luma ~9–18); WB fitted to the puresky sun+sky (grey card R/G 1.015,
-  // B/G 0.95); overcast shade WB = its WB (no sepia hall); with GRADES.hdr clipEv 3.0.
-  // [L5] evBias sunny -0.10 (colour #4: p50 113 -> ~120, clip ~2 %; -0.20 measured only 116). Overcast evBias +0.2 and the highlight meter
-  // capped at hlMax 0.4 EV (was 1 EV): 30-40 % of its taps are the bright cloud deck, so it took the full EV off and the
-  // ground sat ~1.5 EV under (oc_01 lower-half p50 45, ref 237: 139). Both skies set every key, so a sky switch can't
-  // inherit the other's. The integrator retunes this line against the golden stills; every other knob is a GRADES.hdr key.
-  Object.assign(fpv.look, { evMin: -5.5, evMax: 4.4, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.036, 0.994, 0.956],
-    wbShade: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.125, 0.978, 0.845], evBias: def.sky === 'overcast' ? 0.2 : -0.10, hlMax: def.sky === 'overcast' ? 0.4 : 1 });
+  applyLook(level, def);
   Object.assign(world, { depthScene: w.depthScene || null, aoUniforms: w.aoUniforms || null });   // [D] contracts C2/C3 (optional inputs)
   fpv.warmup?.(world);                                                                              // [D] post + depth programs, textures
   fpv.cam.near = 0.06; fpv.cam.far = 3000; fpv.cam.updateProjectionMatrix();
@@ -385,7 +468,7 @@ async function loadProcWorld(def) {
   try {
     const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }), prev = renderer.getRenderTarget();
     renderer.setRenderTarget(rt); const t = performance.now();
-    if (renderer.extensions.has('KHR_parallel_shader_compile')) await renderer.compileAsync(w.scene, fpv.cam); else renderer.compile(w.scene, fpv.cam);
+    if (renderer.extensions.has('KHR_parallel_shader_compile')) await renderer.compileAsync(wScene, fpv.cam); else renderer.compile(wScene, fpv.cam);
     renderer.setRenderTarget(prev); rt.dispose();
     console.info('shader warm-up ms', Math.round(performance.now() - t));
   } catch (e) { console.warn('shader warm-up skipped', e); }
@@ -398,6 +481,7 @@ async function loadWorld(def) {
   try {
     setLoad(def.name, 0, def.proc ? 'Building site…' : 'Fetching world…');
     if (def.proc) {
+      setProgressLevel(def.level || 'bando');   // [S0] this level's PROG / BEST / stars
       await loadProcWorld(def);
       world.def = def;
       applySettings();
@@ -405,6 +489,7 @@ async function loadWorld(def) {
       return true;
     }
     await ensureSpark();
+    if (curLook !== 'day') { fpv.setLook?.('day'); curLook = 'day'; }   // [S0] leaving a night level
     fpv.setHDR(false);
     Object.assign(fpv.look, { evMin: -1.2, evMax: 1.8, invTone: 0.84, lift: 0.07, saturation: 0.95, expo: 0.85 });
     fpv.cam.near = 0.04; fpv.cam.far = 300; fpv.cam.updateProjectionMatrix();
@@ -462,6 +547,8 @@ async function loadWorld(def) {
     return true;
   } catch (err) {
     console.error(err);
+    if (!world.scene && !world.mesh) loadedId = null;   // [S0] the old world is gone: FLY loads again, no RESUME into nothing
+    else if (world.def && world.def.id !== S.world) { S.world = world.def.id; buildWorlds(); syncSegs(); setProgressLevel(world.level || 'bando'); save(); }   // [S0] still flying the old level
     loadError('Could not load world', String(err.message || err), true);
     return false;
   }
@@ -572,6 +659,10 @@ const score = {
   reset() { this.total = 0; this.streak = 0; this.mult = 1; this.streakT = 0; },
 };
 try { score.best = +localStorage.getItem('onetake.best') || 0; } catch (e) {}
+// [S0] per-level progress: bando keeps the original keys (onetake.lines / .best / .perfect / .ui.progress / .ui.lineList),
+// every other level suffixes them with @<level id>. Ghosts are keyed by world hash already (ghost.js), so they are per level.
+let progLevel = 'bando';
+const lkey = (base, id = progLevel) => (id === 'bando' ? base : `${base}@${id}`);
 // the take (take.js): named lines, FLOW, bank / crash / CUT. Free fly runs its own free instance: lines still fire
 // (captions, e.free, pts 0) and count as flown, nothing scores or ends.
 const take = new Take(), freeTake = new Take({ free: true });
@@ -1699,15 +1790,25 @@ const DEFAULT_LINES = ['CHIMNEY DIVE', 'UNDER THE RACK', 'TRIPLE POP', 'TRIPLE D
   'UNDER THE TABLE', 'THE SMALL GAP', 'THREAD THE NEEDLE', 'HALL RUN', 'STRAIGHT THROUGH', 'THROUGH THE WORKSHOP'];   // menu before the first load
 const STAR = 'M8 1.2l2.1 4.4 4.8.6-3.5 3.3.9 4.8L8 11.9l-4.3 2.4.9-4.8L1.1 6.2l4.8-.6z';
 const uiProg = { lines: {} };           // NAME -> { n: times flown, f: best FLOW (0 = only in free fly) }
-try { const p = JSON.parse(localStorage.getItem('onetake.ui.progress') || 'null'); if (p && p.lines && typeof p.lines === 'object') uiProg.lines = p.lines; } catch (e) {}
-const saveUiProg = () => { try { localStorage.setItem('onetake.ui.progress', JSON.stringify(uiProg)); } catch (e) {} };
+const loadUiProg = () => { uiProg.lines = {}; try { const p = JSON.parse(localStorage.getItem(lkey('onetake.ui.progress')) || 'null'); if (p && p.lines && typeof p.lines === 'object') uiProg.lines = p.lines; } catch (e) {} };
+loadUiProg();
+const saveUiProg = () => { try { localStorage.setItem(lkey('onetake.ui.progress'), JSON.stringify(uiProg)); } catch (e) {} };
+// [S0] switch every progress store to level `id` (menu selection before a load, and every level load)
+function setProgressLevel(id) {
+  id = id || 'bando'; if (id === progLevel) return;
+  progLevel = id;
+  TakeLib.setProgressLevel?.(id);                     // take.js PROG + best + perfects
+  take.reloadBest?.(); freeTake.reloadBest?.();
+  try { score.best = +localStorage.getItem(lkey('onetake.best')) || 0; } catch (e) { score.best = 0; }
+  loadUiProg(); newLines.clear(); baseCache = null; baseSrc = null;
+}
 // C's list (needs the world's lines), else null
 function cLines() {
   const t = curTake(); if (typeof t?.lineList !== 'function' || !Array.isArray(world.lines) || !world.lines.length) return null;
   try { const L = t.lineList(world); return Array.isArray(L) ? L : null; } catch (e) { return null; }
 }
 // C's store before a world is loaded (first menu): {NAME: {n, flow, pts}}
-function cStore() { try { const o = JSON.parse(localStorage.getItem('onetake.lines') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } }
+function cStore() { try { const o = JSON.parse(localStorage.getItem(lkey('onetake.lines')) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } }
 const newLines = new Set();             // first time ever, this take: NEW on the card
 let lineTag = '';                       // CLEAN tag for the next caption's sub-line (showLine)
 function noteLine(e) {
@@ -1726,13 +1827,13 @@ function baseLines() {                  // checklist names in world order (cache
       baseSrc = world.lines; const m = new Set();
       for (const l of world.lines) if (l && l.name && !isMicro(l)) m.add(l.name);
       baseCache = [...m];
-      try { localStorage.setItem('onetake.ui.lineList', JSON.stringify(baseCache)); } catch (e) {}
+      try { localStorage.setItem(lkey('onetake.ui.lineList'), JSON.stringify(baseCache)); } catch (e) {}
     }
     return baseCache;
   }
   if (!baseCache) {
-    let names = null; try { names = JSON.parse(localStorage.getItem('onetake.ui.lineList') || 'null'); } catch (e) {}
-    baseCache = Array.isArray(names) && names.length ? names : DEFAULT_LINES;
+    let names = null; try { names = JSON.parse(localStorage.getItem(lkey('onetake.ui.lineList')) || 'null'); } catch (e) {}
+    baseCache = Array.isArray(names) && names.length ? names : progLevel === 'bando' ? DEFAULT_LINES : [];
   }
   return baseCache;
 }
@@ -1744,11 +1845,11 @@ function lineList() {
     const c = m ? m.get(name) : S0?.[name] ? { n: +S0[name].n || 0, f: +S0[name].flow || 0, t: +S0[name].bestT || 0 } : null, r = uiProg.lines[name];
     // C12 (D5): PROG[name].bestT, the line's best time (s), via lineList or the stored record
     const bt = c?.t > 0 ? c.t : +S1?.[name]?.bestT > 0 ? +S1[name].bestT : 0;
-    return { name, hint: LINE_HINT[name] || '', flown: !!(c?.n || r), f: Math.max(c?.f || 0, r?.f || 0), bt };
+    return { name, hint: hintFor(name), flown: !!(c?.n || r), f: Math.max(c?.f || 0, r?.f || 0), bt };
   });
 }
 const flownCount = () => lineList().filter((l) => l.flown).length;
-const hintFor = (name) => LINE_HINT[name] || '';
+const hintFor = (name) => LINE_HINT[name] || (Array.isArray(world.lines) ? world.lines.find((l) => l?.name === name && l.hint)?.hint : '') || '';   // [S0] a level's lines may carry their own hint
 // the nearest never-flown line's first gate. C: take.nextHint(drone, world) -> {name, caption, pos:[x,y,z], dist, bearing
 // (rad from the nose, + right), elev, fresh} or null. The arrow uses pos against the view (so it follows the camera).
 function nearestGate(name, at = camPose.pos) {
@@ -2121,6 +2222,12 @@ window.__onetake = {
   tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; },
   // test hook (?manual): advance n frames of dtMs each and return the canvas
   step(dtMs = 16.7, n = 1, grab = true) { for (let i = 0; i < n; i++) { last = performance.now() - dtMs; frame(performance.now()); } return grab ? canvas.toDataURL('image/jpeg', 0.92) : null; },
+};
+// [S0] levels: the manifest, the loaded level, progress level, switch by id (menu select + FLY), memory readout
+window.__onetake.levels = {
+  get list() { return LEVELS; }, get loaded() { return world.level || null; }, get progress() { return progLevel; }, get look() { return curLook; },
+  select(id) { const L = levelByName(id); if (!L) return false; S.world = L.id === 'bando' ? 'yard' : L.id; buildWorlds(); return true; },
+  mem() { const pm = performance.memory; return { renderer: { ...renderer.info.memory, programs: renderer.info.programs?.length ?? null }, heapMB: pm ? Math.round(pm.usedJSHeapSize / 1048576) : null, lastDispose }; },
 };
 window.__onetake.flight = { PHYS, get log() { return inputLog; }, get lastLog() { return lastInputLog; }, get alpha() { return physAlpha; } };   // [E] input logs
 if (MANUAL) { setInterval(() => { if (state === 'loading') { last = performance.now() - 16; } }, 500); }

@@ -352,7 +352,9 @@ body.paused .brand .paused{display:inline}
 .world small{display:block;margin:4px 0 10px;font:500 14px/1.4 var(--body);color:#a29f99}
 .world.on{border-color:#6c6a66;background:#15171a}
 .world.custom{border-style:dashed;margin-top:8px}
-#worlds{display:grid;gap:8px}
+#worlds{display:grid;gap:8px;margin-top:8px}
+.world.level b em{font:600 11px var(--mono);font-style:normal;letter-spacing:.14em;margin-left:9px;padding:2px 6px;border-radius:4px;border:1px solid #ff3d9a;color:#ff7ac0;vertical-align:4px}
+.world.level.on{border-color:#ff3d9a;background:#1a1218}
 .seg{display:inline-flex;padding:3px;border-radius:11px;background:var(--panel);border:1px solid var(--line);flex-wrap:wrap}
 .world .seg{background:#0b0c0e}
 .seg button{min-height:44px;padding:10px 14px;border-radius:8px;font-size:16px;font-weight:700;letter-spacing:.03em;color:#a3a09a}
@@ -521,7 +523,7 @@ body.dev .dev{display:revert!important}
   <div class="wrap">
     <div class="brand head"><h1>ONE TAKE</h1><span class="tag">FPV</span><span class="paused">PAUSED</span></div>
     <div class="strip head" id="mStrip"></div>
-    <p class="lede head">An abandoned industrial site, wide open. Silos, a chimney you can dive, a factory hall full of holes. Seen through a real camera — shutter, lens, exposure, noise. Fly the named lines in one take.</p>
+    <p class="lede head" id="lede">An abandoned industrial site, wide open. Silos, a chimney you can dive, a factory hall full of holes. Seen through a real camera — shutter, lens, exposure, noise. Fly the named lines in one take.</p>
     <div class="a2hs head hidden ui" id="a2hs"><svg viewBox="0 0 24 24" fill="none" stroke="#f2efe9" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 9.5H6.5v10h11v-10h-2M12 3.5v11M8.8 6.7L12 3.5l3.2 3.2"/></svg><span><b>Full screen</b>⋯ ▸ Share ▸ Add to Home Screen<small>The Home Screen app starts fresh: iOS keeps its BEST and LINES separate from Safari's.</small></span><button id="a2hsX" aria-label="Dismiss">×</button></div>
     <div id="startSec" class="head hidden">
       <div class="sec">Start at</div>
@@ -531,7 +533,7 @@ body.dev .dev{display:revert!important}
 
     <div class="cols">
       <div>
-        <div class="sec">World</div>
+        <div class="sec">Level</div>
         <div class="world" id="yardCard">
           <b>Silo Yard</b><small>Open bando · silos, chimney, factory hall, conveyor gallery</small>
           <div class="seg" data-key="world"><button data-v="yard">Sun</button><button data-v="yard-overcast">Overcast</button></div>
