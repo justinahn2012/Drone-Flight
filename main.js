@@ -1468,15 +1468,22 @@ function splitAccent(text) {
 // [F2] ui #6: the street in hangul as a second line (the caption rises by it); ui #2: the level's accent, and the
 // luma-gated plate (rgba(0,0,0,.35), radius ~10 px at the live size), metered once per caption on its first frame.
 const CAP_KO = '"OT KR", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif';
+// metered through a small CPU canvas: getImageData on the composite itself would count as readbacks against it (Chrome
+// then moves a 2D canvas off the GPU, and every later frame's drawImage of the WebGL picture would read back)
+let capMC = null;
 function compLuma(g, x, y, w, h) {
   x = Math.max(0, Math.floor(x)); y = Math.max(0, Math.floor(y));
   w = Math.min(g.canvas.width - x, Math.ceil(w)); h = Math.min(g.canvas.height - y, Math.ceil(h));
   if (w < 4 || h < 4) return 0;
-  try { return lumaP80(g.getImageData(x, y, w, h).data, w * h); } catch (e) { return 0; }
+  try {
+    if (!capMC) { const c = document.createElement('canvas'); c.width = 128; c.height = 32; capMC = c.getContext('2d', { willReadFrequently: true }); }
+    capMC.clearRect(0, 0, 128, 32); capMC.drawImage(g.canvas, x, y, w, h, 0, 0, 128, 32);
+    return lumaP80(capMC.getImageData(0, 0, 128, 32).data, 128 * 32, 4);
+  } catch (e) { return 0; }
 }
 function drawCaption(g, box, text, flow, age, cap = null) {
   if (age < 0 || age > CAP_DUR) return;
-  const fs = Math.round(box.w * 0.08), place = cap?.place || '', pfs = Math.round(fs * 0.36);
+  const fs = Math.round(box.w * 0.08), place = cap?.place || '', pfs = Math.round(fs * 0.42);
   const parts = splitAccent(text).map((s, i) => [s, i === 1 ? capAccent : '#fff']).filter((p) => p[0]);
   g.save();
   g.font = `900 ${fs}px Montserrat, "Barlow Condensed", system-ui, sans-serif`;
@@ -1484,7 +1491,7 @@ function drawCaption(g, box, text, flow, age, cap = null) {
   const ws = parts.map((p) => g.measureText(p[0]).width), tw = ws.reduce((a, b) => a + b, 0);
   let pw = 0; if (place) { g.font = `800 ${pfs}px ${CAP_KO}`; pw = g.measureText(place).width; g.font = `900 ${fs}px Montserrat, "Barlow Condensed", system-ui, sans-serif`; }
   const fit = Math.min(1, (box.w * 0.9) / Math.max(1, tw, pw));
-  const lift = place ? pfs * 1.32 : 0, cx = box.x + box.w / 2, by = box.y + box.h * 0.96;
+  const lift = place ? pfs * 1.3 : 0, cx = box.x + box.w / 2, by = box.y + box.h * 0.96;
   // plate box in caption units (baseline of the place line, or of the caption, at 0)
   const px = Math.max(tw, pw) / 2 + fs * 0.3, py0 = -lift - fs * 0.86, py1 = (place ? pfs * 0.34 : fs * 0.2);
   if (cap && cap.plate === undefined) cap.plate = compLuma(g, cx - px * fit, by + py0 * fit, 2 * px * fit, (py1 - py0) * fit) > CAP_GATE;
@@ -1641,7 +1648,7 @@ const fontsWarm = new Set();
 function warmFonts(px = 40) {       // canvas captions need the face loaded before the first draw
   const f = `900 ${px}px Montserrat`; if (fontsWarm.has(f)) return; fontsWarm.add(f);
   try { document.fonts?.load?.(f, 'THE SMALL GAP!')?.catch?.(() => {}); } catch (e) {}
-  try { document.fonts?.load?.(`800 ${Math.round(px * 0.36)}px "OT KR"`, '홍대 9')?.catch?.(() => {}); } catch (e) {}   // [F2] the place line's hangul face (7 KB)
+  try { document.fonts?.load?.(`800 ${Math.round(px * 0.42)}px "OT KR"`, '홍대 9')?.catch?.(() => {}); } catch (e) {}   // [F2] the place line's hangul face (7 KB)
 }
 // Take (C, take.js): name the instance `take` or call bindTake(instance). Falls back to the legacy skim score.
 let takeRef = null;
@@ -2173,7 +2180,14 @@ function goStartAt(name) {
 window.__onetakeUI = { uiProg, lineList, nextLine, renderProgress, goStartAt, projectView, retryFrom, readyHint, vertOf, get hint() { return nextNow; },
   // [F2] test hooks: armed line, brackets on screen, the caption meter, place names, the level UI
   armedLine, placeAt, applyLevelUI, get armed() { return armNow; }, get brackets() { return { n: brOn, cands: brCands.length, labels: [...document.querySelectorAll('#osd .brl.on')].map((e) => e.textContent) }; },
-  get capMeter() { return { luma: capM.luma, plate: capM.plate }; } };
+  get capMeter() { return { luma: capM.luma, plate: capM.plate }; },
+  // the live frame composited as one 1080x1920 clip frame with a caption (no recording): the burned-in caption + plate
+  capTest(text, place = '', lay = 'radio') {
+    frame(performance.now()); prepComp(1080, 1920, lay);
+    const C = { caps: [{ t: 0, seg: 0, text, flow: 1, place }], seg: [0] };
+    drawComp(C, 0.5, 0, [0, 0, 0, 0]);
+    return { url: comp.toDataURL('image/jpeg', 0.9), plate: C.caps[0].plate };
+  } };
 
 // ---------------- take events (contract #3), summary card, recovery
 // main.js dispatch (C): (typeof onTakeEvent === 'function' ? onTakeEvent : (e) => defaultTakeUI(e, pop))(e)
