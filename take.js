@@ -90,23 +90,35 @@ const inShaft = (p, world) => (world?.funnels || []).some((f) => f.dir !== 'up' 
 
 // ---- progress, shared by every Take instance (take + free fly): {name: {n: times flown, flow: best FLOW, pts: best pts,
 // bestT: best take time (s, stats.time clock) at which it was first flown in a scored take: a split, lower is better}}
-const PKEY = 'onetake.lines';
-const PROG = (() => { try { const o = JSON.parse(globalThis.localStorage?.getItem(PKEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } })();
+// [S0] per level: bando keeps the original keys, any other level suffixes them with @<level id> (setProgressLevel)
+let LVL = 'bando';
+const lk = (base) => (LVL === 'bando' ? base : `${base}@${LVL}`);
+let PKEY = 'onetake.lines';
+const readProg = () => { try { const o = JSON.parse(globalThis.localStorage?.getItem(PKEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } };
+const PROG = readProg();
 const saveProg = () => { try { globalThis.localStorage?.setItem(PKEY, JSON.stringify(PROG)); } catch (e) {} };
 export function resetProgress() {
   for (const k of Object.keys(PROG)) delete PROG[k];
-  try { for (const k of [PKEY, 'onetake.best', 'onetake.perfect']) globalThis.localStorage?.removeItem(k); } catch (e) {}
+  try { for (const k of [PKEY, lk('onetake.best'), lk('onetake.perfect')]) globalThis.localStorage?.removeItem(k); } catch (e) {}
 }
+// [S0] switch the progress store (lines flown, best take, perfects) to level `id`; Take instances then reloadBest()
+export function setProgressLevel(id) {
+  LVL = id || 'bando'; PKEY = lk('onetake.lines');
+  for (const k of Object.keys(PROG)) delete PROG[k];
+  Object.assign(PROG, readProg());
+}
+export const progressLevel = () => LVL;
 
 export class Take {
   constructor({ free = false } = {}) {
     this.free = free;              // free fly: lines still fire (captions, pts 0), no scoring, no take end
     this._best = 0;
-    try { this._best = +globalThis.localStorage?.getItem('onetake.best') || 0; } catch (e) {}
+    this.reloadBest();
     this._src = null; this._lines = []; this._carves = [];
     this.ghost = null;             // C12: a ghost.js Ghost (main.js / GhostKeeper sets it); survives reset()
     this.reset();
   }
+  reloadBest() { this._best = 0; try { this._best = +globalThis.localStorage?.getItem(lk('onetake.best')) || 0; } catch (e) {} }   // [S0] per level
   get state() { return this._state; }
   get total() { return Math.round(this._total); }
   get flow() { return this._flow; }                       // the multiplier the next line will score at
@@ -373,7 +385,7 @@ export class Take {
       if (pts > 0) ev.push({ type: 'bank', pts, total: this.total, cut: true, pace });
       this._how = 'cut'; this._finish();
       const perfect = this.perfect;
-      if (perfect) { try { const L = globalThis.localStorage; L?.setItem('onetake.perfect', String((+L.getItem('onetake.perfect') || 0) + 1)); } catch (e) {} }
+      if (perfect) { try { const L = globalThis.localStorage; L?.setItem(lk('onetake.perfect'), String((+L.getItem(lk('onetake.perfect')) || 0) + 1)); } catch (e) {} }
       ev.push({ type: 'cut', total: this.total, stats: this.stats, pts, how, pace, stars: starsFor(this._total), perfect });
     }
     return ev;
@@ -381,7 +393,7 @@ export class Take {
   _finish() {
     this._state = 'done'; this._flow = 1; this._released = false; this._skim = 0;
     this._hover = 0; this._land = 0; this._cutIn = 0; this._cutFrac = 0; this._cutKind = null; this._holding = false;
-    if (this._total > this._best) { this._best = Math.round(this._total); try { globalThis.localStorage?.setItem('onetake.best', String(this._best)); } catch (e) {} }
+    if (this._total > this._best) { this._best = Math.round(this._total); try { globalThis.localStorage?.setItem(lk('onetake.best'), String(this._best)); } catch (e) {} }
   }
 
   // ---- discovery
@@ -397,7 +409,7 @@ export class Take {
   progress(world) {
     const L = this.lineList(world), main = L.filter((l) => !l.micro), mic = L.filter((l) => l.micro);
     return { flown: main.filter((l) => l.flown).length, total: main.length, micro: { flown: mic.filter((l) => l.flown).length, total: mic.length },
-      best: this.best, stars: starsFor(this.best), perfects: (() => { try { return +globalThis.localStorage?.getItem('onetake.perfect') || 0; } catch (e) { return 0; } })() };
+      best: this.best, stars: starsFor(this.best), perfects: (() => { try { return +globalThis.localStorage?.getItem(lk('onetake.perfect')) || 0; } catch (e) { return 0; } })() };
   }
   // The line to fly next and where to point: {name, caption, pos:[x,y,z] (the point to steer at), dist (m to pos),
   // bearing (rad from the nose, + = right), elev (rad above level), fresh (never flown), vert ('down' | 'up' | null:

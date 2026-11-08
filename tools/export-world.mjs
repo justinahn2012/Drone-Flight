@@ -3,6 +3,8 @@
 //   node tools/export-world.mjs                 writes world.glb, collider.glb, world.json, graffiti.png to the repo root
 //   node tools/export-world.mjs --out DIR       ...to DIR instead
 //   node tools/export-world.mjs --check         write nothing; exit 1 if the files in --out differ from a fresh export
+//   node tools/export-world.mjs --level ID [--levels FILE]   [S0] another level of levels.json (or FILE) (default bando = everything below,
+//                                               unchanged); writes to export/<ID>/ unless --out. See exportLevel().
 //
 // Source of truth: buildGeometry() in world-bando.js (pure CPU, no renderer), so this runs headless in node / CI.
 //   world.glb     one node per render mesh: the merged site meshes per material (sorted by key), then terrain, far
@@ -23,7 +25,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as THREE from 'three';
 import { exposeAndImport, sourceLiteral, evalLiteral, literalFields, functionBody } from './expose.mjs';
 import { GLBWriter, semanticsFor } from './glb.mjs';
@@ -397,12 +399,75 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
   return { ok: true, hash, world, out, warnings };
 }
 
+// ---------------------------------------------------------------- [S0] other levels (levels.json)
+// A level other than bando exports from a CPU-only geometry entry its module names in the manifest (`geometry`, default
+// `build<Name>Geometry`... tried: level.geometry, 'buildGeometry'). It returns, headless (no renderer, no textures):
+//   { merged: {material: BufferGeometry}, colGeo, lines, spawn, takeStart?, startPoints?, funnels?, bounds?, envelope?,
+//     materials?: {material: {albedo, rough, ...}}, site?: {...plain data}, extra?: {...plain data} }
+// Written: world.glb (one mesh per merged material, sorted), collider.glb, world.json (same format id; level, hashes,
+// lines, spawn...). Deterministic, so --check works the same way.
+export async function exportLevel({ root = ROOT, id, out, seed = 7, check = false, log = console.log, levelsFile = 'levels.json' } = {}) {
+  const t0 = performance.now(), warnings = [], warn = (s) => { warnings.push(s); log('  warning: ' + s); };
+  const levels = JSON.parse(readFileSync(join(root, levelsFile), 'utf8')), L = levels.find((l) => l.id === id || (l.alias || []).includes(id));
+  if (!L) throw new Error(`level ${id} not in levels.json (${levels.map((l) => l.id).join(', ')})`);
+  out ??= join(root, 'export', L.id);
+  const file = L.module.replace(/^\.\//, ''), path = join(root, file);
+  if (!existsSync(path)) throw new Error(`${L.module} not in this tree yet`);
+  const mod = await import(pathToFileURL(path).href);
+  const fn = [L.geometry, 'buildGeometry'].find((k) => k && typeof mod[k] === 'function');
+  if (!fn) throw new Error(`${L.module} has no CPU geometry entry (levels.json "geometry", or export buildGeometry)`);
+  const geo = await mod[fn]({ seed, level: L.id, headless: true });
+  if (!geo?.merged || !geo.colGeo) throw new Error(`${fn}() must return { merged, colGeo, ... }`);
+  const src = readFileSync(path, 'utf8'), MATS = geo.materials || {};
+  const render = Object.keys(geo.merged).sort().map((k) => ({ name: k, geo: geo.merged[k], mat: k, kind: 'site' }));
+  const hRender = setHash('render', render.map((r) => [r.name, r.geo])), hCol = setHash('collider', [['collider', geo.colGeo]]);
+  const hWorld = new GeoHash().str(hRender).str(hCol).hex();
+  const hash = { algo: HASH_ALGO, world: hWorld, render: hRender, collider: hCol, meshes: Object.fromEntries(render.map((r) => [r.name, meshHash(r.name, r.geo)])) };
+  const W = new GLBWriter('One Take FPV tools/export-world.mjs'), meshTable = [];
+  for (const r of render) {
+    const g = r.geo, attrs = {};
+    for (const [k, a] of Object.entries(g.attributes)) attrs[k] = { array: attrArray(a), itemSize: a.itemSize, normalized: a.normalized };
+    const m = MATS[r.mat] || {}, alb = m.albedo || [0.3, 0.29, 0.27];
+    const material = W.material(r.mat, { name: r.mat, pbrMetallicRoughness: { baseColorFactor: [alb[0], alb[1], alb[2], 1], metallicFactor: 0, roughnessFactor: m.rough ?? 1 }, extras: { mat: r.mat, ...plain(m) } });
+    W.mesh(r.name, attrs, g.index ? g.index.array : null, { material, extras: { kind: r.kind, material: r.mat } });
+    const sem = semanticsFor(Object.keys(g.attributes));
+    meshTable.push({ name: r.name, kind: r.kind, material: r.mat, vertices: g.attributes.position.count, triangles: (g.index ? g.index.count : g.attributes.position.count) / 3,
+      attributes: Object.fromEntries(Object.entries(g.attributes).map(([k, a]) => [k, { gltf: sem[k], itemSize: a.itemSize }])), bounds: boundsOf(attrArray(g.attributes.position)), hash: hash.meshes[r.name] });
+  }
+  const col = geo.colGeo, CW = new GLBWriter('One Take FPV tools/export-world.mjs'), colAttrs = {};
+  for (const [k, a] of Object.entries(col.attributes)) colAttrs[k] = { array: attrArray(a), itemSize: a.itemSize };
+  CW.mesh('collider', colAttrs, col.index ? col.index.array : null, { extras: { kind: 'collider' } });
+  const outFiles = { 'world.glb': W.toGLB(), 'collider.glb': CW.toGLB() };
+  const spawn = geo.spawn == null ? null : geo.spawn.pos ? plain(geo.spawn) : { pos: plain(geo.spawn), yaw: plain(geo.yaw ?? 0) };
+  if (!spawn) warn('spawn not found on the geometry entry');
+  const world = {
+    format: WORLD_FORMAT, generator: 'tools/export-world.mjs --level', level: plain(L), source: { [file]: { sha256: sha256(src) }, seed },
+    conventions: { units: 'metres; right-handed, +Y up; the drone / camera look along -Z (three.js)' },
+    hash, files: Object.fromEntries(Object.entries(outFiles).map(([f, b]) => [f, { bytes: b.byteLength, sha256: sha256(b) }])),
+    meshes: meshTable,
+    collider: { vertices: col.attributes.position.count, triangles: (col.index ? col.index.count : col.attributes.position.count) / 3, bounds: boundsOf(attrArray(col.attributes.position)), hash: hCol },
+    spawn, takeStart: plain(geo.takeStart ?? null), startPoints: plain(geo.startPoints ?? null), funnels: plain(geo.funnels ?? null),
+    bounds: plain(geo.bounds ?? null), envelope: plain(geo.envelope ?? null), lines: plain(geo.lines ?? []),
+    materials: plain(MATS), site: plain(geo.site ?? null), extra: plain(geo.extra ?? null), warnings,
+  };
+  const outputs = { ...outFiles, 'world.json': new TextEncoder().encode(stringify(world) + '\n') };
+  if (check) {
+    const stale = Object.entries(outputs).filter(([f, b]) => !existsSync(join(out, f)) || sha256(readFileSync(join(out, f))) !== sha256(b)).map(([f]) => f);
+    log(stale.length ? `${L.id} export STALE in ${out}: ${stale.join(', ')} (hash now ${hWorld})` : `${L.id} export up to date (${hWorld})`);
+    return { ok: !stale.length, stale, hash, warnings };
+  }
+  mkdirSync(out, { recursive: true });
+  for (const [f, b] of Object.entries(outputs)) writeFileSync(join(out, f), b);
+  log(`${L.id}: world.glb ${(outFiles['world.glb'].byteLength / 1e6).toFixed(2)} MB (${meshTable.length} meshes) | collider ${world.collider.triangles} tris | hash ${hWorld} | ${Math.round(performance.now() - t0)} ms -> ${out}`);
+  return { ok: true, hash, world, out, warnings };
+}
+
 // ---------------------------------------------------------------- CLI
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const a = process.argv.slice(2), opt = (k) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : undefined; };
-  if (a.includes('-h') || a.includes('--help')) { console.log('usage: node tools/export-world.mjs [--out DIR] [--seed N] [--check] [--quiet]'); process.exit(0); }
-  const quiet = a.includes('--quiet');
-  exportWorld({ out: resolve(opt('--out') ?? ROOT), seed: +(opt('--seed') ?? 7), check: a.includes('--check'), log: quiet ? () => {} : console.log })
-    .then((r) => process.exit(r.ok ? 0 : 1))
+  if (a.includes('-h') || a.includes('--help')) { console.log('usage: node tools/export-world.mjs [--level ID] [--out DIR] [--seed N] [--check] [--quiet]'); process.exit(0); }
+  const quiet = a.includes('--quiet'), level = opt('--level');
+  (level && level !== 'bando' ? exportLevel({ id: level, levelsFile: opt('--levels') ?? 'levels.json', out: opt('--out') ? resolve(opt('--out')) : undefined, seed: +(opt('--seed') ?? 7), check: a.includes('--check'), log: quiet ? () => {} : console.log }) : exportWorld({ out: resolve(opt('--out') ?? ROOT), seed: +(opt('--seed') ?? 7), check: a.includes('--check'), log: quiet ? () => {} : console.log })
+    ).then((r) => process.exit(r.ok ? 0 : 1))
     .catch((e) => { console.error(e); process.exit(2); });
 }

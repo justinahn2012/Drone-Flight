@@ -1,0 +1,36 @@
+[
+  {
+    "id": "bando",
+    "name": "Silo Yard",
+    "note": "Open bando · silos, chimney, factory hall, conveyor gallery",
+    "lede": "An abandoned industrial site, wide open. Silos, a chimney you can dive, a factory hall full of holes. Seen through a real camera — shutter, lens, exposure, noise. Fly the named lines in one take.",
+    "module": "./world-bando.js",
+    "build": "buildBando",
+    "args": ["renderer", "opts"],
+    "look": "day",
+    "sky": "sunny",
+    "skies": ["sunny", "overcast"],
+    "craft": "freestyle5",
+    "thumb": "hero.jpg",
+    "lm": "lm.json",
+    "audio": null
+  },
+  {
+    "id": "seoul-hongdae",
+    "alias": ["seoul", "hongdae"],
+    "name": "Neon Seoul",
+    "note": "Hongdae at night · neon signs, LED screens, crowds and traffic",
+    "lede": "Hongdae after midnight. Club streets, walking streets and alleys under hangul neon and LED screens, crowds and taxis below. Seen through a real night camera. Fly the named lines in one take.",
+    "module": "./world-seoul.js",
+    "build": "buildSeoul",
+    "args": ["renderer", "scene", "opts"],
+    "look": "night",
+    "sky": "night",
+    "grade": { "retro": 0.3 },
+    "craft": "freestyle5",
+    "tag": "NIGHT",
+    "thumb": null,
+    "lm": null,
+    "audio": "seoul"
+  }
+]
