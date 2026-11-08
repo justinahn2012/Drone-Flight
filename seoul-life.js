@@ -165,8 +165,12 @@ export function buildNetwork(layout) {
   const nodes = [];
   const nodeOf = (p) => { for (const n of nodes) if (Math.hypot(n.x - p[0], n.z - p[1]) < 3) return n; const n = { id: nodes.length, x: p[0], z: p[1], ends: [] }; nodes.push(n); return n; };
   for (const st of streets) { st.n = [nodeOf(st.points[0]), nodeOf(st.points[st.points.length - 1])]; st.n[0].ends.push({ st, k: 0 }); st.n[1].ends.push({ st, k: 1 }); }
-  const edge = half ? half - 4 : Math.max(...streets.flatMap((s) => s.points.map((p) => Math.max(Math.abs(p[0]), Math.abs(p[1]))))) - 4;
-  for (const n of nodes) n.boundary = n.ends.length === 1 && (Math.abs(n.x) > edge || Math.abs(n.z) > edge);
+  // map-edge dead ends (where traffic and walkers enter and leave the block): within 12 m of any side of the street
+  // bounding box. (P1 used max |coord| - 4 for every side, so on the asymmetric OSM box 3 of 7 road ends qualified.)
+  let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
+  for (const s of streets) for (const p of s.points) { bx0 = Math.min(bx0, p[0]); bx1 = Math.max(bx1, p[0]); bz0 = Math.min(bz0, p[1]); bz1 = Math.max(bz1, p[1]); }
+  if (half) { bx0 = Math.max(bx0, -half); bx1 = Math.min(bx1, half); bz0 = Math.max(bz0, -half); bz1 = Math.min(bz1, half); }
+  for (const n of nodes) n.boundary = n.ends.length === 1 && (n.x < bx0 + 12 || n.x > bx1 - 12 || n.z < bz0 + 12 || n.z > bz1 - 12);
   // ---- crosswalks + signals
   const crossings = []; let ci = 0;
   const addCross = (c) => {
@@ -277,10 +281,23 @@ export class TrafficSim {
       for (const g of by.values()) { g.lanes.sort((a, b) => a.k - b.k); if (g.turn > -0.7) ln.succ.push(g); }
     }
     for (const ln of this.lanes) for (const g of ln.succ) for (const m of g.lanes) m.pred++;
-    this.entries = { road: this.lanes.filter((l) => !l.shared && l.pred === 0 && l.len > 10), shared: this.lanes.filter((l) => l.shared && l.pred === 0 && l.len > 10) };
-    for (const k of ['road', 'shared']) if (!this.entries[k].length) this.entries[k] = this.lanes.filter((l) => l.shared === (k === 'shared') && l.len > 10);
+    // re-entry (life #6): road traffic re-enters only at map-edge lanes, so nothing pops in on stage. Alley scooters come
+    // in at a map edge, else at an alley mouth on a road kerb (lane cut by the road band: start === null).
+    const len10 = (l) => l.len > 10;
+    this.entries = {
+      road: this.lanes.filter((l) => !l.shared && len10(l) && l.pred === 0 && l.start && l.start.boundary && !l.bus),
+      shared: this.lanes.filter((l) => l.shared && len10(l) && l.start && l.start.boundary),
+    };
+    if (this.entries.shared.length < 6) this.entries.shared.push(...this.lanes.filter((l) => l.shared && len10(l) && !l.start));
+    if (!this.entries.road.length) this.entries.road = this.lanes.filter((l) => !l.shared && len10(l) && l.pred === 0);
+    for (const k of ['road', 'shared']) if (!this.entries[k].length) this.entries[k] = this.lanes.filter((l) => l.shared === (k === 'shared') && len10(l));
+    this.busEntries = this.lanes.filter((l) => l.bus && len10(l) && l.pred === 0 && l.start && l.start.boundary);
     this.twin = new Map();
     for (const ln of this.lanes) this.twin.set(ln, this.lanes.find((m) => m.street === ln.street && m.dir === -ln.dir && m.k === ln.k) || null);
+    // neighbours for lane changes (same carriageway and direction, k +- 1)
+    for (const ln of this.lanes) {
+      ln.adj = ln.shared ? [] : this.lanes.filter((m) => m !== ln && m.street === ln.street && m.dir === ln.dir && !m.shared && Math.abs(m.k - ln.k) === 1);
+    }
     this.reset();
   }
   toBase(ln, s) { return ln.dir > 0 ? ln.s0 + s : ln.s1 - s; }
@@ -290,28 +307,31 @@ export class TrafficSim {
     for (const ln of this.lanes) {
       ln.veh = [];
       if (ln.len < 8) continue;
-      let s = ln.len - R.next() * 12;
+      let s = ln.shared ? ln.len - R.next() * 400 : ln.len - R.next() * 12;   // alleys: most short ones start empty
       while (s > 2) {
         const type = this.pickType(ln, R), c = VEH[type];
         const v = this.spawn(id++, type, ln, s, R);
         v.v = v.v0 * (0.4 + 0.4 * R.next());
         ln.veh.push(v); this.vehicles.push(v);
-        s -= c.L + (ln.shared ? 50 + R.next() * 110 : (type === 'bus' ? 70 + R.next() * 90 : 10 + R.next() * 30));
+        // alley lanes: one scooter or car per ~350 m of lane (life #6: ~40 scooters in all, P1 had 161)
+        s -= c.L + (ln.shared ? 220 + R.next() * 300 : (type === 'bus' ? 70 + R.next() * 90 : 10 + R.next() * 30));
       }
     }
     for (const v of this.vehicles) v.next = this.pickNext(v.lane, v, R);
   }
+  // Hongdae after 22:00: taxis are 45 % of the car-class traffic (life #6), few trucks, scooters on the kerb lanes
   pickType(ln, R) {
     if (ln.bus) return 'bus';
-    if (ln.shared) return ln.street.kind === 'walking' || R.next() < 0.85 ? 'scooter' : 'car';
+    if (ln.shared) return ln.street.kind === 'walking' || R.next() < 0.8 ? 'scooter' : 'car';
     const r = R.next();
-    return r < 0.5 ? 'car' : r < 0.78 ? 'taxi' : r < 0.88 ? 'truck' : ln.curb ? 'scooter' : 'car';
+    return r < 0.36 ? 'car' : r < 0.74 ? 'taxi' : r < 0.81 ? 'truck' : ln.curb && r < 0.91 ? 'scooter' : 'car';
   }
   spawn(id, type, ln, s, R) {
     const c = VEH[type], pal = PAINT[type];
     const v0 = (ln.shared ? (type === 'scooter' ? 5.5 : 3.5) : c.v0) * (0.85 + 0.3 * R.next());
-    return { id, type, lane: ln, s, ps: s, v: 0, v0, acc: 0, L: c.L, W: c.W, H: c.H, paint: pal[Math.floor(R.next() * pal.length)], weave: R.next() * 6.283,
-      dwell: null, dwellT: 0, hazard: false, brake: 0, jumped: true, hidden: false, nextPick: R.next() * 40, next: null, jx: 0, jz: 0, jhx: 0, jhz: 0, stepped: -1 };
+    return { id, type, lane: ln, s, ps: s, v: 0, v0, acc: 0, L: c.L, W: c.W, H: c.H, paint: pal[Math.floor(R.next() * pal.length)], weave: R.next(),
+      dwell: null, dwellT: 0, hazard: false, brake: 0, jumped: true, hidden: false, nextPick: R.next() * 40, next: null, jx: 0, jz: 0, jhx: 0, jhz: 0, stepped: -1,
+      still: 0, hsrc: -1e9, lc0: 0, lcN: -1e9, lcCool: 0, horn: 0 };
   }
   // the lane v takes after ln: approaches weighted toward straight on; lane index kept (buses keep the bus lane)
   pickNext(ln, v, R) {
@@ -338,7 +358,7 @@ export class TrafficSim {
     v.next = this.pickNext(ln, v, R);
   }
   respawn(v, R) {   // re-enter the block at an entry lane (off-stage), or wait hidden until there is room
-    const E = this.entries[v.lane.shared ? 'shared' : 'road'], ln = E[Math.floor(R.next() * E.length)];
+    const E = v.type === 'bus' && this.busEntries.length ? this.busEntries : this.entries[v.lane.shared ? 'shared' : 'road'], ln = E[Math.floor(R.next() * E.length)];
     const type = this.pickType(ln, R), nv = this.spawn(v.id, type, ln, 0, R), old = v.lane;
     const i = old.veh.indexOf(v); if (i >= 0) old.veh.splice(i, 1);
     Object.assign(v, nv); v.lane = old; v.hidden = true;
@@ -355,16 +375,19 @@ export class TrafficSim {
         v.stepped = N; v.ps = v.s; v.jumped = false;
         if (v.hidden) { if (this.hasRoom(ln, v.L + 8)) { v.hidden = false; v.v = Math.min(v.v0, 6); v.jumped = true; } continue; }
         // leader: in this lane, else the last car of the lane we turn into
-        let gap = Infinity, dv = 0;
-        for (let j = i - 1; j >= 0; j--) { const l = vs[j]; if (!l.hidden) { gap = l.s - l.L - v.s; dv = v.v - l.v; break; } }
+        let gap = Infinity, dv = 0, ldr = null;
+        for (let j = i - 1; j >= 0; j--) { const l = vs[j]; if (!l.hidden) { gap = l.s - l.L - v.s; dv = v.v - l.v; ldr = l; break; } }
         if (gap === Infinity && v.next) {
           let last = null; for (const o of v.next.veh) if (!o.hidden && (!last || o.s < last.s)) last = o;
-          if (last) { gap = ln.len - v.s + last.s - last.L; dv = v.v - last.v; }
+          if (last) { gap = ln.len - v.s + last.s - last.L; dv = v.v - last.v; ldr = last; }
         }
-        // signals
+        // signals (held: a red or amber ahead within 150 m, so the watchdog doesn't count the wait)
+        let held = false;
         for (const st of ln.stops) {
-          const d = st.s - v.s; if (d < -0.5 || d > 120) continue;
+          const d = st.s - v.s; if (d < -0.5 || d > 150) continue;
           const ph = crossPhase(st.c, t);
+          if (ph.car !== 'G') held = true;
+          if (d > 120) continue;
           const stop = ph.car === 'R' || (ph.car === 'A' && d > v.v * v.v / (2 * c.b) + 1);
           if (stop && d < gap) { gap = Math.max(0.01, d); dv = v.v; }
         }
@@ -378,16 +401,40 @@ export class TrafficSim {
         v.acc = a; v.v += a * dt; if (v.v < 0) v.v = 0;
         v.s += v.v * dt;
         v.brake = a < -0.4 || v.v < 0.3 ? 1 : 0;
-        if (v.dwell != null && v.v < 0.15 && v.dwell - v.s < 1.5) {
+        // dwell starts once stopped at the point. IDM halts a vehicle s0 short of its target, so the trigger is s0 + 1.5
+        // (P1 used 1.5: taxis and buses stopped 1.7-5.5 m short and never started their dwell, deadlocking every lane)
+        if (v.dwell != null && v.v < 0.15 && v.dwell - v.s < c.s0 + 1.5) {
           if (v.dwellT === 0) {
-            v.dwellT = N + Math.floor((v.type === 'bus' ? 9 + R.next() * 10 : 6 + R.next() * 14) * LIFE.trafficHz);
+            v.dwellT = N + Math.floor((v.type === 'bus' ? 9 + R.next() * 10 : 5 + R.next() * 9) * LIFE.trafficHz);
             if (v.type === 'bus') this.events.push({ type: 'kneel', id: v.id });
           } else if (N >= v.dwellT) { v.dwell = null; v.dwellT = 0; v.hazard = false; v.nextPick = v.s + 80 + R.next() * 200; if (v.type === 'bus') this.events.push({ type: 'doors', id: v.id }); }
         }
         if (v.dwell == null) {
           if (v.type === 'bus') { for (const bs of ln.busStops) if (bs - v.s > 25 && bs - v.s < 30 + v.v) { v.dwell = bs; break; } }
-          else if (v.type === 'taxi' && ln.curb && v.s > v.nextPick && v.s < ln.len - 40) { v.dwell = v.s + 18 + R.next() * 10; v.hazard = true; }
+          else if (v.type === 'taxi' && ln.curb && v.s > v.nextPick && v.s < ln.len - 40) {
+            // pick-ups mostly where others can pass (multi-lane kerb lanes); on a one-lane road a taxi stops 1 time in 4
+            if (ln.adj.length || R.next() < 0.25) { v.dwell = v.s + 18 + R.next() * 10; v.hazard = true; } else v.nextPick = v.s + 150 + R.next() * 300;
+          }
         }
+        // watchdog (life #2): stopped for 25 s with nothing holding it (no red ahead, not dwelling). A queue head that
+        // is still blocked then leaves the block (re-enters at an edge); the vehicles behind it get a lane change.
+        // held is inherited down a queue (one step late, order-free): a car queued behind a red or a dwelling taxi waits;
+        // only a jam that nothing explains (a merge deadlock, a gridlocked ring) runs the clock
+        // (hsrc = the step its hold was last seen at a source, so a gridlocked ring can't keep itself 'held' forever)
+        v.hsrc = held ? N : ldr && gap < 30 ? (ldr.dwell != null ? N : ldr.hsrc) : -1e9;
+        held = N - v.hsrc < 2 * LIFE.trafficHz;
+        if (v.v < 0.3 && v.dwell == null && !held) v.still++; else v.still = 0;
+        if (v.still > 25 * LIFE.trafficHz) {
+          let head = true; for (let j = i - 1; j >= 0; j--) if (!vs[j].hidden && vs[j].s - vs[j].L - v.s < 25) { head = false; break; }
+          if (head) { v.still = 0; this.respawn(v, R); i--; this.events.push({ type: 'unstick', id: v.id }); continue; }
+          if (v.still > 40 * LIFE.trafficHz) v.lcCool = 0;   // let the lane-change pass try it every round
+        }
+        // a taxi or car held up behind a dwelling vehicle sounds its horn now and then (sound #3: taxi horns)
+        if (v.horn > 0) v.horn--;
+        else if (v.type !== 'bus' && !ln.shared && v.v < 0.3 && v.id % 3 === 0 && ldr && ldr.dwell != null && gap < 12 && (N - ldr.dwellT) % (7 * LIFE.trafficHz) === 0) {
+          v.horn = 25 * LIFE.trafficHz; this.events.push({ type: 'horn', id: v.id, k: v.type === 'taxi' ? 1 : 0 });
+        }
+        else if (v.still === Math.floor((9 + (v.id % 9)) * LIFE.trafficHz) && v.id % 2 === 0 && v.type !== 'bus' && !ln.shared) { v.horn = 25 * LIFE.trafficHz; this.events.push({ type: 'horn', id: v.id, k: v.type === 'taxi' ? 1 : 0 }); }
         // end of the lane: turn into the next one, U-turn (alley scooters at a road kerb), or leave the block
         if (v.s > ln.len) {
           const nx = v.next;
@@ -398,15 +445,69 @@ export class TrafficSim {
         }
       }
     }
+    if (this.n % 15 === 0) this.laneChanges(t, R);
     this.n++;
   }
+  // IDM acceleration of class c at speed v (desired v0) behind a leader `gap` m ahead closing at dv
+  idm(c, v, v0, gap, dv) {
+    const sstar = c.s0 + Math.max(0, v * c.T + v * dv / (2 * Math.sqrt(c.a * c.b)));
+    const r = v / v0, r2 = r * r;
+    return c.a * (1 - r2 * r2 - (gap === Infinity ? 0 : (sstar / gap) * (sstar / gap)));
+  }
+  // MOBIL lane changes (life #6), 4 Hz, deterministic order (lane index, then position): a vehicle moves to an adjacent
+  // lane of its carriageway when it gains > 0.3 m/s^2 there (net of 0.25 x what it costs the new follower) and the new
+  // follower brakes no harder than 3 m/s^2. Buses keep the bus lane; nobody else enters it. No changes within 25 m of a
+  // stop line or the lane end, none while dwelling. Blocked vehicles (behind a dwell, a stuck head) get a lower bar.
+  laneChanges(t, R) {
+    const lead = (ln, s, skip) => { let b = null; for (const o of ln.veh) if (o !== skip && !o.hidden && o.s > s && (!b || o.s < b.s)) b = o; return b; };
+    const foll = (ln, s, skip) => { let b = null; for (const o of ln.veh) if (o !== skip && !o.hidden && o.s <= s && (!b || o.s > b.s)) b = o; return b; };
+    for (const ln of this.lanes) {
+      if (!ln.adj.length || !ln.veh.length) continue;
+      const vs = ln.veh.slice().sort((a, b) => b.s - a.s || a.id - b.id);
+      for (const v of vs) {
+        if (v.hidden || v.dwell != null || v.type === 'bus' || v.lane !== ln) continue;
+        if (v.lcCool > this.n) continue;
+        if (v.s < 8 || ln.len - v.s < 25 || ln.stops.some((st) => st.s - v.s > -2 && st.s - v.s < 25)) continue;
+        const c = VEH[v.type], L0 = lead(ln, v.s, v);
+        const gap0 = L0 ? L0.s - L0.L - v.s : Infinity, blocked = L0 && (L0.dwell != null || L0.still > 3 * LIFE.trafficHz) && gap0 < 30;
+        const a0 = this.idm(c, v.v, v.v0, gap0, L0 ? v.v - L0.v : 0);
+        let best = null, bestG = blocked ? 0.05 : 0.3;
+        for (const m of ln.adj) {
+          if (m.bus || m.s1 - m.s0 < ln.len - 1) continue;
+          const Ln = lead(m, v.s, v), Fn = foll(m, v.s, v);
+          const gapN = Ln ? Ln.s - Ln.L - v.s : Infinity, gapF = Fn ? v.s - v.L - Fn.s : Infinity;
+          if (gapN < 1.5 || gapF < 1.5) continue;
+          const aN = this.idm(c, v.v, v.v0, gapN, Ln ? v.v - Ln.v : 0);
+          let cost = 0;
+          if (Fn) { const cf = VEH[Fn.type], aF = this.idm(cf, Fn.v, Fn.v0, gapF, Fn.v - v.v); if (aF < -3) continue; cost = Math.max(0, this.idm(cf, Fn.v, Fn.v0, Ln ? Ln.s - Ln.L - Fn.s : Infinity, Ln ? Fn.v - Ln.v : 0) - aF); }
+          const g = aN - a0 - 0.25 * cost - (m.k > ln.k ? 0 : 0.05);   // a slight keep-right preference
+          if (g > bestG) { bestG = g; best = m; }
+        }
+        if (!best) continue;
+        // execute: same base path and s range, so only the lateral position changes (eased over 3 s in pose())
+        const i = ln.veh.indexOf(v); ln.veh.splice(i, 1); best.veh.push(v);
+        v.lc0 = this.lcOffset(v) + (ln.lat - best.lat) * ln.dir * best.dir; v.lcN = this.n; v.lane = best; v.lcCool = this.n + Math.floor((6 + R.next() * 6) * LIFE.trafficHz);
+        v.still = 0; v.next = this.pickNext(best, v, R);
+      }
+    }
+  }
+  // lateral offset still left from a lane change, at step position n (fractional)
+  lcOffset(v, n = this.n) { const u = (n - v.lcN) / (3 * LIFE.trafficHz); if (u >= 1 || u < 0) return 0; const f = 1 - u; return v.lc0 * f * f * (3 - 2 * f); }
   // world pose of vehicle v at interpolation alpha in [0,1] between the last two steps
   pose(v, alpha, o = {}) {
     const ln = v.lane, s = v.jumped ? v.s : v.ps + (v.s - v.ps) * alpha, P = this._p || (this._p = {});
     ln.base.at(this.toBase(ln, s), P);
-    let lat = ln.lat;
-    if (ln.shared && v.type === 'scooter') lat += ln.dir * 0.45 * Math.sin(s / 9 + v.weave);   // alley weave
-    let x = P.x + P.nx * lat, z = P.z + P.nz * lat, hx = P.tx * ln.dir, hz = P.tz * ln.dir;
+    let lat = ln.lat, dlat = 0;
+    if (ln.shared && v.type === 'scooter') {   // alley weave: a parabolic sine (integer-free arithmetic only, no Math.sin: native #3)
+      let u = s / 56.5 + v.weave; u -= Math.floor(u); u = 2 * u - 1;           // [-1, 1), one wiggle per 56.5 m
+      lat += ln.dir * 0.45 * 4 * u * (1 - Math.abs(u));
+    }
+    if (v.lcN > -1e8) {   // easing out of a lane change: offset and the yaw that goes with it
+      const n = this.n - 1 + (v.jumped ? 1 : alpha), o0 = this.lcOffset(v, n);
+      if (o0) { lat += o0; dlat = (this.lcOffset(v, n + 1) - o0) * LIFE.trafficHz / Math.max(1, v.v); }
+    }
+    let x = P.x + P.nx * lat, z = P.z + P.nz * lat, hx = P.tx * ln.dir + P.nx * dlat, hz = P.tz * ln.dir + P.nz * dlat;
+    if (dlat) { const l = Math.hypot(hx, hz) || 1; hx /= l; hz /= l; }
     if (v.jx || v.jz || v.jhx || v.jhz) {   // ease out of a junction hand-off over 12 m
       const f = s < 12 ? (1 - Math.max(0, s) / 12) ** 2 : 0;
       x += v.jx * f; z += v.jz * f; hx += v.jhx * f; hz += v.jhz * f; const l = Math.hypot(hx, hz) || 1; hx /= l; hz /= l;
@@ -907,8 +1008,10 @@ function vehicleGeo(type) {
     box(-hw, 0.28, -hl, hw, 0.85, hl, 0);                                  // lower body
     box(-hw + 0.06, 0.85, -hl + 1.05, hw - 0.06, H - 0.02, hl - 1.35, 1, 0.16);   // greenhouse
     box(-hw + 0.25, H - 0.04, -hl + 1.25, hw - 0.25, H, hl - 1.55, 0);    // roof skin
-    box(-hw + 0.08, 0.6, hl - 0.02, -hw + 0.42, 0.74, hl + 0.01, 3); box(hw - 0.42, 0.6, hl - 0.02, hw - 0.08, 0.74, hl + 0.01, 3);
-    box(-hw + 0.05, 0.66, -hl - 0.01, -hw + 0.45, 0.8, -hl + 0.02, 4); box(hw - 0.45, 0.66, -hl - 0.01, hw - 0.05, 0.8, -hl + 0.02, 4);
+    // lamps are small point-like emitters (fpv #1): projector cores 0.16 x 0.06 m in a dark housing, slim LED tail bars
+    box(-hw + 0.08, 0.6, hl - 0.02, -hw + 0.42, 0.74, hl + 0.005, 2); box(hw - 0.42, 0.6, hl - 0.02, hw - 0.08, 0.74, hl + 0.005, 2);
+    box(-hw + 0.17, 0.64, hl - 0.01, -hw + 0.33, 0.70, hl + 0.012, 3); box(hw - 0.33, 0.64, hl - 0.01, hw - 0.17, 0.70, hl + 0.012, 3);
+    box(-hw + 0.05, 0.71, -hl - 0.01, -hw + 0.45, 0.76, -hl + 0.02, 4); box(hw - 0.45, 0.71, -hl - 0.01, hw - 0.05, 0.76, -hl + 0.02, 4);
     box(-hw - 0.01, 0.62, hl - 0.25, -hw + 0.01, 0.7, hl - 0.1, 7); box(hw - 0.01, 0.62, hl - 0.25, hw + 0.01, 0.7, hl - 0.1, 7);
     box(-hw + 0.1, 0.3, hl - 0.02, hw - 0.1, 0.5, hl + 0.02, 2); box(-hw + 0.1, 0.3, -hl - 0.02, hw - 0.1, 0.5, -hl + 0.02, 2);
     for (const z of [hl - 0.95, -hl + 0.9]) { wheel(-hw + 0.1, z, 0.33, 0.22); wheel(hw - 0.1, z, 0.33, 0.22); }
@@ -917,17 +1020,17 @@ function vehicleGeo(type) {
     box(-hw, 0.4, hl - 1.6, hw, 1.05, hl, 0);
     box(-hw + 0.04, 1.05, hl - 1.5, hw - 0.04, H, hl - 0.15, 1, 0.08); box(-hw, 1.05, hl - 1.6, hw, H, hl - 1.45, 0);
     box(-hw, 0.55, -hl, hw, 0.75, hl - 1.65, 0); box(-hw, 0.75, -hl, -hw + 0.05, 1.15, hl - 1.65, 0); box(hw - 0.05, 0.75, -hl, hw, 1.15, hl - 1.65, 0); box(-hw, 0.75, -hl, hw, 1.15, -hl + 0.05, 0);
-    box(-hw + 0.08, 0.55, hl - 0.02, -hw + 0.38, 0.72, hl + 0.01, 3); box(hw - 0.38, 0.55, hl - 0.02, hw - 0.08, 0.72, hl + 0.01, 3);
-    box(-hw + 0.05, 0.5, -hl - 0.02, -hw + 0.3, 0.65, -hl + 0.01, 4); box(hw - 0.3, 0.5, -hl - 0.02, hw - 0.05, 0.65, -hl + 0.01, 4);
+    box(-hw + 0.14, 0.6, hl - 0.02, -hw + 0.3, 0.67, hl + 0.01, 3); box(hw - 0.3, 0.6, hl - 0.02, hw - 0.14, 0.67, hl + 0.01, 3);
+    box(-hw + 0.05, 0.54, -hl - 0.02, -hw + 0.3, 0.6, -hl + 0.01, 4); box(hw - 0.3, 0.54, -hl - 0.02, hw - 0.05, 0.6, -hl + 0.01, 4);
     for (const z of [hl - 0.8, -hl + 1.0]) { wheel(-hw + 0.12, z, 0.3, 0.2); wheel(hw - 0.12, z, 0.3, 0.2); }
   } else if (type === 'bus') {
     box(-hw, 0.3, -hl, hw, 1.1, hl, 0);
-    box(-hw, 1.1, -hl + 0.3, hw, H - 0.35, hl - 0.15, 5);                  // lit window band
+    box(-hw, 1.1, -hl + 0.3, hw, H - 0.35, hl - 0.15, 5);                  // window band: dark glass over a 20-40 nit interior
     box(-hw, 1.1, hl - 0.15, hw, H - 0.35, hl, 1);                          // windscreen
     box(-hw, H - 0.35, -hl, hw, H, hl, 0); box(-hw, 1.1, -hl, hw, H - 0.35, -hl + 0.3, 0);
     box(-hw + 0.3, H - 0.32, hl - 0.01, hw - 0.3, H - 0.08, hl + 0.02, 6); // destination LED
-    box(-hw + 0.1, 0.5, hl - 0.02, -hw + 0.45, 0.68, hl + 0.01, 3); box(hw - 0.45, 0.5, hl - 0.02, hw - 0.1, 0.68, hl + 0.01, 3);
-    box(-hw + 0.08, 0.6, -hl - 0.02, -hw + 0.35, 1.0, -hl + 0.01, 4); box(hw - 0.35, 0.6, -hl - 0.02, hw - 0.08, 1.0, -hl + 0.01, 4);
+    box(-hw + 0.18, 0.55, hl - 0.02, -hw + 0.38, 0.63, hl + 0.01, 3); box(hw - 0.38, 0.55, hl - 0.02, hw - 0.18, 0.63, hl + 0.01, 3);
+    box(-hw + 0.1, 0.7, -hl - 0.02, -hw + 0.22, 0.95, -hl + 0.01, 4); box(hw - 0.22, 0.7, -hl - 0.02, hw - 0.1, 0.95, -hl + 0.01, 4);
     for (const z of [hl - 2.3, -hl + 2.6]) { wheel(-hw + 0.15, z, 0.48, 0.3); wheel(hw - 0.15, z, 0.48, 0.3); }
   } else {   // scooter + rider + delivery box
     box(-0.16, 0.25, -0.7, 0.16, 0.62, 0.55, 0); box(-0.12, 0.62, -0.6, 0.12, 0.72, 0.05, 2);
@@ -954,44 +1057,60 @@ function vehicleMaterial(nit) {
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uNit = nit; sh.uniforms.uTimeV = m.userData.uTime || (m.userData.uTime = { value: 0 });
     sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>
-attribute float part; attribute vec4 iState; varying float vPart; varying vec4 vState; varying vec3 vPaint;`)
+attribute float part; attribute vec4 iState; varying float vPart; varying vec4 vState; varying vec3 vPaint; varying vec3 vLoc;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-vPart = part; vState = iState;
+vPart = part; vState = iState; vLoc = position;
 #ifdef USE_INSTANCING_COLOR
 vPaint = instanceColor;
 #else
 vPaint = vec3(0.8);
 #endif`);
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
-uniform float uNit; uniform float uTimeV; varying float vPart; varying vec4 vState; varying vec3 vPaint;`)
+uniform float uNit; uniform float uTimeV; varying float vPart; varying vec4 vState; varying vec3 vPaint; varying vec3 vLoc;
+float vh21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 float pt = floor(vPart + 0.5);
-vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.015, 0.017, 0.02) : pt < 2.5 ? vec3(0.025) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.05) : pt < 6.5 ? vec3(0.1) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : vec3(0.55, 0.12, 0.08);
+vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.015, 0.017, 0.02) : pt < 2.5 ? vec3(0.025) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.012, 0.014, 0.016) : pt < 6.5 ? vec3(0.02) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : vec3(0.55, 0.12, 0.08);
 diffuseColor.rgb = alb;`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-roughnessFactor = pt < 0.5 ? 0.32 : pt < 1.5 ? 0.06 : 0.6;`)
+roughnessFactor = pt < 0.5 ? 0.32 : (pt < 1.5 || (pt > 4.5 && pt < 5.5)) ? 0.06 : 0.6;`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-// nits: low beam lens ~ 40k (seen off-axis ~ 3k), tail 250, brake 1500, hazard 600, bus interior 120, LED sign 400, taxi lamp 300
+// nits (binding table, PLAN-P2): lamps are point sources (low-beam core ~3k off-axis, tail 250, brake 1500, hazard 600);
+// bodies are not emissive; the bus interior is 20-40 nits seen through dark glass, broken by window posts, seat backs
+// and standing passengers; the destination LED is amber dot-matrix text (250-nit dots, ~30 % lit, so never a plate);
+// the taxi roof lamp is a light box (180)
 float blink = step(0.5, fract(uTimeV * 1.5 + vState.w));
 vec3 e = vec3(0.0);
 if (pt > 2.5 && pt < 3.5) e = vec3(1.0, 0.97, 0.92) * 3000.0 * vState.z;
 else if (pt > 3.5 && pt < 4.5) e = vec3(1.0, 0.04, 0.02) * (250.0 + 1250.0 * vState.x) * vState.z;
-else if (pt > 4.5 && pt < 5.5) e = vec3(0.92, 0.97, 1.0) * 120.0;
-else if (pt > 5.5 && pt < 6.5) e = vec3(1.0, 0.55, 0.12) * 400.0;
+else if (pt > 4.5 && pt < 5.5) {
+  float zc = vLoc.z / 1.18, post = smoothstep(0.0, 0.06, abs(fract(zc) - 0.5) - 0.42);
+  float seat = mix(0.35, 1.0, smoothstep(1.55, 1.75, vLoc.y));
+  float cell = floor(zc), pax = step(0.62, vh21(vec2(cell, floor(vState.w * 97.0))));
+  float body = 1.0 - pax * smoothstep(0.17, 0.12, abs(fract(zc) - 0.5)) * smoothstep(1.2, 1.4, vLoc.y) * (1.0 - smoothstep(2.3, 2.45, vLoc.y));
+  e = vec3(0.95, 0.97, 1.0) * 32.0 * (1.0 - post) * seat * body;
+}
+else if (pt > 5.5 && pt < 6.5) {
+  vec2 dot = vec2(vLoc.x * 55.0, vLoc.y * 55.0), cel = floor(dot);
+  float lit = step(0.7, vh21(vec2(floor(cel.x / 5.0), cel.y))) * step(length(fract(dot) - 0.5), 0.38);
+  e = (vState.w > -1.0 && abs(vLoc.z) > 1.0) ? vec3(1.0, 0.55, 0.12) * 250.0 * lit : vec3(1.0, 0.82, 0.55) * 180.0;
+}
 else if (pt > 6.5 && pt < 7.5) e = vec3(1.0, 0.45, 0.03) * 600.0 * vState.y * blink;
 totalEmissiveRadiance += e * uNit;`);
   };
   return m;
 }
 
-// headlight pool on the asphalt: additive quad ahead of each vehicle, elongated falloff
+// headlight pool on the asphalt: additive quad ahead of each vehicle, elongated falloff. Peak 0.6 nit: low beams lift
+// lamp-lit asphalt (~1 nit at 20 lux, albedo 0.12) by at most ~1.5x (life #6; P1 drew 18-nit white wedges). ctx.pools = false
+// drops them (for a light model that lights the road from the vehicle emitters itself).
 function poolMaterial(nit) {
   return new THREE.ShaderMaterial({
     uniforms: { uNit: nit },
     vertexShader: `attribute vec4 iPool; varying vec2 vUv; varying float vI; void main(){ vUv = uv; vI = iPool.w; vec3 p = position; float c = cos(iPool.z), s = sin(iPool.z);
       vec3 w = vec3(c * p.x + s * p.z, 0.0, -s * p.x + c * p.z) + vec3(iPool.x, 0.03, iPool.y); gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0); }`,
     fragmentShader: `uniform float uNit; varying vec2 vUv; varying float vI; void main(){ vec2 q = vUv * 2.0 - 1.0; float r = length(vec2(q.x * 1.0, q.y));
-      float f = smoothstep(1.0, 0.0, r) * smoothstep(-1.0, -0.6, q.y); f *= f; gl_FragColor = vec4(vec3(1.0, 0.95, 0.85) * f * vI * 18.0 * uNit, 1.0); }`,
+      float f = smoothstep(1.0, 0.0, r) * smoothstep(-1.0, -0.6, q.y); f *= f; gl_FragColor = vec4(vec3(1.0, 0.95, 0.85) * f * vI * 0.6 * uNit, 1.0); }`,
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
   });
 }
@@ -1115,7 +1234,7 @@ export function build(layout, ctx = {}) {
   { const p = poolG.attributes.position; for (let i = 0; i < p.count; i++) { p.setX(i, p.getX(i) * 3.4); p.setZ(i, (p.getZ(i) + 0.5) * 14); } }
   const poolA = new THREE.InstancedBufferAttribute(new Float32Array(traffic.vehicles.length * 4), 4); poolA.setUsage(THREE.DynamicDrawUsage);
   poolG.setAttribute('iPool', poolA); poolG.instanceCount = 0;
-  const pools = new THREE.Mesh(poolG, poolMaterial(nit)); pools.frustumCulled = false; pools.name = 'headlight-pools'; pools.renderOrder = 2; group.add(pools);
+  const pools = new THREE.Mesh(poolG, poolMaterial(nit)); pools.frustumCulled = false; pools.name = 'headlight-pools'; pools.renderOrder = 2; pools.visible = ctx.pools !== false; group.add(pools);
 
   // ---- L3 emitters: one front cluster + one rear cluster per vehicle (mutated in place every update)
   const emitters = [];

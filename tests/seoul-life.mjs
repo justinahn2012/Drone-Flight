@@ -26,6 +26,25 @@ ok(bad === 0 && onRoad > 0, `crossers mid-road only off green (${onRoad} samples
 // moving + stopping
 const mv = a.traffic.vehicles.filter((v) => v.v > 3).length, st = a.traffic.vehicles.filter((v) => v.v < 0.3 && !v.hidden).length;
 ok(mv > 5 && st > 0, `traffic flows and queues (moving ${mv}, stopped ${st})`);
+// liveness (life #2): P1 deadlocked (82 % of road vehicles stopped at 90 s, 100 % at 300 s). At 300 s fewer than 10 %
+// may have been stopped for more than 45 s (longer than any red), and the taxi/bus dwells must actually happen.
+{
+  const L = new LifeSim(layout, { seed: 7 }), T = L.traffic, still = new Map(), ev = {};
+  for (let t = 1; t <= 300; t++) {
+    while (T.n < t * 60) { T.step(); for (const e of T.events) ev[e.type] = (ev[e.type] || 0) + 1; }
+    for (const v of T.vehicles) { if (v.hidden || v.lane.shared) { still.set(v.id, 0); continue; } still.set(v.id, v.v < 0.3 ? (still.get(v.id) || 0) + 1 : 0); }
+  }
+  const road = T.vehicles.filter((v) => !v.hidden && !v.lane.shared), s45 = road.filter((v) => still.get(v.id) > 45).length;
+  ok(s45 < 0.1 * road.length, `liveness at 300 s: ${s45}/${road.length} road vehicles stopped > 45 s (< 10 %)`);
+  ok((ev.kneel || 0) >= 5, `buses kneel at stops (${ev.kneel || 0} in 300 s: the hiss has something to play)`);
+  ok((ev.unstick || 0) <= 12, `watchdog rarely needed (${ev.unstick || 0} unsticks in 300 s)`);
+  const ty = {}; for (const v of T.vehicles) if (!v.hidden) ty[v.type] = (ty[v.type] || 0) + 1;
+  ok(ty.scooter >= 20 && ty.scooter <= 60, `about 40 scooters (${ty.scooter}), P1 had 161`);
+  ok(ty.taxi / (ty.taxi + ty.car) > 0.33, `taxis ~45 % of cars (${(ty.taxi / (ty.taxi + ty.car)).toFixed(2)})`);
+  const E = [...T.entries.road, ...T.entries.shared];
+  ok(T.entries.road.every((l) => l.start && l.start.boundary), `road traffic re-enters only at map-edge lanes (${T.entries.road.length})`);
+  void E;
+}
 // hit test
 const v0 = a.traffic.vehicles.find((v) => !v.hidden && v.type !== 'scooter'), B = a.boxesAt(90); const bx = B.find((q) => q.id === v0.id);
 ok(!!a.hit([bx.c[0], bx.c[1] + bx.half[1] + 0.1, bx.c[2]], 0.2, 90), 'sphere on a roof hits'); ok(!a.hit([bx.c[0], 40, bx.c[2]], 0.2, 90), 'sphere high above misses');
