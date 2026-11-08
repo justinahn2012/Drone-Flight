@@ -1102,9 +1102,9 @@ function showSummary(kind, e) {
   const lines = Array.isArray(st.lines) ? st.lines.map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean) : null;
   sum.kind = kind; sum.data = e || null;
   const T = $('bTitle'); T.className = kind; T.innerHTML = kind === 'cut' ? 'CUT<em>.</em>' : 'CRASHED';
-  const lost = kind === 'crash' && e?.lost > 0 ? ` · chain lost −${fmtN(e.lost)}` : '';   // the CHAIN LOST warning hides under the card
+  const lost = kind === 'crash' && e?.lost > 0 ? `Chain lost −${fmtN(e.lost)}` : 'Take over';   // the CHAIN LOST warning hides under the card
   const cutHow = e?.how === 'land' ? 'Landed · that\'s a take' : 'That\'s a take';   // C: cut.how 'hover' | 'land'
-  $('bSub').textContent = kind === 'cut' ? `${cutHow} · touch a stick for a new one` : isTake ? `Take over${lost} · touch a stick to retry` : 'Touch a stick to fly on';
+  $('bSub').textContent = kind === 'cut' ? `${cutHow} · touch a stick for a new one` : isTake ? `${lost} · touch a stick to retry` : 'Touch a stick to fly on';
   const row = (k, val) => `<span>${k}</span><b>${val}</b>`;
   $('bStats').innerHTML = row('MAX SPEED', `${Math.round(maxSp * 3.6)} KM/H`) + row('FLY TIME', fmt(time)) +
     row('SCORE', fmtN(total)) + row('BEST', newBest ? `<em>NEW</em> ${fmtN(best)}` : fmtN(best)) +
