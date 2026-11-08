@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Seoul site viewer (S1 dev)</title><style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/","three-mesh-bvh":"https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.1/build/index.module.js"}}</script>
+</head><body><script type="module">
+// Dev viewer for world-seoul.js without main.js: ?cam=x,y,z,yawDeg,pitchDeg&ev=stops&layout=provisional
+import * as THREE from 'three';
+import { buildSeoul } from '../../world-seoul.js';
+const q = new URLSearchParams(location.search);
+const W = +(q.get('w') || 960), H = +(q.get('h') || 540);
+const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setSize(W, H); document.body.appendChild(renderer.domElement);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = Math.pow(2, +(q.get('ev') || 0)) * 40;
+const cam = new THREE.PerspectiveCamera(+(q.get('fov') || 75), W / H, 0.05, 3000);
+const layout = q.get('layout') === 'provisional' ? await (await fetch('../layout.provisional.json')).json() : undefined;
+const world = await buildSeoul(renderer, { layout });
+window.world = world;
+if (q.get('day')) { world.scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x806850, 0.5)); const d = new THREE.DirectionalLight(0xffffff, 0.6); d.position.set(80, 120, 40); world.scene.add(d); }
+const setCam = (s) => { const [x, y, z, yaw, pitch] = s.split(',').map(Number); cam.position.set(x, y, z); cam.rotation.set(0, 0, 0, 'YXZ'); cam.rotation.y = yaw * Math.PI / 180; cam.rotation.x = (pitch || 0) * Math.PI / 180; };
+window.shot = (s, ev = 0) => { renderer.toneMappingExposure = Math.pow(2, ev + +(q.get('ev') || 0)) * 40; setCam(s); world.update(cam.position, 1 / 60); renderer.render(world.scene, cam); return renderer.domElement.toDataURL('image/jpeg', 0.85); };
+setCam(q.get('cam') || `${world.spawn.x},${world.spawn.y},${world.spawn.z},${world.yaw * 180 / Math.PI},-5`);
+renderer.render(world.scene, cam);
+window.ready = true;
+</script></body></html>
