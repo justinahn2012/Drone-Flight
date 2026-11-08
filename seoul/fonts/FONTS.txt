@@ -1,0 +1,11 @@
+Seoul sign faces (S2). All SIL Open Font License 1.1 (OFL.txt). Subset to the glyphs seoul-signs.js draws by
+tools/seoul-fonts.py from the Google Fonts repository (github.com/google/fonts/tree/main/ofl).
+  BlackHanSans.woff2      Black Han Sans      (c) 2017 The Black Han Sans Project Authors (Zess Type)
+  DoHyeon.woff2           Do Hyeon            (c) 2018 Woowahan Brothers
+  Jua.woff2               Jua                 (c) 2018 Woowahan Brothers
+  NanumBrushScript.woff2  Nanum Brush Script  (c) 2010 NAVER Corporation
+  NanumPenScript.woff2    Nanum Pen Script    (c) 2010 NAVER Corporation
+  GothicA1Black.woff2     Gothic A1 Black     (c) 2018 HanYang I&C Co.
+  NotoSerifKR900.woff2    Noto Serif KR 900   (c) 2017-2022 Adobe / Google (static instance of the variable font)
+  NotoSansKR800.woff2     Noto Sans KR 800    (c) 2014-2021 Adobe / Google (static instance of the variable font)
+Reserved Font Names are not used: the subsets keep the original family metadata and are loaded under "S2 *" aliases.

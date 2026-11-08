@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Seoul Signs Preview</title>
+<style>
+  :root { --bg: #050508; --fg: #e8e8f0; --dim: #8a8aa0; --panel: rgba(10,10,16,0.82); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 12px/1.4 system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #ui { position: fixed; top: 8px; left: 8px; background: var(--panel); padding: 8px 10px; border-radius: 6px; max-width: min(320px, calc(100vw - 32px)); }
+  #ui.hide { display: none; }
+  #ui label { display: grid; grid-template-columns: 64px 1fr 40px; gap: 6px; align-items: center; margin: 3px 0; }
+  #ui select, #ui button { background: #1a1a24; color: var(--fg); border: 1px solid #333; border-radius: 4px; padding: 2px 6px; }
+  #stats { color: var(--dim); white-space: pre-wrap; margin-top: 6px; font-size: 11px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="ui">
+  <b>S2 signs &amp; screens</b> <button id="hide">hide</button>
+  <label>cam <select id="cam"></select><span></span></label>
+  <label>push <input id="push" type="range" min="-0.05" max="1" step="0.05"><span id="pushv"></span></label>
+  <label>exposure <input id="exp" type="range" min="-4" max="2" step="0.1"><span id="expv"></span></label>
+  <label>moire <input id="moire" type="range" min="0" max="1" step="0.05"><span id="moirev"></span></label>
+  <label>bloom <input id="bloom" type="range" min="0" max="1.5" step="0.05"><span id="bloomv"></span></label>
+  <div id="stats"></div>
+</div>
+<script type="module">
+// Standalone harness for seoul-signs.js: crude massing from the layout, wet-ish ground, a few forward lights from the
+// emitter table (screens as rect lights) so spill is visible. Not the game renderer: S3 owns lighting and the camera.
+// URL: ?cam=walk|main|screen-near|screen-mid|alley|high|blade  &push=0..1 (omit = per-street)  &exp=EV  &t=seconds
+//      &moire=0..1 &bloom=0..1.5 &pause=1 &ui=0 &layout=path
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
+import { seoulSigns, loadFonts } from './seoul-signs.js';
+
+const Q = new URLSearchParams(location.search);
+const num = (k, d) => (Q.has(k) && Q.get(k) !== '' ? +Q.get(k) : d);
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+RectAreaLightUniformsLib.init();
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0.006, 0.006, 0.012);
+scene.fog = new THREE.FogExp2(0x0a0812, 0.006);
+const camera = new THREE.PerspectiveCamera(Number(num('fov', 75)), innerWidth / innerHeight, 0.05, 900);
+const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true;
+
+async function loadLayout() {
+  for (const p of [Q.get('layout'), './seoul/layout.json', './seoul/layout.provisional.json'].filter(Boolean)) {
+    try { const r = await fetch(p); if (r.ok) return { layout: await r.json(), path: p }; } catch (e) { /* next */ }
+  }
+  throw new Error('no layout');
+}
+const { layout, path } = await loadLayout();
+
+// --- massing: extruded footprints (dark concrete), roads, sidewalks ---
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.32, metalness: 0.0 }));
+ground.rotation.x = -Math.PI / 2; scene.add(ground);
+const bmat = new THREE.MeshStandardMaterial({ color: 0x3a3836, roughness: 0.92 });
+for (const lot of layout.lots) {
+  const sh = new THREE.Shape(lot.footprint.map(([x, z]) => new THREE.Vector2(x, -z)));
+  const g = new THREE.ExtrudeGeometry(sh, { depth: lot.floors * (lot.floorH || 3.2), bevelEnabled: false });
+  g.rotateX(-Math.PI / 2); const m = new THREE.Mesh(g, bmat); scene.add(m);
+}
+const roadMat = new THREE.MeshStandardMaterial({ color: 0x0c0c0d, roughness: 0.22 });
+for (const s of layout.streets) {
+  for (let i = 0; i + 1 < s.points.length; i++) {
+    const [a, b] = [s.points[i], s.points[i + 1]]; const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(L, s.width), roadMat); m.rotation.x = -Math.PI / 2;
+    m.rotation.z = -Math.atan2(b[1] - a[1], b[0] - a[0]); m.position.set((a[0] + b[0]) / 2, 0.01, (a[1] + b[1]) / 2); scene.add(m);
+  }
+}
+scene.add(new THREE.HemisphereLight(0x30344a, 0x0a0806, num('amb', 3)));
+
+// --- signs ---
+let signs = null; const lights = new THREE.Group(); scene.add(lights);
+function rebuild() {
+  if (signs) { scene.remove(signs.group); signs.dispose(); }
+  lights.clear();
+  const push = num('push', -1);
+  signs = seoulSigns.build(layout, { seed: num('seed', 1), neonPush: push >= 0 ? push : undefined, moire: num('moire', 0.6), fontBase: './seoul/fonts/',
+    onFonts: () => draw() });
+  scene.add(signs.group);
+  // harness-only spill: screens as rect lights, the brightest static signs as point lights (S3 does this properly)
+  for (const e of signs.emitters.filter((e) => e.kind === 'screen' && e.w > 3)) {
+    const l = new THREE.RectAreaLight(0xffffff, 0, e.w, e.h); l.position.set(...e.pos); l.lookAt(e.pos[0] + e.normal[0], e.pos[1], e.pos[2] + e.normal[2]);
+    l.userData.em = e; lights.add(l);
+  }
+  const stat = signs.emitters.filter((e) => !e.animated).map((e) => ({ e, flux: e.nits * e.w * e.h })).sort((a, b) => b.flux - a.flux).slice(0, num('lights', 24));
+  for (const { e } of stat) { const c = new THREE.Color(...e.rgb); const l = new THREE.PointLight(c, e.nits * e.w * e.h * 0.0008, 14, 2);
+    l.position.set(e.pos[0] + e.normal[0] * 0.6, e.pos[1], e.pos[2] + e.normal[2] * 0.6); lights.add(l); }
+  const s = signs.stats;
+  document.getElementById('stats').textContent = `layout ${path}\nsigns ${s.total}  emitters ${s.emitters}  screens ${s.screens}\nlit ${(s.litShare * 100).toFixed(0)}%  neon ${(s.neonShare * 100).toFixed(1)}%  atlas ${s.atlas}px @ ${s.pxPerM} px/m\ndraw calls ${s.drawCalls}  tris ${s.tris}  build ${s.buildMs} ms\n` +
+    Object.entries(s.colourShare).map(([k, v]) => `${k} ${(v * 100).toFixed(0)}%`).join('  ');
+  window.__signs = signs;
+}
+
+// --- post ---
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType }));
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), num('bloom', 0.2), 0.35, 2.5); composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// --- cameras: [pos, target] ---
+const scr = (id) => layout.screens.find((s) => s.id === id) || layout.screens[0];
+const s0 = scr('S0');
+const CAMS = {
+  walk: [[-70, 3.2, 3.5], [-40, 6, -5]], walk2: [[-10, 5, -1], [-40, 7, -6]], main: [[-125, 9, 80], [-80, 16, 57]],
+  'screen-near': [[s0.pos[0] + 1.2, s0.pos[1] - 0.6, s0.pos[2] + 2.2], [s0.pos[0] - 0.5, s0.pos[1] - 0.3, s0.pos[2]]],
+  'screen-mid': [[s0.pos[0] + 6, s0.pos[1] - 2, s0.pos[2] + 22], [s0.pos[0], s0.pos[1], s0.pos[2]]],
+  alley: [[40, 3, 52], [40, 8, 20]], blade: [[-24, 7, 4], [-40, 9, -5]], high: [[0, 70, 130], [0, 5, 20]],
+};
+const camSel = document.getElementById('cam');
+for (const k of Object.keys(CAMS)) camSel.add(new Option(k, k));
+function setCam(k) { const [p, t] = CAMS[k] || CAMS.walk; camera.position.set(...p); controls.target.set(...t); controls.update(); camSel.value = k; }
+setCam(Q.get('cam') || 'walk'); camSel.onchange = () => setCam(camSel.value);
+
+const bind = (id, v, f) => { const el = document.getElementById(id), out = document.getElementById(id + 'v'); el.value = v; out.textContent = v;
+  el.oninput = () => { out.textContent = el.value; f(+el.value); }; };
+let ev = num('exp', -2.5); renderer.toneMappingExposure = Math.pow(2, ev);
+bind('exp', ev, (v) => { renderer.toneMappingExposure = Math.pow(2, v); });
+bind('moire', num('moire', 0.6), (v) => signs.setMoire(v));
+bind('bloom', num('bloom', 0.2), (v) => { bloom.strength = v; });
+bind('push', num('push', -0.05), (v) => { Q.set('push', v < 0 ? '' : v); rebuild(); });
+document.getElementById('hide').onclick = () => document.getElementById('ui').classList.add('hide');
+if (Q.get('ui') === '0') document.getElementById('ui').classList.add('hide');
+
+await loadFonts('./seoul/fonts/');
+rebuild();
+const t0 = performance.now(); const tFixed = Q.has('t') ? +Q.get('t') : null;
+function draw() {
+  const t = tFixed ?? (performance.now() - t0) / 1000;
+  signs.update(t, camera.position);
+  for (const l of lights.children) { const e = l.userData.em; if (!e) continue;
+    l.color.setRGB(e.rgb[0], e.rgb[1], e.rgb[2]); l.intensity = e.nits * 0.004; }
+  composer.render();
+}
+function loop() { controls.update(); draw(); if (Q.get('pause') !== '1') requestAnimationFrame(loop); }
+loop();
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); });
+window.__ready = true;
+</script>
+</body>
+</html>
