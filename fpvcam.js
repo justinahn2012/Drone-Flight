@@ -138,6 +138,10 @@ uniform float uMaxS;
 uniform float uLodMax;    // 0 on frames whose mip chain wasn't rebuilt
 uniform float uRecon;     // 1: reconstruction filter at silhouettes
 uniform float uTile;      // render px per tile
+#ifdef NIGHT
+uniform sampler2D tVel;   // [P2-A] FPV #6: movers' own motion over the exposure (rg: uv displacement, b: view depth, a: coverage), depth res
+uniform float uVelOn;
+#endif
 
 vec3 tap(vec2 uv, float lod){
   vec2 h = 0.5 * exp2(lod) / uVp;     // keep the mip footprint inside the live viewport
@@ -158,6 +162,15 @@ void main(){
   vec2 a = warp(P, tauRow - 0.5 * uExp, J);
   vec2 b = warp(P, tauRow + 0.5 * uExp, J);
   if (a.x < -5.0 || b.x < -5.0) { fragColor = vec4(tap(vUv, 0.0), 1.0); return; }
+#ifdef NIGHT
+  // [P2-A] object motion blur: on a mover's swept footprint (its geometry extruded along its velocity) in front of the static
+  // surface, the smear is the camera's path plus the mover's own displacement (max of camera and object motion, combined)
+  vec2 vo = vec2(0.0);
+  if (uVelOn > 0.5) {
+    vec4 vv = texelFetch(tVel, clamp(ivec2(vUv * uDVp), ivec2(0), ivec2(uDVp) - 1), 0);
+    if (vv.a > 0.5 && vv.b < zX * 1.03) { vo = vv.rg; a -= 0.5 * vo; b += 0.5 * vo; }
+  }
+#endif
   float lenPx = length((b - a) * uVp);
   float n = clamp(ceil(lenPx / 1.6), 1.0, uMaxS);
   float lod = clamp(log2(max(lenPx / n, 1.0) / 1.25), 0.0, uLodMax);   // prefilter: tap footprint ~ sample spacing
@@ -169,6 +182,9 @@ void main(){
     if (float(i) >= n) break;
     float fi = (n > 1.0) ? (float(i) + j) / n - 0.5 : 0.0;   // box shutter, jittered
     float ze; vec2 s = warpz(P, tauRow + fi * uExp, J, ze);
+#ifdef NIGHT
+    if (s.x > -5.0) s += vo * fi;
+#endif
     float w = 1.0;
     if (s.x < -5.0) s = vUv;
     else if (uRecon > 0.5 && n > 1.0) w = 1.0 - nearer(ze, zAt(s));
@@ -824,11 +840,11 @@ export const GRADES = {
   //   units above which a tap is an area source, its weight], aeMatrix [centre v, falloff].
   night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.0, lift: 0.02, clipEv: 6.5, con: 1.2, toe: 0.045,
     tone: [1.085, 0.91, 0.219], tonePc: 0.6, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
-    bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 2.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
+    bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     ghosts: [[-0.55, 0.004, [0.9, 1.0, 0.8]], [-1.25, 0.0025, [1.0, 0.85, 1.0]], [0.4, 0.002, [1.0, 0.95, 0.8]]],
     core: 1, coreXtalk: 0.15, coreEv: [0, 2], mag: 0.035, magC: 0.04, grain: 0, grainEv: [0, 0], grainPx: 2,
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
-    codec: [0.5, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], meterLens: 1, sharpen: 0.22, sharpPx: 2,
+    codec: [0.5, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
     recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,
     saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.01, aeArea: [0.8, 0.5], aeMatrix: [0.45, 0.5],
     shutter: 1 / 60, readout: 0.011 },
@@ -1067,6 +1083,29 @@ export class FPVCamera {
         uLockEv: { value: 0 }, uEvMin: { value: -4.5 }, uEvMax: { value: 1.5 }, uClipL: { value: 1 }, uAe: { value: new THREE.Vector4(0.25, 0.8, 0.7, 0.15) }, uReject: { value: 0.02 },
         uVeilL: { value: 1 }, uArea: { value: new V2(1e9, 1) }, uMat: { value: new V2(0.45, 1.6) } }),
       copy: bl(), haloH: bl(), haloV: bl(), noise: noiseTexture(), noiseOff: [0, 0, 0, 0], noiseOffC: [0, 0, 0, 0],
+      // [P2-A] FPV #6 object motion blur: the night blur variant + a half-res velocity pass of the movers (contract P2-A1)
+      blur: pass(BLUR_FS, { ...this.blur.u, tVel: { value: null }, uVelOn: { value: 0 } }, D),
+      velRT: null, velScene: new THREE.Scene(), proxies: new Map(), velMat: new THREE.ShaderMaterial({
+        uniforms: { uHalfExp: { value: 1 / 120 } },
+        vertexShader: /* glsl */`attribute vec3 instanceVelocity;
+uniform float uHalfExp;
+varying vec3 vV;
+void main(){
+  mat4 m = modelMatrix;
+#ifdef USE_INSTANCING
+  m = m * instanceMatrix;
+#endif
+  vec4 wp = m * vec4(position, 1.0);
+  vec3 v = instanceVelocity, wn = normalize(mat3(m) * normal);
+  vec4 c0 = projectionMatrix * viewMatrix * vec4(wp.xyz - v * uHalfExp, 1.0), c1 = projectionMatrix * viewMatrix * vec4(wp.xyz + v * uHalfExp, 1.0);
+  vec2 d = (c0.w > 0.02 && c1.w > 0.02) ? 0.5 * (c1.xy / c1.w - c0.xy / c0.w) : vec2(0.0);
+  vec4 mv = viewMatrix * wp;
+  vV = vec3(d, -mv.z);
+  gl_Position = projectionMatrix * (viewMatrix * vec4(wp.xyz + v * uHalfExp * (dot(wn, v) >= 0.0 ? 1.0 : -1.0), 1.0));   // swept footprint
+}`,
+        fragmentShader: /* glsl */`varying vec3 vV;
+void main(){ gl_FragColor = vec4(vV, 1.0); }`,
+      }),
       exp: [rt(1, 1, { filter: THREE.NearestFilter, type: THREE.HalfFloatType }), rt(1, 1, { filter: THREE.NearestFilter, type: THREE.HalfFloatType })], idx: 0,
       haloA: null, haloB: null,
     };
@@ -1178,7 +1217,7 @@ export class FPVCamera {
     const prev = r.getRenderTarget();
     try {
       for (const p of [this.blur, this.tile, this.nbr, this.ssao, this.aoBlur, this.down, this.meter, this.bloomH, this.final]) r.compile(p.scene, this.quadCam);
-      if (this.look.night) { const N = this._initNight(); for (const p of [N.down, N.final, N.meter]) r.compile(p.scene, this.quadCam); }
+      if (this.look.night) { const N = this._initNight(); for (const p of [N.down, N.final, N.meter, N.blur]) r.compile(p.scene, this.quadCam); }
       if (!this._warmScene) {
         this._warmScene = new THREE.Scene();
         for (const m of [this.depthMat, this.sentinel.material, this.lensMask.material]) { const o = new THREE.Mesh(TRI, m); o.frustumCulled = false; this._warmScene.add(o); }
@@ -1250,6 +1289,36 @@ export class FPVCamera {
       const al = this.allocScale || this.maxScale;
       if (this.scale > al * 0.999 && al < this.maxScale) { this.scale = al; this._realloc = this.capT > 0 ? Math.min(this.maxScale, this.ceilLock) : this.maxScale; }
     }
+  }
+
+  // [P2-A] contract P2-A1 (object motion blur): the world lists its movers as InstancedMeshes in world.motionMeshes (or
+  // scene.userData.motionMeshes); each geometry carries an `instanceVelocity` InstancedBufferAttribute (itemSize 3, world m/s, same
+  // instance order as instanceMatrix, flagged needsUpdate with it). We draw proxies that share their geometry and instanceMatrix with
+  // a velocity material into a half-res target; the night blur adds each mover's own smear. Absent: no object blur, no cost.
+  _velocityPass(world, NP, dw, dh, shutter) {
+    const list = world.motionMeshes ?? world.scene?.userData?.motionMeshes;
+    if (!Array.isArray(list) || !list.length) { if (NP.proxies.size) { for (const p of NP.proxies.values()) NP.velScene.remove(p); NP.proxies.clear(); } return false; }
+    const r = this.r, seen = new Set(); let any = false;
+    for (const src of list) {
+      if (!src?.isInstancedMesh || !src.geometry?.attributes?.instanceVelocity) continue;
+      let vis = true; for (let o = src; o; o = o.parent) if (!o.visible) { vis = false; break; }
+      let p = NP.proxies.get(src);
+      if (!p) { p = new THREE.InstancedMesh(src.geometry, NP.velMat, 1); p.matrixAutoUpdate = false; p.frustumCulled = false; NP.proxies.set(src, p); NP.velScene.add(p); }
+      p.geometry = src.geometry; p.instanceMatrix = src.instanceMatrix; p.count = src.count; p.matrix.copy(src.matrixWorld); p.matrixWorldNeedsUpdate = true;
+      p.visible = vis && src.count > 0; any ||= p.visible; seen.add(src);
+    }
+    for (const [s, p] of NP.proxies) if (!seen.has(s)) { NP.velScene.remove(p); NP.proxies.delete(s); }
+    if (!any) return false;
+    if (!NP.velRT || NP.velRT.width !== this.depthRT.width || NP.velRT.height !== this.depthRT.height) {
+      NP.velRT?.dispose(); NP.velRT = rt(this.depthRT.width, this.depthRT.height, { filter: THREE.NearestFilter, type: THREE.HalfFloatType, depth: true });
+    }
+    NP.velMat.uniforms.uHalfExp.value = 0.5 * shutter;
+    NP.velRT.viewport.set(0, 0, dw, dh);
+    r.setRenderTarget(NP.velRT); r.setClearColor(0x000000, 0); r.clear(true, true, false);
+    r.render(NP.velScene, this.cam);
+    this._discard(NP.velRT, false);
+    r.setClearColor(0x000000, 1);
+    return true;
   }
 
   // Tell a tile-based GPU these attachments are dead so it never writes them back to memory.
@@ -1329,6 +1398,9 @@ export class FPVCamera {
     if (dScene?.isScene) r.render(dScene, cam);
     this._discard(this.depthRT, false);
     r.setClearColor(0x000000, 1);              // post passes: full clears so nothing is loaded from memory
+    const NI = !!(lk.night && this.hdr), NP = NI ? this._initNight() : null;      // [S3] night programs (L5)
+    // [P2-A] FPV #6: the movers' own motion (contract P2-A1: world.motionMeshes or scene.userData.motionMeshes)
+    const velOn = NI && lk.objBlur !== 0 && lk.shutter > 0 ? this._velocityPass(world, NP, dw, dh, lk.shutter) : false;
 
     // 2) SSAO (half res) -> world.aoUniforms (contract C3): the scene samples texture(uAO, gl_FragCoord.xy * uAOScale)
     const aoU = meshWorld ? (world.aoUniforms ?? world.scene.userData?.aoUniforms) : null;
@@ -1432,11 +1504,11 @@ export class FPVCamera {
       bu.tNbr.value = this.nbrRT.texture;
     } else bu.tNbr.value = this.tileRT.texture;
     this.blurRT.viewport.set(0, 0, vw, vh);
-    r.setRenderTarget(this.blurRT); r.clear(true, false, false); r.render(this.blur.scene, this.quadCam);
+    if (NI) { NP.blur.u.tVel.value = velOn ? NP.velRT.texture : null; NP.blur.u.uVelOn.value = velOn ? 1 : 0; }
+    r.setRenderTarget(this.blurRT); r.clear(true, false, false); r.render((NI ? NP.blur : this.blur).scene, this.quadCam);
 
     // 5) downsample (metering luma + bloom bright-pass), taps mapped through the lens: the meter and the halos see the
     //    displayed frame (output space), not the rectilinear render's corners and edge margins
-    const NI = !!(lk.night && this.hdr), NP = NI ? this._initNight() : null;      // [S3] night programs (L5)
     const prevExp = NI ? NP.exp[NP.idx] : this.exp[this.expIdx], nextExp = NI ? NP.exp[1 - NP.idx] : this.exp[1 - this.expIdx];
     const H = this.hdr ? 1 : 0, LS = this.hdr ? 16 : 1, F16 = this.f16 ? 1 : 0, LM = lk.meterLens ? 1 : 0;
     const du = this.down.u;
