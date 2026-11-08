@@ -509,10 +509,20 @@ function findSpawn() {
 // take: a retry starts at once, hovering over the chimney mouth (the first line); toStart = the spawn and its reveal.
 // startName (START AT on the pause menu): go to that world.startPoints entry; take retries keep going back there until
 // the next START AT or a back-to-start. '' clears it.
-const safePts = []; let safeT = 0, startAt = null;
+const safePts = []; let safeT = 0, startAt = null, takeFrom = null;
 function trackSafe(dt, now) {
   safeT += dt; if (safeT < 1.0 || drone.crashed) return; safeT = 0;
   if (world.lastDist > 1.2 && drone.vel.length() < 30) { safePts.push({ t: now, p: drone.pos.clone(), yaw: drone.heading }); if (safePts.length > 30) safePts.shift(); }
+}
+// where a take RETRY puts you ({pos, yaw, name}; the crash card's next-line hint can measure from it): the sticky
+// START AT; else, until the player has flown any line (UX r3 #3: the first retry used to teleport a new player 52 m up
+// over the chimney with no explanation), back to where the take started; else the take start over the chimney mouth.
+function retryPose() {
+  const named = findStart(startAt); if (named) return { pos: named.pos, yaw: named.yaw, name: named.name };
+  let any = true; try { const pr = take.progress(world); any = pr.flown + pr.micro.flown > 0; } catch (e) {}
+  if (!any && takeFrom) return { pos: takeFrom.pos, yaw: takeFrom.yaw, name: null };
+  if (world.takeStart) return { pos: world.takeStart.pos, yaw: world.takeStart.yaw, name: world.startPoints?.[0]?.name ?? null };
+  return { pos: world.spawn, yaw: world.yaw, name: null };
 }
 const findStart = (name) => { const k = String(name || '').toLowerCase(); return (k && world.startPoints?.find((s) => s.name.toLowerCase() === k)) || null; };
 function respawn(toStart = false, startName = null) {
@@ -523,10 +533,12 @@ function respawn(toStart = false, startName = null) {
   if (toStart === true) startAt = null;
   const named = typeof startName === 'string' ? findStart(startName) : takeMode && !toStart ? findStart(startAt) : null;
   const sp = named || toStart || takeMode ? null : [...safePts].reverse().find((s) => now - s.t > 2.0);
+  const rp = !named && !sp && takeMode && !toStart ? retryPose() : null;
   if (named) { drone.reset(named.pos, named.yaw); flightT = 0; }
   else if (sp) drone.reset(sp.p, sp.yaw);
-  else if (takeMode && !toStart && world.takeStart) { drone.reset(world.takeStart.pos, world.takeStart.yaw); flightT = 0; }
+  else if (rp) { drone.reset(rp.pos, rp.yaw); flightT = 0; }
   else { drone.reset(world.spawn, world.yaw); flightT = 0; }
+  takeFrom = { pos: drone.pos.clone(), yaw: drone.heading };
   if (toStart || takeMode || named) safePts.length = 0;
   take.reset(); freeTake.reset();
   controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); thrRef = controls.thr;
@@ -551,12 +563,23 @@ const _cp = {};
 // proximity to anything (terrain included): flight turbulence, audio, OLED bars. Scoring uses world.skimBvh.
 // [E] measured inside the physics tick (drone.prox, Infinity when crashed or clear); mirrored here for audio/HUD
 function updateProx() { world.lastDist = world.bvh && !drone.crashed ? drone.prox : Infinity; }
-// "hands on": any centred stick deflected, or the (non-centring) throttle being moved
+// hands (decision 9, design r3 #3). The shaped stick outputs are exactly 0 inside each input's deadzone, so any output
+// is raw deflection past it. moved: a stick past its deadzone or the (non-centring) throttle being moved: starts a take.
+// steer: pitch / roll / yaw past it: blocks the touchdown CUT (holding the dive down is how you land). hands: moved,
+// or E4's controls.active (a thumb on the screen, a key held, a raw stick past the deadzone; else controls.touches): blocks
+// the hover CUT. Without either, hands = moved.
 let thrRef = 0.39, takeGame = S.game;
+const STICK_EPS = 2e-3;
+function thumbsDown() {
+  if (controls.active !== undefined) return !!controls.active;      // E4: thumb on the screen, key held or raw stick past the deadzone
+  const t = controls.touches;
+  return typeof t === 'number' ? t > 0 : t ? (t.size ?? t.length ?? 0) > 0 : false;
+}
 function sticksActive(inp, dt) {
   const d = inp.thr - thrRef; thrRef += d * Math.min(1, dt / 0.5);
-  const m = Math.max(Math.abs(inp.pitch), Math.abs(inp.roll), Math.abs(inp.yaw), S.mode === 'cine' ? Math.abs(inp.climb) : 0);
-  return m > 0.12 || (S.mode !== 'cine' && Math.abs(d) > 0.04);
+  const steer = Math.max(Math.abs(inp.pitch), Math.abs(inp.roll), Math.abs(inp.yaw)) > STICK_EPS;
+  const moved = steer || (S.mode === 'cine' ? Math.abs(inp.climb) > STICK_EPS : Math.abs(d) > 0.04);
+  return { hands: moved || thumbsDown(), moved, steer };
 }
 const takeEvent = (e) => (typeof onTakeEvent === 'function' ? onTakeEvent : (ev) => defaultTakeUI(ev, pop))(e);
 // one call per physics update (frame or tick): stream E may move it onto the fixed ticks as is
@@ -664,13 +687,17 @@ function lineLag(e) {
 }
 // recorded into the replay buffer -> burned into the clip at the line's t0 (when the move began, as in the reference)
 function caption(text, flow = 1) {
-  const c = { text, flow }, lag = lineLag(capEv); capEv = null;
+  const c = { text, flow }, lag = lineLag(capEv), dup = capEv?.clip; capEv = null;
+  if (dup === 'skip') return;                                  // C: shares its t0 with a bigger line's caption
   const F = cur.frames, n = F.length;
   if (lag < 0.02 || n < 2) { capNow = c; markNow = { t0: null }; return; }
   // walk back `lag` s of flight time (steps clamped like the sim's, so a pause doesn't count); start from the frame
   // being built now (~ one step after the last one pushed)
   let i = n - 1, acc = Math.min(0.1, F[n - 1].t - F[n - 2].t);
   while (i > 0 && acc < lag - 1e-4) { acc += Math.min(0.1, F[i].t - F[i - 1].t); i--; }
+  if (dup === 'replace') {                                     // C: same t0 as an earlier, smaller line: take its frame
+    for (let j = Math.max(0, i - 3); j <= Math.min(n - 1, i + 3); j++) if (F[j].cap) { F[j].cap = c; return; }
+  }
   while (i < n - 1 && F[i].cap) i++;                          // two lines on one frame: the next one
   if (F[i].cap) { capNow = c; markNow = { t0: null }; return; }
   F[i].cap = c; markNow = { t0: F[i].t };
