@@ -10,6 +10,7 @@ import { MotorAudio } from './audio.js';
 import { renderHQ, hqSupport } from './clipexport.js';   // F24: HQ offline clips (WebCodecs + mp4-muxer)
 import { Take, defaultTakeUI } from './take.js';
 import * as TakeLib from './take.js';
+import { lifeMovers } from './seoul-movers.js';   // [F1] movers hook (design #5): world.movers from the level's life sim
 import { GhostKeeper } from './ghost.js';   // C12 (D5): best take as a ghost, CHALLENGE files   // F1: TAKE_TUNING (cutT/bankT/stars) for the HUD, read live; a namespace import never fails on a missing name
 
 const $ = (id) => document.getElementById(id);
@@ -398,6 +399,7 @@ function clearWorld() {
   world.grassAt = null;                                                                    // [F24] C7
   try { world.audio?.detach?.(); } catch (e) {}                                             // [integ6] S4 city sound off with its level
   world.depthScene = null; world.aoUniforms = null; world.dispose = null; world.level = null; world.audio = null;   // [S0]
+  world.movers = null; world.tuning = null; world.setPieces = null;                          // [F1] movers hook
 }
 
 // [S0] the camera look of a level (contract L5). 'day' = bando's HDR look line below (unchanged); 'night' = S3's
@@ -447,7 +449,10 @@ async function loadProcWorld(def) {
   const build = mod[level.build];
   if (typeof build !== 'function') throw new Error(`${level.module} has no ${level.build}()`);
   clearWorld(); loadedId = null;
-  const scene0 = new THREE.Scene(), opts = { takeClock: () => ((inputLog?.ticks ?? 0) + physAlpha) * PHYS,   // [integ6] deterministic: sim ticks
+  // [F1] movers hook: the drawn city runs on the drone's tick clock (flight.js drone.tick, the clock world.movers is
+  // asked at, carried in snapshots), at the rendered pose's time (tick - 1 + physAlpha: the pose is lerped between the last
+  // two ticks), so the bus you see is the bus you hit; the input log restarting (10 min) no longer rewinds the city
+  const scene0 = new THREE.Scene(), opts = { takeClock: () => Math.max(0, (drone.tick ?? (inputLog?.ticks ?? 0) + 1) - 1 + physAlpha) * PHYS,   // [integ6] deterministic: sim ticks
     sky: def.sky, quality: S.quality, level: level.id, layout: level.layout, onProgress: (f, t) => setLoad(null, f, t) };
   const args = (Array.isArray(level.args) ? level.args : ['renderer', 'scene', 'opts']).map((a) => (a === 'renderer' ? renderer : a === 'scene' ? scene0 : a === 'opts' ? opts : undefined));
   const w = await build(...args);
@@ -459,6 +464,11 @@ async function loadProcWorld(def) {
   world.level = level.id; world.dispose = typeof w.dispose === 'function' ? w.dispose : null; world.audio = w.audio || null;   // [S0]
   // [integ6] S4: the level's city sound goes through the same camera-mic chain as the motors
   if (world.audio?.attach && audio.ctx) { try { world.audio.attach(audio.ctx, audio.bus); } catch (e) { console.warn('level audio', e); } }
+  // [F1] movers hook (design #5, contract P2-F1): kinematic movers checked inside Drone.step on its tick clock (buses and
+  // taxis crash, people are a SCRAPE + HEADS!), the level's take tuning (lines.json `tuning` over TAKE_TUNING) and E's set
+  // pieces (lines coded against their ids fly once they exist). Each optional; bando has none.
+  try { world.movers = w.movers || lifeMovers(w.parts?.life) || null; } catch (e) { console.warn('movers', e); world.movers = null; }
+  world.tuning = w.tuning || null; world.setPieces = w.setPieces || w.parts?.dressing?.setPieces || null;
   world.spawn.copy(w.spawn?.isVector3 ? w.spawn : w.spawn?.pos ? new THREE.Vector3(...(w.spawn.pos.toArray?.() ?? w.spawn.pos)) : new THREE.Vector3(0, 2, 0)); world.yaw = w.yaw ?? w.spawn?.yaw ?? 0;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);

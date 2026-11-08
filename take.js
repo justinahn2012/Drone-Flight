@@ -205,10 +205,11 @@ export class Take {
     return this._end('crash');
   }
 
-  // [P2-F1] world.tuning (lines.json `tuning`) merges over TAKE_TUNING; a line with `piece` (one of E's set pieces) is
-  // skipped unless world.setPieces holds that id (lines are coded against the set-piece ids before the pieces exist)
+  // [P2-F1] world.tuning (lines.json `tuning`) merges over TAKE_TUNING; a world loader that passes only lines[] still
+  // gets it from the line that carries a copy (lines.mjs stamps it on the `first` line). A line with `piece` (one of E's
+  // set pieces) is skipped unless world.setPieces holds that id (lines are coded against the ids before the pieces exist).
   _compile(world) {
-    const tun = world.tuning || null, sp = world.setPieces || null;
+    const tun = world.tuning || (Array.isArray(world.lines) && world.lines.find((l) => l && l.tuning)?.tuning) || null, sp = world.setPieces || null;
     if (this._tsrc !== tun) { this._tsrc = tun; this._T = mergeTuning(tun); }
     if (this._src === world.lines && this._psrc === sp) return;
     this._src = world.lines; this._psrc = sp;
@@ -248,7 +249,7 @@ export class Take {
     if (hit.touch) this._dirty = true;
     // [P2-F1 design #5] a pedestrian (world.movers via flight.js: drone.moverN counts contacts, moverKind says with what)
     // is a SCRAPE at any speed, captioned HEADS!; it takes the scrape cooldown so the bump isn't counted twice
-    if (hit.mover === 'pedestrian') {
+    if (hit.mover === 'pedestrian' && this._now - this._scrapeT >= this._T.scrapeCool) {
       this._dirty = true; this._scrapeT = this._now; this._scrapes++;
       const lost = Math.min(this._flow - 1, this._T.headsCost); this._flow -= lost;
       ev.push({ type: 'scrape', impact: +(+drone.moverImpact || 0).toFixed(2), flow: this._flow, lost, heads: true });
