@@ -5,11 +5,18 @@
 // LINES are invisible portals in world.lines (a segment of flight crossing a rectangle), or carves (half way round a
 // silo / the chimney, a U-turn over the hall roof). Each new line scores pts x FLOW (x1.25 if CLEAN: no contact since
 // the previous line) into an unbanked chain and adds +1 FLOW (cap x8). 5 s with no line banks the chain and FLOW drops
-// back to x1; flying within 2 m of structure (holdZone) keeps the chain alive. A crash loses whatever is unbanked; a CUT
-// banks the live chain at x1.5. An impact over 2.5 m/s that isn't a crash (SCRAPE) costs 1 FLOW. A line already flown
+// back to x1; flying within 2 m of structure (holdZone) keeps the chain alive. The bank timer and the hold only run
+// faster than 2 m/s (lining up under a hole is not idling). A crash loses whatever is unbanked; a CUT banks the live
+// chain at x1.5 x PACE (x1.5 when the last new line came at <= 45 s of take time, x1.0 at >= 90 s). An impact over
+// 2.5 m/s that isn't a crash or a floor contact (SCRAPE) costs 1 FLOW. A line already flown
 // this take is a repeat: 25 % of its pts, no FLOW, and only after some other line (no ping-pong through one gate).
 // Micro-lines (500 pts) are lines too: they fill the dead stretches of the signature line.
-// Skimming solid geometry (world.skimBvh: structures only, no grass) pays a flat <=100 pts/s while a chain is live.
+// Skimming solid geometry (world.skimBvh: structures only, no grass) pays a flat <=100 pts/s while a chain is live and
+// within 5 s of the last line (orbiting a wall farms nothing).
+// Hands (main.js sticksActive, decision 9): {hands: a thumb on the screen or any stick past its deadzone, moved: a stick
+// past its deadzone, steer: pitch/roll/yaw past it}. A take starts on `moved`; the hover CUT needs no hands, and never
+// fires down a shaft (world.funnels); the touchdown CUT needs `steer` idle (holding the dive down is landing). A plain
+// boolean still works (hands = moved = it, steer = false: the round-3 behaviour).
 // Progress (lines ever flown, best FLOW / pts per line) and the best take persist in localStorage.
 // No three.js import: plain vector maths, runs headless in node too.
 
@@ -36,7 +43,13 @@ export const TAKE_TUNING = {
   carveGap: 1.0,       // s out of a carve's zone before its sweep resets
   cooldown: 1.5,       // s before the same line can fire again
   teleport: 25,        // m in one update = a reset/teleport, not flight
-  stars: [40000, 80000, 130000],   // take total for 1 / 2 / 3 stars
+  stars: [60000, 150000, 260000],  // take total for 1 / 2 / 3 stars (design r3 #1, with PACE)
+  idleSpeed: 2.0,      // m/s: the bank timer and the hold zone only count faster than this
+  pace: [45, 90, 1.5], // PACE at CUT: x1.5 when the last new line is at <= 45 s take time, x1.0 at >= 90 s (linear)
+  skimNear: 5.0,       // s after a line during which skimming pays
+  sameT0: 0.06,        // s: two lines whose t0 agree this closely share one clip caption (the bigger one)
+  hintVert: 3.0,       // m: nextHint gives vert ('down' | 'up') instead of an arrow when the target is this close across
+  viaR: 3.0,           // m: default radius around a via point (across) inside which the hint moves on to the gate
 };
 const T = TAKE_TUNING;
 
@@ -98,6 +111,15 @@ export class Take {
   get cutFrac() { return this._cutFrac; }                 // 0..1 ring fill (1 = CUT)
   get cutKind() { return this._cutKind; }                 // 'hover' | 'land' | null
   get stars() { return starsFor(this._total); }           // of the banked total (0-3, TAKE_TUNING.stars)
+  // PACE: the multiplier a CUT now would apply to the live chain (on top of cutMult), from the take time of the last
+  // new (non-repeat) line: x1.5 up to pace[0] s, x1.0 from pace[1] s. 1 with no line yet. Rounded to 0.01.
+  get pace() {
+    let lastT = null; for (let i = this._log.length - 1; i >= 0; i--) if (!this._log[i].repeat) { lastT = this._log[i].t; break; }
+    if (lastT === null) return 1;
+    const [p0, p1, pm] = T.pace, f = Math.min(1, Math.max(0, (p1 - lastT) / (p1 - p0)));
+    return Math.round((1 + (pm - 1) * f) * 100) / 100;
+  }
+  get cutValue() { return Math.round(this._unbanked * T.cutMult * this.pace); }   // what a CUT now would bank
   get stats() {
     return { maxSpeed: this._maxSpeed, time: this._t, lines: this._log.slice(), maxFlow: this._maxFlow, stars: starsFor(this._total),
       scrapes: this._scrapes, clean: this._log.filter((l) => l.clean).length };
@@ -108,7 +130,7 @@ export class Take {
     this._hover = 0; this._land = 0; this._gndAgo = 9; this._maxSpeed = 0; this._maxFlow = 1; this._log = []; this._done = new Set(); this._lastName = null;
     this._cool = {}; this._pre = new Map(); this._preT = -99; this._last = null; this._released = false; this._skim = 0; this._skimOff = 0;
     this._now = 0; this._holding = false; this._cutIn = 0; this._cutFrac = 0; this._cutKind = null;
-    this._dirty = false; this._imp = null; this._scrapeT = -99; this._scrapes = 0; this._skimAcc = 0;
+    this._dirty = false; this._imp = null; this._scrapeT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._pace = 1;
     for (const C of this._carves || []) C.st.forEach((s) => { s.ref = null; s.acc = 0; s.out = 0; });
   }
   // the take ends the hard way (out of bounds, a reset mid-take): same as a crash
@@ -127,8 +149,10 @@ export class Take {
     this._pre = new Map();
   }
 
-  update(dt, drone, world, sticksActive) {
+  update(dt, drone, world, sticks) {
     const ev = [];
+    const H = typeof sticks === 'object' && sticks ? sticks : { hands: !!sticks, moved: !!sticks, steer: false };
+    const hands = !!(H.hands ?? H.moved), moved = !!(H.moved ?? H.hands), steer = !!H.steer;
     this._now += dt;
     if (world) this._compile(world);
     const p = drone.pos, spd = Math.hypot(drone.vel.x, drone.vel.y, drone.vel.z);
@@ -137,20 +161,20 @@ export class Take {
 
     if (this._state === 'done') {
       // after a CUT: let go, then touch a stick and a new take starts from where you are
-      if (!sticksActive) this._released = true;
-      if (!(this._released && sticksActive && !drone.crashed)) { this._last = { x: p.x, y: p.y, z: p.z }; return ev; }
+      if (!moved) this._released = true;
+      if (!(this._released && moved && !drone.crashed)) { this._last = { x: p.x, y: p.y, z: p.z }; return ev; }
       this.reset(); this._imp = drone.lastImpact ?? null;
     }
     if (this._state === 'ready') {
-      if (!sticksActive || drone.crashed) { this._last = { x: p.x, y: p.y, z: p.z }; return ev; }
+      if (!moved || drone.crashed) { this._last = { x: p.x, y: p.y, z: p.z }; return ev; }
       this._state = 'live'; this._dirty = false; ev.push({ type: 'start' });
     }
     // live (hands off, the bank timer waits: letting go settles into a CUT, which banks the chain at x1.5)
-    this._t += dt; if (sticksActive) this._idle += dt;
+    this._t += dt; if (hands && spd > T.idleSpeed) this._idle += dt;
     this._maxSpeed = Math.max(this._maxSpeed, spd);
     if (drone.crashed) { ev.push(...this._end('crash')); return ev; }
     if (hit.touch) this._dirty = true;
-    if (hit.impact > T.scrapeV && this._now - this._scrapeT >= T.scrapeCool) {
+    if (hit.impact > T.scrapeV && !hit.floor && this._now - this._scrapeT >= T.scrapeCool) {
       this._scrapeT = this._now; this._scrapes++;
       const lost = this._flow > 1 ? 1 : 0; this._flow -= lost;
       ev.push({ type: 'scrape', impact: +hit.impact.toFixed(2), flow: this._flow, lost });
@@ -166,8 +190,9 @@ export class Take {
     // No touchdown CUT down a shaft (world.funnels): a full dive lands on the chimney floor / a stairwell landing.
     const canCut = this._total + this._unbanked > 0 && this._now - this._preT >= T.cutGate;
     this._gndAgo = hit.floor ? 0 : this._gndAgo + dt;
-    this._hover = canCut && !sticksActive && spd < T.cutSpeed ? this._hover + dt : 0;
-    this._land = canCut && this._gndAgo < 0.15 && spd < T.landSpeed && !inShaft(p, world) ? this._land + dt : 0;
+    const shaft = inShaft(p, world);
+    this._hover = canCut && !hands && spd < T.cutSpeed && !shaft ? this._hover + dt : 0;
+    this._land = canCut && !steer && this._gndAgo < 0.15 && spd < T.landSpeed && !shaft ? this._land + dt : 0;
     this._cutIn = 0; this._cutFrac = 0; this._cutKind = null;
     if (this._land > 0) { this._cutIn = Math.max(0, T.landT - this._land); this._cutFrac = Math.min(1, this._land / T.landT); this._cutKind = 'land'; }
     if (this._hover >= T.cutShow && (!this._cutKind || T.cutT - this._hover < this._cutIn)) {
@@ -265,18 +290,32 @@ export class Take {
       if (this._lastName === name) return null;                     // fly something else first
       this._cool[name] = now;
       const pts = Math.round((l.pts || 0) * T.repeat * cm);
-      this._unbanked += pts; this._idle = 0; this._lastName = name;
+      this._unbanked += pts; this._idle = 0; this._lastName = name; this._lineAt = now;
+      const e = this._dedupe({ type: 'repeat', name, caption, pts, clean, micro, t0: tt0, ago, t: tt });
       this._log.push({ name, pts, t: tt, t0: tt0, flow: 1, repeat: true, clean, micro });
       rec.n++; saveProg();
-      return { type: 'repeat', name, caption, pts, clean, micro, t0: tt0, ago, t: tt };
+      return e;
     }
     this._cool[name] = now;
     const flow = this._flow, pts = Math.round((l.pts || 0) * flow * cm);
-    this._unbanked += pts; this._idle = 0; this._lastName = name; this._done.add(name);
+    this._unbanked += pts; this._idle = 0; this._lastName = name; this._done.add(name); this._lineAt = now;
     this._flow = Math.min(T.flowMax, flow + 1); this._maxFlow = Math.max(this._maxFlow, flow);
+    const e = this._dedupe({ type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt });
     this._log.push({ name, pts, t: tt, t0: tt0, flow, clean, micro });
     rec.n++; rec.flow = Math.max(rec.flow, flow); rec.pts = Math.max(rec.pts, pts); saveProg();
-    return { type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt };
+    return e;
+  }
+  // two lines that began at the same moment (CHIMNEY DIVE's pre-gate is DROP IN's gate; THREAD THE NEEDLE's is THE
+  // SMALL GAP's) would be captioned one frame apart in the clip. The later event says which caption the clip keeps:
+  // sameT0 = the earlier line's name, clip = 'replace' (this one is worth at least as much: it takes the earlier
+  // caption's frame) or 'skip' (no clip caption for this one). The live HUD shows both as they fire.
+  _dedupe(e) {
+    for (let i = this._log.length - 1; i >= 0; i--) {
+      const o = this._log[i];
+      if (o.t0 < e.t0 - 1) break;
+      if (Math.abs(o.t0 - e.t0) <= T.sameT0 && o.name !== e.name) { e.sameT0 = o.name; e.clip = e.pts >= o.pts ? 'replace' : 'skip'; break; }
+    }
+    return e;
   }
 
   // the proximity query runs at most every 1/60 s on the accumulated dt (take.update may be called per 1/240 s tick)
@@ -286,12 +325,12 @@ export class Take {
     dt = this._skimAcc; this._skimAcc = 0;
     const bvh = world?.skimBvh;
     let on = false; this._holding = false;
-    if (bvh && this._unbanked > 0 && spd > T.skimSpeed) {
+    if (bvh && this._unbanked > 0 && spd > T.idleSpeed) {
       const r = drone.c?.radius ?? 0.12, zone = drone.key === 'cinewhoop' ? 0.9 : T.skimZone, qz = Math.max(zone, T.holdZone);
       const res = bvh.closestPointToPoint(drone.pos, this._cp || (this._cp = {}), 0, qz + r);
       const gap = res && res.distance <= qz + r ? res.distance - r : Infinity;
       if (gap < T.holdZone) { this._idle = 0; this._holding = true; }
-      if (gap < zone) { const c = 1 - Math.max(0, gap) / zone; const pts = T.skimRate * c * c * dt; this._unbanked += pts; this._skim += pts; this._idle = 0; on = true; }
+      if (gap < zone && spd > T.skimSpeed && this._now - this._lineAt <= T.skimNear) { const c = 1 - Math.max(0, gap) / zone; const pts = T.skimRate * c * c * dt; this._unbanked += pts; this._skim += pts; this._idle = 0; on = true; }
     }
     this._skimOff = on ? 0 : this._skimOff + dt;
     if (!on && this._skim > 0 && this._skimOff > 0.4) { if (this._skim >= 10) ev.push({ type: 'skim', pts: Math.round(this._skim) }); this._skim = 0; }
@@ -306,11 +345,11 @@ export class Take {
       this._finish();
       ev.push({ type: 'crash', total: this.total, stats: this.stats, lost, stars: starsFor(this._total) });
     } else {
-      const pts = Math.round(this._unbanked * T.cutMult);
+      const pace = this.pace, pts = Math.round(this._unbanked * T.cutMult * pace);
       this._total += pts; this._unbanked = 0;
-      if (pts > 0) ev.push({ type: 'bank', pts, total: this.total, cut: true });
+      if (pts > 0) ev.push({ type: 'bank', pts, total: this.total, cut: true, pace });
       this._finish();
-      ev.push({ type: 'cut', total: this.total, stats: this.stats, pts, how, stars: starsFor(this._total) });
+      ev.push({ type: 'cut', total: this.total, stats: this.stats, pts, how, pace, stars: starsFor(this._total) });
     }
     return ev;
   }
@@ -333,28 +372,80 @@ export class Take {
     return { flown: main.filter((l) => l.flown).length, total: main.length, micro: { flown: mic.filter((l) => l.flown).length, total: mic.length },
       best: this.best, stars: starsFor(this.best) };
   }
-  // the nearest line never flown (else: not yet flown this take) by its first gate: {name, caption, pos:[x,y,z], dist (m),
-  // bearing (rad from the nose, + = right), elev (rad above level), fresh (never flown)} or null. Named lines only.
+  // The line to fly next and where to point: {name, caption, pos:[x,y,z] (the point to steer at), dist (m to pos),
+  // bearing (rad from the nose, + = right), elev (rad above level), fresh (never flown), vert ('down' | 'up' | null:
+  // show a down / up triangle instead of the arrow), stage ('via' | 'gate' | 'main'), inProgress} or null.
+  // Which line, in order:
+  //   1. a line in progress: its pre-gate was crossed the right way (within its `within`) -> its main gate (stage 'main')
+  //   2. on a profile that has never flown a named line, the line flagged `first` in world.lines (the one the
+  //      onboarding toast names)
+  //   3. the nearest line never flown, else the nearest not yet flown this take (route length through its via)
+  // Where: a line's first gate, or before that its `via` [{p:[x,y,z], r?, unless?:[x0,x1,y0,y1,z0,z1]}] (in order; a
+  // via is skipped once within r (default viaR) of it across, or while inside its `unless` box, from where the gate is
+  // straight ahead). vert: the target is under hintVert m away across and over 1 m above/below (in progress: also when
+  // it is steep, across < half the drop, e.g. the door at the bottom of the chimney seen from the mouth).
+  // Named lines only (micro-lines are never hinted).
   nextHint(drone, world) {
     if (world) this._compile(world);
-    const p = drone.pos, cand = (pick) => {
+    const p = drone.pos, now = this._now;
+    const eligible = (n) => (!PROG[n]?.n ? 1 : !this._done.has(n) ? 2 : 0);    // 1 fresh, 2 not this take, 0 no
+    const d3 = (c) => Math.hypot(c[0] - p.x, c[1] - p.y, c[2] - p.z);
+    // where to steer for line L's first gate G: [target, stage, route length]
+    const aim = (L, G) => {
+      for (const v of L.l.via || []) {
+        const q = v.p || v, u = v.unless;
+        if (Math.hypot(q[0] - p.x, q[2] - p.z) < (v.r ?? T.viaR)) continue;
+        if (u && p.x >= u[0] && p.x <= u[1] && p.y >= u[2] && p.y <= u[3] && p.z >= u[4] && p.z <= u[5]) continue;
+        return [q, 'via', d3(q) + Math.hypot(G.c[0] - q[0], G.c[1] - q[1], G.c[2] - q[2])];
+      }
+      return [G.c, 'gate', d3(G.c)];
+    };
+    let pick = null;
+    // 1. in progress
+    this._lines.forEach((L, li) => {
+      if (L.l.micro || !L.pre.length) return;
+      const el = eligible(L.l.name); if (!el) return;
+      L.pre.forEach((_, gi) => {
+        const r = this._pre.get(li * 8 + gi);
+        if (r && now - r.t <= (L.l.within ?? 6) && (L.l.two || r.s === 1) && (!pick || r.t > pick.t)) pick = { L, tgt: L.main.c, stage: 'main', fresh: el === 1, t: r.t, prog: true };
+      });
+    });
+    // 2. the first line of a new profile
+    if (!pick && !this._names?.some((l) => !l.micro && PROG[l.name]?.n)) {
+      const L = this._lines.find((x) => x.l.first && !x.l.micro);
+      if (L) { const G = L.pre.length ? L.pre[0] : L.main, [tgt, stage] = aim(L, G); pick = { L, tgt, stage, fresh: true }; }
+    }
+    // 3. nearest fresh, else nearest not flown this take
+    if (!pick) for (const want of [1, 2]) {
       let best = null;
       for (const L of this._lines) {
-        if (L.l.micro || !pick(L.l.name)) continue;
-        for (const G of L.pre.length ? L.pre : [L.main]) {
-          const d = Math.hypot(G.c[0] - p.x, G.c[1] - p.y, G.c[2] - p.z);
-          if (!best || d < best.d) best = { L, G, d };
-        }
+        if (L.l.micro || eligible(L.l.name) !== want) continue;
+        for (const G of L.pre.length ? L.pre : [L.main]) { const [tgt, stage, d] = aim(L, G); if (!best || d < best.d) best = { L, tgt, stage, d }; }
       }
-      return best;
-    };
-    let fresh = true, b = cand((n) => !PROG[n]?.n);
-    if (!b) { fresh = false; b = cand((n) => !this._done.has(n)); }
-    if (!b) return null;
-    const dx = b.G.c[0] - p.x, dy = b.G.c[1] - p.y, dz = b.G.c[2] - p.z;
+      if (best) { pick = { ...best, fresh: want === 1 }; break; }
+    }
+    if (!pick) return null;
+    const c = pick.tgt, dx = c[0] - p.x, dy = c[1] - p.y, dz = c[2] - p.z, hd = Math.hypot(dx, dz);
     const h = drone.heading ?? Math.atan2(-drone.vel.x, -drone.vel.z);
-    return { name: b.L.l.name, caption: b.L.l.caption || b.L.l.name, pos: b.G.c.slice(), dist: +b.d.toFixed(2),
-      bearing: -wrap(Math.atan2(-dx, -dz) - h), elev: Math.atan2(dy, Math.hypot(dx, dz)), fresh };
+    const vert = Math.abs(dy) > 1 && (hd < T.hintVert || (pick.prog && hd < 0.5 * Math.abs(dy))) ? (dy < 0 ? 'down' : 'up') : null;
+    return { name: pick.L.l.name, caption: pick.L.l.caption || pick.L.l.name, pos: c.slice(), dist: +Math.hypot(dx, dy, dz).toFixed(2),
+      bearing: -wrap(Math.atan2(-dx, -dz) - h), elev: Math.atan2(dy, hd), fresh: pick.fresh, vert, stage: pick.stage, inProgress: !!pick.prog };
+  }
+  // First-retry explanation (UX r3 #3, data for the UI): while this take is 'ready' within 3 m of a world.startPoints
+  // entry that carries hint {text, line, until}, and that line has been flown fewer than `until` times ever:
+  // {text, line, n (times flown), until, start (the start point's name)}; else null. The UI shows `text` in the take tag
+  // and on the portrait OLED instead of READY.
+  readyHint(drone, world) {
+    if (this.free || this._state !== 'ready' || !drone?.pos) return null;
+    const p = drone.pos;
+    for (const s of world?.startPoints || []) {
+      const h = s.hint, q = s.pos; if (!h || !q) continue;
+      const qx = q.x ?? q[0], qy = q.y ?? q[1], qz = q.z ?? q[2];
+      if (Math.hypot(p.x - qx, p.y - qy, p.z - qz) > 3) continue;
+      const n = PROG[h.line]?.n || 0;
+      if (n < (h.until ?? 3)) return { text: h.text, line: h.line, n, until: h.until ?? 3, start: s.name };
+    }
+    return null;
   }
 }
 
