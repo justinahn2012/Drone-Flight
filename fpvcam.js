@@ -307,7 +307,7 @@ void main(){
   float ev = decodeEv(texelFetch(tExp, ivec2(0), 0));
   vec3 e = (uHdr > 0.5 ? lin : invTone(lin, uInv)) * exp2(ev);
   // HDR: the bright pass sees the white-balanced exposure (halos take the image's WB, not the raw sky's blue)
-  if (uHdr > 0.5) e *= mix(uWB, uWBShade, smoothstep(0.6, 2.4, ev));
+  if (uHdr > 0.5) e *= mix(uWB, uWBShade, smoothstep(1.5, 3.0, ev));
   vec3 bright = max(e - vec3(uThresh), 0.0);
   fragColor = uF16 > 0.5 ? vec4(min(bright, vec3(uBloomCap)), min(L, 6.0e4))
                          : vec4(min(bright / 8.0, 1.0), sqrt(clamp(L / uLumScale, 0.0, 1.0)));
@@ -463,7 +463,9 @@ void main(){
   vec2 sp = px * uSharpPx;
   float Ln = dot(tex(sG + vec2(sp.x, 0.0)) + tex(sG - vec2(sp.x, 0.0)) + tex(sG + vec2(0.0, sp.y)) + tex(sG - vec2(0.0, sp.y)), LUMA) * 0.25;
   float Lc = dot(c, LUMA);
-  c = uHdr > 0.5 ? max(c + (Lc - Ln) * uSharp * 0.8, 0.0) : clamp(c + (Lc - Ln) * uSharp, 0.0, 1.0);
+  // [L5] HDR: as a luma ratio held to 0.6..1.6 (ui 12d): an interior exposed for concrete puts the sky through a slab
+  // hole 5+ EV over it, and the additive mask drove the 2 px ring round every hole to 0 (black-rimmed white blotches)
+  c = uHdr > 0.5 ? c * clamp(1.0 + (Lc - Ln) * uSharp * 0.8 / max(Lc, 1e-6), 0.6, 1.6) : clamp(c + (Lc - Ln) * uSharp, 0.0, 1.0);
 
   vec3 lin = uHdr > 0.5 ? c : srgb2lin(c);
   vec4 X = texelFetch(tExp, ivec2(0), 0);
@@ -471,7 +473,9 @@ void main(){
   // AE pinned hard (dark tube): the sensor has no stops left, so the camera stops crushing (lighting #2)
   float pin = smoothstep(uPinEv.x, uPinEv.y, X.a * 4.0);
   float con = mix(uCon, 1.0, pin * uPinK.y), toe = uToe * (1.0 - pin * uPinK.x);
-  vec3 wbm = mix(uWB, uWBShade, smoothstep(0.6, 2.4, ev));
+  // [L5] shade WB only for real interiors (EV 1.5..3.0, hall ~3.1): at 0.6..2.4 an outdoor shaded gap (silo gap EV ~1.4)
+  // got ~40 % of the interior's warm correction (R/B x1.13) and the sky-blue shade went neutral (colour #2)
+  vec3 wbm = mix(uWB, uWBShade, smoothstep(1.5, 3.0, ev));
   vec3 e = (uHdr > 0.5 ? lin : invTone(lin, uInv)) * exp2(ev) * wbm;
   e += texture(tBloom, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uBloom;   // halation / glare (HDR: WB'd in its bright pass)
   float vig = pow(max(cos(th), 0.0), 2.2);                                 // optical cos^n falloff
@@ -551,9 +555,12 @@ export const GRADES = {
   //   chromaPx: 4:2:0-like chroma average over +-chromaPx OUTPUT px (0 = off);
   //   mbRecon: McGuire-style reconstruction at silhouettes (TileMax/NeighborMax, soft depth compare, no depth jitter);
   //   lensMask: early-Z mask over the render area the lens never shows (inset by the frame's blur reach).
-  hdr: { wb: [1.036, 0.994, 0.956], wbShade: [1.125, 0.978, 0.845], evBias: -0.30, lift: 0, clipEv: 3.0, con: 1.3, toe: 0.012, veil: 0.05, shadowSat: 0.6,
+  // Round 5 [L5]: shadowSat 0.6 -> 0.85 (its luma window 0.01-0.16 is exactly shade: 0.6 greyed the sky-blue out of it,
+  //   silo shade R/B 0.97 vs ref 0.79); pinEv [0.5, 1.5] -> [0.8, 1.8] (lighting #1: the toe/contrast relax starts later,
+  //   rim at 3 m ~48 -> ~40 per D4; the bore walls get their level from the portal-sampled bake instead).
+  hdr: { wb: [1.036, 0.994, 0.956], wbShade: [1.125, 0.978, 0.845], evBias: -0.30, lift: 0, clipEv: 3.0, con: 1.3, toe: 0.012, veil: 0.05, shadowSat: 0.85,
     skySel: 1, greenSel: 0, skyBoost: 0.35, skyRot: -0.40, skyDark: 0.04, bloom: 0.15, bloomCap: 2, grain: 0.005, grainEv: [1, 0.15], grainPx: 2, meterLens: 1,
-    sharpen: 0.3, sharpPx: 2, recon: 0.6, chromaPx: 0.5, hlEv: null, hlFrac: 0.04, hlGain: 0.5, hlMax: 1, pinEv: [0.5, 1.5], pinToe: 1, pinCon: 1, mbRecon: 1, lensMask: 1 },
+    sharpen: 0.3, sharpPx: 2, recon: 0.6, chromaPx: 0.5, hlEv: null, hlFrac: 0.04, hlGain: 0.5, hlMax: 1, pinEv: [0.8, 1.8], pinToe: 1, pinCon: 1, mbRecon: 1, lensMask: 1 },
 };
 const TAU = Math.PI * 2;
 const JELLO_RATIO = [1, 1.077, 0.93], JELLO_AXIS = [1, 0.8, 0.5];
@@ -1177,7 +1184,7 @@ export class FPVCamera {
         meter: { grid: [9, 7], centre: [0.5, 0.45], scale: [1.6, 2.0], falloff: 1.6, logArithMix: 0.15, space: lk.meterLens ? 'output (lens-mapped)' : 'render' } },
       tone: { camCurveK: 1.25, expo: lk.expo, clipEv: ce, white: Number.isFinite(ce) ? 1 / (1 - Math.exp(-1.25 * 0.24 * lk.expo * Math.pow(2, ce))) : 1,
         toe: lk.toe, con: lk.con, conPivot: 0.24, veil: lk.veil, veilTint: [1, 0.99, 0.97], sCurve: 0.22, lift: lk.lift, invTone: lk.invTone },
-      colour: { wb: lk.wb, wbShade: lk.wbShade || lk.wb, wbShadeEv: [0.6, 2.4], saturation: lk.saturation, shadowSat: lk.shadowSat, shadowSatLuma: [0.01, 0.16],
+      colour: { wb: lk.wb, wbShade: lk.wbShade || lk.wb, wbShadeEv: [1.5, 3.0], saturation: lk.saturation, shadowSat: lk.shadowSat, shadowSatLuma: [0.01, 0.16],
         selective: { sky: lk.skySel, green: lk.greenSel, skyBoost: lk.skyBoost, skyRot: lk.skyRot, skyDark: lk.skyDark, greenRot: -0.209, greenGain: -0.15,
           skyAxis: [0.788, -0.616], skyHue: [0.80, 0.97], skyLuma: [0.35, 0.55], skyChroma: [0.09, 0.15], greenAxis: [-0.819, -0.574], greenHue: [0.70, 0.95], greenChroma: [0.02, 0.05] } },
       bloom: { amount: lk.bloom, threshold: 1.0, cap: lk.bloomCap, resolution: 1 / 8, iterations: 2, kernelWeights: [0.2270270270, 0.3162162162, 0.0702702703], kernelOffsets: [0, 1.3846153846, 3.2307692308], whiteBalanced: true, space: lk.meterLens ? 'output' : 'render' },

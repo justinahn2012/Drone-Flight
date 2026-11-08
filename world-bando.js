@@ -42,7 +42,7 @@ export const LIVE_SHADOW = { ext: 52, snapM: 8, lead: 0, back: 150 };
 // [A4] static sun shadow maps, rendered once at load (perf #1, decision 6). near: 4096^2 hardware-compare depth (16 bit)
 // fitted to the site's casters in light space, capped at +-half m (5.4 cm texels at 110); far: every caster (+-170 m);
 // ring: the treeline crowns (A2). normal/bias: receiver offset along the normal and depth bias, metres.
-export const SUN_MAPS = { near: { size: 4096, sizeLow: 2048, half: 110, normal: 0.05, bias: 0.03 }, far: { size: 2048, sizeLow: 1024, half: 170, normal: 0.15, bias: 0.08 } };
+export const SUN_MAPS = { near: { size: 4096, sizeLow: 2048, half: 110, normal: 0.05, bias: 0.03, raw: 1024 }, far: { size: 2048, sizeLow: 1024, half: 170, normal: 0.15, bias: 0.08 } };
 // [B] surfaces. CC0 Poly Haven sets at 1k; `maps` = which maps are worth downloading.
 // color = linear multiplier on the diffuse map (measured texture means, see report); w = weathering
 // [streaks, base damp, up-facing grime, moss]; wx = [streak columns per m, cylinder radius (0 = planar walls),
@@ -1814,6 +1814,9 @@ function lightUniforms() {
   return { uSunB: { value: new THREE.Vector3() }, uSkyB: { value: new THREE.Vector3() }, uFarSM: { value: null }, uFarMat: { value: new THREE.Matrix4() },
     uFarOn: { value: 0 }, uFarTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) }, uSunW: { value: new THREE.Vector3(0, 1, 0) }, uHaze: { value: 1.2 },
     uNearSM: { value: null }, uNearMat: { value: new THREE.Matrix4() }, uNearTexel: { value: new THREE.Vector2(1 / 4096, 1 / 4096) }, uSunShOn: { value: 0 },
+    // [L5] PCSS on the static near map: uNearRaw = a low-res plain depth copy (blocker search), uPcss = (depth range m,
+    // uv per m, on, 0)
+    uNearRaw: { value: null }, uPcss: { value: new THREE.Vector4(1, 0, 0, 0) },
     uHz: { value: null }, uHzI: { value: 1 }, uHzOn: { value: 0 },
     // [A1] committed lightmap (see lmLoad): indirect irradiance, aux = (openness, sun mask), log2 range, live scale
     uLM: { value: null }, uLMAux: { value: null }, uLMRange: { value: new THREE.Vector2(-12, 3) }, uLMScale: { value: new THREE.Vector3(1, 1, 1) } };
@@ -1839,7 +1842,7 @@ function aLightingPatch(sh, uniforms, mat, kind) {
   const U = uniforms?.aLight; if (!U) return;
   // [A1] lightmapped material (mat.userData.aLM, set by lmEnable with its own program key): the indirect diffuse is
   // the committed lightmap, vAO (B's weathering + specular occlusion) its aux openness, the sun mask its aux.g
-  const lm = !!(mat?.userData?.aLM && U.uLM.value), AO = uniforms.aAO, ssao = !!AO && AO_KINDS.has(kind);
+  const lm = !!(mat?.userData?.aLM && U.uLM.value), AO = uniforms.aAO, ssao = !!AO && AO_KINDS.has(kind), pcss = AO_KINDS.has(kind);   // [L5] PCSS: the kinds keyed per program
   Object.assign(sh.uniforms, U); if (AO) Object.assign(sh.uniforms, AO);
   sh.vertexShader = sh.vertexShader
     .replace('#include <common>', `#include <common>
@@ -1873,6 +1876,8 @@ centroid varying vec2 vLmUv;` : ''}`)
     .replace('#include <common>', `#include <common>
 uniform sampler2DShadow uFarSM;
 uniform sampler2DShadow uNearSM;
+uniform sampler2D uNearRaw;
+uniform vec4 uPcss;
 uniform float uFarOn;
 uniform float uSunShOn;
 uniform vec2 uFarTexel;
@@ -1896,7 +1901,8 @@ uniform vec3 uLMScale;
 centroid varying vec2 vLmUv;
 float aLmAO;
 vec4 aLmX;
-vec3 aLmIrr() { return exp2( mix( vec3( uLMRange.x ), vec3( uLMRange.y ), texture2D( uLM, vLmUv ).rgb ) ) * uLMScale; }` : ''}
+vec3 aLmIrr() { return exp2( mix( vec3( uLMRange.x ), vec3( uLMRange.y ), texture2D( uLM, vLmUv ).rgb ) ) * uLMScale; }
+vec3 aUpV() { return normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ); }` : ''}
 float aFarShadow() {
   vec3 c = vFarC.xyz;
   if ( uFarOn < 0.5 || c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0 ) return 1.0;
@@ -1906,12 +1912,36 @@ float aFarShadow() {
 }
 // [A4] static near map: 4 hardware-compare bilinear taps at +-0.5 texel (a 3x3-texel tent, ~0.1 m at 5.4 cm texels),
 // fading into the far map over the outer 3 % of the near map
-float aNearShadow() {
+float aNearShadow4() {
   vec3 c = vNearC;
   vec2 t = uNearTexel * 0.5;
   return 0.25 * ( texture( uNearSM, vec3( c.xy - t, c.z ) ) + texture( uNearSM, vec3( c.xy + vec2( t.x, - t.y ), c.z ) )
     + texture( uNearSM, vec3( c.xy + vec2( - t.x, t.y ), c.z ) ) + texture( uNearSM, vec3( c.xy + t, c.z ) ) );
 }
+${pcss ? `// [L5] lighting #4: PCSS on the static near map (built surfaces, ground, tracks, decals). Blocker search: 3x3 plain
+// depth taps over +-0.35 m of the low-res copy; none = lit (most sunlit texels stop here). Penumbra = blocker distance
+// x 0.012 (sun disc 0.0093 rad + aureole), 1.5 near texels .. 0.6 m, then 16 hardware-compare Poisson taps, rotated
+// per pixel (interleaved gradient noise) so the 16 taps band into grain, not rings. Tree shadows soften with height.
+const vec2 aPD[16] = vec2[16]( vec2(-0.942, -0.399), vec2(0.946, -0.769), vec2(-0.094, -0.929), vec2(0.345, 0.294),
+  vec2(-0.916, 0.458), vec2(-0.815, -0.879), vec2(-0.383, 0.277), vec2(0.975, 0.756), vec2(0.443, -0.975), vec2(0.537, -0.474),
+  vec2(-0.265, -0.419), vec2(0.792, 0.191), vec2(-0.242, 0.997), vec2(-0.814, 0.914), vec2(0.200, 0.786), vec2(0.144, -0.141) );
+float aNearShadow() {
+  if ( uPcss.z < 0.5 ) return aNearShadow4();
+  vec3 c = vNearC;
+  float rs = 0.35 * uPcss.y, zb = 0.0, nb = 0.0;
+  for ( int j = -1; j <= 1; j ++ ) for ( int i = -1; i <= 1; i ++ ) {
+    float z = texture2D( uNearRaw, c.xy + vec2( float( i ), float( j ) ) * rs ).r;
+    if ( z < c.z - 0.0005 ) { zb += z; nb += 1.0; }
+  }
+  if ( nb < 0.5 ) return 1.0;
+  float d = max( c.z - zb / nb, 0.0 ) * uPcss.x;
+  float w = clamp( d * 0.012, 1.5 * uNearTexel.x / uPcss.y, 0.6 ) * 0.5 * uPcss.y;
+  float a = 6.2831853 * fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) );
+  mat2 rot = mat2( cos( a ), sin( a ), - sin( a ), cos( a ) );
+  float s = 0.0;
+  for ( int k = 0; k < 16; k ++ ) s += texture( uNearSM, vec3( c.xy + rot * aPD[k] * w, c.z ) );
+  return s * 0.0625;
+}` : 'float aNearShadow() { return aNearShadow4(); }'}
 float aSunShadow() {
   float s = 1.0;
   if ( uSunShOn > 0.5 ) {
@@ -1921,7 +1951,11 @@ float aSunShadow() {
   }
   return s * smoothstep( 0.05, 0.4, ${lm ? 'aLmX.g' : 'vFarC.w'} );
 }`)
-    .replace('#include <aomap_fragment>', `${lm ? 'reflectedLight.indirectDiffuse = aLmIrr() * BRDF_Lambert( material.diffuseColor ) * aSSAO();'
+    // [L5] the lightmap is non-directional, so a normal map vanished wherever only indirect light falls (the chimney
+    // bore showed no brick or mortar). aRel: the normal-mapped normal against the flat one under a sky-from-above
+    // irradiance (1 + 0.6 n.up): mortar joints and brick edges read again in shade, flat surfaces are unchanged.
+    .replace('#include <aomap_fragment>', `${lm ? `float aRel = clamp( ( 1.0 + 0.6 * dot( normal, aUpV() ) ) / max( 1.0 + 0.6 * dot( nonPerturbedNormal, aUpV() ), 0.2 ), 0.6, 1.5 );
+  reflectedLight.indirectDiffuse = aLmIrr() * aRel * BRDF_Lambert( material.diffuseColor ) * aSSAO();`
       : 'reflectedLight.indirectDiffuse += vBounceA * BRDF_Lambert( material.diffuseColor );\n  reflectedLight.indirectDiffuse *= aSSAO();'}
 #include <aomap_fragment>`)
     .replace('#include <fog_fragment>', `#ifdef USE_FOG
@@ -1955,7 +1989,7 @@ void main() {
 // structure texel starts at LMUV.texel and coarsens 8 % per try until the atlas fits W x maxH. Pure function of the
 // geometry, append-only: vertices shared by two charts are duplicated at the END of a geometry (the bake's
 // collider->render vertex map stays valid). tools/bakelm.mjs gets the chart detail via { detail: true }.
-export const LMUV = { ver: 1, W: 2048, maxH: 2048, texel: 0.2, terrTexel: 0.25 };
+export const LMUV = { ver: 1, W: 2048, maxH: 2048, texel: 0.2, terrTexel: 0.25, under: 1.5, beam: 2 };   // [L5] under/beam: lmDensity
 function lmWeld(p, NV) {
   const wid = new Int32Array(NV), head = new Map(), nxt = new Int32Array(NV), wq = []; let nw = 0;
   for (let v = 0; v < NV; v++) {
@@ -2073,6 +2107,25 @@ function lmPack(rects, W, maxH) {
   }
   return top;
 }
+// [L5] lighting #5: texel density multiplier per chart. Slab undersides above 1 m (ceilings, the table, the gallery
+// soffits) get LMUV.under, the sides of the downstand beams (vertical 'wall' charts 0.45-0.6 m tall, 1 m+ up) LMUV.beam:
+// at 0.2 m the beam sides stepped x2.5-3.6 next to the ceiling (A4's edge probes). Bounded by the atlas: the structure
+// texel must stay 0.2 m (lightmapUV2 coarsens everything 8 % per try when the charts don't fit 2048 x maxH).
+function lmDensity(key, g, tris) {
+  if (key !== 'slab' && key !== 'wall') return 1;
+  const p = g.attributes.position.array, idx = g.index.array; let nx = 0, ny = 0, nz = 0, y0 = Infinity, y1 = -Infinity;
+  for (const t of tris) {
+    const a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, c = idx[t * 3 + 2] * 3;
+    const ux = p[b] - p[a], uy = p[b + 1] - p[a + 1], uz = p[b + 2] - p[a + 2], vx = p[c] - p[a], vy = p[c + 1] - p[a + 1], vz = p[c + 2] - p[a + 2];
+    nx += uy * vz - uz * vy; ny += uz * vx - ux * vz; nz += ux * vy - uy * vx;
+    y0 = Math.min(y0, p[a + 1], p[b + 1], p[c + 1]); y1 = Math.max(y1, p[a + 1], p[b + 1], p[c + 1]);
+  }
+  const l = Math.hypot(nx, ny, nz) || 1; ny /= l;
+  if (y0 < 1) return 1;
+  if (key === 'slab' && ny < -0.7) return LMUV.under;                            // ceiling / soffit
+  if (key === 'wall' && Math.abs(ny) < 0.3 && y1 - y0 > 0.45 && y1 - y0 <= 0.6) return LMUV.beam;   // downstand beam side
+  return 1;
+}
 export function lightmapUV2(merged, terr, pathG, opt = {}) {
   const W = LMUV.W, entries = Object.entries(merged), out = { ver: LMUV.ver, W, H: 0, texel: 0, terrTexel: LMUV.terrTexel, geos: [] };
   // charts per merged geometry; per (vertex, chart) one uv2 vertex (duplicates appended at the end)
@@ -2108,6 +2161,7 @@ export function lightmapUV2(merged, terr, pathG, opt = {}) {
       let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
       for (const t of ch.tris) for (let k = 0; k < 3; k++) { const v = idx[t * 3 + k], a = par[v * 2], b = par[v * 2 + 1]; if (a < u0) u0 = a; if (a > u1) u1 = a; if (b < v0) v0 = b; if (b > v1) v1 = b; }
       ch.u0 = u0; ch.v0 = v0; ch.du = Math.round((u1 - u0) * 1e4) / 1e4; ch.dv = Math.round((v1 - v0) * 1e4) / 1e4;
+      ch.dens = lmDensity(key, g, ch.tris);
       all.push(ch);
     }
     out.geos.push({ key, g, C, vc, par });
@@ -2121,7 +2175,7 @@ export function lightmapUV2(merged, terr, pathG, opt = {}) {
   for (let tries = 0; ; tries++) {
     const s = 1 / texel;
     rects = all.map((ch, i) => {
-      const nx = Math.round(ch.du * s) + 1, ny = Math.round(ch.dv * s) + 1, rot = ny > nx;
+      const nx = Math.round(ch.du * s * ch.dens) + 1, ny = Math.round(ch.dv * s * ch.dens) + 1, rot = ny > nx;
       return { ch, i, nx, ny, rot, w: (rot ? ny : nx) + 2, h: (rot ? nx : ny) + 2 };
     });
     rects.sort((a, b) => b.h - a.h || b.w - a.w || a.i - b.i);
@@ -2182,12 +2236,35 @@ class GeoHash {
   hex() { const a = _fmix((this.a ^ this.n) >>> 0), b = _fmix((this.b ^ this.n) >>> 0); return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0'); }
 }
 // what tools/bakelm.mjs needs from module scope: the bake's albedo rules (same as bakeLight's) and constants
+// [L5] ground bounce albedo for the bake (see lmBakeInputs.groundBounce)
+const BOUNCE_GROUND = (a) => a.map((v, i) => 0.5 * v + 0.5 * [0.13, 0.13, 0.11][i]);
+// [L5] chimney portals: the mouth (a disc of the bore radius at the brick top) and the door (a vertical rectangle across
+// the door's chord: off(a) < 0.42 rad, the 0.5 m rows below 3.9 m of the tube = y base .. base + 4). n points into the bore's open side (unused by the sampler: |cos|).
+function chimneyPortals() {
+  const { x, z, h, rb, rt, th, base, cop, corb } = CHIM, yTop = h - cop - corb, Ro = (y) => rb + (rt - rb) * (y / h);
+  const rMouth = Ro(yTop) - th, aD = Math.atan2(DOOR[0], DOOR[1]), rD = (Ro(base) - th) * Math.cos(0.42), hw = (Ro(base) - th) * Math.sin(0.42);
+  const sel = { x, z, r: Ro(base) - th + 0.05, y0: base - 0.1, y1: yTop + 0.01 };
+  const dx = Math.sin(aD), dz = Math.cos(aD), y0 = base + 0.03, y1 = base + 4;
+  return [
+    { kind: 'disc', c: [x, yTop, z], n: [0, 1, 0], r: rMouth, sel },
+    { kind: 'rect', c: [x + dx * rD, (y0 + y1) / 2, z + dz * rD], n: [dx, 0, dz], ex: [dz * hw, 0, -dx * hw], ey: [0, (y1 - y0) / 2, 0], sel },
+  ];
+}
 export function lmBakeInputs(geo) {
   const fps = geo.site.footprints || [], ap = MATS.apron?.albedo, rad = MATS.apron?.radius ?? 9, gA = groundAlbedo(), pA = albedoOf('path');
   return {
     albedo: Object.fromEntries(Object.keys(geo.merged).map((k) => [k, albedoOf(k)])), ground: gA, leaf: MATS.leaf?.albedo ?? [0.1, 0.12, 0.04],
     terrainAlbedo: (x, z) => (ap && fps.some((f) => Math.max(f.x0 - x, 0, x - f.x1) ** 2 + Math.max(f.z0 - z, 0, z - f.z1) ** 2 < rad * rad) ? ap : distToPaths(x, z) < 2.6 ? pA : gA),
     envI: 0.85, envIOf: (def) => skyEnvI(def), aoExp: 1.15, PH,   // [A4] envI per sky = 0.85 bgI (envI: the round-3 base)
+    // [L5] lighting #2 / colour #2: the grass ground's BOUNCE albedo, 50 % toward neutral [0.13, 0.13, 0.11]. About half
+    // the indirect light on shaded verticals is ground bounce; at the meadow's olive it cancelled the sky's blue (silo
+    // shade R/B 0.97, ref 0.79). Real meadow bounce is greyer than its albedo (blade shadowing, thatch, soil). Used for
+    // the grass terrain texels, the far field and the below-horizon env table; the ground still renders at its albedo.
+    groundBounce: BOUNCE_GROUND(gA),
+    // [L5] lighting #1: portals the bake importance-samples for texels inside the chimney (its mouth disc and its door),
+    // where 32-256 cosine rays found the 2-5 % aperture 0-2 times (0.5-1 m blotches after the denoise). sel: which
+    // texels use them (inside the bore: horizontal distance to the axis < r, base - 0.1 < y < top).
+    portals: chimneyPortals(),
   };
 }
 export function geometryHash(geo) {
@@ -2395,9 +2472,17 @@ function renderSunMap(renderer, casters, L, fit, opt) {
   renderer.setRenderTarget(rt); renderer.clear(true, true, true); renderer.render(px.scene, cam); renderer.setRenderTarget(prev);
   px.dispose();
   rt.depthTexture = null; rt.dispose();   // keep only the depth texture (frees the FBO and the colour plane)
+  let raw = null;
+  if (opt.raw) {   // [L5] a plain (no compare) low-res depth copy of the same view for the PCSS blocker search
+    raw = new THREE.DepthTexture(opt.raw, opt.raw); raw.type = THREE.UnsignedShortType; raw.minFilter = raw.magFilter = THREE.NearestFilter;
+    const rr = new THREE.WebGLRenderTarget(opt.raw, opt.raw, { depthTexture: raw, depthBuffer: true, format: THREE.RedFormat, type: THREE.UnsignedByteType, generateMipmaps: false });
+    const pr = shadowProxies(casters);
+    renderer.setRenderTarget(rr); renderer.clear(true, true, true); renderer.render(pr.scene, cam); renderer.setRenderTarget(prev);
+    pr.dispose(); rr.depthTexture = null; rr.dispose();
+  }
   const M = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
   M.elements[14] -= opt.bias / (2 * back - 1);   // depth bias in metres (plus the normal offset in the shader)
-  return { tex: dt, M, size, texel: (2 * Math.max(hx, hy)) / size, half: [+hx.toFixed(1), +hy.toFixed(1)] };
+  return { tex: dt, raw, M, size, texel: (2 * Math.max(hx, hy)) / size, half: [+hx.toFixed(1), +hy.toFixed(1)], depthM: 2 * back - 1, uvPerM: 1 / (2 * Math.max(hx, hy)) };
 }
 // a 1x1 compare texture cleared to the far plane: what a sampler2DShadow sees when there is no map (an unbound shadow
 // sampler makes ANGLE drop the draw; three never uploads its null fallback)
@@ -2813,6 +2898,10 @@ export function buildGeometry(R = rng(7), seed = 7) {
   const solids = [];
   const merged = {};
   for (const [mat, list] of Object.entries(site.parts)) {
+    // [L5] the procedural trunks (site.parts.bark) were never drawn or collided since V1; they only cost the bake rays,
+    // atlas texels (and phantom shadows in the bounce). They stay generated (the TR/TS streams the trees use are
+    // untouched) but are no longer merged, so they are out of the lightmap, its hash and the bake's trace scene.
+    if (mat === 'bark') continue;
     merged[mat] = mergeGeometries(list.map((e) => { const g = e.g; for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv', 'aY'].includes(k)) g.deleteAttribute(k); return g; }), false);
     list.forEach((e) => e.collide && solids.push(e.g));
   }
@@ -3062,7 +3151,8 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   aLight.uSunW.value.copy(sunDir); aLight.uHaze.value = hasSun ? 1.2 : 0;
   let skyFrac = 0, bakeFrac = 0;
   const ticker = setInterval(() => prog(0.05 + 0.85 * (skyFrac * 0.3 + (texDone / texTotal) * 0.3 + bakeFrac * 0.4), bakeFrac < 1 ? 'Baking light' : 'Streaming sky and materials'), 200);
-  const skyP = loadSky(skyDef, renderer, { envI, groundAlb: groundAlbedo(), haze: aLight.uHaze.value, onProgress: (f) => (skyFrac = f) });
+  const skyP = loadSky(skyDef, renderer, { envI, groundAlb: BOUNCE_GROUND(groundAlbedo()),   // [L5] the bake's ground bounce (lmBakeInputs)
+    haze: aLight.uHaze.value, onProgress: (f) => (skyFrac = f) });
 
   // geometry (CPU) while downloads run
   const geo = buildGeometry(R, seed);
@@ -3720,10 +3810,13 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
     liveCasters = live; sun.castShadow = live.length > 0; if (sun.castShadow) sun.shadow.needsUpdate = true;
     for (const k of ['aNearShadowTex', 'aFarShadowTex']) if (mats.slab?.[k]) { mats.slab[k].dispose(); mats.slab[k] = null; }
     const nq = quality === 'low' ? SUN_MAPS.near.sizeLow : SUN_MAPS.near.size, fq = quality === 'low' ? SUN_MAPS.far.sizeLow : SUN_MAPS.far.size;
-    const near = renderSunMap(renderer, all, sunDir, nearFit, { size: nq, half: SUN_MAPS.near.half, bias: SUN_MAPS.near.bias, bits: 16 });
+    const near = renderSunMap(renderer, all, sunDir, nearFit, { size: nq, half: SUN_MAPS.near.half, bias: SUN_MAPS.near.bias, bits: 16, raw: quality === 'low' ? 0 : SUN_MAPS.near.raw });
     const far = renderSunMap(renderer, all, sunDir, null, { size: fq, half: SUN_MAPS.far.half, bias: SUN_MAPS.far.bias, bits: 24 });
     scene.userData.vegShadowLod?.(-1);
     aLight.uNearSM.value = near.tex; aLight.uNearMat.value.copy(near.M); aLight.uNearTexel.value.set(1 / near.size, 1 / near.size);
+    if (mats.slab?.aNearRawTex) { mats.slab.aNearRawTex.dispose(); mats.slab.aNearRawTex = null; }
+    aLight.uNearRaw.value = near.raw; aLight.uPcss.value.set(near.depthM, near.uvPerM, near.raw ? 1 : 0, 0);   // [L5] PCSS (off on low)
+    if (mats.slab && near.raw) mats.slab.aNearRawTex = near.raw;
     aLight.uFarSM.value = far.tex; aLight.uFarMat.value.copy(far.M); aLight.uFarTexel.value.set(1 / far.size, 1 / far.size); aLight.uFarOn.value = 1;
     aLight.uSunShOn.value = 1;
     if (mats.slab) { mats.slab.aNearShadowTex = near.tex; mats.slab.aFarShadowTex = far.tex; }   // so clearWorld()'s material sweep disposes them
