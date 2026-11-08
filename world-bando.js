@@ -47,18 +47,21 @@ const MATS = {
   rust: { id: 'rust_coarse_01', tile: 2.0, maps: ['diff'], color: [2.05, 3.2, 6.53], rough: 0.82, roughMin: 0.7, w: [0.25, 0.2, 0.35, 0.1], albedo: [0.245, 0.128, 0.089] },
   // ground and track: greener, darker, less chromatic (decision 3 / graphics #2: reference ground L39 C6)
   ground: { id: 'grass_ground', tile: 4.0, maps: ['diff'], color: [1.05, 1.3, 2.0], rough: 1, kind: 'ground', albedo: [0.128, 0.128, 0.068] },
-  bark: { id: 'bark_brown_02', tile: 1.5, maps: ['diff'], color: [1.1, 1.1, 1.1], rough: 0.95, kind: 'bark', albedo: [0.136, 0.111, 0.066] },
+  bark: { id: 'bark_brown_02', tile: 1.5, maps: [], color: [1.1, 1.1, 1.1], rough: 0.95, kind: 'bark', albedo: [0.136, 0.111, 0.066] },
   path: { id: 'grass_path_2', tile: 3.5, maps: ['diff'], color: [0.31, 0.345, 0.48], rough: 1, kind: 'track', albedo: [0.088, 0.080, 0.066] },
   // not merged-geometry materials: the paved apron is sampled inside the ground shader; grass and leaves are atlases
   apron: { id: 'asphalt_02', tile: 5.0, maps: ['diff'], color: [1.75, 1.72, 1.72], kind: 'aux', albedo: [0.176, 0.170, 0.152], radius: 9 },   // radius: mean paved reach around footprints (5-12 m)
   // grass: graphics #2's darker multiplier, then desaturated ~30 % toward its own luminance (Lab C 26-31 -> ~21 at
   // the same HSV hue; a bluer multiplier alone would push the foliage hue past 70)
   grass: { model: 'grass_medium_01', tile: 1, maps: ['diff', 'alpha'], color: [1.1, 1.1, 1.86], kind: 'aux', albedo: [0.112, 0.109, 0.052] },
-  leaf: { model: 'tree_small_02', tile: 1, maps: ['leaves_diff', 'leaves_alpha'], color: [1.4, 1.3, 1.5], kind: 'aux', albedo: [0.099, 0.124, 0.035] },
+  leaf: { model: 'tree_small_02', tile: 1, maps: [], color: [1.4, 1.3, 1.5], kind: 'aux', albedo: [0.099, 0.124, 0.035] },
 };
 // [B] treeline crowns get low-poly collision proxies (15.6k tris, appended after the terrain in the collider).
 // They cost ~7% of A's light-bake time (terrain-edge rays hit them); false = fly-through treeline, cheaper bake.
 const RING_COLLIDE = true;
+// [V1] trunk + thick-limb skeletons of the real tree models (model units; tools: /tmp/v1/tools/bake.mjs, from veg.json):
+// [x0,y0,z0,r0, x1,y1,z1,r1] tapered segments. buildGeometry turns them into collision tubes per tree instance.
+const VEG_SKEL = {"A":{"H":4.557,"segs":[[0,0.1,0,0.078,0.146,1.3,0.151,0.068],[0.146,1.3,0.151,0.068,0.57,2.3,-0.06,0.039],[0.146,1.3,0.151,0.068,0.166,1.7,0.318,0.064],[0.166,1.7,0.318,0.064,0.115,1.9,0.421,0.074],[0.115,1.9,0.421,0.074,-0.006,2.5,0.74,0.081],[0.115,1.9,0.421,0.074,0.01,2.7,-0.025,0.034],[0.115,1.9,0.421,0.074,0.288,2.1,0.401,0.021],[0.57,2.3,-0.06,0.039,0.598,2.7,-0.289,0.024],[0.598,2.7,-0.289,0.024,0.645,2.9,-0.344,0.046]]},"B":{"H":5.027,"segs":[[0,0.1,0,0.289,-0.117,0.5,-0.185,0.221],[-0.117,0.5,-0.185,0.221,-0.141,0.7,-0.227,0.23],[-0.141,0.7,-0.227,0.23,-0.124,0.9,-0.236,0.222],[-0.124,0.9,-0.236,0.222,-0.235,1.3,0.1,0.173],[-0.124,0.9,-0.236,0.222,-0.011,1.1,-0.519,0.162],[-0.011,1.1,-0.519,0.162,-0.052,1.3,-0.599,0.137],[-0.052,1.3,-0.599,0.137,-0.029,1.5,-0.682,0.154],[-0.235,1.3,0.1,0.173,-0.222,1.5,0.327,0.143],[-0.235,1.3,0.1,0.173,-0.578,1.7,-0.423,0.083],[-0.222,1.5,0.327,0.143,-0.101,1.9,0.586,0.174],[-0.029,1.5,-0.682,0.154,-0.016,1.7,-0.861,0.217],[-0.029,1.5,-0.682,0.154,0.052,1.7,-0.435,0.046],[-0.016,1.7,-0.861,0.217,-0.165,1.9,-0.8,0.106],[-0.578,1.7,-0.423,0.083,-0.477,1.9,-0.34,0.041],[-0.101,1.9,0.586,0.174,-0.258,2.3,0.968,0.144],[-0.165,1.9,-0.8,0.106,-0.266,2.1,-0.807,0.169],[-0.101,1.9,0.586,0.174,0.234,2.1,0.454,0.082],[-0.266,2.1,-0.807,0.169,-0.412,2.3,-0.981,0.016],[-0.258,2.3,0.968,0.144,-0.293,2.5,0.862,0.079],[-0.293,2.5,0.862,0.079,-0.312,2.7,0.931,0.086],[-0.312,2.7,0.931,0.086,-0.284,2.9,1.093,0.102],[-0.284,2.9,1.093,0.102,-0.452,3.1,1.152,0.04]]}};
 const texURL = (m, map) => m.model ? `${PH}/Models/jpg/1k/${m.model}/${m.model}_${map}_1k.jpg` : `${PH}/Textures/jpg/1k/${m.id}/${m.id}_${map}_1k.jpg`;
 
 function rng(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
@@ -764,47 +767,6 @@ function grassTexture(R) {
     }
   });
 }
-function leafTexture(R) {
-  return canvasTex(512, 512, (g, w, h) => {
-    for (let i = 0; i < 900; i++) {
-      const a = R() * Math.PI * 2, rr = Math.sqrt(R()) * w * 0.45, x = w / 2 + Math.cos(a) * rr, y = h / 2 + Math.sin(a) * rr;
-      const s = 6 + R() * 10, sh = 0.35 + R() * 0.65;
-      g.fillStyle = `rgb(${(35 + R() * 45) * sh + 10 | 0},${(70 + R() * 60) * sh + 15 | 0},${(20 + R() * 25) * sh | 0})`;
-      g.save(); g.translate(x, y); g.rotate(R() * Math.PI); g.beginPath(); g.ellipse(0, 0, s, s * 0.45, 0, 0, Math.PI * 2); g.fill(); g.restore();
-    }
-  });
-}
-// [B] leaf clusters stamped from the photographed leaves (Poly Haven tree_small_02 leaf atlas): shaded leaves at the
-// back, sunlit and yellowed ones in front. Built as a DataTexture so transparent texels keep a leaf colour (no
-// black fringes in the mips).
-const LEAF_RECTS = [[62, 55, 200, 145], [235, 65, 350, 112], [33, 190, 180, 290], [250, 185, 375, 250], [62, 325, 210, 420], [250, 290, 350, 365], [62, 470, 180, 545],
-  [250, 425, 405, 515], [45, 610, 200, 705], [268, 545, 425, 645], [285, 680, 425, 750], [77, 745, 225, 840], [270, 780, 430, 870], [80, 890, 200, 965], [290, 900, 445, 1000]];
-function leafCluster(diffT, alphaT, R) {
-  const N = 1024, cv = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
-  const src = cv(N, N), sg = src.getContext('2d', { willReadFrequently: true });
-  sg.drawImage(alphaT.image, 0, 0, N, N); const A = sg.getImageData(0, 0, N, N).data;
-  sg.clearRect(0, 0, N, N); sg.drawImage(diffT.image, 0, 0, N, N); const D = sg.getImageData(0, 0, N, N).data;
-  const vars = [[1, 1, 1], [0.6, 0.68, 0.72], [1.15, 1.08, 0.66]].map(([r, gg, b]) => {
-    const c = cv(N, N), cg = c.getContext('2d'), im = cg.createImageData(N, N), o = im.data;
-    for (let i = 0; i < N * N * 4; i += 4) { o[i] = Math.min(255, D[i] * r); o[i + 1] = Math.min(255, D[i + 1] * gg); o[i + 2] = Math.min(255, D[i + 2] * b); o[i + 3] = A[i + 1]; }
-    cg.putImageData(im, 0, 0); return c;
-  });
-  const S = 512, out = cv(S, S), g = out.getContext('2d', { willReadFrequently: true });
-  for (let i = 0; i < 420; i++) {         // [B] 420 leaves at 16-34 px (round 2: 230 at 28-58 px read 3x oversize)
-    const back = i < 155, v = back ? 1 : (R() < 0.78 ? 0 : 2), [x0, y0, x1, y1] = LEAF_RECTS[Math.floor(R() * LEAF_RECTS.length)];
-    const a = R() * 6.283, rr = Math.sqrt(R()) * S * (back ? 0.32 : 0.41), w = x1 - x0, h = y1 - y0, s = (16 + R() * 18) / Math.max(w, h);
-    g.save(); g.translate(S / 2 + Math.cos(a) * rr, S / 2 + Math.sin(a) * rr); g.rotate(R() * 6.283); g.scale(s * (R() < 0.5 ? -1 : 1), s);
-    g.drawImage(vars[v], x0, y0, w, h, -w / 2, -h / 2, w, h); g.restore();
-  }
-  const px = g.getImageData(0, 0, S, S).data, data = new Uint8Array(px.length);
-  for (let i = 0; i < px.length; i += 4) {
-    const a = px[i + 3]; data[i + 3] = a;
-    if (a < 8) { data[i] = 46; data[i + 1] = 62; data[i + 2] = 22; } else { data[i] = px[i]; data[i + 1] = px[i + 1]; data[i + 2] = px[i + 2]; }
-  }
-  const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat); t.colorSpace = THREE.SRGBColorSpace;
-  t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.anisotropy = 4; t.needsUpdate = true;
-  return t;
-}
 // mean linear colour of a loaded texture (for distance fades / normalisation)
 function texMean(t, fallback) {
   try {
@@ -923,27 +885,6 @@ function graffitiAtlas(R) {
       gA.drawImage(cA, (k % GCOLS) * 512, Math.floor(k / GCOLS) * 256);
     }
   });
-}
-// [B] treeline crown: 7 alpha-tested leaf-cluster cards on the lumps of a round-topped crown (base y = 0, height 1,
-// width 1; the instance scales it), each card turned at random and rolled so the cluster never repeats the same way.
-// Normals point out of the crown centre (it shades as one mass, both faces alike); uv.y doubles as height for AO.
-function crownCards() {
-  const lumps = [[0, 0.5, 0, 0.46], [0.12, 0.77, 0.06, 0.28], [0.27, 0.42, 0.1, 0.31], [-0.25, 0.4, -0.14, 0.31], [-0.14, 0.7, -0.04, 0.26], [0.06, 0.42, 0.28, 0.27], [-0.05, 0.44, -0.3, 0.27]];
-  const P = [], N = [], UV = [], I = [], q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), c = new THREE.Vector3(0, 0.45, 0), CR = rng(1211);
-  lumps.forEach(([x, y, z, r], k) => {
-    e.set((CR() - 0.5) * 1.0, CR() * 6.283, CR() * 6.283, 'YXZ'); q.setFromEuler(e);
-    const s = r * 1.15, b = P.length / 3;
-    for (const [u, w] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-      v.set(u * s, w * s, 0).applyQuaternion(q).add(new THREE.Vector3(x, y, z));
-      v.y = Math.max(v.y, 0.02); P.push(v.x, v.y, v.z); UV.push((u + 1) / 2, (w + 1) / 2);
-      v.sub(c).normalize(); v.y += 0.2; v.normalize(); N.push(v.x, v.y, v.z);
-    }
-    I.push(b, b + 1, b + 2, b, b + 2, b + 3);
-  });
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2)); g.setIndex(I);
-  return g;
 }
 // [B] ground mask over the yard terrain tile (0.625 m texels): R grass density, G paved apron/road,
 // B terrain AO (baked), A grass height. Replaces the per-vertex footprint/path loops of the grass shader.
@@ -1131,6 +1072,75 @@ const LIGHT_MAPS_DIFFUSE = `
 #if defined( USE_ENVMAP ) && defined( STANDARD ) && defined( ENVMAP_TYPE_CUBE_UV )
   iblIrradiance += getIBLIrradiance( geometryNormal );
 #endif`;
+// [V1] vegetation vertex code (leaf cards, treeline, wood, and their depth twins). aSway = displacement scale (model
+// units, grows with height): whole-plant sway (per-instance phase, slow gusts) + per-card flutter. Facing cards
+// (VEG_FACE) are spherical billboards around aCenter, sized by the instance scale; `position` keeps a fixed
+// orientation for three's shadow depth pass and the far/ring shadow proxies.
+const VEG_GLSL = `
+uniform vec4 uWind;
+attribute float aSway;
+#ifdef VEG_CARDS
+attribute vec3 aCenter;
+attribute vec2 aOff;
+attribute float aOcc;
+#endif
+vec3 vegWind(vec3 p, vec3 c, float fl) {
+  vec3 ip = vec3(0.0);
+  #ifdef USE_INSTANCING
+  ip = instanceMatrix[3].xyz;
+  #endif
+  float ph = dot(ip.xz, vec2(0.173, 0.291)), t = uTime * uWind.z, gust = 0.6 + 0.4 * sin(t * 0.23 + ip.x * 0.011);
+  vec3 d = vec3(sin(t * 0.83 + ph) + 0.45 * sin(t * 1.91 + ph * 1.7), 0.0, cos(t * 0.61 + ph * 1.3) + 0.4 * sin(t * 1.57 + ph * 0.6)) * (uWind.x * gust);
+  d += vec3(sin(t * 4.1 + c.x * 7.0 + c.y * 5.0 + ph), 0.6 * sin(t * 5.3 + c.z * 6.0 + ph), cos(t * 3.7 + c.y * 8.0 + ph)) * (uWind.y * fl * gust);
+  return p + d * aSway;
+}
+#ifdef VEG_CARDS
+vec3 vegFace() {
+  mat3 im = mat3(modelMatrix);
+  #ifdef USE_INSTANCING
+  im = im * mat3(instanceMatrix);
+  #endif
+  vec3 cr = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]), cu = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+  return aCenter + inverse(im) * ((cr * aOff.x + cu * aOff.y) * pow(abs(determinant(im)), 1.0 / 3.0));
+}
+#endif`;
+const VEG_CARD_VS = `
+#ifdef VEG_FACE
+  transformed = vegFace();
+#endif
+  transformed = vegWind(transformed, aCenter, 1.0);`;
+// [V1] leaf lighting: wrap diffuse (light reaches round the crown), sun transmission toward the viewer (backlit leaves
+// glow yellow-green instead of going black; the shadow map already darkens leaves inside the crown) and a little
+// waxy specular. uLeafL = (transmission, wrap, specular, -).
+const VEG_LEAF_LIGHTS = `
+uniform vec4 uLeafL;
+#undef RE_Direct
+#define RE_Direct RE_Direct_Leaf
+void RE_Direct_Leaf( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
+  float ndl = dot( geometryNormal, directLight.direction );
+  vec3 lam = BRDF_Lambert( material.diffuseColor );
+  reflectedLight.directDiffuse += saturate( ( ndl + uLeafL.y ) / ( 1.0 + uLeafL.y ) ) * directLight.color * lam;
+  float vdl = saturate( dot( -geometryViewDir, directLight.direction ) );
+  float tr = uLeafL.x * ( 1.4 * pow( vdl, 4.0 ) + 0.4 * saturate( -ndl ) );
+  reflectedLight.directDiffuse += tr * directLight.color * lam * vec3( 1.0, 1.15, 0.55 );
+  reflectedLight.directSpecular += saturate( ndl ) * directLight.color * BRDF_GGX( directLight.direction, geometryViewDir, geometryNormal, material ) * uLeafL.z;
+}`;
+// [V1] the vegetation files (flat, next to this module); null when any is missing (the world then has no plants)
+async function vegLoad() {
+  try {
+    const u = (f) => new URL(f, import.meta.url).href;
+    const [man, bin] = await Promise.all([fetch(u('veg.json')).then((r) => { if (!r.ok) throw new Error('veg.json ' + r.status); return r.json(); }),
+      fetch(u('veg.bin')).then((r) => { if (!r.ok) throw new Error('veg.bin ' + r.status); return r.arrayBuffer(); })]);
+    const tl = new THREE.TextureLoader();
+    const tex = (f, srgb, aniso = 4) => new Promise((res, rej) => tl.load(u(f), (t) => {
+      t.flipY = false; t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter;
+      t.magFilter = THREE.LinearFilter; t.anisotropy = aniso; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.needsUpdate = true; res(t);
+    }, undefined, () => rej(new Error(f))));
+    const [atlas, alpha, ba, bb, bs] = await Promise.all([tex(man.atlas.file, true), tex(man.atlas.alpha, false), tex('veg_bark_a.jpg', true, 8), tex('veg_bark_b.jpg', true, 8), tex('veg_bark_s.jpg', true, 8)]);
+    for (const t of [ba, bb, bs]) t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    return { man, bin, atlas, alpha, bark: { A: ba, B: bb, S: bs } };
+  } catch (e) { console.warn('[V1] vegetation load failed:', e.message); return null; }
+}
 function weatherPatch(mat, opt = {}, uniforms) {
   const kind = opt.kind || (opt.ground ? 'ground' : opt.foliage ? 'leaf' : 'built');
   const usesAY = kind === 'built' || kind === 'decal' || kind === 'bark';
@@ -1153,14 +1163,15 @@ varying vec3 vWPos;
 uniform float uTime;
 varying vec3 vNW;
 ${usesAY ? 'attribute vec2 aY;\nvarying vec2 vAY;' : ''}
-${kind === 'leaf' ? 'attribute float aSway;' : ''}
+${kind === 'leaf' || kind === 'treeline' ? VEG_GLSL : ''}
 ${kind === 'decal' ? 'attribute float aSeed;\nvarying float vSeed;' : ''}
 ${opt.vsHead || ''}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-${kind === 'leaf' ? `  transformed += vec3(sin(uTime * 1.7 + position.x * 0.4 + position.z * 0.3), 0.3 * sin(uTime * 2.3 + position.y), cos(uTime * 1.3 + position.z * 0.35)) * aSway;` : ''}
+${kind === 'leaf' || kind === 'treeline' ? VEG_CARD_VS : ''}
 ${opt.vsBegin || ''}`)
       .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
   vAO = ${opt.aoExpr || 'ao'}; vBounce = bounce;
+  ${opt.vsPost || ''}
   vec4 wpp = vec4(transformed, 1.0);
   vec3 nwo = objectNormal;
   #ifdef USE_INSTANCING
@@ -2279,8 +2290,10 @@ export function buildGeometry(R = rng(7), seed = 7) {
     const y = terrainHeight(x, z), r = 0.09 + h * 0.02, la = TS() * 6.283, lean = 0.3 + TS() * 0.5, lx = Math.cos(la) * lean, lz = Math.sin(la) * lean;
     const B0 = new THREE.Vector3(x, y - 0.1, z), B1 = new THREE.Vector3(x + lx * 0.3, y + h * 0.4, z + lz * 0.3), B2 = new THREE.Vector3(x + lx, y + h * 0.8, z + lz);
     const onTrunk = (f) => (f <= 0.4 ? B0.clone().lerp(B1, f / 0.4) : B1.clone().lerp(B2, (f - 0.4) / 0.4));
-    site.add('bark', limbGeo(B0, B1, r, r * 0.78, 7, Math.max(1, Math.round(h * 0.4 / 2.5)), y - 0.1, y + h));
-    site.add('bark', limbGeo(B1, B2, r * 0.78, r * 0.4, 7, Math.max(1, Math.round(h * 0.4 / 2.5)), y - 0.1, y + h));
+    // [V1] these procedural trunks stay in merged.bark byte for byte (lightmap hash) but no longer collide or draw:
+    // the real-model trees below carry their own collision tubes
+    site.add('bark', limbGeo(B0, B1, r, r * 0.78, 7, Math.max(1, Math.round(h * 0.4 / 2.5)), y - 0.1, y + h), false);
+    site.add('bark', limbGeo(B1, B2, r * 0.78, r * 0.4, 7, Math.max(1, Math.round(h * 0.4 / 2.5)), y - 0.1, y + h), false);
     // the crown: limb clumps around a centre on the leaning trunk (~1.3x taller than wide), a leader at the top
     const cc = onTrunk(0.64), rx = h * (0.24 + TS() * 0.1), ry = h * 0.3, limbs = [], nl = 3 + Math.floor(TS() * 3);
     for (let l = 0; l < nl; l++) {
@@ -2305,6 +2318,45 @@ export function buildGeometry(R = rng(7), seed = 7) {
   for (let k = 0; k < 60 && treeSpots.length < 62; k++) {
     const x = -135 + TR() * 255, z = -105 + TR() * 235;
     if (okTree(x, z) && clearOf(x, z, 9)) addTree(x, z, 7 + TR() * 8);
+  }
+
+  // [V1] tree plan: real-model trees (A = Poly Haven tree_small_02, slender; B = island_tree_01, broad) stand on the
+  // treeSpots (same bases as the baked lightmap's trunks), each with 1-3 younger neighbours, so trees come in clumps.
+  // Trunks and thick limbs collide: tapered hex tubes along the model skeleton (VEG_SKEL), in site.colliders.
+  // Own rng streams: the TR/TS sequences above (and so merged.bark) are untouched.
+  const vegTrees = [], treeCols = [];
+  {
+    const VR = rng(1111), _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3();
+    const tube = (a, b, r0, r1, M) => {   // 6-sided open tube a->b (world), radii r0/r1
+      const d = new THREE.Vector3().subVectors(b, a), L = d.length(); if (L < 1e-3) return;
+      const g = cylGeo(r1, r0, L, 6, true, 1); g.translate(0, L / 2, 0); g.applyQuaternion(_rq.setFromUnitVectors(Y_UP, d.normalize())); g.translate(a.x, a.y, a.z);
+      for (const k of Object.keys(g.attributes)) if (k !== 'position') g.deleteAttribute(k);
+      treeCols.push(g.index ? g : indexify(g));
+    };
+    const place = (type, x, z, h, main) => {
+      const K = VEG_SKEL[type], y = terrainHeight(x, z) - 0.05, s = h / K.H, sx = s * (0.88 + VR() * 0.26), sz = s * (0.88 + VR() * 0.26), yaw = VR() * 6.2832;
+      _q.setFromAxisAngle(Y_UP, yaw); _m.compose(_p.set(x, y, z), _q, _s.set(sx, s, sz));
+      const t = { type, x, y, z, yaw, sx, sy: s, sz, h, main, tint: VR() };
+      vegTrees.push(t);
+      for (const q of K.segs) {
+        const rs = (sx + sz) / 2, r0 = q[3] * rs, r1 = q[7] * rs; if (Math.max(r0, r1) < 0.045) continue;
+        _a.set(q[0], q[1] <= 0.15 ? -0.3 / s : q[1], q[2]).applyMatrix4(_m); _b.set(q[4], q[5], q[6]).applyMatrix4(_m);
+        tube(_a.clone(), _b.clone(), Math.max(r0, 0.03), Math.max(r1, 0.03), _m);
+      }
+      return t;
+    };
+    const free = (x, z, m) => !vegTrees.some((t) => Math.hypot(t.x - x, t.z - z) < m);
+    for (const t of treeSpots) {
+      const type = t.h < 9.5 && VR() < 0.24 ? 'B' : 'A';
+      place(type, t.x, t.z, type === 'B' ? Math.min(Math.max(t.h, 6), 8.5) : t.h, true);
+    }
+    for (const t of treeSpots) {
+      for (let k = 0, n = 1 + Math.floor(VR() * 3); k < n; k++) {
+        const a = VR() * 6.2832, d = 1.6 + VR() * 3.4, x = t.x + Math.cos(a) * d, z = t.z + Math.sin(a) * d, h = t.h * (0.35 + VR() * 0.4);
+        if (!clearOf(x, z, 1.5) || distToPaths(x, z) < 3.2 || Math.hypot(x, z - 120) < 13 || !free(x, z, 1.3)) continue;
+        place('A', x, z, Math.max(2.4, h), false);
+      }
+    }
   }
 
   // [B] distant treeline ring (r ~150-420 m around the site): the horizon for skies with no photographed ground.
@@ -2362,14 +2414,14 @@ export function buildGeometry(R = rng(7), seed = 7) {
     const c = new THREE.BufferGeometry(); c.setAttribute('position', p); c.setIndex(keep); return c;
   })();
   // [B] collision-only treeline proxies go last (A's collider map: solids, then terrain, then anything else)
-  const colGeo = mergeGeometries([solidGeo, posOnly(terr), farCol, ...(site.colliders || []).map(posOnly)], false);
+  const colGeo = mergeGeometries([solidGeo, posOnly(terr), farCol, ...(site.colliders || []).map(posOnly), ...treeCols.map(posOnly)], false);
   colGeo.computeBoundingBox();
   const bvh = new MeshBVH(colGeo, { maxLeafTris: 5 });
   // proximity / skim scoring: built structures and trunks only, so skimming the grass scores nothing
-  const skimBvh = new MeshBVH(solidGeo, { maxLeafTris: 5 });
+  const skimBvh = new MeshBVH(treeCols.length ? mergeGeometries([solidGeo, ...treeCols.map(posOnly)], false) : solidGeo, { maxLeafTris: 5 });   // [V1] + the trees' tubes
   terr.userData.lm = lightmapUV2(merged, terr, pathG);   // [A1] lightmap uv2 on merged/terr/pathG (append-only; layout on terr.userData.lm)
 
-  return { site, terr, far, pathG, treeSpots, treeline, merged, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart, startPoints: site.startPoints, funnels: site.funnels };
+  return { site, terr, far, pathG, treeSpots, vegTrees, treeline, merged, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart, startPoints: site.startPoints, funnels: site.funnels };
 }
 
 // ---------------------------------------------------------------- build everything
@@ -2380,6 +2432,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const uniforms = { uTime: { value: 0 } };
   uniforms.aAO = aoUniforms();          // [A1] contract C3 (world.aoUniforms): stream D fills it each frame
   const lmJP = lmFetchJSON();           // [A1] lm.json, fetched while the geometry builds
+  const vegP = vegLoad();               // [V1] tree/shrub cards, wood, atlas (flat files next to this module)
 
   // textures (stream in parallel with the sky)
   const tl = new THREE.TextureLoader(); tl.setCrossOrigin('anonymous');
@@ -2462,6 +2515,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   mats.path.transparent = true; mats.path.vertexColors = true; mats.path.depthWrite = false; mats.path.polygonOffset = true; mats.path.polygonOffsetFactor = -2;
 
   for (const [mat, g] of Object.entries(merged)) {
+    if (mat === 'bark') continue;   // [V1] the procedural trunks: kept for the lightmap hash, replaced by the real trees
     const mesh = new THREE.Mesh(g, mats[mat] || mats.wall); mesh.castShadow = true; mesh.receiveShadow = true; mesh.matrixAutoUpdate = false; scene.add(mesh);
   }
   const terrMesh = new THREE.Mesh(terr, mats.ground); terrMesh.receiveShadow = true; scene.add(terrMesh);
@@ -2728,68 +2782,109 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   }
   const ringCount = (r) => { let lo = 0, hi = ringR.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ringR[m] <= r) lo = m + 1; else hi = m; } return lo; };
   lap('grass');
-  // [B] trees, wall thickets, field shrubs and saplings on slab edges: leaf-card balls with the photographed leaves,
-  // merged per ~75 m tile (frustum culling in the scene, shadow and blur-depth passes). Normals point out of the whole
-  // crown (it shades as one mass, both card faces alike); light is baked per plant with the same probe as the
-  // buildings, so nothing glows under the silo table.
+  // [V1] vegetation: real CC0 trees and shrubs (Poly Haven tree_small_02 'A', island_tree_01 'B', island_tree_02 'S')
+  // baked offline into leaf-card clouds (billboard clouds of the models' own leaf clusters, twig tiles in one 2048
+  // atlas), simplified wood and trunk skeletons (veg.json / veg.bin / veg_atlas.jpg + veg_atlas_a.png / veg_bark_*.jpg).
+  // Per type 3 LODs (L0 two crossed fixed cards per cluster + full wood, L1/L2 camera-facing cards + lighter wood),
+  // InstancedMesh per (type, LOD) re-bucketed on the CPU when the camera moves > 0.8 m (L0 sorted near to far).
+  // Leaves: wrap lighting + sun transmission (backlit leaves glow instead of going black), crown-mass normals and
+  // per-card crown occlusion, per-instance hue/brightness, wind sway + leaf flutter. Trees on the treeSpots in clumps
+  // (buildGeometry: vegTrees + collision tubes), every tree with a shrub skirt; thickets hug the walls, scrub lines
+  // the reveal track and the yard, saplings on slab edges. The treeline ring is the same cards at LOD 3.
   const foliageStats = bStats.foliage = {}, leafTiles = [];
-  let leafMap = null, leafOK = false;
-  {
-    const FR = rng(1301), lt = texOf.leaf || {}, UPV = new THREE.Vector3(0, 1, 0), fray = new THREE.Ray();
-    leafOK = !!(lt.diff && lt.alpha); leafMap = leafOK ? leafCluster(lt.diff, lt.alpha, FR) : leafTexture(FR);
+  let vegUpdate = () => {}, vegFill = null;
+  const uWind = { value: new THREE.Vector4(0.22, 0.14, 1, 0) }, uLeafL = { value: new THREE.Vector4(1.0, 0.5, 0.35, 0) };
+  const veg = await vegP;
+  if (!veg) console.warn('[V1] vegetation assets missing (veg.json/veg.bin/atlas): no trees or shrubs');
+  if (veg) {
+    const man = veg.man, FR = rng(1301), UPV = new THREE.Vector3(0, 1, 0), fray = new THREE.Ray();
     const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-    const tpl = [];
-    for (let k = 0; k < 9; k++) {
-      const qq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(FR() - 0.5, FR() - 0.5, FR() - 0.5).normalize(), FR() * Math.PI);
-      tpl.push([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => ({ p: new THREE.Vector3(u * 0.6, v * 0.6, 0).applyQuaternion(qq), uv: [(u + 1) / 2, (v + 1) / 2] })));
-    }
-    const TL = { x0: -150, z0: -125, n: 4, size: 75 }, tiles = new Map();
-    const tileOf = (x, z) => {
-      const i = Math.min(TL.n - 1, Math.max(0, Math.floor((x - TL.x0) / TL.size))), j = Math.min(TL.n - 1, Math.max(0, Math.floor((z - TL.z0) / TL.size))), k = j * TL.n + i;
-      let t = tiles.get(k); if (!t) tiles.set(k, (t = { P: [], N: [], UV: [], C: [], AO: [], BO: [], SW: [], I: [] })); return t;
-    };
-    const q = new THREE.Quaternion(), eu = new THREE.Euler(), v = new THREE.Vector3(), n = new THREE.Vector3(), d = new THREE.Vector3();
-    // nq cards per ball (of the 9 templates; the ball's own random turn keeps them from lining up)
-    const ball = (c, s, cc, rad, pr, tint, swayK, baseY, nq = 9) => {
-      eu.set(FR() * 6.28, FR() * 6.28, FR() * 6.28); q.setFromEuler(eu); const sy = s * (0.8 + FR() * 0.35), T = tileOf(cc.x, cc.z);   // a plant never straddles two tiles
-      for (let k = 0; k < nq; k++) {
-        const quad = tpl[k], b = T.P.length / 3;
-        for (const { p, uv } of quad) {
-          v.copy(p).applyQuaternion(q); v.set(v.x * s, v.y * sy, v.z * s).add(c);
-          d.copy(v).sub(cc); const dl = d.length() / rad; d.normalize();
-          n.copy(v).sub(c).normalize().lerp(d, 0.7); n.y += 0.25; n.normalize();
-          const occ = 0.42 + 0.58 * sm(0.1, 1.0, dl * 0.7 + (d.y * 0.5 + 0.5) * 0.4);
-          T.P.push(v.x, v.y, v.z); T.N.push(n.x, n.y, n.z); T.UV.push(uv[0], uv[1]); T.C.push(tint[0], tint[1], tint[2]);
-          T.AO.push(pr.ao * occ); T.BO.push(pr.bo.x * occ, pr.bo.y * occ, pr.bo.z * occ); T.SW.push(Math.max(0, v.y - baseY) * swayK);
-        }
-        T.I.push(b, b + 1, b + 2, b, b + 2, b + 3);
+    const base = {};   // shared BufferAttributes per mesh name
+    const mkGeo = (name) => {
+      const m = man.meshes[name]; if (!m) return null;
+      if (!base[name]) {
+        base[name] = { a: Object.fromEntries(Object.entries(m.attrs).map(([k, [o, n, it]]) => [k, new THREE.BufferAttribute(new Float32Array(veg.bin, o, n), it)])),
+          i: new THREE.BufferAttribute(new Uint16Array(veg.bin, m.index[0], m.index[1]), 1) };
       }
+      const g = new THREE.BufferGeometry(); for (const [k, a] of Object.entries(base[name].a)) g.setAttribute(k, a); g.setIndex(base[name].i);
+      g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5); return g;
     };
+    // leaf albedo: each species' atlas mean -> MATS.leaf.albedo (clamped), the per-instance tint varies it
+    const target = MATS.leaf.albedo, spOf = { A: 'ts', B: 'is', S: 'is' };
+    const spCol = (t) => { const m = man.atlas.meanLin?.[spOf[t]] || [0.06, 0.085, 0.025]; return new THREE.Color().setRGB(...target.map((v, i) => Math.min(2.2, Math.max(0.8, v / m[i])))); };
+    const alphaBoost = `
+  #ifdef USE_ALPHAMAP
+  { vec2 tx = vAlphaMapUv * 2048.0; diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
+  #endif`;
+    const leafMat = (t, face, kind = 'leaf', extra = {}) => {
+      const m = new THREE.MeshStandardMaterial({ map: veg.atlas, alphaMap: veg.alpha, alphaTest: 0.42, alphaToCoverage: true, side: THREE.DoubleSide, roughness: 0.72, metalness: 0,
+        vertexColors: true, color: spCol(t) });
+      m.defines = face ? { VEG_CARDS: '', VEG_FACE: '' } : { VEG_CARDS: '' };
+      return weatherPatch(m, { kind, key: face ? 'f' : 'x', diffuseOnly: true, aoExpr: kind === 'leaf' ? 'ao * aOcc' : 'aOcc', vsPost: kind === 'leaf' ? 'vBounce *= aOcc;' : '',
+        fsLights: VEG_LEAF_LIGHTS, uniforms: { uLeafL, uWind }, fsAlpha: alphaBoost, ...extra }, uniforms);
+    };
+    const woodMat = (t) => weatherPatch(new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0, color: new THREE.Color(0.85, 0.85, 0.85) }), {
+      kind: 'bark', key: 'v', uniforms: { uBark: { value: veg.bark[t] }, uWind },
+      vsHead: VEG_GLSL + '\nattribute float aTile;\nvarying vec2 vBUv;\nvarying float vTile;',
+      vsBegin: '  transformed = vegWind(transformed, position, 0.0);\n  vBUv = uv; vTile = aTile;',
+      fsHead: 'uniform sampler2D uBark;\nvarying vec2 vBUv;\nvarying float vTile;',
+      fsMap: '  { vec2 g = vBUv * vec2(0.5, 1.0); diffuseColor.rgb *= textureGrad(uBark, vec2((vTile + fract(vBUv.x)) * 0.5, fract(vBUv.y)), dFdx(g), dFdy(g)).rgb; }' }, uniforms);
+    const cardDepth = (face) => {
+      const m = depthC2Mat({ vsHead: VEG_GLSL, vsMain: VEG_CARD_VS + `
+  #ifdef USE_INSTANCING
+  transformed = (instanceMatrix * vec4(transformed, 1.0)).xyz;
+  #endif
+  vUv = uv;`, uniforms: { uTime: uniforms.uTime, uWind }, alphaTex: veg.alpha, alphaCh: 1, alphaTest: 0.42, texN: 2048, edge: [0.12, 0.38], near: true });
+      m.defines = face ? { VEG_CARDS: '', VEG_FACE: '' } : { VEG_CARDS: '' };
+      m.vertexShader = m.vertexShader.replace('gl_Position = projectionMatrix * mv;', `gl_Position = projectionMatrix * mv;
+  #ifdef USE_INSTANCING
+  if (length((modelViewMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz) > 42.0) gl_Position = vec4(0.0, 0.0, -2.0, 1.0);   // C2: leaves within ~40 m
+  #endif`);
+      return m;
+    };
+
+    // ---- instances
+    const VI = [], _M = new THREE.Matrix4(), _Q = new THREE.Quaternion(), _P = new THREE.Vector3(), _S = new THREE.Vector3(), _o = new THREE.Vector3();
     const probe = (p) => { const vis = lightProbe(bvh, p, UPV, 18, 4); return { vis, ao: aoCurve(vis), bo: LP.out.clone() }; };
-    const tintOf = () => (FR() < 0.12 ? [1.18, 1.08, 0.7] : [0.85 + FR() * 0.3, 0.9 + FR() * 0.2, 0.8 + FR() * 0.3]);
-    const clear = (x, y, z) => { let m = 6; for (let k = 0; k < 6; k++) { const a = k * 1.047; fray.origin.set(x, y, z); fray.direction.set(Math.cos(a), 0, Math.sin(a)); const h = bvh.raycastFirst(fray, THREE.DoubleSide, 0, 6); if (h) m = Math.min(m, h.distance); } return m; };
-    const shrub = (x, z, s, nb, swayK, nq = 9) => {
+    const qK = quality === 'low' ? 0.75 : 1;
+    // t type, (x, y, z) base, yaw, scale (sx, sy, sz), lod distances [L0 end, L1 end], centre: crown centred on (x, z)
+    const addI = (t, x, y, z, yaw, sx, sy, sz, th, { centre = false, pr = null, yel = 0.12 } = {}) => {
+      const ty = man.types[t], cr = ty.crown.c; _Q.setFromAxisAngle(UPV, yaw);
+      _P.set(x, y, z);
+      if (centre) { _o.set(cr[0] * sx, 0, cr[2] * sz).applyQuaternion(_Q); _P.sub(_o); }
+      _M.compose(_P, _Q, _S.set(sx, sy, sz));
+      const ctr = new THREE.Vector3(...cr).applyMatrix4(_M);
+      pr = pr || probe(ctr.clone().addScaledVector(UPV, ty.crown.r[1] * sy * 0.5));
+      const r = FR(), b = 0.84 + FR() * 0.3, c = r < yel ? [b * 1.1, b * 1.04, b * 0.72] : [b * (0.9 + FR() * 0.14), b, b * (0.82 + FR() * 0.3)];
+      const I = { t, m: _M.toArray(new Float32Array(16)), c, ao: pr.ao, bo: [pr.bo.x, pr.bo.y, pr.bo.z], ay: [y, y + ty.H * sy], ctr, th: th.map((v) => v * qK), lod: -1, d: 0 };
+      VI.push(I); return I;
+    };
+    // the clumps: buildGeometry's trees (they collide) + a shrub skirt round every main tree
+    let nTree = 0, nSkirt = 0;
+    for (const t of geo.vegTrees || []) {
+      const k = Math.min(1.4, Math.max(0.55, t.h / 9));
+      addI(t.type, t.x, t.y, t.z, t.yaw, t.sx, t.sy, t.sz, [30 * k, 85 * k]); nTree++;
+      if (!t.main) continue;
+      for (let j = 0, n = 1 + Math.floor(FR() * 3); j < n; j++) {
+        const a = FR() * 6.283, d = 0.7 + FR() * 2.2, x = t.x + Math.cos(a) * d, z = t.z + Math.sin(a) * d, s = 0.9 + FR() * 1.2;
+        if (distToPaths(x, z) < 2.6) continue;
+        if (bush(x, z, s, 0.06)) nSkirt++;
+      }
+    }
+    function bush(x, z, s, swayK, extra = {}) {   // a shrub mass of about s m: island_tree_02 sunk to its crown
       const y = terrainHeight(x, z), cl = clear(x, y + 0.6 * s, z); if (cl < 0.35) return false;
       s = Math.min(s, (cl + 0.3) / 0.6);
-      const pr = probe(new THREE.Vector3(x, y + s, z)); if (pr.vis < 0.3) return false;       // no light, no growth
-      const cc = new THREE.Vector3(x, y + s * 0.55, z), tint = tintOf();
-      for (let b = 0; b < nb; b++) ball(new THREE.Vector3(x + (FR() - 0.5) * s * 0.9, y + s * (0.3 + FR() * 0.5), z + (FR() - 0.5) * s * 0.9), s * (0.65 + FR() * 0.4), cc, s * 1.2, pr, tint, swayK, y, nq);
+      const k = 0.5 * s, sy = k * (0.95 + FR() * 0.35);
+      const pr = probe(new THREE.Vector3(x, y + s * 0.8, z)); if (pr.vis < 0.3) return false;       // no light, no growth
+      const lk = Math.min(1.3, Math.max(0.6, s / 2));
+      addI('S', x, y - 1.42 * sy, z, FR() * 6.283, k * (0.8 + FR() * 0.25), sy, k * (0.8 + FR() * 0.25), [18 * lk, 50 * lk], { centre: true, pr, yel: 0.08 });
       return true;
-    };
-    // trees: the limb clumps buildGeometry laid out on each leaning trunk, 7-11 small balls (0.08-0.13 h) per limb,
-    // so the crown is lumpy with sky gaps and the branches show between the clumps
-    for (const t of treeSpots) {
-      const cc = new THREE.Vector3(...t.cc), pr = probe(cc.clone().addScaledVector(UPV, t.ry * 0.6)), tint = tintOf(), rad = Math.max(t.rx, t.ry);
-      for (const [lx, ly, lz, lr] of t.limbs) {
-        for (let b = 0, nb = 7 + Math.floor(FR() * 5); b < nb; b++)
-          ball(new THREE.Vector3(lx + (FR() - 0.5) * 2 * lr, ly + (FR() - 0.5) * 1.5 * lr, lz + (FR() - 0.5) * 2 * lr), t.h * (0.08 + FR() * 0.05), cc, rad, pr, tint, 0.012, t.y + t.h * 0.3, 6);
-      }
     }
-    // overgrowth against the walls (art #1): ~250 shrub masses (1.5-3 m, 5-8 balls) in a 1-4 m band along ~40 % of every
-    // footprint edge, in runs; clear of the tracks and of every low line gate (the doors and openings stay visible)
-    let nBush = 0, nField = 0, nSap = 0, nTrack = 0;
-    // doors and openings (gates up to 6 m wide) stay clear; along the wide ones (the silo table's edges) only small,
-    // sparse shrubs, so the line stays flyable and readable
+    function clear(x, y, z) { let m = 6; for (let k = 0; k < 6; k++) { const a = k * 1.047; fray.origin.set(x, y, z); fray.direction.set(Math.cos(a), 0, Math.sin(a)); const h = bvh.raycastFirst(fray, THREE.DoubleSide, 0, 6); if (h) m = Math.min(m, h.distance); } return m; }
+    const sapling = (x, y, z, h, pr = null) => { const s = h / man.types.A.H, k = Math.min(1, Math.max(0.5, h / 6)); return addI('A', x, y - 0.05, z, FR() * 6.283, s * (0.85 + FR() * 0.3), s, s * (0.85 + FR() * 0.3), [22 * k, 60 * k], { pr }); };
+    // overgrowth against the walls (art #1): shrub masses in a 1-4 m band along ~40 % of every footprint edge, in
+    // runs, a young stem among a third of them; clear of the tracks and of every low line gate (doors stay visible)
+    let nBush = 0, nField = 0, nSap = 0, nTrack = 0, nStem = 0;
     const gates = (site.lines || []).filter((l) => l.c[1] - l.h / 2 < 4);
     const gateK = (x, z, s) => {
       let k = 0;
@@ -2808,13 +2903,16 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
         const len = side < 2 ? f.x1 - f.x0 : f.z1 - f.z0;
         for (let t = -1 - FR() * 2; t < len + 1;) {
           const run = 3 + FR() * 7, on = FR() < 0.4;
-          if (on) for (let u = t; u < Math.min(len + 1, t + run); u += (0.35 + FR() * 0.5) * 0.5) {
+          if (on) for (let u = t; u < Math.min(len + 1, t + run); u += (0.35 + FR() * 0.5) * 0.8) {
             const o = 1 + FR() * 3; let s = 1.5 + FR() * 1.5;
             const x = side < 2 ? f.x0 + u : side === 2 ? f.x0 - o : f.x1 + o, z = side < 2 ? (side === 0 ? f.z0 - o : f.z1 + o) : f.z0 + u;
             const gk = gateK(x, z, 1.2); if (gk === 2 || (gk === 1 && FR() < 0.7)) continue;
             if (gk === 1) s = Math.min(s, 1.6);
             if (inFoot(x, z, 0.4) || distToPaths(x, z) < 2.4 + s * 0.5 || !roomy(x, z, s)) continue;
-            if (shrub(x, z, s, 5 + Math.floor(FR() * 4), 0.03, 5)) { nBush++; masses.push([x, z, s]); }
+            if (bush(x, z, s, 0.03)) {
+              nBush++; masses.push([x, z, s]);
+              if (gk === 0 && FR() < 0.35) { const ox = (FR() - 0.5) * s * 0.5, oz = (FR() - 0.5) * s * 0.5; if (!inFoot(x + ox, z + oz, 0.5)) { sapling(x + ox, terrainHeight(x + ox, z + oz), z + oz, s * (1.2 + FR() * 0.9)); nStem++; } }
+            }
           }
           t += run;
         }
@@ -2827,13 +2925,19 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
         if (FR() < 0.35) continue;
         const x0 = z > 95 ? 0 : 6 * (95 - z) / 35, x = x0 + sgn * (4.5 + FR() * 2.5), s = 1.2 + FR() * 1.4;
         if (distToPaths(x, z) < 3.8 + s * 0.4 || !roomy(x, z, s)) continue;
-        if (shrub(x, z, s, 4 + Math.floor(FR() * 4), 0.03, 5)) { nTrack++; masses.push([x, z, s]); }
+        if (bush(x, z, s, 0.03)) { nTrack++; masses.push([x, z, s]); if (FR() < 0.25) { sapling(x, terrainHeight(x, z), z, 2.2 + FR() * 2.5); nStem++; } }
       }
     }
-    for (let k = 0; k < 90; k++) {
+    // scrub on the yard: small clumps of 2-4 shrubs, the odd young tree among them
+    for (let k = 0; k < 45; k++) {
       const x = -125 + FR() * 240, z = -100 + FR() * 225;
       if (inFoot(x, z, 3) || distToPaths(x, z) < 4 || Math.hypot(x, z - 118) < 12) continue;
-      if (shrub(x, z, 1.2 + FR() * 1.4, 3 + Math.floor(FR() * 3), 0.025, 6)) nField++;
+      for (let j = 0, n = 2 + Math.floor(FR() * 3); j < n; j++) {
+        const xx = x + (FR() - 0.5) * 4, zz = z + (FR() - 0.5) * 4;
+        if (distToPaths(xx, zz) < 3.5 || inFoot(xx, zz, 2)) continue;
+        if (bush(xx, zz, 1.1 + FR() * 1.3, 0.025)) nField++;
+      }
+      if (FR() < 0.3) { sapling(x, terrainHeight(x, z), z, 2.5 + FR() * 2.5); nStem++; }
     }
     // saplings where slabs and roofs end (rain, a crack, a little soil)
     const bigF = site.footprints.filter((f) => (f.x1 - f.x0) * (f.z1 - f.z0) > 60);
@@ -2846,72 +2950,94 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
       let hits = 0, hx = 0, hz = 0;
       for (const [dx, dz] of [[1.1, 0], [-1.1, 0], [0, 1.1], [0, -1.1]]) { fray.origin.set(x + dx, h.point.y + 0.4, z + dz); if (bvh.raycastFirst(fray, THREE.DoubleSide, 0, 1.5)) { hits++; hx += dx; hz += dz; } }
       if (hits < 2 || hits === 4 || (hits === 2 && hx === 0 && hz === 0)) continue;
-      const s = 0.45 + FR() * 0.8, base = h.point.clone(), cc = base.clone().addScaledVector(UPV, s * 0.5), pr = probe(cc.clone().addScaledVector(UPV, s * 0.5));
+      const s = 0.8 + FR() * 1.4, pr = probe(h.point.clone().addScaledVector(UPV, s * 0.7));
       if (pr.vis < 0.6) continue;                                   // roofs and outer edges only, not interior hole rims
-      for (let b = 0, nb = 1 + Math.floor(FR() * 2); b < nb; b++) ball(cc.clone().add(new THREE.Vector3((FR() - 0.5) * s * 0.6, FR() * s * 0.4, (FR() - 0.5) * s * 0.6)), s, cc, s, pr, tintOf(), 0.04, base.y);
-      nSap++;
+      sapling(x, h.point.y, z, s, pr); nSap++;
     }
-    const lm = weatherPatch(new THREE.MeshStandardMaterial({ map: leafMap, alphaTest: 0.42, alphaToCoverage: true, side: THREE.DoubleSide, roughness: 0.8, metalness: 0, vertexColors: true,
-      color: leafOK ? lin3(MATS.leaf.color) : new THREE.Color(1, 1, 1) }), { kind: 'leaf', fsAlpha: `
-  #ifdef USE_MAP
-  { vec2 tx = vMapUv * 512.0; diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
-  #endif` }, uniforms);
-    const ldm = depthC2Mat({ vsHead: 'attribute float aSway;', vsMain: `
-  transformed += vec3(sin(uTime * 1.7 + position.x * 0.4 + position.z * 0.3), 0.3 * sin(uTime * 2.3 + position.y), cos(uTime * 1.3 + position.z * 0.35)) * aSway;
-  vUv = uv;`, uniforms: { uTime: uniforms.uTime }, alphaTex: leafMap, alphaCh: 0, alphaTest: 0.42, texN: 512, edge: [0.12, 0.38], near: true });
-    let cards = 0;
-    for (const T of [...tiles.keys()].sort((a, b) => a - b).map((k) => tiles.get(k))) {
-      if (!T.I.length) continue;
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(T.P, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(T.N, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(T.UV, 2));
-      g.setAttribute('color', new THREE.Float32BufferAttribute(T.C, 3)); g.setAttribute('ao', new THREE.Float32BufferAttribute(T.AO, 1)); g.setAttribute('bounce', new THREE.Float32BufferAttribute(T.BO, 3));
-      g.setAttribute('aSway', new THREE.Float32BufferAttribute(T.SW, 1)); g.setIndex(T.I); g.computeBoundingSphere(); g.boundingSphere.radius += 0.6;   // + sway
-      const mesh = new THREE.Mesh(g, lm); mesh.castShadow = true; mesh.receiveShadow = true; mesh.renderOrder = 1; mesh.matrixAutoUpdate = false; mesh.name = 'foliage'; scene.add(mesh);
-      const dm = new THREE.Mesh(g, ldm); dm.matrixAutoUpdate = false; leafTiles.push(dm);
-      cards += T.I.length / 6;
-    }
-    Object.assign(foliageStats, { trees: treeSpots.length, thickets: nBush, track: nTrack, shrubs: nField, saplings: nSap, cards, tiles: leafTiles.length });
-  }
 
-  lap('foliage');
-  // [B] distant treeline: each crown is 7 alpha-tested leaf-cluster cards (crownCards) on a round-topped crown, one
-  // InstancedMesh named 'treeline' (A2 renders it into the static ring shadow map; its material is plain map +
-  // alphaTest, so a depth proxy with the same map works). No shrink with distance: the camera far plane is 3000 m.
-  // Haze = the physical amount at that range, 0.15 (1 - exp(-d / 600)) (decision 12), on top of the scene fog.
-  // Instances run near to far from the site centre (front-to-back for the alpha-tested pass).
-  {
-    const crown = crownCards(), UPV = new THREE.Vector3(0, 1, 0), list = treeline.slice().sort((a, b) => Math.hypot(a.x + 5, a.z - 10) - Math.hypot(b.x + 5, b.z - 10));
-    const tm = weatherPatch(new THREE.MeshStandardMaterial({ map: leafMap, alphaTest: 0.42, alphaToCoverage: true, side: THREE.DoubleSide, roughness: 1, metalness: 0,
-      color: leafOK ? lin3(MATS.leaf.color) : new THREE.Color(1, 1, 1) }), { kind: 'treeline', aoExpr: 'gAO',
-      vsBegin: `
-  float gAO = mix(0.35, 1.0, smoothstep(0.0, 0.85, position.y)) * (0.78 + 0.22 * normal.y);`,
-      fsFog: `#ifdef USE_FOG
+    // ---- meshes per (type, LOD), shared instance buffers per bucket
+    const buckets = [];
+    for (const t of ['A', 'B', 'S']) {
+      const cap = VI.filter((I) => I.t === t).length; if (!cap) continue;
+      const lods = man.types[t].lods;
+      for (let l = 0; l < 3 && l < lods.length; l++) {
+        const iM = new THREE.InstancedBufferAttribute(new Float32Array(cap * 16), 16), iC = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+        const iAO = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1), iBO = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3), iAY = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
+        for (const a of [iM, iC, iAO, iBO, iAY]) a.setUsage(THREE.DynamicDrawUsage);
+        const b = { t, l, list: [], meshes: [], iM, iC, iAO, iBO, iAY };
+        const mk = (name, mat, shadow, depth) => {
+          const g = mkGeo(name); if (!g) return;
+          g.setAttribute('ao', iAO); g.setAttribute('bounce', iBO); g.setAttribute('aY', iAY);
+          const m = new THREE.InstancedMesh(g, mat, cap); m.instanceMatrix = iM; m.instanceColor = iC; m.count = 0; m.visible = false;
+          m.frustumCulled = false; m.castShadow = shadow; m.receiveShadow = true; m.matrixAutoUpdate = false; m.name = 'veg'; m.renderOrder = 1; scene.add(m); b.meshes.push(m);
+          if (depth) { const dm = new THREE.InstancedMesh(g, depth, cap); dm.instanceMatrix = iM; dm.count = 0; dm.visible = false; dm.frustumCulled = false; dm.matrixAutoUpdate = false; leafTiles.push(dm); b.meshes.push(dm); }
+        };
+        mk(lods[l].cards, leafMat(t, l > 0), true, l < 2 ? cardDepth(l > 0) : null);
+        if (lods[l].wood) mk(lods[l].wood, woodMat(t), true, null);
+        buckets.push(b);
+      }
+    }
+    const BK = new Map(buckets.map((b) => [b.t + b.l, b]));
+    const write = () => {
+      for (const b of buckets) {
+        if (b.l === 0) b.list.sort((p, q) => p.d - q.d);   // near to far: alpha-tested crowns reject what they hide
+        b.list.forEach((I, i) => { b.iM.array.set(I.m, i * 16); b.iC.array.set(I.c, i * 3); b.iAO.array[i] = I.ao; b.iBO.array.set(I.bo, i * 3); b.iAY.array.set(I.ay, i * 2); });
+        for (const a of [b.iM, b.iC, b.iAO, b.iBO, b.iAY]) a.needsUpdate = true;
+        for (const m of b.meshes) { m.count = b.list.length; m.visible = b.list.length > 0; }
+      }
+    };
+    const last = new THREE.Vector3(1e9, 0, 0);
+    vegFill = (lod) => { for (const b of buckets) b.list.length = 0; if (lod >= 0) for (const I of VI) { I.lod = -1; (BK.get(I.t + lod) || BK.get(I.t + 0)).list.push(I); } write(); last.set(1e9, 0, 0); };
+    vegUpdate = (cam) => {
+      if (last.distanceToSquared(cam) < 0.64) return;
+      last.copy(cam);
+      for (const b of buckets) b.list.length = 0;
+      for (const I of VI) {
+        const d = (I.d = I.ctr.distanceTo(cam)), l = I.lod;
+        const nl = d < I.th[0] * (l === 0 ? 1.06 : 0.94) ? 0 : d < I.th[1] * (l >= 0 && l <= 1 ? 1.06 : 0.94) ? 1 : 2;
+        I.lod = nl; (BK.get(I.t + nl) || BK.get(I.t + (nl - 1)) || BK.get(I.t + 0)).list.push(I);
+      }
+      write();
+    };
+    const cnt = (t) => VI.filter((I) => I.t === t).length;
+    Object.assign(foliageStats, { trees: nTree, skirts: nSkirt, thickets: nBush, stems: nStem, track: nTrack, shrubs: nField, saplings: nSap, instances: VI.length, A: cnt('A'), B: cnt('B'), S: cnt('S'), meshes: buckets.reduce((n, b) => n + b.meshes.length, 0) });
+
+    lap('foliage');
+    // ---- distant treeline: LOD 3 of A and B (7 camera-facing cards each), one static group named 'treeline' (A2's
+    // ring shadow map renders it with the customDepthMaterial below: the same facing cut-out, turned to the sun).
+    // No shrink with distance: the camera far plane is 3000 m. Haze = 0.15 (1 - exp(-d / 600)) on top of the fog.
+    {
+      const list = treeline.slice().sort((a, b) => Math.hypot(a.x + 5, a.z - 10) - Math.hypot(b.x + 5, b.z - 10));
+      const group = new THREE.Group(); group.name = 'treeline';
+      const tdm = new THREE.MeshBasicMaterial({ alphaMap: veg.alpha, alphaTest: 0.42, side: THREE.DoubleSide, colorWrite: false });
+      tdm.defines = { VEG_CARDS: '', VEG_FACE: '' };
+      tdm.onBeforeCompile = (sh) => {
+        sh.uniforms.uTime = uniforms.uTime; sh.uniforms.uWind = uWind;
+        sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform float uTime;\n' + VEG_GLSL).replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VEG_CARD_VS);
+        sh.fragmentShader = sh.fragmentShader.replace('#include <alphatest_fragment>', alphaBoost + '\n#include <alphatest_fragment>');
+      };
+      tdm.customProgramCacheKey = () => 'vegTreelineDepth';
+      const greens = [[0.86, 0.9, 0.92], [0.95, 0.95, 0.88], [0.78, 0.84, 0.9], [1.0, 0.96, 0.78]];
+      const byT = { A: [], B: [] }; list.forEach((t) => byT[t.tint * 7 % 1 < 0.45 ? 'A' : 'B'].push(t));
+      const M = new THREE.Matrix4(), qq = new THREE.Quaternion(), col = new THREE.Color(), P = new THREE.Vector3(), S = new THREE.Vector3();
+      for (const [t, arr] of Object.entries(byT)) {
+        const ty = man.types[t], lod = ty.lods[3]; if (!lod || !arr.length) continue;
+        const mat = leafMat(t, true, 'treeline', { fsFog: `#ifdef USE_FOG
   gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, 0.15 * (1.0 - exp(-vFogDepth / 600.0)));   // aerial perspective of a distant wood
-#endif`,
-      fsAlpha: `
-  #ifdef USE_MAP
-  { vec2 tx = vMapUv * 512.0; diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
-  #endif` }, uniforms);
-    const M = new THREE.Matrix4(), qq = new THREE.Quaternion(), col = new THREE.Color(), P = new THREE.Vector3(), S = new THREE.Vector3();
-    // relative to the leaf atlas: round 2's crown greens x1.5, a few darker/bluer and yellower stands
-    const greens = [[0.72, 0.74, 0.82], [0.84, 0.82, 0.78], [0.62, 0.66, 0.76], [0.92, 0.88, 0.7]];
-    const im = new THREE.InstancedMesh(crown, tm, list.length);
-    list.forEach((t, i) => {
-      qq.setFromAxisAngle(UPV, t.rot); M.compose(P.set(t.x, t.y, t.z), qq, S.set(t.w, t.h, t.d)); im.setMatrixAt(i, M);
-      const gc = greens[Math.min(3, Math.floor(t.tint * 4))], k = 0.88 + t.tint * 0.24; im.setColorAt(i, col.setRGB(gc[0] * k, gc[1] * k, gc[2] * k));
-    });
-    // depth stand-in for A2's static ring shadow map (it uses customDepthMaterial when present): the same map cut-out
-    // with the same mip alpha boost as the visible cards, so at ~0.9 m shadow texels the crowns' shadows keep their
-    // fill. castShadow stays false: three's own live shadow pass never draws the treeline (it is A2's ring map's).
-    const tdm = new THREE.MeshBasicMaterial({ map: leafMap, alphaTest: 0.42, side: THREE.DoubleSide, colorWrite: false });
-    tdm.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <alphatest_fragment>', `#ifdef USE_MAP
-  { vec2 tx = vMapUv * 512.0; diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
-#endif
-#include <alphatest_fragment>`); };
-    tdm.customProgramCacheKey = () => 'treelineDepth';
-    im.customDepthMaterial = tdm;
-    im.computeBoundingSphere(); im.castShadow = false; im.receiveShadow = false; im.renderOrder = 1; im.matrixAutoUpdate = false; im.name = 'treeline'; scene.add(im);
-    foliageStats.treeline = treeline.filter((t) => !t.outer).length; foliageStats.treelineOuter = treeline.length - foliageStats.treeline; lap('treeline');
+#endif` });
+        const im = new THREE.InstancedMesh(mkGeo(lod.cards), mat, arr.length), cw = 2 * Math.max(ty.crown.r[0], ty.crown.r[2]);
+        arr.forEach((tr, i) => {
+          const sy = tr.h / ty.H, sxz = sy * Math.min(1.6, Math.max(0.85, (tr.w / tr.h) / (cw / ty.H)));
+          qq.setFromAxisAngle(UPV, tr.rot); M.compose(P.set(tr.x, tr.y, tr.z), qq, S.set(sxz, sy, sxz)); im.setMatrixAt(i, M);
+          const gc = greens[Math.min(3, Math.floor(tr.tint * 4))], k = 0.88 + tr.tint * 0.24; im.setColorAt(i, col.setRGB(gc[0] * k, gc[1] * k, gc[2] * k));
+        });
+        im.customDepthMaterial = tdm; im.computeBoundingSphere(); im.castShadow = false; im.receiveShadow = false; im.renderOrder = 1; im.matrixAutoUpdate = false;
+        group.add(im);
+      }
+      group.matrixAutoUpdate = false; scene.add(group);
+      foliageStats.treeline = treeline.filter((t) => !t.outer).length; foliageStats.treelineOuter = treeline.length - foliageStats.treeline;
+    }
+    lap('treeline');
   }
   // [B] contract C2: the blur depth's alpha-tested extras (fpvcam renders this after the collider, same camera, no
   // override material): near grass (<= 8 m ring) and the leaf tiles within 40 m. world.update() keeps them current.
@@ -2952,7 +3078,9 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   const lightBasisX = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), sunDir).normalize(), lightBasisY = new THREE.Vector3().crossVectors(sunDir, lightBasisX);
   const _fwd = new THREE.Vector3(), _ctr = new THREE.Vector3(); let shAx = NaN, shAy = NaN, shN = 0;
   if (sun.castShadow) {
+    vegFill?.(1);   // [V1] every tree and shrub at LOD 1 into the static far map (then back to camera LODs)
     const fs = renderFarShadow(renderer, scene, merged, sunDir, quality === 'low' ? 1024 : 2048, aLight);
+    vegFill?.(-1);
     if (mats.slab) mats.slab.aFarShadowTex = fs.tex;   // so clearWorld()'s material sweep disposes it with the world
     console.info('far shadow texel m', +fs.texel.toFixed(3));
     // [A2] treeline crowns (stream B's mesh or group named 'treeline'; absent = no ring map) into a static ring map
@@ -2980,7 +3108,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     grass.geometry.instanceCount = Math.min(gN * gN, ringCount(grassU.uR.value / cell + 2.2));
     // [B] C2 depth: the grass ring within ~8 m, the leaf tiles within 40 m
     grassDepth.visible = grass.visible; grassDepth.geometry.instanceCount = Math.min(grass.geometry.instanceCount, ringCount(8 / cell + 1.5));
-    for (const m of leafTiles) { _ds.copy(m.geometry.boundingSphere); m.visible = _ds.distanceToPoint(camPos) < 40; }
+    vegUpdate(camPos);   // [V1] tree/shrub LOD buckets (the C2 depth twins share them; their shader keeps < 42 m)
     // [A2] live shadow map follows the camera (lead 0: a heading-dependent centre re-rendered on every turn);
     // re-render only when its snapped centre moves
     _ctr.copy(camPos);
