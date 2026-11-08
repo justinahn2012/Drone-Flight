@@ -2039,9 +2039,10 @@ export function lmMatch(j, geo, sky, sunDir) {
 // BufferGeometry (world space; userData.occ / opacity / albedo) or { position, index?, occ?, opacity?, albedo? }.
 // Normalised to { position: Float32Array, index: Uint32Array, occ, opacity, albedo }; [] when there are none.
 export function vegProxyList(geo) {
-  const src = geo?.vegProxies || geo?.site?.vegProxies || [], out = [], leaf = MATS.leaf?.albedo ?? [0.1, 0.12, 0.04];
+  const raw = geo?.vegProxies || geo?.site?.vegProxies || [], out = [], leaf = MATS.leaf?.albedo ?? [0.1, 0.12, 0.04];
+  const src = Array.isArray(raw) ? raw : [raw];   // V1 hands one {geometry, occ, opacity, albedo}
   for (const e of src) {
-    const g = e?.isBufferGeometry ? e : null, m = g ? g.userData || {} : e || {};
+    const g = e?.isBufferGeometry ? e : e?.geometry?.isBufferGeometry ? e.geometry : null, m = e?.isBufferGeometry ? e.userData || {} : e || {};
     const pos = g ? g.attributes.position?.array : e?.position; if (!pos || pos.length < 9) continue;
     const ix = g ? g.index?.array : e.index, n = pos.length / 3;
     const index = ix ? Uint32Array.from(ix) : Uint32Array.from({ length: n - (n % 3) }, (_, i) => i);
