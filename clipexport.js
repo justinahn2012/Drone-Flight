@@ -223,7 +223,7 @@ export async function renderHQ(o) {
       }
       acc.resolve(k);
       const capOn = o.composite(k, T, i);
-      if (capOn && !capFrames.some((c) => c[1] === capOn)) capFrames.push([k, capOn]);
+      if (capOn >= 0 && !capFrames.some((c) => c[1] === capOn)) capFrames.push([k, capOn]);
       const vf = new VideoFrame(comp, { timestamp: Math.round(k * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
       venc.encode(vf, { keyFrame: k % 60 === 0 }); vf.close();
       while (venc.encodeQueueSize > 2) await new Promise((ok) => setTimeout(ok, 4));

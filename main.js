@@ -854,7 +854,7 @@ function setPhase(p) {
 function syncCuts() {
   const b = clipBuf, busy = $('clip').dataset.phase === 'render';
   $('clipCuts').querySelectorAll('button[data-cut]').forEach((el) => {
-    const k = el.dataset.cut, w = b ? clipPlan(b, k) : null, d = planDur(w);
+    const k = el.dataset.cut, w = b ? clipPlan(b, k) : null, d = Math.round(planDur(w));
     el.classList.toggle('hidden', k === 'short' && !(b && shortOK(b)) && clipSel !== 'short');
     el.disabled = !w || busy; el.classList.toggle('on', k === clipSel);
     el.textContent = k === 'last' ? (w && d < CLIP_LAST - 0.5 ? `LAST ${fmtS(d)}` : CUT_NAME.last) : CUT_NAME[k] + (w ? ` ${fmtS(d)}` : '');
