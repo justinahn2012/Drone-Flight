@@ -39,7 +39,7 @@ const MATS = {
   apron: { id: 'asphalt_02', tile: 5.0, maps: ['diff'], color: [1.75, 1.72, 1.72], kind: 'aux', albedo: [0.176, 0.170, 0.152], radius: 9 },   // radius: mean paved reach around footprints (5-12 m)
   // grass: graphics #2's darker multiplier, then desaturated ~30 % toward its own luminance (Lab C 26-31 -> ~21 at
   // the same HSV hue; a bluer multiplier alone would push the foliage hue past 70)
-  grass: { model: 'grass_medium_01', tile: 1, maps: ['diff', 'alpha'], color: [1.1, 1.17, 1.98], kind: 'aux', albedo: [0.112, 0.116, 0.055] },
+  grass: { model: 'grass_medium_01', tile: 1, maps: ['diff', 'alpha'], color: [1.1, 1.1, 1.86], kind: 'aux', albedo: [0.112, 0.109, 0.052] },
   leaf: { model: 'tree_small_02', tile: 1, maps: ['leaves_diff', 'leaves_alpha'], color: [1.4, 1.3, 1.5], kind: 'aux', albedo: [0.099, 0.124, 0.035] },
 };
 // [B] treeline crowns get low-poly collision proxies (15.6k tris, appended after the terrain in the collider).
@@ -990,7 +990,7 @@ const WP_FRAG = {
     float big = vn(xz * 0.0045 + 11.0) * 0.7 + vn(xz * 0.017) * 0.3, rr = length(xz - vec2(-5.0, 10.0));
     base *= mix(vec3(1.05, 0.98, 0.86), vec3(0.8, 0.96, 0.72), smoothstep(0.35, 0.7, big));
     float wood = smoothstep(0.3, 0.42, vn(xz * 0.0065 + 3.7) * 0.75 + vn(xz * 0.04) * 0.25) * smoothstep(140.0, 175.0, rr);
-    base = mix(base, vec3(0.05, 0.07, 0.031) * (0.62 + 0.38 * vn(xz * 0.13) + 0.3 * vn(xz * 0.5)), wood);
+    base = mix(base, vec3(0.058, 0.064, 0.027) * (0.62 + 0.38 * vn(xz * 0.13) + 0.3 * vn(xz * 0.5)), wood);
     float ap = smoothstep(0.42, 0.58, mk.g + (vn(xz * 0.9) - 0.5) * 0.34 + (vn(xz * 3.7) - 0.5) * 0.12);
     // asphalt: each ~5 m cell (wavy borders) turned by a random quarter turn and offset, so its one long crack never
     // lines up into a grid; textureGrad with the continuous, equally turned derivatives (no mip seams at the borders)
@@ -2237,7 +2237,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   #endif` }, uniforms);
     const M = new THREE.Matrix4(), qq = new THREE.Quaternion(), col = new THREE.Color(), P = new THREE.Vector3(), S = new THREE.Vector3();
     // relative to the leaf atlas: round 2's crown greens x1.5, a few darker/bluer and yellower stands
-    const greens = [[0.66, 0.72, 0.9], [0.8, 0.82, 0.86], [0.55, 0.62, 0.82], [0.9, 0.88, 0.74]];
+    const greens = [[0.72, 0.74, 0.82], [0.84, 0.82, 0.78], [0.62, 0.66, 0.76], [0.92, 0.88, 0.7]];
     const im = new THREE.InstancedMesh(crown, tm, list.length);
     list.forEach((t, i) => {
       qq.setFromAxisAngle(UPV, t.rot); M.compose(P.set(t.x, t.y, t.z), qq, S.set(t.w, t.h, t.d)); im.setMatrixAt(i, M);
