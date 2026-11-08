@@ -663,7 +663,8 @@ function buildSite(seed = 7) {
   // underside of the first hole a climb goes through), a held climb is captured within r of the axis below it, steered
   // onto the axis and let go above `top` (over the last opening); rIn = clear radius of the tightest opening (the hall
   // roof slot is 2.0 m across x). Read without dir (round-3 flight.js) the 'up' entry is a dive assist down the same
-  // stack from over the roof slot (TRIPLE DROP), which is harmless. take.js: no CUT within r below `top` of any funnel.
+  // stack from over the roof slot (TRIPLE DROP), which is harmless. take.js: no CUT within r below `top` of a 'down' funnel.
+  // E4 captures a held climb from `reach` (default 8 m) below `bottom` to 0.5 m above it, and lets go at `top`.
   S.funnels = [
     { name: 'chimney', dir: 'down', c: [CHIM.x, CHIM.z], top: CHIM.h, bottom: 4, r: 3.5, rIn: CHIM.rt - CHIM.th },
     { name: 'stairwell', dir: 'down', c: [TOWER.x, TOWER.z], top: SILO.top + 0.4, bottom: 2, r: 3.0, rIn: (TOWER.w - 2 * TOWER.T) / 2 - 0.65 },

@@ -566,13 +566,14 @@ function updateProx() { world.lastDist = world.bvh && !drone.crashed ? drone.pro
 // hands (decision 9, design r3 #3). The shaped stick outputs are exactly 0 inside each input's deadzone, so any output
 // is raw deflection past it. moved: a stick past its deadzone or the (non-centring) throttle being moved: starts a take.
 // steer: pitch / roll / yaw past it: blocks the touchdown CUT (holding the dive down is how you land). hands: moved,
-// or any thumb on the screen (C8: E's controls.touches, a Map / Set / array or a count; or controls.active): blocks
+// or E4's controls.active (a thumb on the screen, a key held, a raw stick past the deadzone; else controls.touches): blocks
 // the hover CUT. Without either, hands = moved.
 let thrRef = 0.39, takeGame = S.game;
 const STICK_EPS = 2e-3;
 function thumbsDown() {
-  const t = controls.touches ?? controls.active;
-  return typeof t === 'number' ? t > 0 : typeof t === 'boolean' ? t : t ? (t.size ?? t.length ?? 0) > 0 : false;
+  if (controls.active !== undefined) return !!controls.active;      // E4: thumb on the screen, key held or raw stick past the deadzone
+  const t = controls.touches;
+  return typeof t === 'number' ? t > 0 : t ? (t.size ?? t.length ?? 0) > 0 : false;
 }
 function sticksActive(inp, dt) {
   const d = inp.thr - thrRef; thrRef += d * Math.min(1, dt / 0.5);

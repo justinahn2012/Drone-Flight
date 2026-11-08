@@ -152,6 +152,10 @@ const types = (evs) => evs.map((e) => e.type);
   ok(!types(evs).includes('cut') && tk.cutKind === null, 'no touchdown CUT down a shaft');
   hold(tk, d, 3.5, false, evs, 0.2);
   ok(!types(evs).includes('cut') && tk.cutKind === null, 'r4: no hover CUT down a shaft either');
+  world.funnels = [{ c: [d.pos.x + 1, d.pos.z], dir: 'up', top: 50, bottom: 4, r: 3.5 }];
+  const t6 = new Take(), e6 = []; d.contactN = { x: 0, y: 0, z: 0 }; flyTo(t6, d, d.pos.z + 21, 10, true, e6); hold(t6, d, 2.5, true, e6, 5);
+  world.funnels[0].c = [d.pos.x + 1, d.pos.z]; d.contactN = { x: 0, y: 1, z: 0 }; hold(t6, d, 0.7, true, e6, 0.2);
+  ok(e6.find((e) => e.type === 'cut')?.how === 'land', "r4: an 'up' funnel does not block the touchdown CUT");
   delete world.funnels; d.contactN = { x: 0, y: 0, z: 0 };
 }
 

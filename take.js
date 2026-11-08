@@ -80,7 +80,8 @@ function crossGate(G, a, b) {
 const plainCaption = (s) => String(s || '').replace(/\*/g, '');
 // down one of world.funnels' shafts ({c:[x, z], top, r}): within r of the axis, anywhere below its top (its floor
 // included: E's `bottom` is where the dive assist lets go, not the floor)
-const inShaft = (p, world) => (world?.funnels || []).some((f) => p.y <= f.top && Math.hypot(p.x - f.c[0], p.z - f.c[1]) < f.r);
+// 'down' funnels only (E4): an 'up' funnel's column includes the hall's ground floor, where a landing must still CUT
+const inShaft = (p, world) => (world?.funnels || []).some((f) => f.dir !== 'up' && p.y <= f.top && Math.hypot(p.x - f.c[0], p.z - f.c[1]) < f.r);
 
 // ---- progress, shared by every Take instance (take + free fly): {name: {n: times flown, flow: best FLOW, pts: best pts}}
 const PKEY = 'onetake.lines';
