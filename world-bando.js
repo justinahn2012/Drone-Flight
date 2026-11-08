@@ -2814,6 +2814,9 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
         if (a.aOff) {   // cards: pack offset, sway and occlusion into one vec4 (aCard)
           const n = a.aOff.count, c = new Float32Array(n * 4);
           for (let i = 0; i < n; i++) { c[i * 4] = a.aOff.array[i * 2]; c[i * 4 + 1] = a.aOff.array[i * 2 + 1]; c[i * 4 + 2] = a.aSway.array[i]; c[i * 4 + 3] = a.aOcc.array[i]; }
+          // fuller crowns: every card 1.18x about its centre (fixed corners and facing offsets alike)
+          const P = a.position.array, C = a.aCenter.array, K = 1.18;
+          for (let i = 0; i < n; i++) { for (let k = 0; k < 3; k++) P[i * 3 + k] = C[i * 3 + k] + (P[i * 3 + k] - C[i * 3 + k]) * K; c[i * 4] *= K; c[i * 4 + 1] *= K; }
           a.aCard = new THREE.BufferAttribute(c, 4); delete a.aOff; delete a.aSway; delete a.aOcc;
         }
         base[name] = { a, i: new THREE.BufferAttribute(new Uint16Array(veg.bin, m.index[0], m.index[1]), 1) };
@@ -2877,7 +2880,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
       const k = Math.min(1.4, Math.max(0.55, t.h / 9));
       addI(t.type, t.x, t.y, t.z, t.yaw, t.sx, t.sy, t.sz, [30 * k, 85 * k]); nTree++;
       if (!t.main) continue;
-      for (let j = 0, n = 1 + Math.floor(FR() * 3); j < n; j++) {
+      for (let j = 0, n = 2 + Math.floor(FR() * 3); j < n; j++) {
         const a = FR() * 6.283, d = 0.7 + FR() * 2.2, x = t.x + Math.cos(a) * d, z = t.z + Math.sin(a) * d, s = 0.9 + FR() * 1.2;
         if (distToPaths(x, z) < 2.6) continue;
         if (bush(x, z, s, 0.06)) nSkirt++;
@@ -2886,7 +2889,7 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     function bush(x, z, s, swayK, extra = {}) {   // a shrub mass of about s m: island_tree_02 sunk to its crown
       const y = terrainHeight(x, z), cl = clear(x, y + 0.6 * s, z); if (cl < 0.35) return false;
       s = Math.min(s, (cl + 0.3) / 0.6);
-      const k = 0.5 * s, sy = k * (0.95 + FR() * 0.35);
+      const k = 0.55 * s, sy = k * (0.95 + FR() * 0.35);
       const pr = probe(new THREE.Vector3(x, y + s * 0.8, z)); if (pr.vis < 0.3) return false;       // no light, no growth
       const lk = Math.min(1.3, Math.max(0.6, s / 2));
       addI('S', x, y - 1.42 * sy, z, FR() * 6.283, k * (0.8 + FR() * 0.25), sy, k * (0.8 + FR() * 0.25), [18 * lk, 50 * lk], { centre: true, pr, yel: 0.08 });
@@ -2914,9 +2917,9 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
       for (let side = 0; side < 4; side++) {
         const len = side < 2 ? f.x1 - f.x0 : f.z1 - f.z0;
         for (let t = -1 - FR() * 2; t < len + 1;) {
-          const run = 3 + FR() * 7, on = FR() < 0.4;
-          if (on) for (let u = t; u < Math.min(len + 1, t + run); u += (0.35 + FR() * 0.5) * 0.8) {
-            const o = 1 + FR() * 3; let s = 1.5 + FR() * 1.5;
+          const run = 3 + FR() * 8, on = FR() < 0.5;
+          if (on) for (let u = t; u < Math.min(len + 1, t + run); u += (0.35 + FR() * 0.5) * 0.7) {
+            const o = 0.8 + FR() * 2.8; let s = 1.7 + FR() * 1.9;
             const x = side < 2 ? f.x0 + u : side === 2 ? f.x0 - o : f.x1 + o, z = side < 2 ? (side === 0 ? f.z0 - o : f.z1 + o) : f.z0 + u;
             const gk = gateK(x, z, 1.2); if (gk === 2 || (gk === 1 && FR() < 0.7)) continue;
             if (gk === 1) s = Math.min(s, 1.6);
