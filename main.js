@@ -106,8 +106,10 @@ const MODE_HINT = {
 // take rules for the copy, read live from C's TAKE_TUNING (cutT 3.0 / bankT 5.0 at integration)
 const TT = () => TakeLib.TAKE_TUNING || {};
 const secs = (v, d) => { const x = +v > 0 ? +v : d; return (Math.round(x * 10) / 10).toString(); };
+// C: CUT = 3 s hands-off hover, or 0.6 s touched down (TAKE_TUNING.cutT / landT)
+const cutRule = () => `let go and hover for ${secs(TT().cutT, 3)} s, or touch down for ${secs(TT().landT, 0.6)} s,`;
 const GAME_HINT = {
-  take: () => `One take: fly through named lines to build FLOW. ${secs(TT().bankT, 5)} s without a line banks it; a crash loses what isn't banked. Let go and hover for ${secs(TT().cutT, 3)} s, or land, to CUT.`,
+  take: () => `One take: fly through named lines to build FLOW. ${secs(TT().bankT, 5)} s without a line banks it; a crash loses what isn't banked. To CUT, ${cutRule().replace(/,$/, '')}.`,
   free: () => 'No clock, no take. Lines still caption. Crash and you fly on from where you last flew clear.',
 };
 const STICK_LBL = { cine: ['CLIMB · TURN', 'SPEED · CARVE'], angle: ['THROTTLE · YAW', 'PITCH · ROLL'], acro: ['THROTTLE · YAW', 'PITCH · ROLL'] };
@@ -281,9 +283,9 @@ const STICK_COACH = {
 const LOAD_TIPS = {
   take: () => [
     '<b>Lines</b> are named gaps, holes and dives. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(TT().bankT, 5) + ' s without a line banks it.',
-    `<b>CUT</b>: let go and hover for ${secs(TT().cutT, 3)} s, or land, to end the take and keep everything. The ring by REC counts it down; touch a stick to cancel.`,
+    `<b>CUT</b>: ${cutRule()} to end the take and keep everything. The ring by REC counts it down; touch a stick to cancel.`,
     'A crash loses the <b>unbanked</b> chain. The bar under FLOW shows when it banks. Bank it or push on: your call.',
-    '<b>RESET</b> restarts the take at the chimney; hold it to go back to the spawn. The pause menu can START AT other parts of the site.',
+    '<b>RESET</b> restarts the take at the chimney, or where you chose to START AT on the pause menu; hold it to go back to the spawn.',
   ],
   free: () => [
     '<b>Free fly</b>: no clock. Lines still caption. Crash and you fly on from where you last flew clear.',
@@ -779,6 +781,8 @@ function pop(text, kind = 'score') {
 }
 function showLine(text, subHTML = '', flow = 1) {
   if (/^\+0(?!\d)/.test(subHTML)) subHTML = '';   // free fly: lines caption with pts 0, so no "+0" sub-line
+  else if (subHTML && lineTag) subHTML += lineTag;  // C: a line flown with no contact since the last one (×1.25)
+  lineTag = '';
   setPop('line', (flow >= 6 ? '<span class="emo">😮</span>' : '') + accentHTML(text), subHTML, CAP_DUR);
 }
 function setPop(kind, capHTML, subHTML, dur) {
@@ -828,7 +832,7 @@ function updateHud(dt) {
     $('oThr').querySelector('i').style.height = (controls.thr * 100).toFixed(1) + '%';
     $('oThr').querySelector('u').style.bottom = (Math.sqrt(1 / drone.c.twr) * 100).toFixed(1) + '%';
   }
-  const ts = v.take ? v.state : null;   // the take tag itself is per frame (hudFast): REC / CUT countdown / CRASHED / CUT
+  const ts = v.take && S.game !== 'free' ? v.state : null;   // the take tag itself is per frame (hudFast): REC / CUT countdown / CRASHED / CUT
   // live chain under the caption spot, with the bank drain bar (hudFast)
   const L = $('live');
   if (v.unbanked > 0 && state === 'fly' && !summaryUp()) {
@@ -837,12 +841,12 @@ function updateHud(dt) {
   if (drone.limitHit > 0 && performance.now() - lastLimitToast > 2500) { lastLimitToast = performance.now(); warn(drone.pos.y >= (world.envelope?.max.y ?? 1e9) - 0.01 ? 'CEILING' : 'WORLD EDGE'); }
   // --- next line: Betaflight-style home arrow (8 steps) + name + distance, until 3 lines have ever been flown.
   // The chevron over the gate (< 25 m) is per frame in hudFast and shows for any unflown line.
-  hint = state === 'fly' && !summaryUp() && ts !== 'done' && !drone.crashed ? nextLine() : null;
-  const guide = !!hint && flownCount() < 3, dir = hint ? octant(hint) : 0;
+  nextNow = state === 'fly' && !summaryUp() && ts !== 'done' && !drone.crashed ? nextLine() : null;
+  const nx = nextNow, guide = !!nx && flownCount() < 3, dir = nx ? octant(nx) : 0;
   if (guide) {
     $('oNextA').style.transform = `rotate(${dir * 45}deg)`;
-    $('oNextN').textContent = hint.name;
-    $('oNextD').textContent = `${Math.round(hint.dist)}M${elevTxt(hint)}`;
+    $('oNextN').textContent = nx.name;
+    $('oNextD').textContent = `${Math.round(nx.dist)}M${elevTxt(nx)}`;
   }
   $('oNext').classList.toggle('on', guide);
   // --- radio OLED (portrait)
@@ -850,39 +854,38 @@ function updateHud(dt) {
   const bars = world.lastDist < 3 ? Math.max(0, Math.min(4, Math.round(4 - world.lastDist / 0.5))) : 0;
   $('oPx').querySelectorAll('i').forEach((el, i) => el.classList.toggle('on', i < bars));
   $('oSc').textContent = fmtN(v.total);
-  $('oSt').textContent = drone.crashed ? 'CRASHED' : cutLeft > 0 ? `CUT ${Math.ceil(cutLeft)}…` : drone.limitHit > 0 ? 'LIMIT' :
+  $('oSt').textContent = drone.crashed ? 'CRASHED' : cutLeft > 0 ? (cutLand ? 'LANDED · CUT…' : `CUT ${Math.ceil(cutLeft)}…`) : drone.limitHit > 0 ? 'LIMIT' :
     v.unbanked > 0 ? `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ' x' + v.flow : ''} +${fmtN(v.unbanked)}` :
-    guide ? `${ARROWS[dir]} ${hint.name} ${Math.round(hint.dist)}M` :
+    guide ? `${HOME_ARROWS[dir]} ${nx.name} ${Math.round(nx.dist)}M` :
     ts === 'live' ? '● REC' : ts === 'ready' ? 'READY · FLY A LINE' : ts === 'done' ? (crashedTake() ? 'CRASHED' : 'CUT') :
     S.mode !== 'cine' ? `THR ${Math.round(controls.thr * 100)}%  BEST ${fmtN(v.best)}` : `BEST ${fmtN(v.best)}`;
 }
 
 // ---------------- per-frame HUD: take tag (REC / CUT countdown / CRASHED), bank drain bar, near-line chevron, LOW POWER
-const RING = 2 * Math.PI * 7.5;                                   // #cutArc circumference (r 7.5)
-const ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];          // OLED home arrow, clockwise from the nose
-let cutLeft = 0, tagKey = '', hint = null, lowPow = false, batLvl = 0, drainK = -2, chevOn = false, chevD = -1;
+const CUT_RING = 2 * Math.PI * 7.5;                               // #cutArc circumference (r 7.5)
+const HOME_ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];     // OLED home arrow, clockwise from the nose
+let cutLeft = 0, cutLand = false, tagKey = '', nextNow = null, lowPow = false, batLvl = 0, drainK = -2, chevOn = false, chevD = -1;
 const crashedTake = () => drone.crashed || sum.kind === 'crash' || pendingSum?.type === 'crash';
 function hudFast() {
-  const t = curTake(), ts = t ? t.state : null;
-  // CUT countdown, decision 10: the ring appears after 1 s of hands-off hover and drains to the CUT; any stick cancels
-  // it (C resets the hover). C: take.cutIn = s until the CUT (0/Infinity when not counting); until C lands, the
-  // round-2 hover timer.
+  const t = curTake(), ts = t && S.game !== 'free' ? t.state : null;   // free fly: no take, no tag
+  // CUT countdown, decision 10. C: take.cutIn = s until the CUT while the ring shows (after cutShow 1 s of hands-off
+  // hover, or at once on a touchdown), else 0; take.cutFrac = ring fill 0..1; take.cutKind 'hover' | 'land'.
+  // Any stick cancels it (C resets the hover). Without C: the round-2 hover timer, ring from 1 s.
   const cutT = +TT().cutT || 3, from = Math.max(0.3, cutT - 1);
-  let ci = 0;
+  let ci = 0, frac = 0;
   if (t && ts === 'live' && state === 'fly') {
-    let c = t.cutIn;
-    if (typeof c !== 'number') c = t._hover > 0 && (t.total || 0) + (t.unbanked || 0) > 0 ? cutT - t._hover : 0;
-    if (c > 0 && c <= from) ci = c;
+    if (typeof t.cutIn === 'number') { if (t.cutIn > 0) { ci = t.cutIn; frac = typeof t.cutFrac === 'number' ? t.cutFrac : 1 - ci / from; } }
+    else { const c = t._hover > 0 && (t.total || 0) + (t.unbanked || 0) > 0 ? cutT - t._hover : 0; if (c > 0 && c <= from) { ci = c; frac = 1 - c / from; } }
   }
-  cutLeft = ci;
-  const txt = !ts ? '' : ci ? `CUT ${Math.ceil(ci)}` : crashedTake() ? 'CRASHED' : ts === 'live' ? 'REC' : ts === 'done' ? 'CUT' : 'READY';
+  cutLeft = ci; cutLand = !!ci && t.cutKind === 'land';
+  const txt = !ts ? '' : ci ? (cutLand ? 'LANDED' : `CUT ${Math.ceil(ci)}`) : crashedTake() ? 'CRASHED' : ts === 'live' ? 'REC' : ts === 'done' ? 'CUT' : 'READY';
   const cls = 'o tl' + (ts ? ' on' : '') + (ts === 'live' && !ci ? ' live' : '') + (ci ? ' cut' : '');
   if (cls + txt !== tagKey) {
     tagKey = cls + txt; $('takeTag').className = cls; $('takeTxt').textContent = txt;
     document.body.classList.toggle('cutting', !!ci);
   }
-  if (ci) $('cutArc').style.strokeDashoffset = (RING * (1 - ci / from)).toFixed(2);
-  // bank drain bar under the live chain: bankIn / bankT (C keeps it full while you hug structure)
+  if (ci) $('cutArc').style.strokeDashoffset = (CUT_RING * Math.max(0, Math.min(1, frac))).toFixed(2);   // drains as it fills
+  // bank drain bar under the live chain: bankIn / bankT. C's take.holding (hugging structure keeps the chain alive) glows it.
   const L = $('live'), d = $('drain');
   const k = L.classList.contains('show') && t && typeof t.bankIn === 'number' ? Math.max(0, Math.min(1, t.bankIn / (+TT().bankT || 5))) : -1;
   if (k !== drainK) {
@@ -890,10 +893,12 @@ function hudFast() {
     drainK = k;
     if (k >= 0) { d.style.transform = `scaleX(${k.toFixed(3)})`; d.classList.toggle('low', t.bankIn < 1.5); }
   }
-  // chevron over the next unflown line's first gate, projected through the lens (OSD only: never in clips)
+  if (k >= 0) d.classList.toggle('hold', !!t.holding);
+  // chevron over the next never-flown line's first gate (C: hint.fresh), projected through the lens. OSD only, never in clips.
+  const nx = nextNow;
   let on = false;
-  if (hint && hint.pos && state === 'fly' && hint.dist < 27) {
-    const p = projectView(hint.pos);
+  if (nx && nx.pos && nx.fresh !== false && state === 'fly' && nx.dist < 27) {
+    const p = projectView(nx.pos);
     if (p && p.d < 25) {
       on = true;
       $('oChev').style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px) translate(-50%,calc(-100% - 4px))`;
@@ -928,8 +933,10 @@ function relBearing(p) {
 const octant = (h) => { const b = h.pos ? relBearing(h.pos) : +h.bearing || 0; return ((Math.round(b / (Math.PI / 4)) % 8) + 8) % 8; };
 const elevTxt = (h) => { const dy = h.pos ? h.pos.y - camPose.pos.y : (+h.elev || 0) * (h.dist || 0); return Math.abs(dy) >= 5 ? ` ${dy > 0 ? '▲' : '▼'}${Math.round(Math.abs(dy))}` : ''; };
 
-// ---------------- line progress: LINES checklist, best FLOW per line, stars. The UI keeps its own record from the
-// take events (localStorage onetake.ui.progress), so it works whatever C's take.js stores.
+// ---------------- line progress: LINES checklist, best FLOW per line, stars.
+// C (take.js) keeps the record (localStorage onetake.lines) and serves it as take.lineList(world)
+// [{name, micro, flown, n, bestFlow, ...}] and take.progress(world). The UI also keeps a copy from the take events
+// (onetake.ui.progress) so it works on its own; both are read (union), so nothing is lost either way.
 const LINE_HINT = {
   'CHIMNEY DIVE': 'in at the top of the chimney, out of its door', 'DROP IN': 'into the chimney mouth',
   'UNDER THE RACK': 'under the pipe rack, end to end', 'TRIPLE POP': 'up through the hall\'s three stacked holes',
@@ -942,46 +949,64 @@ const LINE_HINT = {
 const DEFAULT_LINES = ['CHIMNEY DIVE', 'UNDER THE RACK', 'TRIPLE POP', 'TRIPLE DROP', 'GALLERY CLIMB', 'GALLERY DROP', 'STAIRWELL DIVE',
   'UNDER THE TABLE', 'THE SMALL GAP', 'THREAD THE NEEDLE', 'HALL RUN', 'STRAIGHT THROUGH', 'THROUGH THE WORKSHOP'];   // menu before the first load
 const STAR = 'M8 1.2l2.1 4.4 4.8.6-3.5 3.3.9 4.8L8 11.9l-4.3 2.4.9-4.8L1.1 6.2l4.8-.6z';
-const prog = { lines: {}, stars: 0 };   // lines: NAME -> { n: times flown, f: best FLOW (0 = only in free fly) }
-try { const p = JSON.parse(localStorage.getItem('onetake.ui.progress') || 'null'); if (p && p.lines && typeof p.lines === 'object') { prog.lines = p.lines; prog.stars = +p.stars || 0; } } catch (e) {}
-const saveProg = () => { try { localStorage.setItem('onetake.ui.progress', JSON.stringify(prog)); } catch (e) {} };
+const uiProg = { lines: {} };           // NAME -> { n: times flown, f: best FLOW (0 = only in free fly) }
+try { const p = JSON.parse(localStorage.getItem('onetake.ui.progress') || 'null'); if (p && p.lines && typeof p.lines === 'object') uiProg.lines = p.lines; } catch (e) {}
+const saveUiProg = () => { try { localStorage.setItem('onetake.ui.progress', JSON.stringify(uiProg)); } catch (e) {} };
+// C's list (needs the world's lines), else null
+function cLines() {
+  const t = curTake(); if (typeof t?.lineList !== 'function' || !Array.isArray(world.lines) || !world.lines.length) return null;
+  try { const L = t.lineList(world); return Array.isArray(L) ? L : null; } catch (e) { return null; }
+}
+// C's store before a world is loaded (first menu): {NAME: {n, flow, pts}}
+function cStore() { try { const o = JSON.parse(localStorage.getItem('onetake.lines') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } }
 const newLines = new Set();             // first time ever, this take: NEW on the card
+let lineTag = '';                       // CLEAN tag for the next caption's sub-line (showLine)
 function noteLine(e) {
   const name = e.name; if (!name) return;
-  const r = prog.lines[name]; if (!r) newLines.add(name);
-  prog.lines[name] = { n: (r?.n || 0) + 1, f: Math.max(r?.f || 0, e.free ? 0 : e.flow || 1) };
-  saveProg();
+  const c = cLines()?.find((l) => l.name === name), r = uiProg.lines[name];
+  if (e.type === 'line' && (c ? c.n <= 1 : !r)) newLines.add(name);   // C counts the line before dispatching it
+  uiProg.lines[name] = { n: (r?.n || 0) + 1, f: Math.max(r?.f || 0, e.free ? 0 : e.flow || 1) };
+  saveUiProg();
 }
-// 500-pt micro-lines (C: DROP IN, roof U-turn, SILO CARVE...) are beats, not checklist lines
+// 500-pt micro-lines (C: DROP IN, roof U-turn, SILO CARVE...: l.micro) are beats, not checklist lines
 const isMicro = (l) => !!l.micro || (typeof l.pts === 'number' && l.pts > 0 && l.pts < 1000);
-let lineCache = null, lineSrc = null;
-function lineList() {
+let baseCache = null, baseSrc = null;
+function baseLines() {                  // checklist names in world order (cached for the menu before the next load)
   if (Array.isArray(world.lines) && world.lines.length) {
-    if (lineSrc !== world.lines) {
-      lineSrc = world.lines; const m = new Map();
-      for (const l of world.lines) if (l && l.name && !m.has(l.name) && !isMicro(l)) m.set(l.name, { name: l.name, hint: l.hint || LINE_HINT[l.name] || '' });
-      lineCache = [...m.values()];
-      try { localStorage.setItem('onetake.ui.lineList', JSON.stringify(lineCache.map((l) => l.name))); } catch (e) {}
+    if (baseSrc !== world.lines) {
+      baseSrc = world.lines; const m = new Set();
+      for (const l of world.lines) if (l && l.name && !isMicro(l)) m.add(l.name);
+      baseCache = [...m];
+      try { localStorage.setItem('onetake.ui.lineList', JSON.stringify(baseCache)); } catch (e) {}
     }
-    return lineCache;
+    return baseCache;
   }
-  if (!lineCache) {
+  if (!baseCache) {
     let names = null; try { names = JSON.parse(localStorage.getItem('onetake.ui.lineList') || 'null'); } catch (e) {}
-    lineCache = (Array.isArray(names) && names.length ? names : DEFAULT_LINES).map((n) => ({ name: n, hint: LINE_HINT[n] || '' }));
+    baseCache = Array.isArray(names) && names.length ? names : DEFAULT_LINES;
   }
-  return lineCache;
+  return baseCache;
 }
-const flownCount = () => lineList().filter((l) => prog.lines[l.name]).length;
-const hintFor = (name) => lineList().find((l) => l.name === name)?.hint || LINE_HINT[name] || '';
-// the nearest unflown line's first gate. C: take.nextHint(drone, world) -> {name, dist, bearing, elev} picks the line;
-// the UI resolves the gate position from world.lines by name (so bearing conventions can't disagree).
+// [{name, hint, flown, f (best FLOW)}]
+function lineList() {
+  const C = cLines(), m = C ? new Map(C.map((l) => [l.name, { n: l.n || (l.flown ? 1 : 0), f: l.bestFlow || 0 }])) : null;
+  const S0 = m ? null : !Array.isArray(world.lines) ? cStore() : null;
+  return baseLines().map((name) => {
+    const c = m ? m.get(name) : S0?.[name] ? { n: +S0[name].n || 0, f: +S0[name].flow || 0 } : null, r = uiProg.lines[name];
+    return { name, hint: LINE_HINT[name] || '', flown: !!(c?.n || r), f: Math.max(c?.f || 0, r?.f || 0) };
+  });
+}
+const flownCount = () => lineList().filter((l) => l.flown).length;
+const hintFor = (name) => LINE_HINT[name] || '';
+// the nearest never-flown line's first gate. C: take.nextHint(drone, world) -> {name, caption, pos:[x,y,z], dist, bearing
+// (rad from the nose, + right), elev, fresh} or null. The arrow uses pos against the view (so it follows the camera).
 function nearestGate(name) {
   let best = null, bd = Infinity;
   for (const l of world.lines || []) {
-    if (!l || (name ? l.name !== name : isMicro(l) || prog.lines[l.name])) continue;
+    if (!l || (name ? l.name !== name : isMicro(l) || uiProg.lines[l.name])) continue;
     const g = l.pre?.[0]?.c || l.c; if (!g) continue;
     const d = Math.hypot(g[0] - camPose.pos.x, g[1] - camPose.pos.y, g[2] - camPose.pos.z);
-    if (d < bd) { bd = d; best = { name: l.name, pos: new THREE.Vector3(g[0], g[1], g[2]), dist: d }; }
+    if (d < bd) { bd = d; best = { name: l.name, pos: new THREE.Vector3(g[0], g[1], g[2]), dist: d, fresh: true }; }
   }
   return best;
 }
@@ -991,40 +1016,46 @@ function nextLine() {
   if (typeof t?.nextHint === 'function') {
     let h = null; try { h = t.nextHint(drone, world); } catch (e) {}
     if (!h || !h.name) return null;
-    const c = h.pos || h.c;
-    if (c) { const pos = Array.isArray(c) ? new THREE.Vector3(c[0], c[1], c[2]) : new THREE.Vector3(c.x, c.y, c.z); return { name: h.name, pos, dist: pos.distanceTo(camPose.pos) }; }
-    return nearestGate(h.name) || { name: h.name, pos: null, dist: +h.dist || 0, bearing: +h.bearing || 0, elev: +h.elev || 0 };
+    const c = h.pos || h.c, fresh = h.fresh !== false;
+    if (c) { const pos = Array.isArray(c) ? new THREE.Vector3(c[0], c[1], c[2]) : new THREE.Vector3(c.x, c.y, c.z); return { name: h.name, pos, dist: pos.distanceTo(camPose.pos), fresh }; }
+    const g = nearestGate(h.name); if (g) { g.fresh = fresh; return g; }
+    return { name: h.name, pos: null, dist: +h.dist || 0, bearing: +h.bearing || 0, elev: +h.elev || 0, fresh };
   }
   return nearestGate(null);
 }
-// 3-star targets per take (design #3: 40k / 80k / 130k); C may publish TAKE_TUNING.stars
-function starTargets() { const s = TT().stars ?? curTake()?.starTargets; return Array.isArray(s) && s.length ? s : [40000, 80000, 130000]; }
-const starsFor = (total) => starTargets().filter((v) => total >= v).length;
+// 3-star targets per take (design #3: 40k / 80k / 130k = C's TAKE_TUNING.stars)
+function starTargets() { const s = TT().stars; return Array.isArray(s) && s.length ? s : [40000, 80000, 130000]; }
+const starCount = (total) => starTargets().filter((v) => total >= v).length;
 const starsHTML = (n, of) => Array.from({ length: of }, (_, i) => `<svg viewBox="0 0 16 16"${i < n ? ' class="on"' : ''} aria-hidden="true"><path d="${STAR}"/></svg>`).join('');
 const kfmt = (v) => (v >= 1000 ? Math.round(v / 1000) + 'K' : String(v));
-// menu: BEST + stars + LINES strip, the LINES checklist, START AT (paused)
+// menu: BEST + stars (of the best take) + LINES strip, the LINES checklist, START AT (paused)
 function renderProgress() {
-  const L = lineList(), fl = flownCount(), best = scoreView().best || 0;
-  $('mStrip').innerHTML = `<span>BEST <b>${best ? fmtN(best) : '—'}</b></span><i>·</i><span class="stars">${starsHTML(prog.stars, starTargets().length)}</span><i>·</i><span>LINES <b>${fl}/${L.length}</b></span>`;
+  const L = lineList(), fl = L.filter((l) => l.flown).length, best = scoreView().best || 0;
+  $('mStrip').innerHTML = `<span>BEST <b>${best ? fmtN(best) : '—'}</b></span><i>·</i><span class="stars">${starsHTML(starCount(best), starTargets().length)}</span><i>·</i><span>LINES <b>${fl}/${L.length}</b></span>`;
   const nx = loadedId ? nextLine() : null;
   $('lnCount').textContent = `${fl}/${L.length}`;
   $('lnGrid').innerHTML = L.map((l) => {
-    const r = prog.lines[l.name], next = !r && nx?.name === l.name;
-    const sub = r ? (r.f >= 1 ? `FLOW ×${r.f}` : 'FLOWN') : l.hint;
-    return `<div class="ln${r ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}</small></div>`;
+    const next = !l.flown && nx?.name === l.name;
+    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.hint;
+    return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}</small></div>`;
   }).join('');
-  // START AT (C: world.startPoints [{name, pos, yaw}] + respawn(false, name)); hidden until C provides them
+  // START AT (C: world.startPoints [{name, pos, yaw}] + respawn(false, name)); hidden until C provides them. C keeps the
+  // choice for retries in its module-level `startAt`; the active one is lit. Hold RESET (back to the spawn) clears it.
   const sp = Array.isArray(world.startPoints) && loadedId ? world.startPoints.filter((s) => s && s.name) : [];
+  const cur = typeof startAt === 'string' ? startAt.toLowerCase() : '';
   $('startSec').classList.toggle('hidden', !sp.length || !document.body.classList.contains('paused'));
-  $('starts').innerHTML = sp.map((s) => `<button data-n="${esc(s.name)}">${esc(s.name)}</button>`).join('');
+  $('starts').innerHTML = sp.map((s) => `<button data-n="${esc(s.name)}"${s.name.toLowerCase() === cur ? ' class="on"' : ''}>${esc(s.name)}</button>`).join('');
 }
-$('starts').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) startAt(b.dataset.n); });
-function startAt(name) {
+$('starts').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) goStartAt(b.dataset.n); });
+// (not `startAt`: that name is C's sticky START AT choice in respawn)
+function goStartAt(name) {
   if (!loadedId || state !== 'menu' || !name) return;
   respawn(false, name); prevState = 'fly';
   startFlight(false);
   toast(`START AT ${String(name).toUpperCase()}`);
 }
+// F1 test hooks (uishots), kept off window.__onetake so that shared object stays merge-clean
+window.__onetakeUI = { uiProg, lineList, nextLine, renderProgress, goStartAt, projectView, get hint() { return nextNow; } };
 
 // ---------------- take events (contract #3), summary card, recovery
 // main.js dispatch (C): (typeof onTakeEvent === 'function' ? onTakeEvent : (e) => defaultTakeUI(e, pop))(e)
@@ -1035,8 +1066,10 @@ function caption(text, flow = 1) { capNow = { text, flow }; }   // recorded into
 function onTakeEvent(e) {
   if (!e || !e.type) return;
   const now = performance.now() / 1000;
-  if (e.type === 'start') newLines.clear();   // F1: line progress / NEW badges
-  if (e.type === 'line') noteLine(e);
+  // F1: line progress / NEW badges, CLEAN on the caption, SCRAPE warning (C: scrape {impact, flow, lost})
+  if (e.type === 'start') newLines.clear();
+  if (e.type === 'line' || e.type === 'repeat') { noteLine(e); lineTag = e.clean && !e.free ? ' · <b>CLEAN</b>' : ''; }
+  if (e.type === 'scrape' && e.lost) warn(`SCRAPE · FLOW ×${e.flow || 1}`, 1.2);
   switch (e.type) {
     case 'start':
       hideSummary(); sum.kind = sum.data = null; pendingSum = null; clipEndT = null;
@@ -1069,14 +1102,15 @@ function showSummary(kind, e) {
   const lines = Array.isArray(st.lines) ? st.lines.map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean) : null;
   sum.kind = kind; sum.data = e || null;
   const T = $('bTitle'); T.className = kind; T.innerHTML = kind === 'cut' ? 'CUT<em>.</em>' : 'CRASHED';
-  $('bSub').textContent = kind === 'cut' ? 'That\'s a take · touch a stick for a new one' : isTake ? 'Take over · touch a stick to retry' : 'Touch a stick to fly on';
+  const lost = kind === 'crash' && e?.lost > 0 ? ` · chain lost −${fmtN(e.lost)}` : '';   // the CHAIN LOST warning hides under the card
+  const cutHow = e?.how === 'land' ? 'Landed · that\'s a take' : 'That\'s a take';   // C: cut.how 'hover' | 'land'
+  $('bSub').textContent = kind === 'cut' ? `${cutHow} · touch a stick for a new one` : isTake ? `Take over${lost} · touch a stick to retry` : 'Touch a stick to fly on';
   const row = (k, val) => `<span>${k}</span><b>${val}</b>`;
   $('bStats').innerHTML = row('MAX SPEED', `${Math.round(maxSp * 3.6)} KM/H`) + row('FLY TIME', fmt(time)) +
     row('SCORE', fmtN(total)) + row('BEST', newBest ? `<em>NEW</em> ${fmtN(best)}` : fmtN(best)) +
     row('MAX FLOW', `×${mf || 1}`) + (lines ? row('LINES', String(lines.length)) : '');
   // stars for this take + the next target; this take's lines (NEW = first time ever); the checklist and what to fly next
-  const tg = starTargets(), ns = typeof e?.stars === 'number' ? e.stars : starsFor(total), nextT = tg.find((s) => total < s);
-  if (isTake && ns > prog.stars) { prog.stars = ns; saveProg(); }
+  const tg = starTargets(), ns = typeof e?.stars === 'number' ? e.stars : starCount(total), nextT = tg.find((s) => total < s);
   $('bStars').innerHTML = isTake ? starsHTML(ns, tg.length) + (nextT ? `<small>NEXT ${kfmt(nextT)}</small>` : '') : '';
   $('bLines').innerHTML = lines && lines.length ? [...new Set(lines)].map((n) => esc(n) + (newLines.has(n) ? ' <em>NEW</em>' : '')).join(' · ') : '';
   const LL = lineList(), nx = nextLine(), nh = nx ? hintFor(nx.name) : '';
@@ -1126,7 +1160,7 @@ function coachStart(fresh) {
   const portrait = document.body.classList.contains('portrait');
   if (!rotateTipped && portrait) { rotateTipped = true; setTimeout(() => toast('ROTATE FOR FULL SCREEN', 2.5), 900); }
   // first flight ever, from the spawn: where the first line is (UX #2). The OSD arrow takes over from there.
-  if (fresh && !firstTipped && S.game !== 'free' && !Object.keys(prog.lines).length) {
+  if (fresh && !firstTipped && S.game !== 'free' && !flownCount()) {
     firstTipped = true;
     setTimeout(() => { if (state === 'fly') toast('FIRST LINE: FOLLOW THE TRACK INTO THE HALL\'S OPEN BAY · STAY LOW', 4.5); }, portrait ? 3600 : 1200);
   }
@@ -1269,8 +1303,7 @@ window.addEventListener('popstate', () => {
 });
 window.__onetake = {
   S, drone, fpv, world, controls, renderer, take, get spark() { return spark; }, startFlight, respawn, applySettings, get state() { return state; },
-  ui: { onTakeEvent, pop, warn, toast, showSummary, hideSummary, saveClip, endReplay, openMenu, bindTake, scoreView, smoothReplay, splitAccent, get replay() { return replay; }, replayBuf, room,
-    prog, lineList, nextLine, renderProgress, startAt, projectView, get hint() { return hint; } },
+  ui: { onTakeEvent, pop, warn, toast, showSummary, hideSummary, saveClip, endReplay, openMenu, bindTake, scoreView, smoothReplay, splitAccent, get replay() { return replay; }, replayBuf, room },
   tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; },
   // test hook (?manual): advance n frames of dtMs each and return the canvas
   step(dtMs = 16.7, n = 1, grab = true) { for (let i = 0; i < n; i++) { last = performance.now() - dtMs; frame(performance.now()); } return grab ? canvas.toDataURL('image/jpeg', 0.92) : null; },

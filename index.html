@@ -107,6 +107,7 @@ body.portrait #osd{display:none}
 #live.show{opacity:.86}
 #live i{display:block;height:2px;margin:4px auto 0;background:#fff;box-shadow:0 0 0 1px #000;transform-origin:50% 50%;transform:scaleX(0)}
 #live i.low{background:var(--acc)}
+#live i.hold{background:#fff;box-shadow:0 0 0 1px #000,0 0 6px 1px rgba(255,255,255,.75)}
 #live em,#pop em{font-style:normal;color:var(--acc)}
 /* line captions: Shorts style, lower third */
 #pop{position:absolute;left:50%;bottom:calc(var(--sb) + 10px + var(--cell)*2.15 + 30px);transform:translateX(-50%);text-align:center;opacity:0;width:max-content;max-width:94%}
@@ -116,6 +117,7 @@ body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 #pop .emo{display:block;font-size:1.25em;line-height:1.05;text-shadow:none}
 #pop .sub{margin-top:6px;font:600 var(--cell) var(--mono);color:#fff;text-shadow:var(--key);letter-spacing:.04em}
 #pop.score .cap{display:none}
+#pop .sub b{font-weight:600;color:var(--amber)}
 #pop.show{animation:popA var(--popDur,1.3s) cubic-bezier(.2,.8,.2,1) forwards}
 @keyframes popA{0%{transform:translateX(-50%) scale(1.25);opacity:0}12%{transform:translateX(-50%) scale(1);opacity:1}80%{opacity:1}100%{transform:translateX(-50%) scale(1);opacity:0}}
 /* warnings: Betaflight-style blinking centre text */
@@ -184,6 +186,8 @@ body.coaching:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 /* summary up: the OSD steps back (tag stays), no stick rings */
 body.sumup #osd .o:not(.tl){opacity:.25}
 body.sumup .float{display:none}
+/* chain / caption / warning sit where the card is: gone at once (no fade bleeding through the scrim) */
+body.sumup #live,body.sumup #pop,body.sumup #warn{visibility:hidden;transition:none}
 #crashBar{display:flex;gap:10px;margin-top:14px}
 #crashBar .pill{flex:1;pointer-events:auto;-webkit-backdrop-filter:none;backdrop-filter:none}
 #crashBar .pill:not(.hot){background:rgba(255,255,255,.08)}
@@ -422,7 +426,7 @@ body.dev .dev{display:revert!important}
     <div id="startSec" class="head hidden">
       <div class="sec">Start at</div>
       <div class="seg" id="starts"></div>
-      <div class="hint">Practice one part of the site. A new take starts there.</div>
+      <div class="hint">Practice one part of the site: retries start there too. Hold RESET to go back to the spawn.</div>
     </div>
 
     <div class="cols">
