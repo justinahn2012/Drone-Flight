@@ -19,11 +19,12 @@ export const SKIES = {
   // environmentRotation), so the world sun is sunDir rotated by rotY: always use skySunDir(def). 0.87 puts 9 of the 13
   // lines side-lit and the spawn sun 74 deg front-right (was 4/13, spawn 124 deg = front-lit, no visible shadows).
   // bgI: background radiance scale (scene.backgroundIntensity; the fog colour gets the same factor so the horizon has
-  // no seam). The photographed sky sits ~1 EV under our forced sun (sunI 10 vs the HDR's own 4.4), so sunny x2.0;
-  // overcast x1.6 so the cloud deck may clip like the reference. disc: a 0.6 deg sun disc kept in the background at
+  // no seam). The photographed sky sits ~1 EV under our forced sun (sunI 10 vs the HDR's own 4.4), so sunny x2.0.
+  // Overcast stays x1.0: under stream D's grade (clipEv 2.5, evBias +0.3) its cloud deck already clips 22.6% of the
+  // spawn frame (ref 7.7-22%); x1.6 blew 37% (80% of the sky). disc: a 0.6 deg sun disc kept in the background at
   // this radiance (the energy over the clamp is carried by the DirectionalLight, so the env never sees it).
   sunny: { id: 'kloofendal_48d_partly_cloudy_puresky', label: 'Sunny', sunRatio: 7.5, sunDir: [0.5544, 0.7417, 0.3775], rotY: 0.87, bgI: 2.0, disc: 2000 },
-  overcast: { id: 'overcast_soil_puresky', label: 'Overcast', sunRatio: 0, sunDir: [0.3813, 0.921, 0.0794], rotY: 0, bgI: 1.6, disc: 0 },
+  overcast: { id: 'overcast_soil_puresky', label: 'Overcast', sunRatio: 0, sunDir: [0.3813, 0.921, 0.0794], rotY: 0, bgI: 1.0, disc: 0 },
 };
 // [A2] world-space sun of a SKIES entry (three r180: a background/env rotation Euler(0, rotY, 0) samples the texture at
 // R(-rotY) * worldDir, so a texture direction d shows at R(+rotY) * d). The bake, shadows, haze and exporters use this.
@@ -1432,7 +1433,8 @@ function aSkyShadowPatch(sh, uniforms) {
   sh.fragmentShader = sh.fragmentShader.replace('void main() {', `${A2_RING_GLSL}\nvoid main() {`)
     .replace('? aDirShadow( getShadow(', '? aRingShadow() * aDirShadow( getShadow(');
 }
-function renderRingShadow(renderer, root, L, size, U) {
+// hole: world xz the ring surrounds (the site centre; the crowns' own bounding box is lopsided by the outer groves)
+function renderRingShadow(renderer, root, L, size, U, hole = null) {
   root.updateMatrixWorld(true);
   const meshes = []; root.traverse((o) => { if (o.isMesh && o.visible) meshes.push(o); });
   if (!meshes.length || !U) return null;
@@ -1456,8 +1458,11 @@ function renderRingShadow(renderer, root, L, size, U) {
   const M = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
   M.elements[14] -= 0.4 / (2 * back - 1);   // 40 cm depth bias (+ the 80 cm normal offset in the shader; texels ~0.9 m)
   // inner radius: the closest any crown's shadow can reach toward the ring centre (horizontal reach = height x tan(zenith))
-  const cx = (box.min.x + box.max.x) / 2, cz = (box.min.z + box.max.z) / 2, tanZ = Math.sqrt(Math.max(0, 1 - L.y * L.y)) / Math.max(0.05, L.y);
+  const cx = hole ? hole.x : (box.min.x + box.max.x) / 2, cz = hole ? hole.y : (box.min.z + box.max.z) / 2, tanZ = Math.sqrt(Math.max(0, 1 - L.y * L.y)) / Math.max(0.05, L.y);
+  // each caster's shadow is swept from it along -L (horizontal) for (height over the lowest ground) x tan(zenith)
   const yFloor = Math.min(box.min.y, -15) - 5;   // the far ground can sit well below a crown's base
+  const hl = Math.hypot(L.x, L.z) || 1, sdx = -L.x / hl, sdz = -L.z / hl;
+  const segDist = (px, pz, len) => { const t = Math.max(0, Math.min(len, (cx - px) * sdx + (cz - pz) * sdz)); return Math.hypot(px + sdx * t - cx, pz + sdz * t - cz); };
   let rIn = Infinity; const v = new THREE.Vector3(), Mi = new THREE.Matrix4(), sph = new THREE.Sphere();
   for (const o of meshes) {
     const g = o.geometry;
@@ -1465,11 +1470,11 @@ function renderRingShadow(renderer, root, L, size, U) {
       if (!g.boundingSphere) g.computeBoundingSphere();
       for (let i = 0; i < o.count; i++) {
         o.getMatrixAt(i, Mi); Mi.premultiply(o.matrixWorld); sph.copy(g.boundingSphere).applyMatrix4(Mi);
-        rIn = Math.min(rIn, Math.hypot(sph.center.x - cx, sph.center.z - cz) - sph.radius - (sph.center.y + sph.radius - yFloor) * tanZ);
+        rIn = Math.min(rIn, segDist(sph.center.x, sph.center.z, (sph.center.y + sph.radius - yFloor) * tanZ) - sph.radius);
       }
     } else {
       const p = g.attributes.position;
-      for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); rIn = Math.min(rIn, Math.hypot(v.x - cx, v.z - cz) - (v.y - yFloor) * tanZ); }
+      for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); rIn = Math.min(rIn, segDist(v.x, v.z, (v.y - yFloor) * tanZ)); }
     }
   }
   rIn = Math.max(0, rIn - 10);
@@ -2154,7 +2159,8 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     // A sampler2DShadow must always see an allocated compare texture (three's null fallback is never uploaded, and
     // ANGLE then drops every draw), so without a treeline the far map stands in and uRingG.w stays 0.
     const tl = scene.getObjectByName('treeline');
-    const rs = tl ? renderRingShadow(renderer, tl, sunDir, 1024, uniforms.aSky) : null;
+    const siteBox = new THREE.Box3(); for (const g of Object.values(merged)) { if (!g.boundingBox) g.computeBoundingBox(); siteBox.union(g.boundingBox); }
+    const rs = tl ? renderRingShadow(renderer, tl, sunDir, 1024, uniforms.aSky, new THREE.Vector2((siteBox.min.x + siteBox.max.x) / 2, (siteBox.min.z + siteBox.max.z) / 2)) : null;
     if (rs) { if (mats.slab) mats.slab.aRingShadowTex = rs.tex; console.info('ring shadow', rs.info); }
     else { uniforms.aSky.uRingSM.value = fs.tex; uniforms.aSky.uRingG.value.w = 0; console.info('ring shadow: no treeline object, off'); }
   }
