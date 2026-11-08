@@ -1090,13 +1090,13 @@ const WP_FRAG = {
     float dry = mix(smoothstep(0.47, 0.72, vn(xz * 0.021 + 31.0) * 0.7 + vn(xz * 0.11 + 3.0) * 0.3), m2.g, inM);
     float lush = mix(smoothstep(0.52, 0.8, vn(xz * 0.045 + 71.0)), m2.a, inM) * (1.0 - dry);
     float dryF = smoothstep(0.15, 0.85, dry + (cl - 0.5) * 0.6 + (p1 - 0.5) * 0.3);
-    vec3 cG = mix(vec3(0.096, 0.11, 0.036), vec3(0.06, 0.086, 0.027), lush);
-    vec3 meadow = mix(cG * gD, vec3(0.185, 0.152, 0.082) * mD, dryF) * (0.78 + 0.44 * cl);
+    vec3 cG = mix(vec3(0.074, 0.086, 0.032), vec3(0.048, 0.07, 0.024), lush);
+    vec3 meadow = mix(cG * gD, vec3(0.15, 0.13, 0.078) * mD, dryF) * (0.66 + 0.68 * cl * cl);
     // out to ~8 m the blades stand on it (NEAR tier): there the ground is the shaded thatch between tufts. Further
     // out they thin away, and the ground IS the meadow: no dark felt under a fading field. Track profile = the VS's.
     float dP = mix(8.0, m2.r * 8.0, inM);
-    float gDen = mk.r * inM * max(smoothstep(1.1, 2.3, dP), 0.5 * (1.0 - smoothstep(0.3, 0.48, dP))) * smoothstep(0.1, 0.24, abs(dP - 0.8));
-    vec3 base = mix(meadow, meadow * vec3(0.58, 0.55, 0.46), gDen * (1.0 - smoothstep(5.0, 10.0, dist)));
+    float gDen = mk.r * inM * max(smoothstep(1.5, 2.6, dP), 0.5 * (1.0 - smoothstep(0.26, 0.44, dP))) * smoothstep(0.16, 0.36, abs(dP - 0.8));
+    vec3 base = mix(meadow, meadow * vec3(0.58, 0.55, 0.46), gDen * mix(0.35, 1.0, 1.0 - smoothstep(5.0, 10.0, dist)) * (1.0 - smoothstep(24.0, 40.0, dist)));
     vec3 dirt = vec3(0.118, 0.104, 0.078) * (0.74 + 0.5 * cl) * mix(vec3(1.0), gD, 0.6);
     float bare = smoothstep(0.7, 0.86, vn(xz * 0.07 + 2.0) * 0.7 + vn(xz * 0.6) * 0.3);
     float cov = 1.0 - smoothstep(0.3, 0.78, vAO);                         // under slabs / inside: bare dirt
@@ -1132,8 +1132,8 @@ const WP_FRAG = {
     c *= 0.74 + 0.5 * vn(xz * 0.2) * (0.6 + 0.4 * n1);
     float rut = 1.0 - smoothstep(0.13, 0.27, abs(dP - 0.8 - (vn(xz * 0.11 + 3.0) - 0.5) * 0.16) + (n2 - 0.5) * 0.07);
     c *= mix(1.0, 0.64, rut);
-    float strip = 1.0 - smoothstep(0.3, 0.55, dP + (n2 - 0.5) * 0.25);
-    float verge = smoothstep(1.15, 2.4, dP + (n1 - 0.5) * 0.9 + (n2 - 0.5) * 0.3);
+    float strip = 1.0 - smoothstep(0.26, 0.46, dP + (n2 - 0.5) * 0.25);
+    float verge = smoothstep(1.5, 2.7, dP + (n1 - 0.5) * 0.9 + (n2 - 0.5) * 0.3);
     float a = diffuseColor.a + (n1 - 0.5) * 0.6;
     diffuseColor.a = smoothstep(0.3, 0.65, a) * (1.0 - max(0.85 * strip, verge) * (1.0 - rut)) * (1.0 - smoothstep(0.35, 0.6, mk.g));
     diffuseColor.rgb = c; }`,
@@ -2690,7 +2690,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   // alpha-tested cards were 1.3-2.9 fragments/px in skims). Widths never drop under 1 px (uPix). Wind: a per-blade
   // flutter plus gusts that travel downwind across the field. The track profile (bare wheel ruts, a short sparse
   // centre strip, verges rising over ~4 m) comes from the path distance field in mask2, as in the ground and track.
-  const GQS = { low: { nb: 10, near: [4.5, 6.5], mid: 24 }, auto: { nb: 13, near: [5.5, 8], mid: 32 }, high: { nb: 15, near: [6, 8.5], mid: 34 } };
+  const GQS = { low: { nb: 10, near: [4.5, 6.5], mid: 24 }, auto: { nb: 14, near: [5.5, 8], mid: 32 }, high: { nb: 16, near: [6, 8.5], mid: 34 } };
   const GQ = GQS[quality] || GQS.auto, gCell = 0.34;
   const gShared = { uCam: { value: new THREE.Vector3() }, uCell0: { value: gCell }, uPix: { value: 0.003 },
     uFr: { value: [0, 1, 2, 3].map(() => new THREE.Vector4(0, 0, 0, 1e6)) }, uWind: { value: new THREE.Vector4(0.8, 0.6, 0.3, 3.5) }, ...maskU };
@@ -2698,8 +2698,8 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   // thin-out from, to (3D m)); uWind = (direction xz, strength, gust travel m/s)
   const tierU = (cell, lod, lod2) => ({ ...gShared, uOrigin: { value: new THREE.Vector2() }, uCell: { value: cell }, uR: { value: 10 },
     uLod: { value: new THREE.Vector4(...lod) }, uLod2: { value: new THREE.Vector4(...lod2) } });
-  const nearU = tierU(gCell, [0, GQ.near[0], GQ.near[1], GQ.nb], [0.09, 1, 1e4, 1e4]);
-  const midU = tierU(gCell * 2, [1, GQ.near[0], GQ.near[1], 7], [0.22, 2.2, GQ.mid - 10, GQ.mid]);
+  const nearU = tierU(gCell, [0, GQ.near[0], GQ.near[1], GQ.nb], [0.11, 1, 1e4, 1e4]);
+  const midU = tierU(gCell * 2, [1, GQ.near[0], GQ.near[1], 8], [0.3, 3.2, GQ.mid - 10, GQ.mid]);
   // shared by both tiers and the blur-depth twin (contract C2)
   const GRASS_VS_HEAD = `attribute vec2 aCell;
 uniform vec2 uOrigin; uniform vec3 uCam; uniform float uCell; uniform float uCell0; uniform float uR; uniform float uPix;
@@ -2727,9 +2727,9 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
   float d3 = length(toT), dh = length(toT.xz);
   // track profile from the distance field: bare ruts, a short sparse centre strip, ragged verges rising over ~4 m
   float dP = m2.r * 8.0 + (tA.z - 0.5) * 0.3;
-  float rut = 1.0 - smoothstep(0.1, 0.24, abs(dP - 0.8));
-  float strip = 1.0 - smoothstep(0.3, 0.48, dP);
-  float verge = smoothstep(1.1, 2.3, dP + (gvn(bp * 1.1) - 0.5) * 1.0);
+  float rut = 1.0 - smoothstep(0.16, 0.36, abs(dP - 0.8));
+  float strip = 1.0 - smoothstep(0.26, 0.44, dP);
+  float verge = smoothstep(1.45, 2.6, dP + (gvn(bp * 1.1) - 0.5) * 1.0);
   float edge = min(min(muv.x, muv.y), min(1.0 - muv.x, 1.0 - muv.y));
   float dens = mk.r * max(verge, 0.5 * strip) * (1.0 - rut) * smoothstep(0.0, 0.02, edge);
   float weed = step(0.955, tC.x) * (1.0 - strip);
@@ -2740,7 +2740,7 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
   float sw = mix(uLod.y, uLod.z, tB.x), fo = mix(uLod2.z, uLod2.w, tB.y);
   float scl = uLod.x < 0.5 ? (1.0 - step(sw, d3)) * (1.0 - (1.0 - member) * smoothstep(sw - 1.2, sw, d3))
                            : member * step(sw, d3) * (1.0 - smoothstep(fo - 3.0, fo, d3));
-  scl *= step(tB.z + 0.004, dens) * (1.0 - smoothstep(uR - 1.5, uR, dh)) * smoothstep(0.35, 1.0, d3);
+  scl *= step(tB.z * 0.75 + 0.004, dens) * (1.0 - smoothstep(uR - 1.5, uR, dh)) * smoothstep(0.35, 1.0, d3);
   vec3 gc = vec3(bp.x, gy + H * 0.5, bp.y); float rad = H * 1.1 + uLod2.x + 0.2;
   bool cull = scl < 0.01;
   for (int i = 0; i < 4; i++) cull = cull || dot(uFr[i].xyz, gc) + uFr[i].w < -rad;
@@ -2774,7 +2774,7 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
   float tw = (bB.w - 0.5) * 1.4;
   vec3 wax = vec3(-dir.y, 0.0, dir.x) * cos(tw) + vec3(dir.x, 0.0, dir.y) * sin(tw);
   // width: leaves taper to a point, stalks are thin with a spindle seed head, weeds are broad; never under 1 px
-  float bw = mix((0.006 + 0.007 * bA.w) * (1.0 - 0.8 * pow(t, 2.2)), 0.0022 + 0.012 * smoothstep(0.62, 0.8, t), stalk);
+  float bw = mix((0.009 + 0.009 * bA.w) * (1.0 - 0.8 * pow(t, 2.2)), 0.0022 + 0.012 * smoothstep(0.62, 0.8, t), stalk);
   bw = mix(bw, (0.03 + 0.03 * bA.w) * sin(3.1416 * min(t * 1.15, 1.0)) + 0.004, weed);
   bw = max(bw * uLod2.y, uPix * d3);
   vec3 lpos = bpos + wax * (side * bw * 0.5);
@@ -2826,7 +2826,7 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
   };
   const tiers = {};
   let grassDepth = null;
-  for (const [name, U, nb, lv, rMax] of [['near', nearU, GQ.nb, [0, 0.4, 0.7, 0.88, 1], GQ.near[1] + 1], ['mid', midU, 7, [0, 0.62, 1], GQ.mid + 1]]) {
+  for (const [name, U, nb, lv, rMax] of [['near', nearU, GQ.nb, [0, 0.4, 0.7, 0.88, 1], GQ.near[1] + 1], ['mid', midU, 8, [0, 0.62, 1], GQ.mid + 1]]) {
     const cell = U.uCell.value, gN = 2 * Math.ceil((rMax + 2) / cell), g = bladeGeo(nb, lv);
     // cells in rings around the camera cell: instanceCount stops at the tier's radius
     const order = []; for (let i = 0; i < gN; i++) for (let j = 0; j < gN; j++) order.push([i, j, Math.hypot(i - gN / 2, j - gN / 2)]);
@@ -2841,7 +2841,7 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
     mesh.onBeforeRender = setFr; scene.add(mesh);
     tiers[name] = { mesh, U, gN, ringR, cell, verts: nb * (2 * lv.length - 1) };
   }
-  {   // [B] C2 blur depth: the near blades within ~6 m, the same vertex shader, opaque
+  {   // [B] C2 blur depth: the near blades within ~4.5 m, the same vertex shader, opaque
     const ng = tiers.near.mesh.geometry, dg = new THREE.InstancedBufferGeometry();
     for (const k of ['position', 'aCell']) dg.setAttribute(k, ng.getAttribute(k));
     dg.setIndex(ng.index); dg.instanceCount = 0;
@@ -2853,7 +2853,7 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
     T.U.uR.value = r; T.mesh.visible = r > 0.8;
     T.mesh.geometry.instanceCount = T.mesh.visible ? Math.min(T.gN * T.gN, ringCount(T.ringR, r / c + 1.5)) : 0;
   };
-  bStats.grass = { near: { blades: GQ.nb, vertsPerTuft: tiers.near.verts, cells: tiers.near.gN ** 2, switch: GQ.near }, mid: { blades: 7, vertsPerTuft: tiers.mid.verts, cells: tiers.mid.gN ** 2, out: GQ.mid } };
+  bStats.grass = { near: { blades: GQ.nb, vertsPerTuft: tiers.near.verts, cells: tiers.near.gN ** 2, switch: GQ.near }, mid: { blades: 8, vertsPerTuft: tiers.mid.verts, cells: tiers.mid.gN ** 2, out: GQ.mid } };
   scene.userData.grass = { shared: gShared, near: nearU, mid: midU, tiers };   // live tuning (wind, LOD)
   lap('grass');
   // [B] trees, wall thickets, field shrubs and saplings on slab edges: leaf-card balls with the photographed leaves,
@@ -3100,8 +3100,8 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
     const alt = Math.max(0, camPos.y - terrainHeight(camPos.x, camPos.z) - 0.3);
     setTier(tiers.near, camPos, Math.sqrt(Math.max(0, GQ.near[1] ** 2 - alt * alt)) + 0.5);
     setTier(tiers.mid, camPos, Math.sqrt(Math.max(0, GQ.mid ** 2 - alt * alt)) + 1);
-    // [B] C2 depth: the near blades within ~6 m, the leaf tiles within 40 m
-    grassDepth.visible = tiers.near.mesh.visible; grassDepth.geometry.instanceCount = Math.min(tiers.near.mesh.geometry.instanceCount, ringCount(tiers.near.ringR, 6 / gCell + 1.5));
+    // [B] C2 depth: the near blades within ~4.5 m (parallax error beyond is small), the leaf tiles within 40 m
+    grassDepth.visible = tiers.near.mesh.visible; grassDepth.geometry.instanceCount = Math.min(tiers.near.mesh.geometry.instanceCount, ringCount(tiers.near.ringR, 4.5 / gCell + 1.5));
     for (const m of leafTiles) { _ds.copy(m.geometry.boundingSphere); m.visible = _ds.distanceToPoint(camPos) < 40; }
     // [A2] live shadow map follows the camera (lead 0: a heading-dependent centre re-rendered on every turn);
     // re-render only when its snapped centre moves
