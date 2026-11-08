@@ -59,6 +59,7 @@ export const TAKE_TUNING = {
   armHold: false,      // UX #2: true = the bank timer stops while a line is armed (pre-gate crossed, window open)
   firstR: Infinity,    // m: nextHint's "first line of a new profile" rule only within this of world.takeStart
   headsCost: 1,        // FLOW lost to a pedestrian contact (world.movers, flight.js moverN): SCRAPE + HEADS!
+  microFlow: 1,        // FLOW a new micro-line adds (bando: 1, like a line; a level dense with micros: 0, they keep the chain)
 };
 const T = TAKE_TUNING;
 
@@ -381,7 +382,7 @@ export class Take {
     this._cool[name] = now;
     const flow = this._flow, pts = Math.round((l.pts || 0) * flow * cm);
     this._unbanked += pts; this._idle = 0; this._lastName = name; this._done.add(name); this._lineAt = now;
-    this._flow = Math.min(this._T.flowMax, flow + 1); this._maxFlow = Math.max(this._maxFlow, flow);
+    this._flow = Math.min(this._T.flowMax, flow + (micro ? this._T.microFlow : 1)); this._maxFlow = Math.max(this._maxFlow, flow);
     const e = this._dedupe({ type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt });
     this._log.push({ name, pts, t: tt, t0: tt0, flow, clean, micro });
     rec.n++; rec.flow = Math.max(rec.flow, flow); rec.pts = Math.max(rec.pts, pts);

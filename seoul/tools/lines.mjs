@@ -118,7 +118,7 @@ function run({ path, name, caption, value, s0, s1, y0, y1, w, cuts = null, segVa
   }
   for (const f of feats) {
     const Gf = gateAt(f.s, f.y0 ?? y0, f.y1 ?? y1, f.w ?? w);
-    add(f.name, f.caption || f.name.replace(/ (\S+)$/, ' *$1*!'), f.pts || 500, Gf, { two: true, micro: true, feature: f.what });
+    add(f.name, f.caption || f.name.replace(/ (\S+)$/, ' *$1*!'), f.pts || 500, Gf, { two: true, micro: true, feature: f.what, on: name });
   }
   report.push(`  (${name}: ${Math.abs(span).toFixed(0)} m, window ${within(Math.abs(span))} s, ${n} segments, ${feats.length} feature micros)`);
   return { A, B, G };
@@ -186,7 +186,7 @@ run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value:
   for (const [i, a, b] of [[1, Ga, Gm], [2, Gm, Gb]]) { add(`SCREEN CANYON ${i}/2`, `SCREEN CANYON *${i}/2*`, 750, b, { pre: [a], within: within(dist3(a, b)), micro: true, seg: 'SCREEN CANYON' });
     add(`SCREEN CANYON ${i}/2`, `SCREEN CANYON *${i}/2*`, 750, neg(a), { pre: [neg(b)], within: within(dist3(a, b)), micro: true, seg: 'SCREEN CANYON' }); }
   const pBus = cx(s0 + sg * 45);
-  add('OVER THE BUSES', 'OVER THE *BUSES*!', 500, g([pBus.x, 6.25, pBus.z], n, 10, 3.5, [-n[2], 0, n[0]]), { two: true, micro: true, feature: 'Yanghwa-ro median bus lane' });
+  add('OVER THE BUSES', 'OVER THE *BUSES*!', 500, g([pBus.x, 6.25, pBus.z], n, 10, 3.5, [-n[2], 0, n[0]]), { two: true, micro: true, feature: 'Yanghwa-ro median bus lane', on: 'SCREEN CANYON' });
   report.push(`  (SCREEN CANYON: ${dl.toFixed(0)} m from exit 9 SW along Yanghwa-ro)`); }
 // 5. THE GAP / TIGHT GAP: the narrowest real gaps between two buildings of 3+ storeys (parallel walls 1.4-3.2 m apart,
 // overlapping >= 6 m), found in the footprints; flown through along the gap
@@ -345,7 +345,7 @@ const startPoints = [
 // ---- [P2-F1 design #1] the level's take tuning, merged over take.js TAKE_TUNING (bando keeps its own): stars fitted from
 // noisy-pilot sims (seoul/tools/take-sim.mjs), the chain held while a line is armed (UX #2), the bank timer and the hold
 // zone sized for 6-10 m streets, PACE scaled to a 1 km map, the first-line guide only near the spawn (design #4)
-const tuning = { stars: [12000, 28000, 45000], bankT: 6.0, holdZone: 2.5, armHold: true, firstR: 60, pace: [120, 300, 1.5] };
+const tuning = { stars: [12000, 28000, 45000], bankT: 6.0, holdZone: 2.5, armHold: true, firstR: 60, pace: [120, 300, 1.5], microFlow: 0 };
 // a copy on the `first` line for world loaders that pass lines[] only (take.js reads either)
 const firstLine = lines.find((l) => l.first); if (firstLine) firstLine.tuning = tuning;
 const out = { version: 2, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', tuning, lines, funnels, startPoints,

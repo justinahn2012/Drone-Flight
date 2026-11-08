@@ -16,7 +16,8 @@
    120,
    300,
    1.5
-  ]
+  ],
+  "microFlow": 0
  },
  "lines": [
   {
@@ -77,7 +78,8 @@
      120,
      300,
      1.5
-    ]
+    ],
+    "microFlow": 0
    }
   },
   {
@@ -515,7 +517,8 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "first blade stack (2F blades at 3.55 m)"
+   "feature": "first blade stack (2F blades at 3.55 m)",
+   "on": "WALKING STREET"
   },
   {
    "name": "BLADE ALLEY",
@@ -540,7 +543,8 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "blade stacks both sides, 58-79 m"
+   "feature": "blade stacks both sides, 58-79 m",
+   "on": "WALKING STREET"
   },
   {
    "name": "THE FORK",
@@ -565,7 +569,8 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "the other Eoulmadang-ro branch joins"
+   "feature": "the other Eoulmadang-ro branch joins",
+   "on": "WALKING STREET"
   },
   {
    "name": "CLUB QUEUE",
@@ -590,7 +595,8 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "club door at 152 m: its queue"
+   "feature": "club door at 152 m: its queue",
+   "on": "WALKING STREET"
   },
   {
    "name": "THE SPLIT",
@@ -615,7 +621,8 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "the walking branch splits off"
+   "feature": "the walking branch splits off",
+   "on": "WALKING STREET"
   },
   {
    "name": "BAR ALLEY",
@@ -1096,7 +1103,8 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "club 123 m + karaoke, blades both sides"
+   "feature": "club 123 m + karaoke, blades both sides",
+   "on": "BAR ALLEY"
   },
   {
    "name": "CLUB DOORS",
@@ -1121,7 +1129,8 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "club door at 173 m"
+   "feature": "club door at 173 m",
+   "on": "BAR ALLEY"
   },
   {
    "name": "POCHA ROW",
@@ -1146,7 +1155,8 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "pocha at 187 m"
+   "feature": "pocha at 187 m",
+   "on": "BAR ALLEY"
   },
   {
    "name": "CLUB STREET",
@@ -2309,7 +2319,8 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "Yanghwa-ro median bus lane"
+   "feature": "Yanghwa-ro median bus lane",
+   "on": "SCREEN CANYON"
   },
   {
    "name": "THE GAP",
