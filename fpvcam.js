@@ -719,8 +719,9 @@ void main(){
   if (uCodec.x > 0.0) {
     vec2 sz = vec2(textureSize(tSmall, 0));
     float Lb = texelFetch(tSmall, ivec2(min(vUv * sz, sz - 1.0)), 0).a * exp2(ev);
-    codecK = uCodec.x * (1.0 - smoothstep(uCodec.y, uCodec.z, Lb));
-    e *= 1.0 + codecK * (clamp(Lb / max(dot(eCore, LUMA), 1e-6), 0.25, 4.0) - 1.0);
+    float cr = clamp(Lb / max(dot(eCore, LUMA), 1e-6), 0.25, 4.0);
+    codecK = uCodec.x * (1.0 - smoothstep(uCodec.y, uCodec.z, Lb)) * (1.0 - smoothstep(1.5, 3.0, max(cr, 1.0 / cr)));   // edges keep their bits
+    e *= 1.0 + codecK * (cr - 1.0);
   }
 #endif
   float vig = pow(max(cos(th), 0.0), 2.2);                                 // optical cos^n falloff
@@ -839,12 +840,12 @@ export const GRADES = {
   //   grain removed]; sharpDark: exposed level where sharpening fades in. AE (colour #6, graphics #1): aeReject 1 %, aeArea [scene
   //   units above which a tap is an area source, its weight], aeMatrix [centre v, falloff].
   night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.0, lift: 0.02, clipEv: 6.5, con: 1.2, toe: 0.045,
-    tone: [1.085, 0.91, 0.219], tonePc: 0.6, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
+    tone: [1.085, 0.91, 0.219], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     ghosts: [[-0.55, 0.004, [0.9, 1.0, 0.8]], [-1.25, 0.0025, [1.0, 0.85, 1.0]], [0.4, 0.002, [1.0, 0.95, 0.8]]],
     core: 1, coreXtalk: 0.15, coreEv: [0, 2], mag: 0.035, magC: 0.04, grain: 0, grainEv: [0, 0], grainPx: 2,
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
-    codec: [0.5, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
+    codec: [0.4, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
     recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,
     saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.01, aeArea: [0.8, 0.5], aeMatrix: [0.45, 0.5],
     shutter: 1 / 60, readout: 0.011 },
