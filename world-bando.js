@@ -2731,7 +2731,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
     Object.values(t).forEach((tx) => tx && tx.repeat.set(rep, rep));
     const mat = new THREE.MeshStandardMaterial({ map: t.diff || null, normalMap: t.nor_gl || null, roughness: m.rough ?? 1, metalness: 0,
       color: t.diff ? lin3(m.color) : new THREE.Color(0x9a9690), normalScale: new THREE.Vector2(1, 1), ...extra });
-    return weatherPatch(mat, { kind: m.kind || 'built', w: m.w, roughMin: m.roughMin, uniforms: kindU(key) }, uniforms);
+    return weatherPatch(mat, { kind: m.kind || 'built', w: m.w, wx: m.wx, roughMin: m.roughMin, uniforms: kindU(key) }, uniforms);   // wx: silo streaks, brick soot (never passed before round 4)
   };
   const mats = {}; for (const [k, m] of Object.entries(MATS)) if (m.kind !== 'aux') mats[k] = mkMat(k);
   mats.path.transparent = true; mats.path.vertexColors = true; mats.path.depthWrite = false; mats.path.polygonOffset = true; mats.path.polygonOffsetFactor = -2;
