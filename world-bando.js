@@ -15,9 +15,23 @@ export const SKIES = {
   // [A] pure skies (no photographed ground/treeline at infinity: it broke scale at altitude). sunRatio: direct sun
   // irradiance vs sky irradiance (HDR captures squash the sun; a clear 48 deg day runs ~5-7x horizontal).
   // sunDir: measured once from the HDR's sun pixels (2k), so the light bake can run before the HDR has downloaded.
-  sunny: { id: 'kloofendal_48d_partly_cloudy_puresky', label: 'Sunny', sunRatio: 7.5, sunDir: [0.5544, 0.7417, 0.3775] },
-  overcast: { id: 'overcast_soil_puresky', label: 'Overcast', sunRatio: 0, sunDir: [0.3813, 0.921, 0.0794] },
+  // [A2] sunDir is in the HDR's own frame. rotY (rad) turns the whole sky about +Y (scene.backgroundRotation and
+  // environmentRotation), so the world sun is sunDir rotated by rotY: always use skySunDir(def). 0.87 puts 9 of the 13
+  // lines side-lit and the spawn sun 74 deg front-right (was 4/13, spawn 124 deg = front-lit, no visible shadows).
+  // bgI: background radiance scale (scene.backgroundIntensity; the fog colour gets the same factor so the horizon has
+  // no seam). The photographed sky sits ~1 EV under our forced sun (sunI 10 vs the HDR's own 4.4), so sunny x2.0.
+  // Overcast stays x1.0: under stream D's grade (clipEv 2.5, evBias +0.3) its cloud deck already clips 22.6% of the
+  // spawn frame (ref 7.7-22%); x1.6 blew 37% (80% of the sky). disc: a 0.6 deg sun disc kept in the background at
+  // this radiance (the energy over the clamp is carried by the DirectionalLight, so the env never sees it).
+  sunny: { id: 'kloofendal_48d_partly_cloudy_puresky', label: 'Sunny', sunRatio: 7.5, sunDir: [0.5544, 0.7417, 0.3775], rotY: 0.87, bgI: 2.0, disc: 2000 },
+  overcast: { id: 'overcast_soil_puresky', label: 'Overcast', sunRatio: 0, sunDir: [0.3813, 0.921, 0.0794], rotY: 0, bgI: 1.0, disc: 0 },
 };
+// [A2] world-space sun of a SKIES entry (three r180: a background/env rotation Euler(0, rotY, 0) samples the texture at
+// R(-rotY) * worldDir, so a texture direction d shows at R(+rotY) * d). The bake, shadows, haze and exporters use this.
+export function skySunDir(def) { return new THREE.Vector3(...def.sunDir).normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), def.rotY || 0); }
+// [A2] live shadow map: +-ext m, re-rendered only when its centre (the camera, no lead) moves a snapM light-space step.
+// Lead 0 + 8 m snap: ~2-3 re-renders/s in carves instead of 13-20 (perf #1b). Exported for the frequency test.
+export const LIVE_SHADOW = { ext: 52, snapM: 8, lead: 0, back: 150 };
 // [B] surfaces. CC0 Poly Haven sets at 1k; `maps` = which maps are worth downloading.
 // color = linear multiplier on the diffuse map (measured texture means, see report); w = weathering
 // [streaks, base damp, up-facing grime, moss]; roughMin = roughness floor (kills the glossy blue sky rim).
@@ -1092,6 +1106,7 @@ ${foliage ? `#ifdef DOUBLE_SIDED
     if (opt.fsFog) sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', `${opt.fsFog}\n#include <fog_fragment>`);   // before, never instead of
     // [A-lighting] begin: baked sun/sky bounce, sun mask, far shadow map, forward-scatter haze (see aLightingPatch)
     aLightingPatch(sh, uniforms);
+    aSkyShadowPatch(sh, uniforms);   // [A2] treeline ring shadow map, multiplied into aLightingPatch's sun shadow
     // [A-lighting] end
   };
   return mat;
@@ -1442,20 +1457,12 @@ function renderFarShadow(renderer, scene, merged, L, size, U) {
   const dt = new THREE.DepthTexture(size, size); dt.type = THREE.UnsignedIntType; dt.compareFunction = THREE.LessEqualCompare; dt.minFilter = dt.magFilter = THREE.LinearFilter;
   const rt = new THREE.WebGLRenderTarget(size, size, { depthTexture: dt, depthBuffer: true, format: THREE.RedFormat, type: THREE.UnsignedByteType, generateMipmaps: false });
   // proxies of every shadow caster with a depth-only material (alpha-tested where the original is)
-  const proxy = new THREE.Scene(), plain = new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide }), extra = [];
   scene.updateMatrixWorld(true);
-  scene.traverse((o) => {
-    if (!o.isMesh || !o.castShadow || !o.visible) return;
-    const m = Array.isArray(o.material) ? o.material[0] : o.material;
-    let mat = plain;
-    if (m && m.alphaTest > 0 && m.map) { mat = new THREE.MeshBasicMaterial({ map: m.map, alphaTest: m.alphaTest, side: THREE.DoubleSide, colorWrite: false }); extra.push(mat); }
-    const p = o.isInstancedMesh ? new THREE.InstancedMesh(o.geometry, mat, o.count) : new THREE.Mesh(o.geometry, mat);
-    if (o.isInstancedMesh) p.instanceMatrix = o.instanceMatrix;
-    p.matrixAutoUpdate = false; p.matrix.copy(o.matrixWorld); p.matrixWorld.copy(o.matrixWorld); p.frustumCulled = false; proxy.add(p);
-  });
+  const casters = []; scene.traverse((o) => { if (o.isMesh && o.castShadow && o.visible) casters.push(o); });
+  const px = shadowProxies(casters);
   const prev = renderer.getRenderTarget();
-  renderer.setRenderTarget(rt); renderer.clear(true, true, true); renderer.render(proxy, cam); renderer.setRenderTarget(prev);
-  extra.forEach((m) => m.dispose()); plain.dispose();
+  renderer.setRenderTarget(rt); renderer.clear(true, true, true); renderer.render(px.scene, cam); renderer.setRenderTarget(prev);
+  px.dispose();
   rt.depthTexture = null; rt.dispose();   // keep only the depth texture (frees the FBO and the colour plane)
   const M = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
   M.elements[14] -= 0.08 / (2 * back - 1);   // 8 cm depth bias (plus the 15 cm normal offset in the shader)
@@ -1463,11 +1470,134 @@ function renderFarShadow(renderer, scene, merged, L, size, U) {
   return { tex: dt, texel: (2 * Math.max(hx, hy)) / size };
 }
 
+// [A2] depth-only stand-ins for shadow casters, sharing geometry and instance matrices. A mesh's customDepthMaterial
+// (three's own hook for shadow passes) wins; otherwise alpha-tested materials keep their map/alphaMap cut-out.
+// Caveat: vertex animation or atlas UVs done in onBeforeCompile are not seen here, so such a caster should set
+// customDepthMaterial.
+function shadowProxies(list) {
+  const scene = new THREE.Scene(), plain = new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide }), extra = [];
+  for (const o of list) {
+    const m = Array.isArray(o.material) ? o.material[0] : o.material;
+    let mat = plain;
+    if (o.customDepthMaterial) mat = o.customDepthMaterial;
+    else if (m && m.alphaTest > 0 && (m.map || m.alphaMap)) {
+      mat = new THREE.MeshBasicMaterial({ map: m.map || null, alphaMap: m.alphaMap || null, alphaTest: m.alphaTest, side: THREE.DoubleSide, colorWrite: false }); extra.push(mat);
+    }
+    const p = o.isInstancedMesh ? new THREE.InstancedMesh(o.geometry, mat, o.count) : new THREE.Mesh(o.geometry, mat);
+    if (o.isInstancedMesh) p.instanceMatrix = o.instanceMatrix;
+    p.matrixAutoUpdate = false; p.matrix.copy(o.matrixWorld); p.matrixWorld.copy(o.matrixWorld); p.frustumCulled = false; scene.add(p);
+  }
+  return { scene, dispose: () => { extra.forEach((m) => m.dispose()); plain.dispose(); } };
+}
+
+// ---------------------------------------------------------------- [A2] static ring shadow map (treeline crowns)
+// The crowns stand 120-420 m out, beyond the far map (site casters only) and the live map, so the belt floated in
+// 07b/09. One depth pass at load into a 1024^2 compare texture fitted to the crowns in light space (<= +-470 m,
+// ~0.9 m texels); every weatherPatch material multiplies its sun shadow by one hardware-compare tap of it, but only
+// beyond uRingG.z (the closest any crown shadow can land), so site and grass fragments never pay for it.
+function skyShadowUniforms() {
+  return { uRingSM: { value: null }, uRingMat: { value: new THREE.Matrix4() }, uRingG: { value: new THREE.Vector4(0, 0, 0, 0) } };
+}
+const A2_RING_GLSL = `
+uniform sampler2DShadow uRingSM;
+uniform mat4 uRingMat;
+uniform vec4 uRingG;   // xy: ring centre (world xz), z: inner radius^2 (no crown shadow inside), w: 1 = on
+float aRingShadow() {
+  vec2 dr = vWPos.xz - uRingG.xy;
+  if ( uRingG.w < 0.5 || dot( dr, dr ) < uRingG.z ) return 1.0;
+  vec3 c = ( uRingMat * vec4( vWPos + vNW * ( 0.8 * inversesqrt( max( dot( vNW, vNW ), 1e-8 ) ) ), 1.0 ) ).xyz;
+  if ( c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0 ) return 1.0;
+  return texture( uRingSM, c );
+}
+`;
+// Runs right after aLightingPatch (inside weatherPatch's [A-lighting] block): needs its aDirShadow( getShadow( ... call.
+function aSkyShadowPatch(sh, uniforms) {
+  const U = uniforms?.aSky; if (!U || !sh.fragmentShader.includes('aDirShadow( getShadow(')) return;
+  Object.assign(sh.uniforms, U);
+  sh.fragmentShader = sh.fragmentShader.replace('void main() {', `${A2_RING_GLSL}\nvoid main() {`)
+    .replace('? aDirShadow( getShadow(', '? aRingShadow() * aDirShadow( getShadow(');
+}
+// hole: world xz the ring surrounds (the site centre; the crowns' own bounding box is lopsided by the outer groves)
+function renderRingShadow(renderer, root, L, size, U, hole = null) {
+  root.updateMatrixWorld(true);
+  const meshes = []; root.traverse((o) => { if (o.isMesh && o.visible) meshes.push(o); });
+  if (!meshes.length || !U) return null;
+  const box = new THREE.Box3().setFromObject(root); if (box.isEmpty()) return null;
+  // light-space fit (same basis as the live map)
+  const lx = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), L).normalize(), ly = new THREE.Vector3().crossVectors(L, lx);
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], c = new THREE.Vector3();
+  for (let k = 0; k < 8; k++) {
+    c.set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z);
+    [c.dot(lx), c.dot(ly), c.dot(L)].forEach((v, i) => { lo[i] = Math.min(lo[i], v); hi[i] = Math.max(hi[i], v); });
+  }
+  const hx = Math.min(470, (hi[0] - lo[0]) / 2 + 4), hy = Math.min(470, (hi[1] - lo[1]) / 2 + 4), back = (hi[2] - lo[2]) / 2 + 60;
+  const ctr = new THREE.Vector3().addScaledVector(lx, (lo[0] + hi[0]) / 2).addScaledVector(ly, (lo[1] + hi[1]) / 2).addScaledVector(L, (lo[2] + hi[2]) / 2);
+  const cam = new THREE.OrthographicCamera(-hx, hx, hy, -hy, 1, 2 * back);
+  cam.position.copy(ctr).addScaledVector(L, back); cam.up.set(0, 1, 0); cam.lookAt(ctr); cam.updateMatrixWorld(true); cam.updateProjectionMatrix();
+  const dt = new THREE.DepthTexture(size, size); dt.type = THREE.UnsignedIntType; dt.compareFunction = THREE.LessEqualCompare; dt.minFilter = dt.magFilter = THREE.LinearFilter;
+  const rt = new THREE.WebGLRenderTarget(size, size, { depthTexture: dt, depthBuffer: true, format: THREE.RedFormat, type: THREE.UnsignedByteType, generateMipmaps: false });
+  const px = shadowProxies(meshes), prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(rt); renderer.clear(true, true, true); renderer.render(px.scene, cam); renderer.setRenderTarget(prev);
+  px.dispose(); rt.depthTexture = null; rt.dispose();
+  const M = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
+  M.elements[14] -= 0.4 / (2 * back - 1);   // 40 cm depth bias (+ the 80 cm normal offset in the shader; texels ~0.9 m)
+  // inner radius: the closest any crown's shadow can reach toward the ring centre (horizontal reach = height x tan(zenith))
+  const cx = hole ? hole.x : (box.min.x + box.max.x) / 2, cz = hole ? hole.y : (box.min.z + box.max.z) / 2, tanZ = Math.sqrt(Math.max(0, 1 - L.y * L.y)) / Math.max(0.05, L.y);
+  // each caster's shadow is swept from it along -L (horizontal) for (height over the lowest ground) x tan(zenith)
+  const yFloor = Math.min(box.min.y, -15) - 5;   // the far ground can sit well below a crown's base
+  const hl = Math.hypot(L.x, L.z) || 1, sdx = -L.x / hl, sdz = -L.z / hl;
+  const segDist = (px, pz, len) => { const t = Math.max(0, Math.min(len, (cx - px) * sdx + (cz - pz) * sdz)); return Math.hypot(px + sdx * t - cx, pz + sdz * t - cz); };
+  let rIn = Infinity; const v = new THREE.Vector3(), Mi = new THREE.Matrix4(), sph = new THREE.Sphere();
+  for (const o of meshes) {
+    const g = o.geometry;
+    if (o.isInstancedMesh) {
+      if (!g.boundingSphere) g.computeBoundingSphere();
+      for (let i = 0; i < o.count; i++) {
+        o.getMatrixAt(i, Mi); Mi.premultiply(o.matrixWorld); sph.copy(g.boundingSphere).applyMatrix4(Mi);
+        rIn = Math.min(rIn, segDist(sph.center.x, sph.center.z, (sph.center.y + sph.radius - yFloor) * tanZ) - sph.radius);
+      }
+    } else {
+      const p = g.attributes.position;
+      for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); rIn = Math.min(rIn, segDist(v.x, v.z, (v.y - yFloor) * tanZ)); }
+    }
+  }
+  rIn = Math.max(0, rIn - 10);
+  U.uRingSM.value = dt; U.uRingMat.value.copy(M); U.uRingG.value.set(cx, cz, rIn * rIn, 1);
+  return { tex: dt, info: { meshes: meshes.length, texel: +((2 * Math.max(hx, hy)) / size).toFixed(2), half: [+hx.toFixed(0), +hy.toFixed(0)], rIn: +rIn.toFixed(1) } };
+}
+
 // ---------------------------------------------------------------- [A] sky: real HDR photo, sun split out for shadows
 // Returns: background (its lower hemisphere = fog x haze, so a puresky's mirrored "ground" never shows), a PMREM env
 // from a 1024x512 copy whose lower hemisphere is the lit ground (albedo x (sun + sky) / pi), and the measured sun
 // colour / intensity, sky irradiance and fog colour (mean of the sky 0.5-5 deg above the horizon).
-async function loadSky(def, renderer, { envI = 0.85, groundAlb = ALB_FALLBACK.ground, haze = 1.2, onProgress } = {}) {
+// Everything here is in the HDR's own frame (def.sunDir); buildBando rotates the sky by def.rotY.
+// [A2] equirect texel <-> direction, exactly as three samples it (equirectUv; row 0 = zenith with flipY): shared by
+// loadSky and the node checks
+export function equirectDir(px, py, W, H, out = new THREE.Vector3()) {
+  const ph = ((px + 0.5) / W - 0.5) * 2 * Math.PI, la = (0.5 - (py + 0.5) / H) * Math.PI;
+  return out.set(Math.cos(ph) * Math.cos(la), Math.sin(la), Math.sin(ph) * Math.cos(la));
+}
+export function equirectTexel(d, W, H) {
+  const u = Math.atan2(d.z, d.x) / (2 * Math.PI) + 0.5, v = Math.asin(Math.max(-1, Math.min(1, d.y))) / Math.PI + 0.5;
+  return [u * W - 0.5, (1 - v) * H - 0.5];
+}
+// [A2] sun disc: 0.6 deg across (the real sun is 0.53; a bit more survives the cube conversion), radiance capped at
+// def.disc (the physical E/omega is ~1e5, far past half float's useful range and the bloom cap). Anti-aliased over
+// one texel. Returns the disc coverage (0..1) of the texel at direction cosine cd with the sun.
+const SUN_R = 0.3 * Math.PI / 180;
+function sunDiscCover(cd, texAng) { const a = Math.acos(Math.min(1, cd)); return Math.min(1, Math.max(0, (SUN_R - a) / texAng + 0.5)); }
+// [A2] a loadSky result into a scene: the sky turns by rotY (background and env together, so the env's bright side and
+// the disc sit on the light); the background alone is brightened by bgI, and the fog (= the horizon it converges to)
+// by the same factor. Returns bgI.
+export function applySky(scene, def, sk) {
+  const bgI = def.bgI ?? 1, rot = def.rotY || 0;
+  scene.background = sk.sky; scene.environment = sk.env;
+  scene.backgroundRotation.set(0, rot, 0); scene.environmentRotation.set(0, rot, 0);
+  scene.backgroundIntensity = bgI;
+  scene.fog = new THREE.Fog(sk.fogColor.clone().multiplyScalar(bgI), 40, 2600);
+  return bgI;
+}
+export async function loadSky(def, renderer, { envI = 0.85, groundAlb = ALB_FALLBACK.ground, haze = 1.2, onProgress } = {}) {
   const id = def.id, url = `${PH}/HDRIs/hdr/2k/${id}_2k.hdr`;
   const tex = await new HDRLoader().setDataType(THREE.FloatType).loadAsync(url, (e) => e.total && onProgress?.(e.loaded / e.total));
   const { width: W, height: H, data } = tex.image; const ch = data.length / (W * H);
@@ -1499,13 +1629,21 @@ async function loadSky(def, renderer, { envI = 0.85, groundAlb = ALB_FALLBACK.gr
   const sst = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
   const H1 = THREE.DataUtils.toHalfFloat(1);
   // background: below the horizon = what the fog converges to (fog colour x forward-scatter haze)
+  // [A2] plus the capped sun disc (stored / bgI, so it shows at def.disc after scene.backgroundIntensity)
   const half = new Uint16Array(W * H * 4);
+  const discL = def.sunRatio > 0 && def.disc > 0 ? def.disc / (def.bgI || 1) : 0, texAng = Math.PI / H, latSun = Math.asin(L.y);
+  let discN = 0;
   for (let py = 0; py < H; py++) {
     const lat = latOf(py), t = sst(0.5, -1.0, lat * 180 / Math.PI), cl = Math.cos(lat), sl = Math.sin(lat);
+    const discRow = discL > 0 && Math.abs(lat - latSun) < SUN_R + 2 * texAng;
     for (let px = 0; px < W; px++) {
       const i = (py * W + px) * ch, o = (py * W + px) * 4;
       let r = data[i], g = data[i + 1], b = data[i + 2];
       if (t > 0) { const hz = 1 + haze * Math.pow(Math.max(0, cosP[px] * cl * L.x + sl * L.y + sinP[px] * cl * L.z), 6); r += (fogC.r * hz - r) * t; g += (fogC.g * hz - g) * t; b += (fogC.b * hz - b) * t; }
+      if (discRow) {
+        const k = sunDiscCover(cosP[px] * cl * L.x + sl * L.y + sinP[px] * cl * L.z, texAng);
+        if (k > 0) { r += (discL * sunColor.r - r) * k; g += (discL * sunColor.g - g) * k; b += (discL * sunColor.b - b) * k; discN++; }
+      }
       half[o] = THREE.DataUtils.toHalfFloat(r); half[o + 1] = THREE.DataUtils.toHalfFloat(g); half[o + 2] = THREE.DataUtils.toHalfFloat(b); half[o + 3] = H1;
     }
   }
@@ -1531,8 +1669,8 @@ async function loadSky(def, renderer, { envI = 0.85, groundAlb = ALB_FALLBACK.gr
   const pm = new THREE.PMREMGenerator(renderer);
   const env = pm.fromEquirectangular(envSrc).texture; pm.dispose(); envSrc.dispose();
   console.info('sky', id, 'sunI', +sunI.toFixed(2), 'sunE', +Ei.toFixed(2), 'sunColor', [sunColor.r, sunColor.g, sunColor.b].map((v) => +v.toFixed(3)), 'skyE', skyE.toArray().map((v) => +v.toFixed(3)),
-    'fog', [fogC.r, fogC.g, fogC.b].map((v) => +v.toFixed(3)), 'ground', gR.map((v) => +v.toFixed(3)), 'maxL', +maxL.toFixed(0));
-  return { sky, env, sunDir: L, sunColor, sunI, sunE: Ei, skyE, fogColor: fogC };
+    'fog', [fogC.r, fogC.g, fogC.b].map((v) => +v.toFixed(3)), 'ground', gR.map((v) => +v.toFixed(3)), 'maxL', +maxL.toFixed(0), 'disc texels', discN);
+  return { sky, env, sunDir: L, sunColor, sunI, sunE: Ei, skyE, fogColor: fogC, discTexels: discN };
 }
 
 
@@ -1665,8 +1803,10 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   }
   // [A] sky + light. The bake needs only the per-sky sun direction, so it runs right after the geometry while the HDR
   // and textures stream; the HDR's measured sun/sky intensities then scale it through uniforms (uniforms.aLight).
-  const skyDef = SKIES[sky] || SKIES.sunny, hasSun = skyDef.sunRatio > 0, envI = 0.85, sunDir = new THREE.Vector3(...skyDef.sunDir).normalize();
+  // [A2] sunDir is the WORLD sun (the sky's own sunDir turned by rotY), for the bake, the light, shadows and haze
+  const skyDef = SKIES[sky] || SKIES.sunny, hasSun = skyDef.sunRatio > 0, envI = 0.85, sunDir = skySunDir(skyDef);
   const aLight = (uniforms.aLight = lightUniforms());
+  uniforms.aSky = skyShadowUniforms();   // [A2] ring shadow map (treeline crowns)
   aLight.uSunW.value.copy(sunDir); aLight.uHaze.value = hasSun ? 1.2 : 0;
   let skyFrac = 0, bakeFrac = 0;
   const ticker = setInterval(() => prog(0.05 + 0.85 * (skyFrac * 0.3 + (texDone / texTotal) * 0.3 + bakeFrac * 0.4), bakeFrac < 1 ? 'Baking light' : 'Streaming sky and materials'), 200);
@@ -1694,8 +1834,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const texOf = {}; Object.keys(MATS).forEach((k, i) => (texOf[k] = texSets[i]));
   prog(0.9, 'Lighting');
 
-  scene.background = sk.sky; scene.environment = sk.env;
-  scene.fog = new THREE.Fog(sk.fogColor, 40, 2600);
+  const bgI = applySky(scene, skyDef, sk);
 
   const bStats = { ms: {} }; globalThis.__bandoStats = bStats;    // [B] counts + CPU ms per block, for the smoke harness / integrator
   let tLap = performance.now(); const lap = (k) => { const n = performance.now(); bStats.ms[k] = Math.round(n - tLap); tLap = n; };
@@ -1728,7 +1867,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
     const mesh = new THREE.Mesh(g, mats[mat] || mats.wall); mesh.castShadow = true; mesh.receiveShadow = true; mesh.matrixAutoUpdate = false; scene.add(mesh);
   }
   const terrMesh = new THREE.Mesh(terr, mats.ground); terrMesh.receiveShadow = true; scene.add(terrMesh);
-  const farMat = mkMat('ground'); const farMesh = new THREE.Mesh(far, farMat); farMesh.receiveShadow = false; scene.add(farMesh);
+  const farMat = mkMat('ground'); const farMesh = new THREE.Mesh(far, farMat); farMesh.receiveShadow = true; scene.add(farMesh);   // [A2] treeline shadows land on it
   const pathMesh = new THREE.Mesh(pathG, mats.path); pathMesh.receiveShadow = true; pathMesh.renderOrder = 1; scene.add(pathMesh);
 
   lap('mask+materials');
@@ -2080,25 +2219,34 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   }
 
   // [A] sun: a shadowed DirectionalLight carrying the energy clamped out of the HDR.
-  // Live map: +-48 m (4.7 cm texels at 2048), centred 0.3*ext ahead of the camera, snapped to a texel-aligned ~4 m
-  // light-space grid and re-rendered only when that snapped centre moves (autoUpdate off). Beyond it the static far map.
+  // [A2] Live map: +-52 m (5.1 cm texels at 2048) centred on the camera (no lead), snapped to a texel-aligned 8 m
+  // light-space grid and re-rendered only when that snapped centre moves (autoUpdate off): >= 48 m of cover all round.
+  // Beyond it the static far map (site casters), and over the far ground the static ring map (treeline crowns).
   const sun = new THREE.DirectionalLight(sk.sunColor, sunI);
   scene.environmentIntensity = envI;
   sun.castShadow = sunI > 0.5;                       // overcast: no shadow pass at all
   const sm = quality === 'low' ? 1024 : 2048; sun.shadow.mapSize.set(sm, sm);
-  const ext = 48, back = 150;
+  const { ext, back, snapM, lead } = LIVE_SHADOW;
   Object.assign(sun.shadow.camera, { left: -ext, right: ext, top: ext, bottom: -ext, near: 1, far: 2 * back });
   sun.shadow.bias = -0.00008; sun.shadow.normalBias = 0.04; sun.shadow.camera.updateProjectionMatrix();   // 2.4 cm depth bias
   sun.shadow.autoUpdate = false; sun.shadow.needsUpdate = true;
   if (mats.brick) mats.brick.shadowSide = THREE.DoubleSide;   // the chimney tube casts with both skins (no leak down its throat)
   scene.add(sun); scene.add(sun.target);
-  const texel = (2 * ext) / sm, snap = texel * Math.max(1, Math.round(4 / texel));
+  const texel = (2 * ext) / sm, snap = texel * Math.max(1, Math.round(snapM / texel));
   const lightBasisX = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), sunDir).normalize(), lightBasisY = new THREE.Vector3().crossVectors(sunDir, lightBasisX);
-  const _fwd = new THREE.Vector3(), _ctr = new THREE.Vector3(); let shAx = NaN, shAy = NaN;
+  const _fwd = new THREE.Vector3(), _ctr = new THREE.Vector3(); let shAx = NaN, shAy = NaN, shN = 0;
   if (sun.castShadow) {
     const fs = renderFarShadow(renderer, scene, merged, sunDir, quality === 'low' ? 1024 : 2048, aLight);
     if (mats.slab) mats.slab.aFarShadowTex = fs.tex;   // so clearWorld()'s material sweep disposes it with the world
     console.info('far shadow texel m', +fs.texel.toFixed(3));
+    // [A2] treeline crowns (stream B's mesh or group named 'treeline'; absent = no ring map) into a static ring map
+    // A sampler2DShadow must always see an allocated compare texture (three's null fallback is never uploaded, and
+    // ANGLE then drops every draw), so without a treeline the far map stands in and uRingG.w stays 0.
+    const tl = scene.getObjectByName('treeline');
+    const siteBox = new THREE.Box3(); for (const g of Object.values(merged)) { if (!g.boundingBox) g.computeBoundingBox(); siteBox.union(g.boundingBox); }
+    const rs = tl ? renderRingShadow(renderer, tl, sunDir, 1024, uniforms.aSky, new THREE.Vector2((siteBox.min.x + siteBox.max.x) / 2, (siteBox.min.z + siteBox.max.z) / 2)) : null;
+    if (rs) { if (mats.slab) mats.slab.aRingShadowTex = rs.tex; console.info('ring shadow', rs.info); }
+    else { uniforms.aSky.uRingSM.value = fs.tex; uniforms.aSky.uRingG.value.w = 0; console.info('ring shadow: no treeline object, off'); }
   }
   let grassLevel = 1;
   const update = (camPos, dt, camQuat) => {
@@ -2115,12 +2263,13 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     grass.visible = alt < 32.5;
     grass.geometry.instanceCount = Math.min(gN * gN, ringCount(grassU.uR.value / cell + 2.2));
     if (horizonBand) { horizonBand.position.set(camPos.x, 0, camPos.z); horizonBand.userData.off.copy(horizonBand.position); }
-    // [A] live shadow map follows a point ahead of the camera; re-render only when its snapped centre moves
+    // [A2] live shadow map follows the camera (lead 0: a heading-dependent centre re-rendered on every turn);
+    // re-render only when its snapped centre moves
     _ctr.copy(camPos);
-    if (camQuat) { _fwd.set(0, 0, -1).applyQuaternion(camQuat); _fwd.y = 0; const l = _fwd.length(); if (l > 1e-3) _ctr.addScaledVector(_fwd, (0.3 * ext) / l); }
+    if (camQuat && lead > 0) { _fwd.set(0, 0, -1).applyQuaternion(camQuat); _fwd.y = 0; const l = _fwd.length(); if (l > 1e-3) _ctr.addScaledVector(_fwd, (lead * ext) / l); }
     const ax = Math.round(_ctr.dot(lightBasisX) / snap) * snap, ay = Math.round(_ctr.dot(lightBasisY) / snap) * snap;
     if (ax !== shAx || ay !== shAy) {
-      shAx = ax; shAy = ay;
+      shAx = ax; shAy = ay; shN++;
       const c = _ctr.set(0, 0, 0).addScaledVector(lightBasisX, ax).addScaledVector(lightBasisY, ay).addScaledVector(sunDir, camPos.dot(sunDir));
       sun.target.position.copy(c); sun.position.copy(c).addScaledVector(sunDir, back);
       sun.target.updateMatrixWorld(); sun.updateMatrixWorld();
@@ -2135,6 +2284,8 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   prog(0.98, 'Ready');
   BAKE = null;   // [A] the probe solution was only needed while building (decals); free it
   scene.userData.aLight = aLight; scene.userData.lightBake = bake.stats;   // [A] live tuning hooks (uSunB, uSkyB, uFarOn, uHaze...)
+  // [A2] sky/shadow hooks: ring map uniforms, live-map re-render count (for perf checks), the world sun
+  scene.userData.aSky = { u: uniforms.aSky, shadowUpdates: () => shN, sunDir: sunDir.clone(), rotY: skyDef.rotY || 0, bgI };
   return {
     scene, colliderScene: colScene, bvh, skimBvh, update, hdr: true, stats: bStats,
     spawn: new THREE.Vector3(0, terrainHeight(0, 118) + 1.4, 118), yaw: 0,                       // first flight: the reveal
