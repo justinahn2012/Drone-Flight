@@ -53,7 +53,7 @@ const norm1 = (c) => { const y = Math.max(lum(c), 1e-4); return [c[0] / y, c[1] 
 
 // luminance by type (nits, the lit face / tube surface, not the rect mean). G5 / L5: channel 300-1500, boxes 150-600.
 export const NITS = {
-  lightbox: [300, 600], lightboxColour: [150, 350], channel: [400, 1500], channelColour: [300, 800],
+  lightbox: [150, 300], lightboxColour: [120, 250], channel: [300, 900], channelColour: [250, 700],   // [integ6] S3's clip pass: fascia boxes capped 150-300, channel 300-900
   neon: [900, 2200], window: [40, 120], scroller: [400, 900], screen: [350, 700], screenSmall: [250, 500], banner: [0, 0],
 };
 // share of the rect that actually emits, for the emitter's mean nits

@@ -49,12 +49,12 @@ export const SEOUL_MATS = {
 // what each lot's use looks like at street level at ~23:00 (shopfront light: linear rgb, cd/m2 seen through the glass;
 // shut: chance the shutter is down). Interiors 300-1500 cd/m2 through glass; convenience stores are the brightest and coldest.
 const USE_LOOK = {
-  club: { rgb: [0.9, 0.35, 1.0], nits: 250, shut: 0.15 }, bar: { rgb: [1.0, 0.55, 0.3], nits: 350, shut: 0.1 },
-  pocha: { rgb: [1.0, 0.6, 0.25], nits: 500, shut: 0.05 }, restaurant: { rgb: [1.0, 0.78, 0.55], nits: 600, shut: 0.25 },
-  cafe: { rgb: [1.0, 0.8, 0.6], nits: 500, shut: 0.35 }, shop: { rgb: [1.0, 0.95, 0.9], nits: 800, shut: 0.45 },
-  conv: { rgb: [0.85, 0.95, 1.0], nits: 1500, shut: 0 }, karaoke: { rgb: [0.8, 0.5, 1.0], nits: 300, shut: 0.05 },
-  pc: { rgb: [0.5, 0.8, 1.0], nits: 300, shut: 0.05 }, motel: { rgb: [1.0, 0.5, 0.6], nits: 200, shut: 0.1 },
-  office: { rgb: [0.9, 0.95, 1.0], nits: 400, shut: 0.8 }, hotel: { rgb: [1.0, 0.85, 0.65], nits: 500, shut: 0.1 },
+  club: { rgb: [0.9, 0.35, 1.0], nits: 60, shut: 0.15 }, bar: { rgb: [1.0, 0.55, 0.3], nits: 80, shut: 0.1 },
+  pocha: { rgb: [1.0, 0.6, 0.25], nits: 120, shut: 0.05 }, restaurant: { rgb: [1.0, 0.78, 0.55], nits: 130, shut: 0.25 },
+  cafe: { rgb: [1.0, 0.8, 0.6], nits: 120, shut: 0.35 }, shop: { rgb: [1.0, 0.95, 0.9], nits: 150, shut: 0.45 },
+  conv: { rgb: [0.85, 0.95, 1.0], nits: 300, shut: 0 }, karaoke: { rgb: [0.8, 0.5, 1.0], nits: 80, shut: 0.05 },
+  pc: { rgb: [0.5, 0.8, 1.0], nits: 80, shut: 0.05 }, motel: { rgb: [1.0, 0.5, 0.6], nits: 60, shut: 0.1 },
+  office: { rgb: [0.9, 0.95, 1.0], nits: 100, shut: 0.8 }, hotel: { rgb: [1.0, 0.85, 0.65], nits: 120, shut: 0.1 },
 };
 const K = { band: 0.12, fascia: [3.05, 1.0, 0.32], shopTop: 2.95, parapet: 0.9, poleH: 10.0, poleR: 0.17, poleStep: 26, cableR: 0.022 };
 
@@ -254,7 +254,7 @@ export function buildSeoulGeometry(layout, { lineData = null, seed = 11 } = {}) 
           const s = 0.3 + (k + 0.5) * ((L - 0.6) / bays), cx = a[0] + tx * s + nx * 0.03, cz = a[1] + tz * s + nz * 0.03;
           const r = R(); facts.windows++;
           let em = [0, 0, 0];
-          if (r < 0.42) { facts.windowsLit++; const warm = R() < 0.6, n = (80 + R() * 220) * NIT; em = warm ? [n, n * 0.78, n * 0.55] : [n * 0.85, n * 0.95, n]; }
+          if (r < 0.42) { facts.windowsLit++; const warm = R() < 0.6, q = R(), n = (r < 0.21 ? 5 + q * 15 : 15 + q * 45) * NIT; /* [integ6] S3: 15-60 nits, half curtained 5-20 */ em = warm ? [n, n * 0.78, n * 0.55] : [n * 0.85, n * 0.95, n]; }
           A('glass').quad([cx - tx * bw / 2, y0, cz - tz * bw / 2], [cx + tx * bw / 2, y0, cz + tz * bw / 2], [cx + tx * bw / 2, y1, cz + tz * bw / 2], [cx - tx * bw / 2, y1, cz - tz * bw / 2], [nx, 0, nz], [[0, 0], [1, 0], [1, 1], [0, 1]], em);
           // AC units under some windows on side and back walls, or high on the front (the real Seoul pattern)
           if (f >= 1 && !slot && R() < (front ? 0.12 : 0.3)) {
