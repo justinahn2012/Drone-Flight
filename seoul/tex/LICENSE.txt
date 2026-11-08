@@ -1,0 +1,3 @@
+The textures in this folder are re-encoded (KTX2, Basis Universal) from Poly Haven texture scans,
+released under CC0 1.0 Universal (public domain): https://polyhaven.com/license
+Sources and checksums: textures.json.

@@ -1,0 +1,34 @@
+{
+ "log": "walking.otil",
+ "world": "826c408788a79424",
+ "sources": {
+  "geometry": "38b09fc3088ffa7c",
+  "lines": "e8b3dbf4ab1f2c43",
+  "layout": "08f62965c4218dbc",
+  "flight": "df8848b548849a8f",
+  "take": "a74bcb9e88f6b09e",
+  "life": "816c67f82fc7d7ed"
+ },
+ "sticks": "main.js sticksActive, no touches; thrRef starts at the first tick",
+ "events": [
+  {
+   "tick": 0,
+   "type": "start"
+  },
+  {
+   "tick": 5591,
+   "type": "line",
+   "name": "WALKING STREET",
+   "caption": "THE WALKING *STREET*!",
+   "pts": 2500,
+   "flow": 1,
+   "clean": true,
+   "micro": false,
+   "t0": 1.82,
+   "ago": 21.475,
+   "t": 23.3
+  }
+ ],
+ "total": 0,
+ "state": "live"
+}

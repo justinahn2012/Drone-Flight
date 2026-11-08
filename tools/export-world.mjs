@@ -401,23 +401,56 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
 
 // ---------------------------------------------------------------- [S0] other levels (levels.json)
 // A level other than bando exports from a CPU-only geometry entry its module names in the manifest (`geometry`, default
-// `build<Name>Geometry`... tried: level.geometry, 'buildGeometry'). It returns, headless (no renderer, no textures):
+// `buildGeometry`). It returns, headless (no renderer, no textures):
 //   { merged: {material: BufferGeometry}, colGeo, lines, spawn, takeStart?, startPoints?, funnels?, bounds?, envelope?,
-//     materials?: {material: {albedo, rough, ...}}, site?: {...plain data}, extra?: {...plain data} }
+//     materials?: {material: {albedo, rough, ...}}, colRanges?: [{key, tri0, tris}], emitters?, setPieces?, layout?,
+//     site?: {...plain data}, extra?: {...plain data} }
 // Written: world.glb (one mesh per merged material, sorted), collider.glb, world.json (same format id; level, hashes,
-// lines, spawn...). Deterministic, so --check works the same way.
-export async function exportLevel({ root = ROOT, id, out, seed = 7, check = false, log = console.log, levelsFile = 'levels.json' } = {}) {
-  const t0 = performance.now(), warnings = [], warn = (s) => { warnings.push(s); log('  warning: ' + s); };
+// lines, spawn...), plus the level's data files (LEVEL_DATA: Seoul = tools/export-seoul-data.mjs). Deterministic, so
+// --check works the same way. [P2 H] Until a module exports its entry, LEVEL_SHIMS adapt what it has (noted, not a
+// warning), and the level's runtime scene is built headless to apply world.json `coverage` in node.
+export const LEVEL_DEFAULTS = { 'seoul-hongdae': { seed: 11 } };   // = the seed the game's build uses (buildSeoul opts.seed ?? 11)
+export const LEVEL_DATA = { 'seoul-hongdae': './export-seoul-data.mjs' };
+export const LEVEL_SHIMS = {
+  // world-seoul.js before C's buildGeometry: the same calls buildSeoul makes, minus the renderer (native #1)
+  'seoul-hongdae': async (mod, { seed }) => {
+    if (typeof mod.buildSeoulGeometry !== 'function' || typeof mod.loadSeoulJSON !== 'function') return null;
+    const layout = (await mod.loadSeoulJSON('./seoul/layout.json')) || (await mod.loadSeoulJSON('./seoul/layout.provisional.json'));
+    if (!layout) throw new Error('seoul/layout.json missing');
+    const lineData = await mod.loadSeoulJSON('./seoul/lines.json');
+    const geo = mod.buildSeoulGeometry(layout, { lineData, seed });
+    const B = mod.boxOf(layout), sp = geo.takeStart || layout.spawn || { pos: [0, 6, 0], yaw: 0 };
+    return { ...geo, layout, seed, materials: mod.SEOUL_MATS, spawn: { pos: sp.pos, yaw: sp.yaw ?? 0 },
+      bounds: { min: [B.x0 - 60, -5, B.z0 - 60], max: [B.x1 + 60, 200, B.z1 + 60] }, envelope: { min: [B.x0 - 30, -2, B.z0 - 30], max: [B.x1 + 30, 160, B.z1 + 30] } };
+  },
+};
+
+/** The level's CPU geometry: its own entry when it has one, else its shim. -> { geo, entry } */
+export async function levelGeometry(mod, L, seed) {
+  const fn = [L.geometry, 'buildGeometry'].find((k) => k && typeof mod[k] === 'function');
+  if (fn) return { geo: await mod[fn]({ seed, level: L.id, headless: true }), entry: fn };
+  const shim = LEVEL_SHIMS[L.id] && (await LEVEL_SHIMS[L.id](mod, { seed }));
+  if (shim) return { geo: shim, entry: `shim (${L.module} has no buildGeometry yet: tools/export-world.mjs LEVEL_SHIMS)` };
+  throw new Error(`${L.module} has no CPU geometry entry (levels.json "geometry", or export buildGeometry)`);
+}
+
+const toV = (v) => (v == null ? null : v.isVector3 ? [v.x, v.y, v.z] : Array.isArray(v) ? v : v);
+const toBox = (b) => (b == null ? null : b.isBox3 ? { min: toV(b.min), max: toV(b.max) } : { min: toV(b.min), max: toV(b.max) });
+
+export async function exportLevel({ root = ROOT, id, out, seed, check = false, log = console.log, levelsFile = 'levels.json', dataOnly = false, coverageCheck = true } = {}) {
+  const t0 = performance.now(), warnings = [], notes = [], warn = (s) => { warnings.push(s); log('  warning: ' + s); }, note = (s) => { notes.push(s); log('  note: ' + s); };
   const levels = JSON.parse(readFileSync(join(root, levelsFile), 'utf8')), L = levels.find((l) => l.id === id || (l.alias || []).includes(id));
   if (!L) throw new Error(`level ${id} not in levels.json (${levels.map((l) => l.id).join(', ')})`);
   out ??= join(root, 'export', L.id);
+  seed ??= L.seed ?? LEVEL_DEFAULTS[L.id]?.seed ?? 7;
   const file = L.module.replace(/^\.\//, ''), path = join(root, file);
   if (!existsSync(path)) throw new Error(`${L.module} not in this tree yet`);
-  const mod = await import(pathToFileURL(path).href);
-  const fn = [L.geometry, 'buildGeometry'].find((k) => k && typeof mod[k] === 'function');
-  if (!fn) throw new Error(`${L.module} has no CPU geometry entry (levels.json "geometry", or export buildGeometry)`);
-  const geo = await mod[fn]({ seed, level: L.id, headless: true });
-  if (!geo?.merged || !geo.colGeo) throw new Error(`${fn}() must return { merged, colGeo, ... }`);
+  const dataPath = LEVEL_DATA[L.id], dataMod = dataPath ? await import(dataPath) : null;
+  const mods = dataMod?.seoulModules ? await dataMod.seoulModules(root, (s) => note(s.trim())) : null;   // exposes module-private constants: before any import of the level
+  const mod = mods?.files[file] || (await import(pathToFileURL(path).href));
+  const { geo, entry } = await levelGeometry(mod, L, seed);
+  if (!geo?.merged || !geo.colGeo) throw new Error(`${entry}() must return { merged, colGeo, ... }`);
+  if (/^shim/.test(entry)) note(`geometry from the ${entry}`);
   const src = readFileSync(path, 'utf8'), MATS = geo.materials || {};
   const render = Object.keys(geo.merged).sort().map((k) => ({ name: k, geo: geo.merged[k], mat: k, kind: 'site' }));
   const hRender = setHash('render', render.map((r) => [r.name, r.geo])), hCol = setHash('collider', [['collider', geo.colGeo]]);
@@ -428,46 +461,84 @@ export async function exportLevel({ root = ROOT, id, out, seed = 7, check = fals
     const g = r.geo, attrs = {};
     for (const [k, a] of Object.entries(g.attributes)) attrs[k] = { array: attrArray(a), itemSize: a.itemSize, normalized: a.normalized };
     const m = MATS[r.mat] || {}, alb = m.albedo || [0.3, 0.29, 0.27];
-    const material = W.material(r.mat, { name: r.mat, pbrMetallicRoughness: { baseColorFactor: [alb[0], alb[1], alb[2], 1], metallicFactor: 0, roughnessFactor: m.rough ?? 1 }, extras: { mat: r.mat, ...plain(m) } });
+    const material = W.material(r.mat, { name: r.mat, pbrMetallicRoughness: { baseColorFactor: [alb[0], alb[1], alb[2], 1], metallicFactor: m.metal || 0, roughnessFactor: m.rough ?? 1 }, extras: { mat: r.mat, ...plain(m) } });
     W.mesh(r.name, attrs, g.index ? g.index.array : null, { material, extras: { kind: r.kind, material: r.mat } });
     const sem = semanticsFor(Object.keys(g.attributes));
     meshTable.push({ name: r.name, kind: r.kind, material: r.mat, vertices: g.attributes.position.count, triangles: (g.index ? g.index.count : g.attributes.position.count) / 3,
       attributes: Object.fromEntries(Object.entries(g.attributes).map(([k, a]) => [k, { gltf: sem[k], itemSize: a.itemSize }])), bounds: boundsOf(attrArray(g.attributes.position)), hash: hash.meshes[r.name] });
   }
+  // collider: per-material vertex ranges when the entry reports colRanges ([{key, tri0, tris}] over the non-indexed merge)
   const col = geo.colGeo, CW = new GLBWriter('One Take FPV tools/export-world.mjs'), colAttrs = {};
   for (const [k, a] of Object.entries(col.attributes)) colAttrs[k] = { array: attrArray(a), itemSize: a.itemSize };
-  CW.mesh('collider', colAttrs, col.index ? col.index.array : null, { extras: { kind: 'collider' } });
+  const ranges = Array.isArray(geo.colRanges) && geo.colRanges.length ? Object.fromEntries(geo.colRanges.map((r) => [r.key, [r.tri0 * 3, (r.tri0 + r.tris) * 3]])) : null;
+  const triangleCounts = ranges && col.index ? triCounts(col.index.array, ranges) : null;
+  CW.mesh('collider', colAttrs, col.index ? col.index.array : null, { extras: { kind: 'collider' }, ...(ranges ? { primExtras: { ranges, triangleCounts } } : {}) });
   const outFiles = { 'world.glb': W.toGLB(), 'collider.glb': CW.toGLB() };
-  const spawn = geo.spawn == null ? null : geo.spawn.pos ? plain(geo.spawn) : { pos: plain(geo.spawn), yaw: plain(geo.yaw ?? 0) };
+  const spawn = geo.spawn == null ? null : geo.spawn.pos ? { pos: toV(geo.spawn.pos), yaw: plain(geo.spawn.yaw ?? geo.yaw ?? 0) } : { pos: plain(toV(geo.spawn)), yaw: plain(geo.yaw ?? 0) };
   if (!spawn) warn('spawn not found on the geometry entry');
+  for (const k of ['bounds', 'envelope']) if (geo[k] == null) warn(`${k} not on the geometry entry (buildGeometry should return what buildSeoul's world has)`);
+  // the level's runtime content as data (Seoul: emitters, signs, screens, light, life, dressing, look, textures)
+  let D = null;
+  if (dataMod?.exportSeoulData) {
+    try { D = await dataMod.exportSeoulData({ root, geo, L, seed, mods, log, note, warn }); }
+    catch (e) { warn(`level data export threw: ${e.stack || e.message}`); }
+  }
+  const matOut = Object.fromEntries(Object.entries(MATS).map(([k, m]) => {
+    const tex = m?.id && m.maps ? Object.fromEntries(m.maps.map((map) => [map, { url: `https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/${m.id}/${m.id}_${map}_1k.jpg`, ktx2: D?.textures?.files?.[`${m.id}_${map}.ktx2`] ? `tex/${m.id}_${map}.ktx2` : null }])) : undefined;
+    return [k, { ...plain(m), ...(tex ? { textures: tex } : {}) }];
+  }));
+  const L1 = geo.layout;
   const world = {
-    format: WORLD_FORMAT, generator: 'tools/export-world.mjs --level', level: plain(L), source: { [file]: { sha256: sha256(src) }, seed },
-    conventions: { units: 'metres; right-handed, +Y up; the drone / camera look along -Z (three.js)' },
-    hash, files: Object.fromEntries(Object.entries(outFiles).map(([f, b]) => [f, { bytes: b.byteLength, sha256: sha256(b) }])),
+    format: WORLD_FORMAT, generator: 'tools/export-world.mjs --level', level: plain(L), source: { [file]: { sha256: sha256(src) }, seed, entry },
+    conventions: { units: 'metres; right-handed, +Y up; the drone / camera look along -Z (three.js)' + (L1 ? '; x east, z south (layout L1)' : ''), ...(D ? { light: 'emitters and data in nits (cd/m2); NITS = 0.1 scene units per cd/m2 (light.json)', uv: 'site UVs are planar world metres: sample at uv / materials[mat].tile, repeat wrap (KTX2 rows pre-flipped: tex/textures.json orientation)' } : {}) },
+    hash, files: null,
     meshes: meshTable,
-    collider: { vertices: col.attributes.position.count, triangles: (col.index ? col.index.count : col.attributes.position.count) / 3, bounds: boundsOf(attrArray(col.attributes.position)), hash: hCol },
+    collider: { vertices: col.attributes.position.count, triangles: (col.index ? col.index.count : col.attributes.position.count) / 3, bounds: boundsOf(attrArray(col.attributes.position)), hash: hCol,
+      ...(ranges ? { ranges, triangleCounts, skim: 'triangles whose first vertex lies in a range other than the ground layers (walk, road, plaza): world.skimBvh', note: 'double-sided; index in three-mesh-bvh order; ranges = vertex ranges per material key (a triangle belongs to the range holding its first vertex); flush decals (stripe, yellow, glass, shop) are render-only' } : {}) },
     spawn, takeStart: plain(geo.takeStart ?? null), startPoints: plain(geo.startPoints ?? null), funnels: plain(geo.funnels ?? null),
-    bounds: plain(geo.bounds ?? null), envelope: plain(geo.envelope ?? null), lines: plain(geo.lines ?? []),
-    materials: plain(MATS), site: plain(geo.site ?? null), extra: plain(geo.extra ?? null), warnings,
+    bounds: plain(toBox(geo.bounds)), envelope: plain(toBox(geo.envelope)), lines: plain(geo.lines ?? []),
+    materials: matOut, site: plain(geo.site ?? null), extra: plain(geo.extra ?? null),
+    ...(L1 ? { layout: { file: 'layout.json', origin: plain(L1.origin ?? null), box: plain(L1.box ?? null), lots: L1.lots?.length ?? 0, streets: L1.streets?.length ?? 0, screens: L1.screens?.length ?? 0 } } : {}),
+    ...(geo.facts ? { facts: plain(geo.facts) } : {}),
+    ...(D ? { data: D.data, textures: D.textures, runtimeOnly: D.runtimeOnly, coverage: D.coverage, coverageObjects: D.coverageObjects } : {}),
+    notes, warnings,
   };
-  const outputs = { ...outFiles, 'world.json': new TextEncoder().encode(stringify(world) + '\n') };
+  // node-side coverage: the headless runtime scene against world.json `coverage` (the browser job does it on the real page)
+  if (D?.scene && coverageCheck) {
+    try {
+      const { coverage } = await import(pathToFileURL(join(root, 'tests', 'coverage.js')).href);
+      const cov = coverage(D.scene, world);
+      world.coverageNode = { meshes: cov.meshes, byRule: cov.byRule, pending: cov.pending };
+      for (const u of cov.uncovered) warn(`coverage: ${u.type} "${u.name}" (parent "${u.parent}", ${u.vertices} verts${u.why ? ', ' + u.why : ''}) has no export entry`);
+      for (const n of cov.undrawnExports) warn(`coverage: world.glb mesh "${n}" is not drawn by the game`);
+    } catch (e) { warn('coverage in node: ' + e.message); }
+  }
+  const dataFiles = D?.files || {};
+  const all = { ...outFiles, ...dataFiles };
+  world.files = Object.fromEntries(Object.entries(all).sort(([a], [b]) => (a < b ? -1 : 1)).map(([f, b]) => [f, { bytes: b.byteLength, sha256: sha256(b) }]));
+  const outputs = dataOnly ? { ...dataFiles } : { ...all, 'world.json': new TextEncoder().encode(stringify(world) + '\n') };
   if (check) {
     const stale = Object.entries(outputs).filter(([f, b]) => !existsSync(join(out, f)) || sha256(readFileSync(join(out, f))) !== sha256(b)).map(([f]) => f);
-    log(stale.length ? `${L.id} export STALE in ${out}: ${stale.join(', ')} (hash now ${hWorld})` : `${L.id} export up to date (${hWorld})`);
-    return { ok: !stale.length, stale, hash, warnings };
+    log(stale.length ? `${L.id} export STALE in ${out}: ${stale.join(', ')} (hash now ${hWorld})` : `${L.id} export up to date (${hWorld}, ${Object.keys(outputs).length} files)`);
+    return { ok: !stale.length, stale, hash, warnings, notes, world };
   }
-  mkdirSync(out, { recursive: true });
-  for (const [f, b] of Object.entries(outputs)) writeFileSync(join(out, f), b);
-  log(`${L.id}: world.glb ${(outFiles['world.glb'].byteLength / 1e6).toFixed(2)} MB (${meshTable.length} meshes) | collider ${world.collider.triangles} tris | hash ${hWorld} | ${Math.round(performance.now() - t0)} ms -> ${out}`);
-  return { ok: true, hash, world, out, warnings };
+  for (const [f, b] of Object.entries(outputs)) { mkdirSync(dirname(join(out, f)), { recursive: true }); writeFileSync(join(out, f), b); }
+  const bytes = Object.values(outputs).reduce((s, b) => s + b.byteLength, 0);
+  log(`${L.id}: world.glb ${(outFiles['world.glb'].byteLength / 1e6).toFixed(2)} MB (${meshTable.length} meshes) | collider ${world.collider.triangles} tris | ${Object.keys(dataFiles).length} data files | ${Object.keys(outputs).length} files, ${(bytes / 1e6).toFixed(1)} MB | hash ${hWorld} | ${warnings.length} warnings | ${Math.round(performance.now() - t0)} ms -> ${out}`);
+  return { ok: true, hash, world, out, warnings, notes };
 }
 
 // ---------------------------------------------------------------- CLI
+// --strict: any warning fails (exit 1). CI runs the Seoul export with it, so a mesh class with no export entry, a stale
+// texture, or a data exporter that throws stops the build; a missing partner exporter (a shim was used) is only a note.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const a = process.argv.slice(2), opt = (k) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : undefined; };
-  if (a.includes('-h') || a.includes('--help')) { console.log('usage: node tools/export-world.mjs [--level ID] [--out DIR] [--seed N] [--check] [--quiet]'); process.exit(0); }
-  const quiet = a.includes('--quiet'), level = opt('--level');
-  (level && level !== 'bando' ? exportLevel({ id: level, levelsFile: opt('--levels') ?? 'levels.json', out: opt('--out') ? resolve(opt('--out')) : undefined, seed: +(opt('--seed') ?? 7), check: a.includes('--check'), log: quiet ? () => {} : console.log }) : exportWorld({ out: resolve(opt('--out') ?? ROOT), seed: +(opt('--seed') ?? 7), check: a.includes('--check'), log: quiet ? () => {} : console.log })
-    ).then((r) => process.exit(r.ok ? 0 : 1))
+  if (a.includes('-h') || a.includes('--help')) { console.log('usage: node tools/export-world.mjs [--level ID] [--out DIR] [--seed N] [--check] [--strict] [--quiet]'); process.exit(0); }
+  const quiet = a.includes('--quiet'), level = opt('--level'), strict = a.includes('--strict'), seed = opt('--seed') != null ? +opt('--seed') : undefined;
+  (level && level !== 'bando' ? exportLevel({ id: level, levelsFile: opt('--levels') ?? 'levels.json', out: opt('--out') ? resolve(opt('--out')) : undefined, seed, check: a.includes('--check'), log: quiet ? () => {} : console.log }) : exportWorld({ out: resolve(opt('--out') ?? ROOT), seed: seed ?? 7, check: a.includes('--check'), log: quiet ? () => {} : console.log })
+  ).then((r) => {
+    if (strict && r.warnings?.length) { console.log(`FAIL --strict: ${r.warnings.length} warning(s):\n  ` + r.warnings.join('\n  ')); process.exit(1); }
+    process.exit(r.ok ? 0 : 1);
+  })
     .catch((e) => { console.error(e); process.exit(2); });
 }
