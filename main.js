@@ -1164,6 +1164,7 @@ function updateHud(dt) {
   const bars = world.lastDist < 3 ? Math.max(0, Math.min(4, Math.round(4 - world.lastDist / 0.5))) : 0;
   $('oPx').querySelectorAll('i').forEach((el, i) => el.classList.toggle('on', i < bars));
   $('oSc').textContent = fmtN(v.total);
+  $('oSt').classList.toggle('wrap', !!(readyNow && ts === 'ready'));
   $('oSt').textContent = drone.crashed ? 'CRASHED' : cutLeft > 0 ? (cutLand ? 'LANDED · CUT…' : `CUT ${Math.ceil(cutLeft)}…`) : drone.limitHit > 0 ? 'LIMIT' :
     v.unbanked > 0 ? `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ' x' + v.flow : ''} +${fmtN(v.unbanked)}` :
     readyNow && ts === 'ready' ? readyNow :
