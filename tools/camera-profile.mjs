@@ -100,7 +100,7 @@ export async function cameraProfile({ root = ROOT, out = root, log = console.log
       tiltDeg = Object.fromEntries(Object.entries(CRAFTS).map(([k, c]) => [k, Object.fromEntries(['acro', 'angle', 'cine'].map((mode) => [mode, f(c, { mode }, Math)]))]));
     } catch (e) { warn('defTilt did not evaluate: ' + e.message); }
   } else warn('main.js: defTilt not found');
-  const mount = /camPose\.pos\.copy\(drone\.pos\)\.add\(_v\.set\(([^)]*)\)/.exec(main);
+  const mount = /camPose\.pos\.copy\((?:drone\.pos|rigP)\)\.add\(_v\.set\(([^)]*)\)/.exec(main);
   if (!mount) warn('main.js: camera mount offset not found');
 
   const camera = {

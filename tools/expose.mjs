@@ -84,7 +84,7 @@ function skipNonCode(src, i) {
 export function literalFields(text) {
   const out = {}; let depth = 0, start = 1;
   const flush = (end) => {
-    const part = text.slice(start, end).trim(); start = end + 1;
+    const part = text.slice(start, end).replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').trim(); start = end + 1;   // comments between fields
     if (!part || part.startsWith('...')) return;
     const m = /^([A-Za-z_$][\w$]*)\s*(?::([\s\S]*))?$/.exec(part);
     if (m) out[m[1]] = m[2] === undefined ? m[1] : m[2].trim();

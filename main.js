@@ -360,9 +360,8 @@ async function loadProcWorld(def) {
   fpv.setHDR(true);
   // [D] HDR look (colorist round 2, PLAN3 decisions 4/5): evMax 3.6 (interiors ~p50 60-87, not pinned at +4); WB fitted to
   // the puresky sun+sky (grey card R/G 1.015, B/G 0.95); overcast shade WB = its WB (no sepia hall); sunny evBias -0.15.
-  const oc = def.sky === 'overcast';
-  Object.assign(fpv.look, { evMin: -5.5, evMax: 3.6, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: oc ? [1.038, 0.998, 0.907] : [1.036, 0.994, 0.956],
-    wbShade: oc ? [1.038, 0.998, 0.907] : [1.125, 0.978, 0.845], evBias: oc ? 0.3 : -0.15 });
+  Object.assign(fpv.look, { evMin: -5.5, evMax: 3.6, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.036, 0.994, 0.956],
+    wbShade: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.125, 0.978, 0.845], evBias: def.sky === 'overcast' ? 0.3 : -0.15 });
   Object.assign(world, { depthScene: w.depthScene || null, aoUniforms: w.aoUniforms || null });   // [D] contracts C2/C3 (optional inputs)
   fpv.warmup?.();                                                                                   // [D] post programs behind the loader
   fpv.cam.near = 0.06; fpv.cam.far = 3000; fpv.cam.updateProjectionMatrix();
