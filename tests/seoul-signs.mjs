@@ -28,9 +28,10 @@ ok(M.PUSH_BY_KIND.club === 0.6 && M.PUSH_BY_KIND.walking === 0.6 && M.PUSH_BY_KI
 
 // --- art #1 density list ---
 const S = a.specs, lots = layout.lots || [];
-const fasc = S.filter((s) => (s.type === 'fascia' || s.type === 'channel') && s.floor === 0 && !s.geo.small && s.id.endsWith(':fascia0') || s.id.endsWith(':channel0'));
-const wr = fasc.map((s) => (s.geo.w / s.frame.L)); const wrOk = wr.filter((x) => x <= 0.86).length / wr.length;
-ok(wrOk > 0.97, `ground fascia width <= 0.85 L on ${pct(wrOk)}`);
+const fasc = S.filter((s) => s.geo.bay); const wr = fasc.map((s) => s.geo.w / s.geo.bay); const wrOk = wr.filter((x) => x <= 0.86).length / wr.length;
+ok(wrOk > 0.97 && fasc.length > 400, `${fasc.length} ground shop fascias, width <= 0.85 of the bay on ${pct(wrOk)}`);
+const bays = fasc.map((s) => s.geo.bay).sort((x, y) => x - y); ok(bays[bays.length >> 1] < 9, `median shop bay ${bays[bays.length >> 1].toFixed(1)} m (Hongdae 4-8 m)`);
+ok(!S.some((s) => (s.type === 'blade' || s.type === 'fascia') && s.floor >= 7), 'no blades or boxes above 7F');
 const rb = lots.filter((l) => l.use === 'restaurant' || l.use === 'bar'); const rbCh = rb.filter((l) => S.some((s) => s.id === `${l.id}:channel0`)).length / Math.max(1, rb.length);
 ok(rbCh > 0.35 && rb.length > 20, `channel letters on ${pct(rbCh)} of restaurant/bar ground floors (target 45 %)`);
 const tall = lots.filter((l) => (l.floors | 0) >= 3 && l.use !== 'motel' && l.use !== 'hotel');
@@ -38,7 +39,7 @@ const bladeLots = tall.filter((l) => S.some((s) => s.lot === l.id && s.type === 
 const twoStacks = bladeLots.filter((l) => new Set(S.filter((s) => s.lot === l.id && s.type === 'blade').map((s) => s.geo.u)).size >= 2);
 ok(bladeLots.length / tall.length >= 0.68, `blades on ${pct(bladeLots.length / tall.length)} of 3F+ lots (>= 70 %)`);
 ok(twoStacks.length / Math.max(1, bladeLots.length) > 0.2, `second blade stack on ${pct(twoStacks.length / Math.max(1, bladeLots.length))} of them (30 %)`);
-const stands = S.filter((s) => s.type === 'stand').length; ok(stands / lots.length >= 0.5, `입간판 ${stands} for ${lots.length} shops (>= 1 per 2)`);
+const stands = S.filter((s) => s.type === 'stand').length; ok(stands / fasc.length >= 0.5, `입간판 ${stands} for ${fasc.length} shops (>= 1 per 2)`);
 const upLit = S.filter((s) => s.type === 'window' && s.lit && s.floor >= 1 && s.floor <= 3);
 const upTen = new Set(S.filter((s) => s.floor >= 1 && s.floor <= 3 && s.lit).map((s) => `${s.lot}/${s.floor}`));
 const vin = new Set(upLit.map((s) => `${s.lot}/${s.floor}`)); ok(vin.size / upTen.size >= 0.55, `vinyl on ${pct(vin.size / upTen.size)} of lit 2F-4F tenants (60 %)`);

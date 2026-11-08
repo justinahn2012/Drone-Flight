@@ -105,6 +105,12 @@ const UPPER_USES = {
   shop: ['office', 'cafe', 'shop', 'karaoke'], conv: ['pc', 'karaoke', 'office', 'restaurant'], karaoke: ['karaoke', 'pc', 'bar', 'office'],
   pc: ['pc', 'karaoke', 'office'], motel: ['motel'], hotel: ['hotel'], office: ['office', 'office', 'cafe', 'restaurant'],
 };
+// what sits next to a building's first shop on the ground floor
+const GROUND_NEXT = {
+  club: ['bar', 'pocha', 'conv', 'karaoke', 'restaurant'], bar: ['bar', 'pocha', 'restaurant', 'karaoke', 'cafe'], pocha: ['pocha', 'bar', 'restaurant'],
+  restaurant: ['restaurant', 'restaurant', 'cafe', 'bar', 'shop', 'conv', 'pocha'], cafe: ['cafe', 'shop', 'restaurant', 'bar'], shop: ['shop', 'shop', 'cafe', 'restaurant'],
+  conv: ['restaurant', 'cafe', 'shop'], karaoke: ['bar', 'pc', 'restaurant'], pc: ['restaurant', 'conv', 'cafe'],
+};
 const TAGS = ['24시', '영업중', 'OPEN', '단체석', '생맥주', '무한리필', '포장 가능', '심야영업', '새벽까지', '예약 환영', '주차 가능',
   '1인석', 'SINCE 2009', '본점', '2호점', '맛집', '신장개업', '연중무휴'];
 const NEON_WORDS = ['술', '오늘 밤', '한잔 해', '취하고 싶은 밤', '사랑해', '청춘', 'OPEN', 'BAR', 'LOVE', 'TONIGHT', '포차', '노래',
@@ -239,54 +245,69 @@ export function generateSigns(layout, opts = {}) {
     };
     const g = tenants[0];
     const L = F.L, fh = F.fh;
-    // --- ground floor: fascia light box (most) or channel letters on a raceway (cafes, conv, clubs, restaurants, bars) ---
-    // art #1: fasciaW 0.82-0.97 L -> 0.55-0.85 L; channel share 0.2 -> 0.45 for restaurants and bars
-    const fasciaW = Math.min(L - 0.3, L * range(r, 0.55, 0.85)), fasciaH = range(r, 0.85, 1.25);
-    const fasciaY = Math.min(fh - fasciaH - 0.15, range(r, 2.55, 2.95));
-    const channel = r.next() < ({ cafe: 0.55, club: 0.5, shop: 0.4, hotel: 0.7, restaurant: 0.45, bar: 0.45, pocha: 0.45 }[g.use] ?? 0.25);
-    add(channel ? 'channel' : 'fascia', g, { u: (L - fasciaW) / 2, y: fasciaY, w: fasciaW, h: fasciaH, d: channel ? 0.12 : 0.28 });
-    // --- second fascia on the side-return or a smaller box over the door (pocha / restaurants stack boxes) ---
-    if (r.next() < 0.35 && L > 6) add('fascia', g, { u: range(r, 0.2, 0.6), y: fasciaY - 0.95, w: Math.min(2.4, L * 0.25), h: 0.7, d: 0.2, small: true });
-    // --- LED dot scroller over the door (bars, pocha, pc, karaoke, restaurants) ---
-    if (r.next() < ({ bar: 0.5, pocha: 0.6, restaurant: 0.4, pc: 0.6, karaoke: 0.6, conv: 0.1 }[g.use] ?? 0.12)) {
-      const sw = Math.min(L * 0.5, range(r, 1.6, 3.2));
-      add('scroller', g, { u: range(r, 0.3, Math.max(0.35, L - sw - 0.3)), y: fasciaY - 0.36, w: sw, h: 0.26, d: 0.06 }, { scrollRow: Math.floor(r.next() * SCROLL_TEXT.length) });
+    // --- ground floor: a building's frontage holds 1-4 shop bays (Hongdae: 4-8 m each), each with its own signs ---
+    const nShops = lot.use === 'hotel' || lot.use === 'motel' || lot.use === 'office' ? 1 : Math.max(1, Math.min(4, Math.round(L / 6.5)));
+    const bay = L / nShops, shops = [g];
+    for (let i = 1; i < nShops; i++) {
+      const use = pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant);
+      shops.push({ f: 0, use, name: makeName(r, use, use === 'club' ? 0.6 : use === 'cafe' ? 0.35 : use === 'shop' ? 0.4 : 0.12), lit: r.next() < (LIT_P[use] ?? 0.5), phone: fakePhone(r), tag: pick(r, TAGS) });
     }
-    // --- sidewalk standing sign (입간판): ~one per two shops ---
-    if (r.next() < ({ cafe: 0.6, bar: 0.75, pocha: 0.75, restaurant: 0.75, karaoke: 0.8, pc: 0.6, shop: 0.45, club: 0.5, conv: 0.3 }[g.use] ?? 0.25))
-      add('stand', g, { u: range(r, 0.6, Math.max(0.7, L - 0.6)), y: 0.15, w: 0.55, h: range(r, 1.1, 1.5), d: 0.55, out: range(r, 0.8, 1.4) });
-    // --- upper floors: spandrel boxes, window vinyl (on ~70 % of floors; lit with the tenant), channel letters ---
+    let fasciaY = 2.75;
+    shops.forEach((sh, i) => {
+      const u0 = bay * i;
+      // art #1: fascia 0.55-0.85 of the bay (was 0.82-0.97 L); channel letters on 45 % of restaurants and bars (was 20 %)
+      const fasciaW = Math.min(bay - 0.3, bay * range(r, 0.55, 0.85)), fasciaH = range(r, 0.85, 1.25);
+      const fy = Math.min(fh - fasciaH - 0.15, range(r, 2.55, 2.95)); if (i === 0) fasciaY = fy;
+      const channel = r.next() < ({ cafe: 0.55, club: 0.5, shop: 0.4, hotel: 0.7, restaurant: 0.45, bar: 0.45, pocha: 0.45 }[sh.use] ?? 0.25);
+      add(channel ? 'channel' : 'fascia', sh, { u: u0 + (bay - fasciaW) / 2, y: fy, w: fasciaW, h: fasciaH, d: channel ? 0.12 : 0.28, bay });
+      // second, smaller box over the door (pocha / restaurants stack boxes)
+      if (r.next() < 0.35 && bay > 5) add('fascia', sh, { u: u0 + range(r, 0.2, 0.6), y: fy - 0.95, w: Math.min(2.4, bay * 0.3), h: 0.7, d: 0.2, small: true });
+      // LED dot scroller over the door (bars, pocha, pc, karaoke, restaurants)
+      if (r.next() < ({ bar: 0.5, pocha: 0.6, restaurant: 0.4, pc: 0.6, karaoke: 0.6, conv: 0.1 }[sh.use] ?? 0.12)) {
+        const sw = Math.min(bay * 0.6, range(r, 1.6, 3.2));
+        add('scroller', sh, { u: u0 + range(r, 0.3, Math.max(0.35, bay - sw - 0.3)), y: fy - 0.36, w: sw, h: 0.26, d: 0.06 }, { scrollRow: Math.floor(r.next() * SCROLL_TEXT.length) });
+      }
+      // sidewalk standing sign (입간판): ~0.6 per shop
+      if (r.next() < ({ cafe: 0.6, bar: 0.75, pocha: 0.75, restaurant: 0.75, karaoke: 0.8, pc: 0.6, shop: 0.45, club: 0.5, conv: 0.3 }[sh.use] ?? 0.25))
+        add('stand', sh, { u: u0 + range(r, 0.6, Math.max(0.7, bay - 0.6)), y: 0.15, w: 0.55, h: range(r, 1.1, 1.5), d: 0.55, out: range(r, 0.8, 1.4) });
+      // neon in the shop window (bars, pocha, clubs)
+      if (NIGHT_USES.has(sh.use) && r.next() < 0.5) add('neon', sh, { u: u0 + range(r, 0.4, Math.max(0.5, bay - 2.2)), y: 1.0, w: range(r, 1.2, 1.8), h: range(r, 0.5, 0.8), d: 0.05 }, { neonText: pick(r, NEON_WORDS) });
+    });
+    // --- upper floors (signs stop around 6-7F; above that only the odd 학원 window): spandrel boxes, window vinyl, channel ---
+    const signTop = Math.min(nFloors, 7);
     for (let f = 1; f < nFloors; f++) {
       const t = tenants[f]; if (t.use === 'motel' || t.use === 'hotel') continue;
       const y0 = f * fh;
+      if (f >= signTop) {
+        if (r.next() < 0.12) { const ww = Math.min(L - 0.6, range(r, 2.0, 3.6)); add('window', t, { u: range(r, 0.3, Math.max(0.35, L - ww - 0.3)), y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.3), d: 0.0 }); }
+        continue;
+      }
       const v = r.next();
-      if (v < 0.55) add('fascia', t, { u: L * range(r, 0.06, 0.16), y: y0 + fh - range(r, 1.05, 1.3), w: L * range(r, 0.5, 0.8), h: range(r, 0.75, 1.0), d: 0.22 });
-      else if (v < 0.75) add('channel', t, { u: L * range(r, 0.08, 0.2), y: y0 + fh - 1.0, w: L * range(r, 0.55, 0.8), h: 0.8, d: 0.1 });
+      if (v < 0.55) { const bw = Math.min(L * range(r, 0.5, 0.8), range(r, 5, 9)); add('fascia', t, { u: range(r, 0.3, Math.max(0.35, L - bw - 0.3)), y: y0 + fh - range(r, 1.05, 1.3), w: bw, h: range(r, 0.75, 1.0), d: 0.22 }); }
+      else if (v < 0.75) { const cw = Math.min(L * range(r, 0.55, 0.8), range(r, 5, 8)); add('channel', t, { u: range(r, 0.3, Math.max(0.35, L - cw - 0.3)), y: y0 + fh - 1.0, w: cw, h: 0.8, d: 0.1 }); }
       if (r.next() < 0.7) {
-        const nw = r.next() < 0.5 ? 1 : 2;
+        const nw = Math.max(1, Math.min(3, Math.round(L / 6) + (r.next() < 0.5 ? 0 : 1)));
         for (let j = 0; j < nw; j++) {
           const ww = Math.min(L / nw - 0.6, range(r, 2.0, 3.6));
           add('window', t, { u: (L / nw) * j + (L / nw - ww) / 2, y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.3), d: 0.0 });
         }
       }
-      if (r.next() < 0.12 && t.lit === false) add('banner', t, { u: L * 0.15, y: y0 + 0.5, w: L * 0.7, h: 0.8, d: 0.02 });
+      if (r.next() < 0.12 && t.lit === false) { const bw = Math.min(L * 0.7, 8); add('banner', t, { u: (L - bw) / 2, y: y0 + 0.5, w: bw, h: 0.8, d: 0.02 }); }
     }
     // --- vertical blade stacks (돌출간판): one tenant box per floor at the facade edge; a second stack on ~30 % ---
     if (nFloors >= 3 && r.next() < 0.75) {
       const side = r.next() < 0.5 ? 0.35 : L - 0.35, out = range(r, 0.45, 0.9), bw = range(r, 0.55, 0.75);
-      for (let f = 1; f < nFloors; f++) add('blade', tenants[f], { u: side, y: f * fh + 0.25, w: bw, h: fh - 0.5, d: 0.32, out });
+      for (let f = 1; f < signTop; f++) add('blade', tenants[f], { u: side, y: f * fh + 0.25, w: bw, h: fh - 0.5, d: 0.32, out });
       if (lot.use === 'motel' || lot.use === 'hotel') { // one tall continuous blade for the whole building name
         add('blade', tenants[0], { u: L - side, y: fh + 0.2, w: 0.9, h: Math.min(10, (nFloors - 1) * fh - 0.4), d: 0.4, out: 1.0, tall: true });
       } else if (r.next() < 0.3 && L > 5) {
         const side2 = L - side, out2 = range(r, 0.45, 0.8), bw2 = range(r, 0.5, 0.7);
-        for (let f = 1; f < nFloors; f++) add('blade', tenants[f], { u: side2, y: f * fh + 0.3, w: bw2, h: fh - 0.6, d: 0.3, out: out2 });
+        for (let f = 1; f < signTop; f++) add('blade', tenants[f], { u: side2, y: f * fh + 0.3, w: bw2, h: fh - 0.6, d: 0.3, out: out2 });
       }
     }
     // --- round projecting box (원형돌출) at 2F for cafes/restaurants ---
     if (nFloors >= 2 && r.next() < ({ cafe: 0.5, restaurant: 0.3, shop: 0.3, bar: 0.3 }[g.use] ?? 0.08))
       add('round', g, { u: r.next() < 0.5 ? 0.5 : L - 0.5, y: fh + 0.4, w: 0.8, h: 0.8, d: 0.18, out: 0.6 });
-    // --- neon in the ground-floor window (bars, pocha, clubs) ---
-    if (NIGHT_USES.has(g.use) && r.next() < 0.5) add('neon', g, { u: range(r, 0.5, Math.max(0.6, L - 2.2)), y: 1.0, w: range(r, 1.2, 1.8), h: range(r, 0.5, 0.8), d: 0.05 }, { neonText: pick(r, NEON_WORDS) });
     // --- rooftop sign on taller buildings: steel frame with letters ---
     if (nFloors >= 5 && r.next() < 0.45) {
       const t = lot.use === 'office' ? tenants[nFloors - 1] : tenants[0];
@@ -331,8 +352,8 @@ export function signStats(specs) {
 // element kinds (the shader in section 7 switches on these; native ports implement the same list):
 //   BOX   light-box ground: diffuser profile (centre +20 %, edges -30 %), LED rows stronger at grazing angles, p.z=1 round
 //   PANEL flat panel (galva, black board, band, tube border): emits col, reflects alb
-//   FILL  MSDF glyph fill; p.x=1: LED letter profile (edges dimmer)
-//   TUBE  MSDF neon tube centred on the glyph outline, half width p.x em
+//   FILL  MSDF glyph fill; p.x=1: LED letter profile (edges dimmer), p.x=2: script neon (the stroke is the tube)
+//   TUBE  MSDF neon tube traced inside the glyph outline: half width p.x em, centre p.y em inside the edge
 //   DOTS  MSDF glyph filled with exposed LED dots at pitch p.x em on a dark letter body
 //   BULBS border strip of bulbs / LEDs: uv.x metres along, p = (pitch m, mode 0 static | 1 chase | 2 LED, strip width m)
 //   ROOM  lit room behind window film: ceiling-light gradient, p.z=1 blinds
@@ -375,7 +396,7 @@ function textRun(els, text, face, cx, cy, w, h, o = {}) {
     const x0 = x + g.l * em * sx, x1 = x + g.r * em * sx, y0 = base + g.b * em, y1 = base + g.t * em;
     const gi = g.ink * em * em * sx, area = (x1 - x0) * (y1 - y0);
     els.push({ k: o.kind ?? K.FILL, layer: o.layer ?? 1, z: o.z ?? 0, q: [x0, y0, x1, y0, x1, y1, x0, y1], uv: [g.u0, g.v0, g.u1, g.v0, g.u1, g.v1, g.u0, g.v1],
-      col: o.col || [0, 0, 0], alb: o.alb || [0.5, 0.5, 0.5], p: [o.pitchM ? o.pitchM / em : (o.p0 ?? 0), 0, area > 0 ? Math.min(1, gi / area) : 0], ink: gi, glyph: true });
+      col: o.col || [0, 0, 0], alb: o.alb || [0.5, 0.5, 0.5], p: [o.pitchM ? o.pitchM / em : (o.p0 ?? 0), o.p1 ?? 0, area > 0 ? Math.min(1, gi / area) : 0], ink: gi, glyph: true });
     ink += gi; x += (g.adv + track) * em * sx;
   }
   return { ink, w: tw, em, start, end: els.length };
@@ -440,7 +461,7 @@ export function designFace(s, w, h) {
       if (design === 'dots') { // exposed LED bulbs inside letter-shaped bodies on a dark board (포차, 노래방)
         rect(els, K.PANEL, -hx, -hy, hx, hy, [0, 0, 0], [0.025, 0.025, 0.03]);
         const bc = s.cat === 'white' ? srgb(HEX.bulb) : s.rgb;
-        textRun(els, nm.sub && nm.main.length < 5 ? nm.main + nm.sub : nm.main, 'S2 BlackHan', 0, 0, w * 0.9, h * 0.86, { k: 0.8, kind: K.DOTS, col: E(lit, bc, N), alb: [0.05, 0.05, 0.05], pitchM: 0.036 });
+        textRun(els, nm.sub && nm.main.length < 5 ? nm.main + nm.sub : nm.main, 'S2 BlackHan', 0, 0, w * 0.9, h * 0.86, { k: 0.8, kind: K.DOTS, col: E(lit, bc, N), alb: [0.05, 0.05, 0.05], pitchM: 0.045 });
         letterNits = N; break;
       }
       const round = s.style === 'round'; ground(design, round);
@@ -471,7 +492,7 @@ export function designFace(s, w, h) {
       if (design === 'dots') {
         rect(els, K.PANEL, -hx, -hy, hx, hy, [0, 0, 0], [0.025, 0.025, 0.03]);
         const bc = s.cat === 'white' ? srgb(HEX.bulb) : s.rgb; const t = (nm.main + (nm.sub || '')).replace(/[^가-힣0-9A-Z]/g, '').slice(0, 6);
-        if (t) vStack(els, t, 'S2 BlackHan', 0, -h * 0.02, w, h * 0.92, { kind: K.DOTS, col: E(lit, bc, N), alb: [0.05, 0.05, 0.05], pitchM: 0.034 });
+        if (t) vStack(els, t, 'S2 BlackHan', 0, -h * 0.02, w, h * 0.92, { kind: K.DOTS, col: E(lit, bc, N), alb: [0.05, 0.05, 0.05], pitchM: 0.042 });
         break;
       }
       ground(design, false); const L = lettersOn(design);
@@ -500,9 +521,11 @@ export function designFace(s, w, h) {
     case 'neon': {
       // black acrylic board, tubes along the letter outlines; re-skinned boxes get a tube frame in the accent colour
       rect(els, K.PANEL, -hx, -hy, hx, hy, [0, 0, 0], [0.018, 0.018, 0.02]);
+      // thin script faces: the stroke itself is the tube (FILL with a tube profile); bold faces: a tube traced on the outline
       const text = s.neonText || (nm.sub || nm.main);
-      const tf = s.neonText ? fam : 'S2 Pen';
-      textRun(els, text, tf, 0, 0, w * 0.88, h * 0.8, { k: 0.78, kind: K.TUBE, col: E(lit, s.rgb, N), alb: scaleC(s.rgb, 0.3), p0: 0.045 });
+      const tf = s.neonText ? fam : (R.next() < 0.5 ? 'S2 Pen' : 'S2 BlackHan');
+      const script = tf === 'S2 Pen' || tf === 'S2 Brush';
+      textRun(els, text, tf, 0, 0, w * 0.88, h * 0.8, { k: script ? 0.78 : 0.72, kind: script ? K.FILL : K.TUBE, col: E(lit, s.rgb, N), alb: scaleC(s.rgb, 0.3), p0: script ? 2 : 0.022, p1: 0.032 });
       if (s.type !== 'neon') {
         const ins = Math.min(w, h) * 0.08, tw = 0.016, ac = E(lit, s.accentName === 'white' ? s.rgb : s.accent, N * 0.8), al = [0.2, 0.2, 0.2];
         rect(els, K.PANEL, -hx + ins, -hy + ins, hx - ins, -hy + ins + tw, ac, al, null, 1); rect(els, K.PANEL, -hx + ins, hy - ins - tw, hx - ins, hy - ins, ac, al, null, 1);
@@ -548,7 +571,7 @@ export function designFace(s, w, h) {
   for (const e of els) {
     const ly = lum(e.col); if (!(ly > 0)) continue;
     let a;
-    if (e.glyph) a = e.ink * (e.k === K.TUBE ? 0.45 : e.k === K.DOTS ? 0.3 : 1);
+    if (e.glyph) a = e.ink * (e.k === K.TUBE ? 0.3 : e.k === K.DOTS ? 0.3 : 1);
     else if (e.bulb) a = Math.abs((e.q[2] - e.q[0]) * (e.q[5] - e.q[1])) * 0.16;
     else { a = Math.abs((e.q[2] - e.q[0]) * (e.q[5] - e.q[1])); if (e.layer === 0) a = Math.max(0, a - inkLit); }
     Y += ly * a; C[0] += e.col[0] * a; C[1] += e.col[1] * a; C[2] += e.col[2] * a;
@@ -950,19 +973,22 @@ const FACE_FRAG_BODY = /* glsl */`
     } else {                  // glyphs
       float cov;
       if (kind == 3) {        // neon tube on the outline
-        float hw = vSK.y; float dd = hw - abs(dEm);
+        float hw = vSK.y; float dc = dEm - vSK.z; float dd = hw - abs(dc);    // tube centre inset vSK.z em inside the outline
         cov = clamp(dd * emPx + 0.5, 0.0, 1.0);
-        float e = clamp(1.0 - abs(dEm) / hw, 0.0, 1.0);
+        float e = clamp(1.0 - abs(dc) / hw, 0.0, 1.0);
         sgEm = vSCol * (0.45 + 0.75 * e);
-        cov = mix(cov, vSK.w * 0.6, far);
+        cov = mix(cov, vSK.w * 0.35, far);
       } else {
         cov = clamp(sd * uAtlasP.z / tpp + 0.5, 0.0, 1.0);
         cov = mix(cov, vSK.w, far);
         if (kind == 2) {
-          sgEm = vSCol * (vSK.y > 0.5 ? mix(0.8, 1.06, smoothstep(0.0, 0.05, dEm)) : 1.0);
+          float pr = 1.0;
+          if (vSK.y > 1.5) pr = 0.5 + 0.65 * smoothstep(0.0, 0.03, dEm);           // script neon: glass tube, bright core
+          else if (vSK.y > 0.5) pr = mix(0.8, 1.06, smoothstep(0.0, 0.05, dEm));    // LED channel letter: dimmer returns at the edge
+          sgEm = vSCol * pr;
         } else {              // exposed LED dots inside the letter body
           float pt = vSK.y * uAtlasP.w; vec2 f = fract(tx / pt) - 0.5;
-          float dotm = 1.0 - smoothstep(0.17, 0.3, length(f));
+          float dotm = 1.0 - smoothstep(0.2, 0.33, length(f));
           sgEm = vSCol * mix(dotm, 0.22, smoothstep(4.0, 1.5, pt / tpp));
         }
       }

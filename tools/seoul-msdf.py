@@ -183,23 +183,26 @@ def render_glyph(job):
     ys, xs = np.mgrid[0:ch, 0:cw]
     P = np.stack([xs.ravel() + 0.5, ys.ravel() + 0.5], 1)                       # pixel centres
     D = B - A; L2 = (D ** 2).sum(1); Lr = np.sqrt(L2)
-    PA = P[:, None, :] - A[None, :, :]                                          # [m, n, 2]
-    traw = (PA * D[None]).sum(2) / L2[None]
-    t = np.clip(traw, 0, 1)
-    Q = A[None] + t[..., None] * D[None]
-    dist = np.sqrt(((P[:, None, :] - Q) ** 2).sum(2))                          # true distance to each sub-segment
-    cr = (D[None, :, 0] * PA[..., 1] - D[None, :, 1] * PA[..., 0])             # cross (y down)
-    # orthogonality tie-break (msdfgen SignedDistance.dot): prefer the segment the point is most perpendicular to
-    PQ = P[:, None, :] - Q; pql = np.maximum(np.sqrt((PQ ** 2).sum(2)), 1e-9)
+
+    def exact(P):
+        """exact signed distance (px, + inside, non-zero winding) and the per-segment terms at points P"""
+        PA = P[:, None, :] - A[None, :, :]
+        traw = (PA * D[None]).sum(2) / L2[None]
+        t = np.clip(traw, 0, 1)
+        Q = A[None] + t[..., None] * D[None]
+        PQ = P[:, None, :] - Q
+        dist = np.sqrt((PQ ** 2).sum(2))
+        cr = (D[None, :, 0] * PA[..., 1] - D[None, :, 1] * PA[..., 0])
+        ay, by = A[:, 1][None], B[:, 1][None]; px_, py_ = P[:, 0:1], P[:, 1:2]
+        up = (ay <= py_) & (by > py_); dn = (ay > py_) & (by <= py_)
+        xint = A[:, 0][None] + (py_ - ay) / np.where(by - ay == 0, 1, by - ay) * (B[:, 0] - A[:, 0])[None]
+        left = xint > px_
+        inside = ((np.where(up & left, 1, 0) - np.where(dn & left, 1, 0)).sum(1)) != 0
+        return inside, dist, cr, traw, PQ
+    inside, dist, cr, traw, PQ = exact(P)
+    pql = np.maximum(np.sqrt((PQ ** 2).sum(2)), 1e-9)
     dot = np.abs((PQ * D[None]).sum(2)) / (pql * Lr[None])
     score = dist + dot * 1e-4
-    # inside test: non-zero winding of the flattened outline (exact SDF sign)
-    ay, by = A[:, 1][None], B[:, 1][None]; px_, py_ = P[:, 0:1], P[:, 1:2]
-    up = (ay <= py_) & (by > py_); dn = (ay > py_) & (by <= py_)
-    xint = A[:, 0][None] + (py_ - ay) / np.where(by - ay == 0, 1, by - ay) * (B[:, 0] - A[:, 0])[None]
-    left = xint > px_
-    wind = (np.where(up & left, 1, 0) - np.where(dn & left, 1, 0)).sum(1)
-    inside = wind != 0
     jall = np.argmin(score, 1); m = np.arange(len(P))
     sdf = np.where(inside, 1, -1) * dist[m, jall]                               # exact, px, + inside
     # orientation: which cross sign means inside for this font (y flipped already)
@@ -242,10 +245,31 @@ def render_glyph(job):
         cb = big & ~eqa & (np.abs(b_s[..., 2] - 0.5) >= np.abs(a_s[..., 2] - 0.5))
         clash[sa] |= ca; clash[sb] |= cb
     norm[clash] = med[clash][:, None]
-    # error correction 2: the median must agree in sign with the exact SDF away from the outline
-    med = np.median(norm, 2)
-    bad = (np.sign(med - 0.5) != np.sign(sd)) & (np.abs(sd) > 0.6)
-    norm[bad] = (sd[bad] / rng + 0.5)[:, None]
+    # error correction 2 (msdfgen-style distance check): reconstruct the median where the GPU interpolates (texel
+    # centres, edge midpoints, cell centres) and compare its sign with the exact SDF there; texels that make a sample
+    # flip sign away from the outline are equalised to the exact distance. Corners stay sharp: there the reconstructed
+    # and exact distances differ in size, not in sign.
+    fy, fx = np.mgrid[0:2 * ch - 1, 0:2 * cw - 1]
+    PF = np.stack([fx.ravel() / 2 + 0.5, fy.ravel() / 2 + 0.5], 1)
+    insF, distF, _, _, _ = exact(PF)
+    sdF = (np.where(insF, 1, -1) * distF.min(1)).reshape(2 * ch - 1, 2 * cw - 1)
+    for _ in range(4):
+        up = np.zeros((2 * ch - 1, 2 * cw - 1, 3)); up[0::2, 0::2] = norm
+        up[0::2, 1::2] = (norm[:, :-1] + norm[:, 1:]) / 2; up[1::2, 0::2] = (norm[:-1] + norm[1:]) / 2
+        up[1::2, 1::2] = (norm[:-1, :-1] + norm[1:, :-1] + norm[:-1, 1:] + norm[1:, 1:]) / 4
+        medF = np.median(up, 2) - 0.5
+        badF = (np.sign(medF) != np.sign(sdF)) & (np.abs(sdF) > 0.08)
+        # magnitude check for outline effects (neon tubes trace |d| < ~1.5 px): a median that claims the outline is
+        # near where the exact SDF says it is far is a pseudo-distance artefact, not a sharp corner
+        badF |= (np.abs(medF * rng) < 1.6) & (np.abs(sdF) > 2.6)
+        if not badF.any(): break
+        fix = np.zeros((ch, cw), bool)
+        by_, bx_ = np.nonzero(badF)
+        for oy in (0, 1):
+            for ox in (0, 1):
+                ty = (by_ + oy * (by_ % 2)) // 2; tx = (bx_ + ox * (bx_ % 2)) // 2
+                fix[np.clip(ty, 0, ch - 1), np.clip(tx, 0, cw - 1)] = True
+        norm[fix] = (sd[fix] / rng + 0.5)[:, None]
     img = np.clip(np.round(norm * 255), 0, 255).astype(np.uint8)
     ink = float(np.clip(sd + 0.5, 0, 1).sum())
     return img, ink
