@@ -8,14 +8,14 @@ import { buildSeoul } from '../../world-seoul.js';
 const q = new URLSearchParams(location.search);
 const W = +(q.get('w') || 960), H = +(q.get('h') || 540);
 const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setSize(W, H); document.body.appendChild(renderer.domElement);
-renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = Math.pow(2, +(q.get('ev') || 0)) * 40;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = Math.pow(2, +(q.get('ev') || 0)) * 0.04;
 const cam = new THREE.PerspectiveCamera(+(q.get('fov') || 75), W / H, 0.05, 3000);
 const layout = q.get('layout') === 'provisional' ? await (await fetch('../layout.provisional.json')).json() : undefined;
 const world = await buildSeoul(renderer, { layout });
 window.world = world;
-if (q.get('day')) { world.scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x806850, 0.5)); const d = new THREE.DirectionalLight(0xffffff, 0.6); d.position.set(80, 120, 40); world.scene.add(d); }
+if (q.get('day')) { world.scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x806850, 500)); const d = new THREE.DirectionalLight(0xffffff, 600); d.position.set(80, 120, 40); world.scene.add(d); }
 const setCam = (s) => { const [x, y, z, yaw, pitch] = s.split(',').map(Number); cam.position.set(x, y, z); cam.rotation.set(0, 0, 0, 'YXZ'); cam.rotation.y = yaw * Math.PI / 180; cam.rotation.x = (pitch || 0) * Math.PI / 180; };
-window.shot = (s, ev = 0) => { renderer.toneMappingExposure = Math.pow(2, ev + +(q.get('ev') || 0)) * 40; setCam(s); world.update(cam.position, 1 / 60); renderer.render(world.scene, cam); return renderer.domElement.toDataURL('image/jpeg', 0.85); };
+window.shot = (s, ev = 0) => { renderer.toneMappingExposure = Math.pow(2, ev + +(q.get('ev') || 0)) * 0.04; setCam(s); world.update(cam.position, 1 / 60); renderer.render(world.scene, cam); return renderer.domElement.toDataURL('image/jpeg', 0.85); };
 setCam(q.get('cam') || `${world.spawn.x},${world.spawn.y},${world.spawn.z},${world.yaw * 180 / Math.PI},-5`);
 renderer.render(world.scene, cam);
 window.ready = true;

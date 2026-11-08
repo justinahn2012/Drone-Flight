@@ -11,14 +11,17 @@
 // colliderScene, depthScene, bvh, skimBvh, update, spawn, yaw, takeStart, startPoints, funnels, lines, bounds,
 // envelope, aoUniforms, rebakeShadows, grassAt, hdr, stats) plus look/sky ('night'), layout and emitters (L3).
 // Optional partner modules, each tolerated missing: seoul-signs.js (S2), seoul-life.js (S4), seoul-light.js (S3).
-// Units: metres, y up, x east, z south. Light: scene-linear radiance, NIT scene units per cd/m2 (1e-4: the bando sun
-// scale, where sunI 10 lights a white wall to ~32 000 cd/m2). Pure-CPU part: buildSeoulGeometry(layout) (node, CI).
+// Units: metres, y up, x east, z south. Light: scene-linear radiance, NITS = 0.1 scene units per cd/m2 (integrator
+// decision; passed to partners as ctx.nitScale). Pure-CPU part: buildSeoulGeometry(layout) (node, CI).
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MeshBVH } from 'three-mesh-bvh';
 
-export const NIT = 1e-4;           // scene-linear radiance per cd/m2 (see header); illuminance: 1 lux -> 1e-4 * PI ... see lux()
-export const LUX = 1e-4;            // three light intensity per lux (radiance = E * albedo / PI)
+// Integrator decision (Seoul light units): 1 cd/m2 = 0.1 scene units (S3's NITS), which keeps night exposure inside
+// the camera's EV range. Illuminance uses the same factor (three: radiance = E x albedo / PI).
+export const NITS = 0.1;
+export const NIT = NITS;            // alias used inside this file
+export const LUX = NITS;            // three light intensity per lux
 const PH = 'https://dl.polyhaven.org/file/ph-assets';
 const IS_NODE = typeof window === 'undefined';
 
@@ -469,7 +472,7 @@ export async function buildSeoul(renderer, a, b) {
   baseLight.name = 'seoul:base'; if (opts.baseLight !== false) scene.add(baseLight);
   const emitters = geo.emitters.slice();
   const uniforms = { uTime: { value: 0 } };
-  const ctx = { THREE, renderer, scene, layout, NIT, LUX, rng, hash, seed: opts.seed ?? 11, quality: opts.quality || 'auto', bvh: geo.bvh, lotInfo: geo.lotInfo, poles: geo.poles, cables: geo.cables, uniforms,
+  const ctx = { THREE, renderer, scene, layout, NIT, NITS, nitScale: NITS, LUX, rng, hash, seed: opts.seed ?? 11, quality: opts.quality || 'auto', bvh: geo.bvh, lotInfo: geo.lotInfo, poles: geo.poles, cables: geo.cables, uniforms,
     streetById: new Map(layout.streets.map((s) => [s.id, s])), lotById: new Map(layout.lots.map((l) => [l.id, l])), takeClock: opts.takeClock || null };
   // partner modules (each optional)
   prog(0.65, 'Hongdae: signs');
@@ -501,9 +504,9 @@ export async function buildSeoul(renderer, a, b) {
     envelope: { min: new THREE.Vector3(B.x0 - 30, -2, B.z0 - 30), max: new THREE.Vector3(B.x1 + 30, 160, B.z1 + 30) },
     aoUniforms: { uAO: { value: null }, uAOOn: { value: 0 }, uAOScale: { value: new THREE.Vector2(1, 1) } },
     rebakeShadows: () => {}, grassAt: null,
-    look: 'night', sky: 'night', layout, emitters, parts, NIT, LUX,
+    look: 'night', sky: 'night', layout, emitters, parts, NIT, NITS, nitScale: NITS, LUX,
   };
-  scene.userData.seoul = { baseLight, emitters, parts, NIT, LUX, stats, lotInfo: geo.lotInfo };
+  scene.userData.seoul = { baseLight, emitters, parts, NIT, NITS, nitScale: NITS, LUX, stats, lotInfo: geo.lotInfo };
   scene.userData.depthScene = depthScene; scene.userData.aoUniforms = world.aoUniforms;
   prog(0.9, 'Hongdae: light');
   const lightMod = opts.light === false ? null : await tryModule('./seoul-light.js', 'seoulLight');
