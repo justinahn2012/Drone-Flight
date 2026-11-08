@@ -10,6 +10,7 @@
 <meta name="theme-color" content="#000000">
 <title>One Take — FPV</title>
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!-- Montserrat 900 = the reference Short's caption face; its woff2 only downloads once a caption is drawn. Barlow 500 = menu body text -->
@@ -106,6 +107,23 @@ body.nohud.cutting #osd .o:not(.cc),body.portrait.cutting #osd .o:not(.cc){displ
 #oThr i{position:absolute;left:0;right:0;bottom:0;background:#fff}
 #oThr u{position:absolute;left:-6px;right:-6px;height:2px;background:var(--acc);box-shadow:0 0 0 1px #000}
 body.thr #oThr{display:block}
+/* the ready hint at full white (ui #4: it measured rgb(162,159,153) on sky, 1.7:1) */
+#osd #takeTag.hint,#osd #takeHint{opacity:1;color:#fff}
+/* LIFT THUMBS (ux #4): hovering with a thumb resting on the glass never CUTs; after 2 s the ring shows greyed, full,
+   with no number, and says why */
+#cutC.rest .kw,#cutC.rest .kb{stroke-dashoffset:0!important}
+#cutC.rest .kw{stroke:#9a978f}
+#cutC.rest #cutN{display:none}
+#cutC.rest #cutL{color:#d6d3cd}
+/* ghost (C12, D5's best take re-flown): a hollow diamond where it is now, projected through the lens. OSD only: it
+   never reaches a clip (clips are drawn from the WebGL frame) */
+#oGhost{left:0;top:0;display:none;will-change:transform}
+#oGhost.on{display:block}
+#oGhost svg{display:block;width:18px;height:18px;overflow:visible}
+#oGhost .kb,#oGhost .kw{fill:none;stroke-linejoin:round}
+#oGhost .kb{stroke:#000;stroke-width:4}
+#oGhost .kw{stroke:#ffd34d;stroke-width:1.8}
+#oGhost.far svg{width:12px;height:12px}
 /* overlay levels: OSD (all) | Minimal (score + captions) | Clean (captions only) */
 body.hud-min #osd .o:not(.tr):not(.tl):not(.cc){display:none}
 body.nohud #osd, body.nohud #live{display:none}
@@ -128,7 +146,7 @@ body.portrait #osd{display:none}
 @keyframes up{0%{transform:scale(1.7)}}
 /* line captions: Shorts style, lower third */
 #pop{position:absolute;left:50%;bottom:calc(var(--sb) + 10px + var(--cell)*2.15 + 30px);transform:translateX(-50%);text-align:center;opacity:0;width:max-content;max-width:94%}
-body.portrait #live{bottom:14px}
+body.portrait #live{display:none}   /* ui #2: the chain is on the OLED (with its drain rule) only */
 body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 #pop .cap{font:900 clamp(26px,min(7.6vh,7.2vw),46px)/1.06 var(--cap);color:#fff;text-shadow:var(--stroke);letter-spacing:.005em;text-transform:uppercase}
 #pop .emo{display:block;font-size:1.25em;line-height:1.05;text-shadow:none}
@@ -144,6 +162,8 @@ body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 #toast{position:absolute;left:50%;top:calc(17% + var(--st));transform:translate(-50%,-6px);padding:0 12px;background:none;text-shadow:var(--key);
   font:600 13px/1.4 var(--mono);letter-spacing:.06em;color:#fff;opacity:0;transition:opacity .2s,transform .2s;max-width:86%;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
+/* Clean overlay: only toasts that matter (clip ready / failed / cancelled) show over the picture */
+body.nohud #toast:not(.warn){display:none}
 @keyframes blink{50%{opacity:.15}}
 
 /* no plates on the live view (UI #1): keylined OSD glyphs (white 2.2 px, keyline 1.4 px at 22 px), a dark press state */
@@ -186,6 +206,9 @@ body.coaching:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 #bTitle.crash{color:#fff}
 #bTitle em{font-style:normal;color:var(--acc)}
 .bsub{margin-top:5px;font:600 12px var(--mono);color:#d8d5cf;letter-spacing:.04em}
+/* gold PERFECT (C12: every line CLEAN, no scrapes) beside CUT. */
+#bTitle .perf{display:inline-block;margin-left:12px;padding:3px 7px 2px;border-radius:4px;vertical-align:7px;background:linear-gradient(#ffd75a,#d9a514);
+  color:#1a1300;font:700 13px/1 var(--mono);letter-spacing:.14em;text-shadow:none;box-shadow:0 0 0 1px rgba(0,0,0,.4)}
 .stats{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px 12px;margin-top:12px;font:600 15px var(--mono);font-feature-settings:"tnum"}
 .stats span{color:#c6c3bc;font-size:12px;letter-spacing:.08em;align-self:center}
 .stats b{font-weight:600;color:#fff;text-align:right;white-space:nowrap}
@@ -227,6 +250,11 @@ body.sumup #live,body.sumup #pop,body.sumup #warn{visibility:hidden;transition:n
 body.replaying #recBar{display:flex}
 body.replaying #osd, body.replaying #pop, body.replaying #live, body.replaying #warn, body.replaying #ghost,
 body.replaying #btnMenu, body.replaying #btnReset, body.replaying #btnClip, body.replaying .float{display:none}
+/* the clip modal is opaque to the OSD (ui #1: the dimmed LQ / HALL RUN arrow showed through it) */
+body.clipopen #osd,body.clipopen #live,body.clipopen #pop,body.clipopen #btnMenu,body.clipopen #btnReset,body.clipopen #btnClip{visibility:hidden}
+/* HQ render with the modal closed: the chip reopens it */
+body.hqbg #recT{cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+body.hqbg #recBar{min-height:44px}
 
 /* ---------- Radio (portrait) ---------- */
 #radio{position:absolute;left:0;right:0;bottom:0;display:none;padding:10px 12px calc(14px + var(--sb));
@@ -254,6 +282,10 @@ body.portrait #radio{display:grid;grid-template-columns:1fr 1fr;grid-template-ro
 #oled .big{font-size:20px;line-height:1.15}
 /* the ready hint (UX #3) can run past one OLED line (C4: '▲ HOLD LEFT STICK UP · TRIPLE POP'): it wraps, never clips */
 #oSt.wrap{white-space:normal}
+/* bank drain under the OLED chain line (ui #2): a 2 px rule, OLED blue, accent when low */
+#oDrain{display:block;height:2px;margin-top:3px;background:var(--oled);box-shadow:0 0 4px rgba(140,230,255,.5);transform-origin:0 50%;transform:scaleX(0);visibility:hidden}
+#oDrain.on{visibility:visible}
+#oDrain.low{background:var(--acc);box-shadow:none}
 #oled .l1{display:flex;gap:10px;align-items:center}
 .prox{display:inline-flex;gap:2px;margin-left:auto}
 .prox i{width:5px;height:10px;border:1px solid currentColor;opacity:.45}
@@ -301,6 +333,7 @@ body.paused .lede,body.paused .a2hs{display:none}
 .ln small{display:block;margin-top:1px;font:500 12px/1.3 var(--body);color:#86837d}
 .ln.on b{color:var(--ink)}
 .ln.on small{font:600 11px/1.4 var(--mono);letter-spacing:.06em;color:var(--amber)}
+.ln.on small i{font-style:normal;color:#c6c3bc}
 .ln.on svg rect{fill:var(--ink);stroke:var(--ink)}
 .ln.on svg path{display:block}
 .ln.next{border-color:var(--acc)}
@@ -441,6 +474,7 @@ body.dev .dev{display:revert!important}
         <div class="o bl"><div id="oMode">CINE</div><div><svg class="ic n" id="oBat" viewBox="0 0 11 16" aria-hidden="true"><g class="kb"><path d="M4 1.3h3M1.6 2.7h7.8v12.1H1.6z"/></g><g class="kw"><path d="M4 1.3h3M1.6 2.7h7.8v12.1H1.6z"/></g><rect class="f" x="3.6" y="11.6" width="3.8" height="1.3"/><rect class="f" x="3.6" y="9.85" width="3.8" height="1.3"/><rect class="f" x="3.6" y="8.1" width="3.8" height="1.3"/><rect class="f" x="3.6" y="6.35" width="3.8" height="1.3"/><rect class="f" x="3.6" y="4.6" width="3.8" height="1.3"/></svg><span id="oVolt">25.2</span><small>V</small></div></div>
         <div class="o bc"><svg class="ic" viewBox="0 0 14 16" aria-hidden="true"><g class="kb"><path d="M7 15a5.3 5.3 0 1 0 0-10.6A5.3 5.3 0 0 0 7 15zM7 9.7V7.2M5.4 1.6h3.2M7 1.6v2.6"/></g><g class="kw"><path d="M7 15a5.3 5.3 0 1 0 0-10.6A5.3 5.3 0 0 0 7 15zM7 9.7V7.2M5.4 1.6h3.2M7 1.6v2.6"/></g></svg><span id="tmr">00:00</span></div>
         <div class="o br"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><g class="kb"><path d="M2.4 13a6.2 6.2 0 1 1 11.2 0M8 10.6l3.2-3.8"/></g><g class="kw"><path d="M2.4 13a6.2 6.2 0 1 1 11.2 0M8 10.6l3.2-3.8"/></g></svg><span id="spd">0</span> <small>KM/H</small></div>
+        <div class="o" id="oGhost" aria-hidden="true"><svg viewBox="0 0 16 16"><path class="kb" d="M8 2.2L13.8 8 8 13.8 2.2 8z"/><path class="kw" d="M8 2.2L13.8 8 8 13.8 2.2 8z"/></svg></div>
         <div class="o" id="oChev"><span id="oChevD"></span><svg viewBox="0 0 26 15" aria-hidden="true"><path class="kb" d="M3 3l10 9 10-9"/><path class="kw" d="M3 3l10 9 10-9"/></svg></div>
       </div>
       <div id="ghost"><div class="gg" id="gL"><span id="gLt">CLIMB · TURN</span></div><div class="gg" id="gR"><span id="gRt">SPEED · CARVE</span></div></div>
@@ -471,7 +505,7 @@ body.dev .dev{display:revert!important}
   <div id="radio">
     <div class="well" id="wL"><div class="top" id="tL"></div><div class="wlabel" id="lblL">CLIMB · TURN</div></div>
     <div class="mid">
-      <div id="oled"><div class="l1"><span id="oMd">CINE</span><span id="oT">00:00</span><span id="oS">0 KM/H</span><span class="prox" id="oPx"><i></i><i></i><i></i><i></i></span></div><div class="big" id="oSc">ONE TAKE</div><div id="oSt"></div></div>
+      <div id="oled"><div class="l1"><span id="oMd">CINE</span><span id="oT">00:00</span><span id="oS">0 KM/H</span><span class="prox" id="oPx"><i></i><i></i><i></i><i></i></span></div><div class="big" id="oSc">ONE TAKE</div><div id="oSt"></div><i id="oDrain"></i></div>
       <div class="rbtn">
         <button class="ui" id="rMode">CINE</button>
         <button class="ui" id="rReset">RESET</button>
@@ -587,7 +621,7 @@ body.dev .dev{display:revert!important}
   <div class="side">
     <div class="cuts" id="clipCuts"><button class="pill" data-cut="short">SHORT</button><button class="pill" data-cut="last">LAST 20 S</button><button class="pill" data-cut="full">FULL TAKE</button></div>
     <div class="cuts opts" id="clipOpts"><button class="pill" data-lay="full">FULL FRAME</button><button class="pill" data-lay="radio">WITH STICKS</button><button class="pill" id="clipHQ">HQ</button></div>
-    <div class="row"><button class="pill rec" id="clipMake">MAKE CLIP</button><button class="pill rec" id="clipShare">SAVE VIDEO</button><a class="pill" id="clipSave" download>DOWNLOAD</a><button class="pill" id="clipClose">CLOSE</button></div>
+    <div class="row"><button class="pill rec" id="clipMake">MAKE CLIP</button><button class="pill rec" id="clipShare">SAVE VIDEO</button><a class="pill" id="clipSave" download>DOWNLOAD</a><button class="pill hidden" id="clipHide">CLOSE</button><button class="pill" id="clipClose">CLOSE</button></div>
     <div class="meta" id="clipMeta"></div>
   </div>
 </div></div>

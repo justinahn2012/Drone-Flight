@@ -111,7 +111,8 @@ const MODE_HINT = {
 const TT = () => TakeLib.TAKE_TUNING || {};
 const secs = (v, d) => { const x = +v > 0 ? +v : d; return (Math.round(x * 10) / 10).toString(); };
 // C: CUT = 3 s hands-off hover, or 0.6 s touched down (TAKE_TUNING.cutT / landT)
-const cutRule = () => `let go and hover for ${secs(TT().cutT, 3)} s, or touch down for ${secs(TT().landT, 0.6)} s,`;
+// ux #4: a thumb resting on the glass counts as hands on, so the copy says "lift both thumbs"
+const cutRule = () => `lift both thumbs and hover ${secs(TT().cutT, 3)} s, or touch down for ${secs(TT().landT, 0.6)} s,`;
 const GAME_HINT = {
   take: () => `One take: fly through named lines to build FLOW. ${secs(TT().bankT, 5)} s without a line banks it; a crash loses what isn't banked. To CUT, ${cutRule().replace(/,$/, '')}.`,
   free: () => 'No clock, no take. Lines still caption. Crash and you fly on from where you last flew clear.',
@@ -223,7 +224,7 @@ $('rClip').onclick = () => openClip();
 $('cReset').onclick = () => respawn();
 $('cClip').onclick = () => openClip();
 $('btnClip')?.addEventListener('click', () => openClip());   // F1's in-flight landscape CLIP, if present
-$('recCancel').onclick = () => { if (replay) { endReplay(true); toast('CLIP CANCELLED'); } };
+$('recCancel').onclick = () => { if (hqJob?.bg) { hqJob.cancel = true; return; } if (replay) { endReplay(true); toast('CLIP CANCELLED', 1.8, true); } };
 controls.onButton = (b) => { if (b === 'reset' && (state === 'fly' || state === 'crash')) respawn(false); if (b === 'menu') state === 'menu' ? startFlight(false) : openMenu(); };
 
 function openMenu() {
@@ -287,7 +288,7 @@ const STICK_COACH = {
 const LOAD_TIPS = {
   take: () => [
     '<b>Lines</b> are named gaps, holes and dives. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(TT().bankT, 5) + ' s without a line banks it.',
-    `<b>CUT</b>: ${cutRule()} to end the take and keep everything. The ring by REC counts it down; touch a stick to cancel.`,
+    `<b>CUT</b>: ${cutRule()} to end the take and keep everything. The ring in the middle counts it down; touch a stick to cancel.`,
     'A crash loses the <b>unbanked</b> chain. The bar under FLOW shows when it banks. Bank it or push on: your call.',
     '<b>RESET</b> restarts the take at the chimney, or where you chose to START AT on the pause menu; hold it to go back to the spawn.',
   ],
@@ -852,20 +853,28 @@ function buildClip(b, kind) {
 // Output (PLAN4 decision 8): SHORT/LAST/FULL as a full-bleed 1080x1920 frame through the lens (default) or the radio
 // layout (square picture over the sticks). HQ: offline re-render from the input log, 8 sub-frames per 1/60 s shutter,
 // WebCodecs + mp4-muxer (clipexport.js); without WebCodecs (or if it fails) the real-time MediaRecorder path.
-const clipCfg = { shortMin: 8, sub: 8, hqScale: 1.0 };   // hqScale: render scale of the HQ scene pass (tests lower it)
+const clipCfg = { shortMin: 8, sub: 8, hqScale: 1.0, subSlow: 4, budget: 6 };   // hqScale: render scale of the HQ scene pass (tests lower it)
+// U5 (ux #2): subSlow sub-frames when the live game was already slow (governor frame-time EMA over target, or the 30 Hz
+// Low Power cap), and the render drops to it mid-way if its first frames project past budget x the clip's length
+// (6x: 20 s of clip in <= 2 min, the FPV panel's phone target).
 const clipPrefs = { lay: 'full', hq: true };
 try { const p = JSON.parse(localStorage.getItem('onetake.clip') || '{}'); if (p.lay === 'radio' || p.lay === 'full') clipPrefs.lay = p.lay; if (typeof p.hq === 'boolean') clipPrefs.hq = p.hq; } catch (e) {}
 const saveClipPrefs = () => { try { localStorage.setItem('onetake.clip', JSON.stringify(clipPrefs)); } catch (e) {} };
 let clipSel = 'last', clipDone = null, hqJob = null, hqOK;    // hqOK: undefined until hqSupport() answers, then {..} | null
+let clipReady = false;                                          // an HQ clip finished with the modal closed: CLIP opens it
 const CUT_NAME = { short: 'SHORT', last: 'LAST 20 S', full: 'FULL TAKE' };
 const CUT_HINT = { short: 'The lines, hard cuts between', last: 'The last 20 seconds', full: 'The whole take, from the run-up' };
 const shortOK = (b) => { const w = clipPlan(b, 'short'); return !!w && planDur(w) >= clipCfg.shortMin; };
 const tiltFor = (mode) => (S.tilt >= 0 ? S.tilt : Math.round(drone.c.camTilt * (mode === 'acro' ? 1 : mode === 'angle' ? 0.8 : 0.55))) * DEG;
+// LAST is only a choice when it differs from FULL TAKE (ui #1, ux #1): within 0.5 s of it, it is hidden
+const lastSame = (b) => { const l = clipPlan(b, 'last'), f = clipPlan(b, 'full'); return !l || !f || Math.abs(planDur(l) - planDur(f)) < 0.5; };
 function openClip(from = null) {
+  if (hqJob?.bg) { showRender(); return; }                      // rendering with the modal closed: back to its progress
   if (state === 'replay' || clipOpen || hqJob) return;
-  const b = from || clipSource(); if (!b) { toast('FLY FIRST'); return; }
-  clipBuf = b; clipSel = shortOK(b) ? 'short' : 'last';
-  if (!clipPlan(b, clipSel)) { toast('FLY FIRST'); return; }
+  if (clipReady && lastClip && !from) { clipReady = false; reopenDone(); return; }   // "CLIP READY": the finished clip
+  const b = from || clipSource(); if (!b) { toast('FLY FIRST', 1.8, true); return; }
+  clipBuf = b; clipSel = shortOK(b) ? 'short' : lastSame(b) ? 'full' : 'last';
+  if (!clipPlan(b, clipSel)) { toast('FLY FIRST', 1.8, true); return; }
   clipDone = null; audio.kick?.(true);                          // inside the tap: a live fallback needs the context
   pauseForClip(); setPhase('choose');
   $('clip').classList.remove('hidden'); comp.classList.add('hidden'); fitComp(false);
@@ -876,33 +885,37 @@ function setPhase(p) {
   const done = p === 'done', busy = p === 'render';
   $('clipShare').classList.toggle('hidden', !done); $('clipSave').classList.toggle('hidden', !done || !clipCanShare);
   $('clipClose').textContent = busy ? 'CANCEL' : 'CLOSE';
+  $('clipHide').classList.toggle('hidden', !(busy && hqJob && !hqJob.prep));   // HQ: close the modal, the render carries on
   if (!done) $('clipVid').pause();
   syncCuts();
 }
 function syncCuts() {
   const b = clipBuf, busy = $('clip').dataset.phase === 'render';
+  const same = b ? lastSame(b) : false;
+  if (same && clipSel === 'last') clipSel = 'full';
   $('clipCuts').querySelectorAll('button[data-cut]').forEach((el) => {
     const k = el.dataset.cut, w = b ? clipPlan(b, k) : null, d = Math.round(planDur(w));
-    el.classList.toggle('hidden', k === 'short' && !(b && shortOK(b)) && clipSel !== 'short');
+    el.classList.toggle('hidden', (k === 'short' && !(b && shortOK(b)) && clipSel !== 'short') || (k === 'last' && same));
     el.disabled = !w || busy; el.classList.toggle('on', k === clipSel);
     el.textContent = k === 'last' ? (w && d < CLIP_LAST - 0.5 ? `LAST ${fmtS(d)}` : CUT_NAME.last) : CUT_NAME[k] + (w ? ` ${fmtS(d)}` : '');
   });
   $('clipOpts').querySelectorAll('button[data-lay]').forEach((el) => { el.classList.toggle('on', el.dataset.lay === clipPrefs.lay); el.disabled = busy; });
   const hq = $('clipHQ'); hq.classList.toggle('hidden', hqOK === null); hq.classList.toggle('on', clipPrefs.hq); hq.disabled = busy;
-  const same = clipDone && clipDone.kind === clipSel && clipDone.lay === clipPrefs.lay && clipDone.hq === useHQ();
-  $('clipMake').classList.toggle('hidden', busy || !!same);
-  const w = b ? clipPlan(b, clipSel) : null;
-  $('clipPickN').textContent = CUT_NAME[clipSel]; $('clipPickD').textContent = w ? fmtS(Math.round(planDur(w))) : '';
-  $('clipPickH').textContent = CUT_HINT[clipSel] + (clipSel === 'short' && w ? ` · ${w.length} part${w.length > 1 ? 's' : ''}` : '');
-  if ($('clip').dataset.phase === 'choose') $('clipMeta').textContent = `${clipPrefs.lay === 'full' ? '1080×1920 full frame' : '1080×1920 with sticks'} · ${useHQ() ? `HQ · real motion blur (${clipCfg.sub} sub-frames)` : hqOK === null ? 'recorded live (no WebCodecs here)' : 'recorded live'}`;
+  const made = clipDone && clipDone.kind === clipSel && clipDone.lay === clipPrefs.lay && clipDone.hq === useHQ();
+  $('clipMake').classList.toggle('hidden', busy || !!made);
+  // the header is the selected pill (ui #1): its own label, its own length, its own description
+  const w = b ? clipPlan(b, clipSel) : null, d = Math.round(planDur(w));
+  $('clipPickN').textContent = clipSel === 'last' && w && d < CLIP_LAST - 0.5 ? 'LAST' : CUT_NAME[clipSel]; $('clipPickD').textContent = w ? fmtS(d) : '';
+  $('clipPickH').textContent = (clipSel === 'last' && w && d < CLIP_LAST - 0.5 ? `The last ${d} seconds` : CUT_HINT[clipSel]) + (clipSel === 'short' && w ? ` · ${w.length} part${w.length > 1 ? 's' : ''}` : '');
+  if ($('clip').dataset.phase === 'choose') $('clipMeta').textContent = useHQ() ? 'HQ · real motion blur' : 'Standard';
 }
 const useHQ = () => clipPrefs.hq && hqOK !== null;
 // render a cut now (MAKE CLIP; also the programmatic API). HQ when on and supported, else the live recorder.
 function saveClip(kind = 'last', from = null) {
   if (state === 'replay' || hqJob) return;
-  const b = from || clipBuf || clipSource(); if (!b) { toast('FLY FIRST'); return; }
+  const b = from || clipBuf || clipSource(); if (!b) { toast('FLY FIRST', 1.8, true); return; }
   const C = buildClip(b, kind);
-  if (!C) { toast(kind === 'short' ? 'NO LINES IN THIS TAKE YET' : 'FLY FIRST'); return; }
+  if (!C) { toast(kind === 'short' ? 'NO LINES IN THIS TAKE YET' : 'FLY FIRST', 1.8, true); return; }
   audio.kick?.(true);                                         // inside the tap: clip audio even with Sound Off
   clipBuf = b; clipKind = kind; clipSel = kind;
   if (clipPrefs.hq && hqOK !== null && window.VideoEncoder) makeHQ(C, b, kind);
@@ -924,13 +937,17 @@ function prepComp(W, H, lay) {
 const capLabel = (C) => C.caps.length ? ` · ${C.caps.length} caption${C.caps.length > 1 ? 's' : ''}` : '';
 // ---- HQ: offline, re-simulated, sub-frame accumulated, WebCodecs
 async function makeHQ(C, b, kind) {
-  const job = hqJob = { cancel: false }, lay = clipPrefs.lay;
+  const job = hqJob = { cancel: false, bg: false, needCtx: false }, lay = clipPrefs.lay;
   if (!clipOpen) pauseForClip();
-  $('clip').classList.remove('hidden'); setPhase('render'); hqProgress(0, 0);
+  $('clip').classList.remove('hidden'); setPhase('render'); hqProgress(0, 0, 1, 0);
   const sup = hqOK === undefined ? (hqOK = await hqSupport()) : hqOK;
   if (job.cancel) { hqJob = null; setPhase(clipDone ? 'done' : 'choose'); return; }
   if (!sup) { hqJob = null; recordLive(C, b, kind); return; }
-  const W = 1080, H = 1920, pic = prepComp(W, H, lay), N = Math.max(1, clipCfg.sub | 0), lk = fpv.look;
+  job.needCtx = !sup.audio;                                     // the remux pass needs the live context: don't suspend it
+  // slow device: the live game's governor was already over target (or capped at 30 Hz) -> clipCfg.subSlow sub-frames
+  const slow = (fpv.autoMs || 0) > 0 || (fpv.ftEma || 0) > Math.max(fpv.targetMs || 16.7, fpv.autoMs || 0) * 1.14;
+  let N = Math.max(1, clipCfg.sub | 0); if (slow && N > clipCfg.subSlow) N = clipCfg.subSlow;
+  const W = 1080, H = 1920, pic = prepComp(W, H, lay), lk = fpv.look;
   const keep = { shutter: lk.shutter, grain: lk.grain, letterbox: lk.letterbox, scale: fpv.scale };
   renderer.setSize(pic.w, pic.h, false); fpv.resize(pic.w, pic.h); lk.letterbox = 0;
   lk.shutter = keep.shutter / N;                                // each sub-frame smears its slice of the shutter
@@ -956,20 +973,116 @@ async function makeHQ(C, b, kind) {
   let res = null, err = null;
   try {
     res = await renderHQ({ C, world, renderer, fpv, comp, size: [pic.w, pic.h], sub: N, shutter: keep.shutter, tiltFor, makeAudio: (actx) => clipAudio(actx, C),
-      renderSub, composite, onProgress: (f) => hqProgress(f, (performance.now() - t0) / 1000), cancelled: () => job.cancel });
+      renderSub, composite, onProgress: (f, n, nF, ms) => hqProgress(f, n, nF, ms), cancelled: () => job.cancel,
+      budgetMs: clipCfg.budget > 0 ? C.dur * clipCfg.budget * 1000 : 0, minSub: clipCfg.subSlow,
+      onSub: (n) => { lk.shutter = keep.shutter / n; lk.grain = keep.grain * Math.sqrt(n); } });
   } catch (e) { err = e; console.warn('HQ clip failed', e); }
   finally {
     Object.assign(lk, { shutter: keep.shutter, grain: keep.grain, letterbox: keep.letterbox }); fpv.scale = keep.scale;
-    Object.assign(motion, mo0); layout(); fpv.resetExposure = true; hqJob = null;
+    Object.assign(motion, mo0); layout(); fpv.resetExposure = true;
   }
-  if (err) { hqOK = null; toast('HQ FAILED · RECORDING LIVE', 2.5); setPhase('choose'); recordLive(C, b, kind); return; }
-  if (!res) { setPhase(clipDone ? 'done' : 'choose'); return; }   // cancelled
-  showClip(res.blob, { dur: Math.floor(C.dur * CLIP_FPS + 1e-6) / CLIP_FPS + 1 / CLIP_FPS, caps: C.caps.map((c) => [c.t, c.text]), sigma: C.sigma, jit: C.jit, raw: C.rawJit, W, H, kind, lay, hq: res.stats, fixed: true });
+  // no AudioEncoder (Safari): a video-only MP4 + the offline-rendered sound -> one real-time remux pass
+  if (res && res.audio && !job.cancel) {
+    const blob = await remuxAudio(res.blob, res.audio, job);
+    if (blob) res.blob = blob; else if (!job.cancel) toast('NO SOUND IN THIS CLIP', 2.5, true);
+    res.stats.audio = blob ? 'remux' : 'none';
+  }
+  const bg = job.bg; hqJob = null;
+  if (err) { hqOK = null; toast('HQ FAILED · RECORDING LIVE', 2.5, true); hqHome(); setPhase('choose'); recordLive(C, b, kind); return; }
+  if (!res || job.cancel) {                                      // cancelled
+    if (bg) { hqHome(); resumeAfterClip(); toast('CLIP CANCELLED', 1.8, true); } else setPhase(clipDone ? 'done' : 'choose');
+    return;
+  }
+  const info = { dur: Math.floor(C.dur * CLIP_FPS + 1e-6) / CLIP_FPS + 1 / CLIP_FPS, caps: C.caps.map((c) => [c.t, c.text]), sigma: C.sigma, jit: C.jit, raw: C.rawJit, W, H, kind, lay, hq: res.stats, fixed: true };
+  if (bg) {                                                      // the modal was closed: back to the game, "CLIP READY"
+    hqHome(); showClip(res.blob, info, true); resumeAfterClip(); clipReady = true;
+    toast('CLIP READY · TAP CLIP TO SAVE', 4, true);
+  } else showClip(res.blob, info);
 }
-function hqProgress(f, secs) {
+// U5 (ux #2): the ETA starts after 10 frames (the first ones carry shader compiles), timed from the video loop only
+function hqProgress(f, n, nF, ms, what = 'RENDERING') {
+  const pct = Math.round(100 * f), left = n >= 10 && ms > 0 ? (nF - n) * ms / 1000 : -1;
+  const eta = what !== 'RENDERING' ? '' : left < 0 ? ' · ESTIMATING' : left > 1 ? ` · ${fmtS(Math.ceil(left))} LEFT` : '';
   $('clipProgB').style.width = (100 * f).toFixed(1) + '%';
-  const left = f > 0.03 ? secs * (1 - f) / f : 0;
-  $('clipMeta').textContent = `RENDERING ${Math.round(100 * f)}%${left > 1 ? ` · ${fmtS(Math.round(left))} LEFT` : ''}`;
+  $('clipMeta').textContent = `${what} ${pct}%${eta}`;
+  if (hqJob?.bg) { $('recT').textContent = `${what === 'RENDERING' ? 'HQ CLIP' : what} ${pct}%${eta}`; $('recP').style.width = (100 * f).toFixed(1) + '%'; }
+}
+// close the modal while the HQ render carries on: the clip being made plays full screen under a progress chip (the
+// game can't run beside it: the render owns the renderer). Tap the chip to reopen, CANCEL to stop.
+function hideRender() {
+  if (!hqJob || hqJob.prep) return;
+  hqJob.bg = true; $('clip').classList.add('hidden'); document.body.classList.add('replaying', 'hqbg');
+  comp.classList.remove('hidden'); fitComp(true);
+  $('recT').textContent = `HQ CLIP ${Math.round(parseFloat($('clipProgB').style.width) || 0)}%`;
+}
+function showRender() {
+  if (!hqJob) return;
+  hqJob.bg = false; hqHome(); $('clip').classList.remove('hidden'); setPhase('render');
+}
+function hqHome() { document.body.classList.remove('replaying', 'hqbg'); comp.classList.add('hidden'); fitComp(false); }
+function resumeAfterClip() {
+  clipOpen = false; document.body.classList.remove('clipopen');
+  if (state === 'fly' || state === 'crash') controls.enabled = true;
+  if (sum.data || state === 'crash') showSummary(sum.kind || 'crash', sum.data);
+  if (!audio.on) audio.idle?.(); else audio.kick?.();
+}
+// the modal as it was when the clip finished
+function reopenDone() {
+  pauseForClip(); $('clip').classList.remove('hidden'); comp.classList.add('hidden'); fitComp(false); setPhase('done');
+  const v = $('clipVid'); v.currentTime = 0; v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+}
+// U5 (sound #5, fpv #4): HQ without AudioEncoder. The video-only MP4 plays (muted, decoded in hardware) into the
+// composite canvas while an AudioBufferSourceNode plays the offline-rendered clip sound into a MediaStreamDestination;
+// MediaRecorder writes both. Real time (the clip's length), at the HQ frames' quality minus one re-encode.
+async function remuxAudio(blob, ab, job) {
+  const ctx = audio.ctx;
+  if (!ctx || ctx.state === 'closed' || !window.MediaRecorder || !comp.captureStream) return null;
+  try { await Promise.race([Promise.resolve(ctx.resume?.()).catch(() => {}), new Promise((ok) => setTimeout(ok, 600))]); } catch (e) {}
+  if (ctx.state !== 'running') return null;
+  const url = URL.createObjectURL(blob), v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.preload = 'auto';
+  v.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none';
+  document.body.appendChild(v); v.src = url;
+  let src = null, stream = null;
+  try {
+    await new Promise((ok, no) => { v.onloadeddata = ok; v.onerror = () => no(new Error('decode')); setTimeout(() => no(new Error('decode timeout')), 10000); });
+    const mime = pickMime(), W = comp.width, H = comp.height;
+    stream = comp.captureStream(0); let vt = stream.getVideoTracks()[0];
+    if (!vt || typeof vt.requestFrame !== 'function') { stream.getTracks().forEach((t) => t.stop()); stream = comp.captureStream(CLIP_FPS); vt = null; }
+    const dest = ctx.createMediaStreamDestination(); src = ctx.createBufferSource(); src.buffer = ab; src.connect(dest);
+    stream.addTrack(dest.stream.getAudioTracks()[0]);
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: W * H >= 1.5e6 ? 16e6 : 8e6, audioBitsPerSecond: 160e3 } : undefined);
+    const chunks = []; rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    const stopped = new Promise((ok) => { rec.onstop = ok; });
+    let run = true;
+    const draw = () => {
+      if (!run) return;
+      cctx.drawImage(v, 0, 0, W, H); vt?.requestFrame?.();
+      const f = v.duration > 0 ? Math.min(1, v.currentTime / v.duration) : 0; hqProgress(f, 0, 1, 0, 'ADDING SOUND');
+      if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
+    };
+    cctx.drawImage(v, 0, 0, W, H); vt?.requestFrame?.();
+    rec.start(250);
+    await v.play();
+    src.start(); draw();
+    await new Promise((ok) => { v.onended = ok; const iv = setInterval(() => { if (job.cancel || v.error) { clearInterval(iv); ok(); } else if (v.ended) { clearInterval(iv); ok(); } }, 200); });
+    run = false; try { src.stop(); } catch (e) {}
+    try { rec.stop(); } catch (e) {}
+    await stopped;
+    if (job.cancel || !chunks.length) return null;
+    return new Blob(chunks, { type: rec.mimeType || mime || 'video/mp4' });
+  } catch (e) { console.warn('clip remux failed', e); return null; }
+  finally {
+    try { src?.disconnect(); } catch (e) {}
+    stream?.getVideoTracks().forEach((t) => t.stop());
+    v.pause(); v.removeAttribute('src'); v.load(); v.remove(); URL.revokeObjectURL(url);
+  }
+}
+// the clip's sound rendered offline (also the live fallback's track, sound #5): null where it can't be
+async function offlineAudio(C) {
+  if (!window.OfflineAudioContext) return null;
+  try { const actx = new OfflineAudioContext(2, Math.ceil((C.dur + 0.5) * 48000), 48000); clipAudio(actx, C); return await actx.startRendering(); }
+  catch (e) { console.warn('offline clip audio', e); return null; }
 }
 // the clip's sound, re-synthesised on an OfflineAudioContext along the output timeline (hits, crash, rooms, grass)
 function clipAudio(actx, C) {
@@ -983,23 +1096,37 @@ function clipAudio(actx, C) {
   return a;
 }
 // ---- live (fallback): the replay plays in real time into MediaRecorder
-function recordLive(C, b, kind) {
-  if (!window.MediaRecorder || !comp.captureStream) { toast('THIS BROWSER CAN\'T RECORD CLIPS'); setPhase(clipDone ? 'done' : 'choose'); return; }
+// U5 (sound #5): the sound is the offline render (the same track HQ gets), played from an AudioBufferSourceNode into
+// the recorder when it arms, and the 30p frames are paced by that audio clock instead of performance.now(), so a
+// starved phone drops frames without the video running short of the audio. No OfflineAudioContext: the live synth.
+async function recordLive(C, b, kind) {
+  if (!window.MediaRecorder || !comp.captureStream) { toast('THIS BROWSER CAN\'T RECORD CLIPS', 2.5, true); setPhase(clipDone ? 'done' : 'choose'); return; }
+  let ab = null;
+  if (audio.ctx && audio.ctx.state !== 'closed') {
+    const job = hqJob = { cancel: false, prep: true };
+    if (!clipOpen) pauseForClip();
+    $('clip').classList.remove('hidden'); setPhase('render'); $('clipMeta').textContent = 'PREPARING SOUND'; $('clipProgB').style.width = '0%';
+    ab = await offlineAudio(C);
+    hqJob = null;
+    if (job.cancel) { setPhase(clipDone ? 'done' : 'choose'); return; }
+  }
   const lay = clipPrefs.lay, mime = pickMime(), big = !mime.includes('42E01F');    // baseline L3.1 tops out at 720p
   const W = big ? 1080 : 720, H = big ? 1920 : 1280, pic = prepComp(W, H, lay);
   let stream = comp.captureStream(0), vt = stream.getVideoTracks()[0];
   if (!vt || typeof vt.requestFrame !== 'function') { stream.getTracks().forEach((t) => t.stop()); stream = comp.captureStream(CLIP_FPS); vt = null; }
-  const at = audio.streamDest?.stream.getAudioTracks()[0]; if (at) stream.addTrack(at);
+  let dest = null;
+  if (ab) { try { dest = audio.ctx.createMediaStreamDestination(); stream.addTrack(dest.stream.getAudioTracks()[0]); } catch (e) { dest = null; ab = null; } }
+  if (!ab) { const at = audio.streamDest?.stream.getAudioTracks()[0]; if (at) stream.addTrack(at); }
   try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: big ? 12e6 : 6e6, audioBitsPerSecond: 160e3 } : undefined); }
-  catch (e) { stream.getVideoTracks().forEach((t) => t.stop()); toast('THIS BROWSER CAN\'T RECORD CLIPS'); return; }
+  catch (e) { stream.getVideoTracks().forEach((t) => t.stop()); toast('THIS BROWSER CAN\'T RECORD CLIPS', 2.5, true); setPhase(clipDone ? 'done' : 'choose'); return; }
   recChunks = [];
   const rec = recorder;
   rec.ondataavailable = (e) => e.data.size && recChunks.push(e.data);
   rec.onstop = () => showClip(new Blob(recChunks, { type: rec.mimeType || mime || 'video/mp4' }), { dur: C.dur, caps: C.caps.map((c) => [c.t, c.text]), sigma: C.sigma, jit: C.jit, raw: C.rawJit, W, H, kind, lay, fixed: !!vt });
   clipBuf = b; clipKind = kind;
-  $('clip').classList.add('hidden'); clipOpen = false;         // the composite plays on screen while it records
+  $('clip').classList.add('hidden'); clipOpen = false; document.body.classList.remove('clipopen');   // the composite plays on screen while it records
   replay = { clip: C, k: -1, i: -1, t: 0, dur: C.dur, wall0: 0, armed: false, prev: state, stream, vt, st: null, W, RW: pic.w, RH: pic.h,
-    letterbox: fpv.look.letterbox, targetMs: fpv.targetMs };
+    letterbox: fpv.look.letterbox, targetMs: fpv.targetMs, ab, dest, src: null, a0: 0 };
   renderer.setSize(pic.w, pic.h, false); fpv.resize(pic.w, pic.h); fpv.look.letterbox = 0; fpv.targetMs = 1000 / CLIP_FPS; fpv.resetExposure = true;
   state = 'replay'; controls.enabled = false; controls.cancelAll?.();
   $('crashBar').classList.add('hidden'); $('banner').classList.add('hidden');
@@ -1012,7 +1139,13 @@ function recordLive(C, b, kind) {
     if (replay !== r0) return;
     r0.armed = true; r0.wall0 = performance.now() / 1000;
     r0.stopTm = setTimeout(() => { if (replay === r0) endReplay(); }, Math.round((C.dur + 1.5 / CLIP_FPS) * 1000));   // ends on time even if frames run slow
-    try { rec.start(250); } catch (e) { endReplay(true); toast('THIS BROWSER CAN\'T RECORD CLIPS'); }
+    try { rec.start(250); } catch (e) { endReplay(true); toast('THIS BROWSER CAN\'T RECORD CLIPS', 2.5, true); return; }
+    if (r0.ab) {                                                 // the clip's own sound, started with the recorder
+      const ctx = audio.ctx, s = ctx.createBufferSource(); s.buffer = r0.ab; s.connect(r0.dest);
+      if (audio.spk) s.connect(audio.spk);                       // heard as the game would be (Sound Off: silent)
+      r0.src = s; r0.clk = ctx.state === 'running'; r0.a0 = ctx.currentTime; r0.wall0 = performance.now() / 1000; s.start();
+      if (window.__onetakeClipDebug) r0.dbg = [];
+    }
   });
 }
 // next 30p output frame, paced by the wall clock: null when none is due (nothing to render this rAF). A slow device
@@ -1020,17 +1153,24 @@ function recordLive(C, b, kind) {
 function replayFrame() {
   const r = replay, C = r.clip;
   if (!r.armed) return null;
-  const due = Math.floor((performance.now() / 1000 - r.wall0) * CLIP_FPS + 1e-6);
+  // the audio clock while it runs and keeps up; if it stalls (suspended, or a device that doesn't advance it) by more
+  // than 0.25 s against the wall clock, the wall clock takes over so the video never freezes
+  const wall = performance.now() / 1000 - r.wall0;
+  let el = wall;
+  if (r.clk) { const ac = audio.ctx.state === 'running' ? audio.ctx.currentTime - r.a0 : -1; if (ac >= 0 && ac > wall - 0.25) el = ac; else r.clk = false; }
+  if (r.dbg && r.dbg.length < 400) r.dbg.push([+wall.toFixed(3), +(audio.ctx ? audio.ctx.currentTime - r.a0 : -1).toFixed(3), r.clk ? 1 : 0, r.k]);
+  const due = Math.floor(el * CLIP_FPS + 1e-6);
   if (due <= r.k) return null;
   const T = due / CLIP_FPS;
   if (T > C.dur + 0.5 / CLIP_FPS) { endReplay(); return null; }
   const step = r.k < 0 ? 1 : due - r.k; r.k = due; r.t = Math.min(T, C.dur);
   let i = r.i; const n = C.f.length;
-  if (i < 0) { i = 0; audio.snap?.(); }
+  const live = !r.ab;                                           // the live synth plays the clip (no offline track)
+  if (i < 0) { i = 0; if (live) audio.snap?.(); }
   while (i < n - 1 && C.ot[i + 1] <= T) {
     i++; const fr = C.f[i];
-    if (C.seg[i] !== C.seg[i - 1]) { audio.snap?.(); fpv.resetExposure = true; }   // hard cut: no glide or AE drift across it
-    if (fr.hit) audio.hit(fr.hit); if (fr.thud) audio.thud(fr.thud);               // bumps + crash land in the clip
+    if (C.seg[i] !== C.seg[i - 1]) { if (live) audio.snap?.(); fpv.resetExposure = true; }   // hard cut: no glide or AE drift across it
+    if (live) { if (fr.hit) audio.hit(fr.hit); if (fr.thud) audio.thud(fr.thud); }        // bumps + crash land in the clip
   }
   r.i = i;
   const a = C.f[i], b = i + 1 < n && C.seg[i + 1] === C.seg[i] ? C.f[i + 1] : null;
@@ -1048,11 +1188,13 @@ function replayPose(f) {
   } else {
     camPose.pos.copy(a.p); camPose.quat.copy(a.q); motion.vel.copy(a.v); motion.ang.copy(a.w); Object.assign(motion, a.mo); replay.st = a.st;
   }
-  audio.update(a.m, a.s, a.wash, a.c, false, a.ax);
+  audio.update(a.m, a.s, a.wash, a.c, !!replay.ab, a.ax);        // the offline track plays instead: the synth stays quiet
 }
 function endReplay(cancel = false) {
   if (!replay) return;
   const r = replay; replay = null; clearTimeout(r.stopTm);
+  if (r.src) { try { r.src.stop(); } catch (e) {} try { r.src.disconnect(); } catch (e) {} }
+  if (r.dbg) window.__onetakeClipDbg = r.dbg;
   if (cancel && recorder) { recorder.onstop = null; recorder.ondataavailable = null; recChunks = []; }
   try { if (recorder?.state !== 'inactive') recorder?.stop(); } catch (e) {}
   r.stream?.getVideoTracks().forEach((t) => t.stop());   // the canvas track only: the audio track is shared by every clip
@@ -1175,17 +1317,19 @@ function drawCaption(g, box, text, flow, age) {
 let clipURL = null;
 function pauseForClip() {
   clipOpen = true; controls.enabled = false; controls.cancelAll?.();
+  document.body.classList.add('clipopen');                                         // ui #1: no dimmed OSD through the modal
   audio.update(drone.motors, 0, 0, drone.crashed, true, ax);                      // fade the live game sound out
-  setTimeout(() => { if (clipOpen && state !== 'replay') audio.idle?.(); }, 250);
+  setTimeout(() => { if (clipOpen && state !== 'replay' && !hqJob) audio.idle?.(); }, 250);
 }
 let clipCanShare = false;
-function showClip(blob, info = {}) {
+function showClip(blob, info = {}, quiet = false) {
   clearTimeout(clipWait);
   if (clipURL) URL.revokeObjectURL(clipURL);
   clipURL = URL.createObjectURL(blob); lastClip = { blob, info };
   const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
   const v = $('clipVid'); v.src = clipURL;
-  v.muted = false; v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });   // with its sound where autoplay allows
+  if (!quiet) { v.muted = false; v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }   // with its sound where autoplay allows
+  else v.muted = false;
   const a = $('clipSave'); a.href = clipURL; a.download = `onetake-${Date.now()}.${ext}`;
   const file = new File([blob], a.download, { type: blob.type });
   clipCanShare = !!navigator.canShare?.({ files: [file] });
@@ -1194,8 +1338,10 @@ function showClip(blob, info = {}) {
   const nc = info.caps?.length || 0;
   $('clipMeta').textContent = `${fmtS(Math.round(info.dur || 0))} · ${info.W}×${info.H} · 30p${info.hq ? ` · HQ ${info.hq.sub}× shutter` : ''}${info.sigma > 0 ? ' · stabilised' : ''}${nc ? ` · ${nc} caption${nc > 1 ? 's' : ''}` : ''}`;
   clipDone = { kind: info.kind, lay: info.lay, hq: !!info.hq }; clipSel = info.kind || clipSel;
-  pauseForClip();
-  $('clip').classList.remove('hidden'); comp.classList.add('hidden'); fitComp(false);
+  if (!quiet) {
+    pauseForClip();
+    $('clip').classList.remove('hidden'); comp.classList.add('hidden'); fitComp(false);
+  }
   setPhase('done');
   $('clipShare').onclick = async () => {
     if (clipCanShare) { try { await navigator.share({ files: [file], title: 'One Take' }); } catch (e) {} }
@@ -1206,12 +1352,15 @@ function closeClip() {
   clearTimeout(clipWait);
   if (hqJob) hqJob.cancel = true;
   $('clip').classList.add('hidden'); $('clipVid').pause(); comp.classList.add('hidden'); fitComp(false);
+  document.body.classList.remove('clipopen', 'hqbg', 'replaying');
   if (!clipOpen) return;
   clipOpen = false;
   if (state === 'fly' || state === 'crash') controls.enabled = true;
   audio.kick?.();                                              // inside the CLOSE tap
 }
 $('clipClose').onclick = () => { if (hqJob) { hqJob.cancel = true; return; } closeClip(); };   // rendering: CANCEL back to the cuts
+$('clipHide').onclick = () => hideRender();                     // rendering: CLOSE, the render carries on (CLIP READY)
+$('recT').addEventListener('click', () => { if (hqJob?.bg) showRender(); });
 $('clipMake').onclick = () => saveClip(clipSel, clipBuf);
 $('clipCuts').addEventListener('click', (e) => {
   const el = e.target.closest('button[data-cut]'); if (!el || el.disabled) return;
@@ -1279,13 +1428,14 @@ function warn(text, secs = 1.6) {
   const w = $('warn'); w.textContent = String(text).toUpperCase(); w.classList.remove('show'); void w.offsetWidth; w.classList.add('show');
   clearTimeout(warnTm); warnTm = setTimeout(() => w.classList.remove('show'), secs * 1000);
 }
-function toast(text, secs = 1.8) {
-  const t = $('toast'); t.textContent = text; t.classList.add('show');
+// imp: also shown over the Clean overlay (body.nohud hides the rest, e.g. LOW POWER)
+function toast(text, secs = 1.8, imp = false) {
+  const t = $('toast'); t.textContent = text; t.classList.toggle('warn', !!imp); t.classList.add('show');
   clearTimeout(toastTm); toastTm = setTimeout(() => t.classList.remove('show'), secs * 1000);
 }
 
 function updateHud(dt) {
-  hudFast();
+  hudFast(dt);
   hudT += dt; if (hudT < 0.1) return; hudT = 0;
   if (state === 'replay' && replay) {
     $('recT').textContent = `REPLAY ${fmtS(replay.t)} / ${fmtS(replay.dur)}`;
@@ -1347,7 +1497,7 @@ function updateHud(dt) {
   $('oSc').textContent = fmtN(v.total);
   $('oSt').classList.toggle('wrap', !!(readyNow && ts === 'ready'));
   $('oSt').textContent = drone.crashed ? 'CRASHED' : cutLeft > 0 ? (cutLand ? 'LANDED · CUT…' : `CUT ${Math.ceil(cutLeft)}…`) : drone.limitHit > 0 ? 'LIMIT' :
-    v.unbanked > 0 ? `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ' x' + v.flow : ''} +${fmtN(v.unbanked)}` :
+    v.unbanked > 0 ? `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ' ×' + v.flow : ''} +${fmtN(v.unbanked)}` :
     readyNow && ts === 'ready' ? readyNow :
     guide ? `${vt ? (vt === 'up' ? '▲' : '▼') : HOME_ARROWS[dir]} ${nx.name} ${Math.round(nx.dist)}M` :
     ts === 'live' ? '● REC' : ts === 'ready' ? 'READY · FLY A LINE' : ts === 'done' ? (crashedTake() ? 'CRASHED' : 'CUT') :
@@ -1358,9 +1508,25 @@ function updateHud(dt) {
 const CUT_RING = 2 * Math.PI * 28;                                // #cutArc circumference (r 28: the 64 px centre ring)
 const HOME_ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];     // OLED home arrow, clockwise from the nose
 let cutLeft = 0, cutLand = false, tagKey = '', nextNow = null, lowPow = false, batLvl = 0, drainK = -2, chevOn = false, chevD = -1;
-let liveFlow = 1, readyNow = '', guideNow = false;
+let liveFlow = 1, readyNow = '', guideNow = false, restT = 0, odOn = false, ghostOn = false, ghostFar = false;
 const crashedTake = () => drone.crashed || sum.kind === 'crash' || pendingSum?.type === 'crash';
-function hudFast() {
+// C12 (D5): where the best take's ghost is now: take.ghostPose(t) / take.ghost.pose(t) / take.ghost.pos, as {pos|p} or
+// [x,y,z] or {x,y,z}. Absent (or not flying a take): null.
+function ghostPos(t) {
+  if (!t || S.game === 'free') return null;
+  let g = null;
+  try {
+    const tt = typeof t.time === 'number' ? t.time : +t._t || 0;
+    if (typeof t.ghostPose === 'function') g = t.ghostPose(tt);
+    else if (t.ghost && typeof t.ghost.pose === 'function') g = t.ghost.pose(tt);
+    else if (typeof ghostPose === 'function') g = ghostPose(tt);   // eslint-disable-line no-undef (main.js-level, if D5 puts it there)
+    else g = t.ghost?.pos ?? null;
+  } catch (e) { return null; }
+  const p = g?.pos ?? g?.p ?? g?.position ?? g;
+  if (Array.isArray(p) || ArrayBuffer.isView(p)) return p.length >= 3 && isFinite(p[0]) && isFinite(p[1]) && isFinite(p[2]) ? { x: +p[0], y: +p[1], z: +p[2] } : null;
+  return p && isFinite(p.x) && isFinite(p.y) && isFinite(p.z) ? p : null;
+}
+function hudFast(dt = 0) {
   const t = curTake(), ts = t && S.game !== 'free' ? t.state : null;   // free fly: no take, no tag
   // CUT countdown, decision 10. C: take.cutIn = s until the CUT while the ring shows (after cutShow 1 s of hands-off
   // hover, or at once on a touchdown), else 0; take.cutFrac = ring fill 0..1; take.cutKind 'hover' | 'land'.
@@ -1372,16 +1538,27 @@ function hudFast() {
     else { const c = t._hover > 0 && (t.total || 0) + (t.unbanked || 0) > 0 ? cutT - t._hover : 0; if (c > 0 && c <= from) { ci = c; frac = 1 - c / from; } }
   }
   cutLeft = ci; cutLand = !!ci && t.cutKind === 'land';
+  // LIFT THUMBS (ux #4): 2 s of hovering with a live chain and a thumb resting (centred) on the glass, which counts as
+  // hands on and never CUTs: a greyed full ring that says why
+  if (!ci && t && ts === 'live' && state === 'fly' && !drone.crashed && !summaryUp()) {
+    const tn = controls.touches?.size ?? 0, eps = 0.02;
+    const centred = Math.max(Math.abs(tickInp.pitch), Math.abs(tickInp.roll), Math.abs(tickInp.yaw)) <= eps && (S.mode !== 'cine' || Math.abs(tickInp.climb) <= eps);
+    const hov = drone.vel.length() < (+TT().cutSpeed || 1) && (t.total || 0) + (t.unbanked || 0) > 0;
+    restT = tn > 0 && centred && hov ? restT + dt : 0;
+  } else restT = 0;
+  const rest = restT >= 2;
   // the countdown is the 64 px ring at the centre of the view (design #3); the tag keeps saying REC until the CUT lands.
   // Ready at the retry start: the tag's second line says how to begin (UX #3, readyHint).
   const rh = ts === 'ready' ? readyNow : '';
   const txt = !ts ? '' : crashedTake() ? 'CRASHED' : ts === 'live' ? 'REC' : ts === 'done' ? 'CUT' : 'READY';
   const cls = 'o tl' + (ts ? ' on' : '') + (ts === 'live' ? ' live' : '') + (rh ? ' hint' : '');
-  const key = cls + txt + rh + (ci ? (cutLand ? '|L' : '|' + Math.ceil(ci)) : '');
+  const key = cls + txt + rh + (ci ? (cutLand ? '|L' : '|' + Math.ceil(ci)) : rest ? '|R' : '');
   if (key !== tagKey) {
     tagKey = key; $('takeTag').className = cls; $('takeTxt').textContent = txt; $('takeHint').textContent = rh;
-    document.body.classList.toggle('cutting', !!ci);
+    document.body.classList.toggle('cutting', !!ci || rest);
+    $('cutC').classList.toggle('rest', !ci && rest);
     if (ci) { $('cutN').textContent = cutLand ? '' : String(Math.ceil(ci)); $('cutL').textContent = cutLand ? 'LANDED' : 'CUT'; }
+    else if (rest) { $('cutN').textContent = ''; $('cutL').textContent = 'LIFT THUMBS'; }
   }
   if (ci) {   // drains as it fills; the keyline follows the white arc, so the drained part is only the dark track
     const off = (CUT_RING * Math.max(0, Math.min(1, frac))).toFixed(2);
@@ -1396,6 +1573,21 @@ function hudFast() {
     if (k >= 0) { d.style.transform = `scaleX(${k.toFixed(3)})`; d.classList.toggle('low', t.bankIn < 1.5); }
   }
   if (k >= 0) d.classList.toggle('hold', !!t.holding);
+  // portrait: the same drain as a 2 px rule under the OLED chain line (ui #2)
+  const po = k >= 0 && document.body.classList.contains('portrait'), od = $('oDrain');
+  if (po !== odOn) { odOn = po; od.classList.toggle('on', po); }
+  if (po) { od.style.transform = `scaleX(${k.toFixed(3)})`; od.classList.toggle('low', t.bankIn < 1.5); }
+  // ghost (C12): the best take, re-flown, as a hollow diamond over where it is now
+  let gOn = false;
+  const gp = ts === 'live' && state === 'fly' ? ghostPos(t) : null;
+  if (gp) {
+    const p = projectView(gp);
+    if (p && p.d > 0.6) {
+      gOn = true; $('oGhost').style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px) translate(-50%,-50%)`;
+      const far = p.d > 30; if (far !== ghostFar) { ghostFar = far; $('oGhost').classList.toggle('far', far); }
+    }
+  }
+  if (gOn !== ghostOn) { ghostOn = gOn; $('oGhost').classList.toggle('on', gOn); }
   // chevron over the next never-flown line's first gate (C: hint.fresh), projected through the lens, only while the arrow
   // shows (UX #5). OSD only, never in clips.
   const nx = nextNow;
@@ -1523,11 +1715,13 @@ function baseLines() {                  // checklist names in world order (cache
 }
 // [{name, hint, flown, f (best FLOW)}]
 function lineList() {
-  const C = cLines(), m = C ? new Map(C.map((l) => [l.name, { n: l.n || (l.flown ? 1 : 0), f: l.bestFlow || 0 }])) : null;
-  const S0 = m ? null : !Array.isArray(world.lines) ? cStore() : null;
+  const C = cLines(), m = C ? new Map(C.map((l) => [l.name, { n: l.n || (l.flown ? 1 : 0), f: l.bestFlow || 0, t: +l.bestT || 0 }])) : null;
+  const S0 = m ? null : !Array.isArray(world.lines) ? cStore() : null, S1 = m ? cStore() : S0;
   return baseLines().map((name) => {
-    const c = m ? m.get(name) : S0?.[name] ? { n: +S0[name].n || 0, f: +S0[name].flow || 0 } : null, r = uiProg.lines[name];
-    return { name, hint: LINE_HINT[name] || '', flown: !!(c?.n || r), f: Math.max(c?.f || 0, r?.f || 0) };
+    const c = m ? m.get(name) : S0?.[name] ? { n: +S0[name].n || 0, f: +S0[name].flow || 0, t: +S0[name].bestT || 0 } : null, r = uiProg.lines[name];
+    // C12 (D5): PROG[name].bestT, the line's best time (s), via lineList or the stored record
+    const bt = c?.t > 0 ? c.t : +S1?.[name]?.bestT > 0 ? +S1[name].bestT : 0;
+    return { name, hint: LINE_HINT[name] || '', flown: !!(c?.n || r), f: Math.max(c?.f || 0, r?.f || 0), bt };
   });
 }
 const flownCount = () => lineList().filter((l) => l.flown).length;
@@ -1564,6 +1758,7 @@ function nextLine(from = null) {
 function starTargets() { const s = TT().stars; return Array.isArray(s) && s.length ? s : [60000, 150000, 260000]; }
 const starCount = (total) => starTargets().filter((v) => total >= v).length;
 const starsHTML = (n, of) => Array.from({ length: of }, (_, i) => `<svg viewBox="0 0 16 16"${i < n ? ' class="on"' : ''} aria-hidden="true"><path d="${STAR}"/></svg>`).join('');
+const fmtBT = (t) => (t >= 60 ? `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}` : `${t.toFixed(t < 10 ? 2 : 1)} S`);   // best line time
 const kfmt = (v) => (v >= 1000 ? Math.round(v / 1000) + 'K' : String(v));
 // menu: BEST + stars (of the best take) + LINES strip, the LINES checklist, START AT (paused)
 function renderProgress() {
@@ -1573,8 +1768,8 @@ function renderProgress() {
   $('lnCount').textContent = `${fl}/${L.length}`;
   $('lnGrid').innerHTML = L.map((l) => {
     const next = !l.flown && nx?.name === l.name;
-    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.hint;
-    return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}</small></div>`;
+    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.hint, bt = l.flown && l.bt > 0 ? `<i> · ${fmtBT(l.bt)}</i>` : '';
+    return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}${bt}</small></div>`;
   }).join('');
   // START AT (C: world.startPoints [{name, pos, yaw}] + respawn(false, name)); hidden until C provides them. C keeps the
   // choice for retries in its module-level `startAt`; the active one is lit. Hold RESET (back to the spawn) clears it.
@@ -1645,15 +1840,21 @@ function showSummary(kind, e) {
   const maxSp = st.maxSpeed ?? runStats.maxSpeed, time = st.time ?? v.time ?? flightT, mf = st.maxFlow ?? runStats.maxFlow;
   const lines = Array.isArray(st.lines) ? st.lines.map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean) : null;
   sum.kind = kind; sum.data = e || null;
-  const T = $('bTitle'); T.className = kind; T.innerHTML = kind === 'cut' ? 'CUT<em>.</em>' : 'CRASHED';
+  // C12 (D5): gold PERFECT on a CUT with every line CLEAN and no scrapes (cut.perfect, else take.perfect)
+  const tk = curTake(), perfect = kind === 'cut' && !!(e?.perfect ?? st.perfect ?? (tk && 'perfect' in tk ? tk.perfect : false));
+  const T = $('bTitle'); T.className = kind; T.innerHTML = kind === 'cut' ? 'CUT<em>.</em>' + (perfect ? '<span class="perf">PERFECT</span>' : '') : 'CRASHED';
   const lost = kind === 'crash' && e?.lost > 0 ? `Chain lost −${fmtN(e.lost)}` : 'Take ended';   // the CHAIN LOST warning hides under the card
   const cutHow = e?.how === 'land' ? 'Landed · that\'s a take' : 'That\'s a take';   // C: cut.how 'hover' | 'land'
-  $('bSub').textContent = kind === 'cut' ? `${cutHow} · touch a stick for a new one` : isTake ? `${lost} · touch a stick to retry` : 'Touch a stick to fly on';
+  const pace = kind === 'cut' && typeof e?.pace === 'number' && e.pace > 0 ? ` · PACE ×${(Math.round(e.pace * 100) / 100).toFixed(2)}` : '';   // ui #3: in the subtitle
+  // with PACE, the CUT. title already says it's a take: the line stays one line on the 440 px card
+  $('bSub').textContent = kind === 'cut' ? `${pace ? (e?.how === 'land' ? 'Landed' : '') + pace : cutHow}`.replace(/^ · /, '') + ' · touch a stick for a new one' : isTake ? `${lost} · touch a stick to retry` : 'Touch a stick to fly on';
   const row = (k, val) => `<span>${k}</span><b>${val}</b>`;
+  // ui #3: six even cells. The 6th is CLEAN lines (x/n) when C has it, else SCRAPES; LINES no longer repeats the list below
+  const nL = lines ? lines.length : 0;
+  const sixth = typeof st.clean === 'number' && nL ? row('CLEAN', `${Math.min(st.clean, nL)}/${nL}`) : typeof st.scrapes === 'number' ? row('SCRAPES', String(st.scrapes)) : lines ? row('LINES', String(nL)) : '';
   $('bStats').innerHTML = row('MAX SPEED', `${Math.round(maxSp * 3.6)} KM/H`) + row('FLY TIME', fmt(time)) +
     row('SCORE', fmtN(total)) + row('BEST', newBest ? `<em>NEW</em> ${fmtN(best)}` : fmtN(best)) +
-    row('MAX FLOW', `×${mf || 1}`) + (lines ? row('LINES', String(lines.length)) : '') +
-    (kind === 'cut' && typeof e?.pace === 'number' && e.pace > 0 ? row('PACE', `×${(Math.round(e.pace * 100) / 100).toFixed(2)}`) : '');   // C4: PACE ×1.5 → ×1.0
+    row('MAX FLOW', `×${mf || 1}`) + sixth;
   // stars for this take + the next target; this take's lines (NEW = first time ever); the checklist and what to fly next
   const tg = starTargets(), ns = typeof e?.stars === 'number' ? e.stars : starCount(total), nextT = tg.find((s) => total < s);
   $('bStars').innerHTML = isTake ? starsHTML(ns, tg.length) + (nextT ? `<small>NEXT ${kfmt(nextT)}</small>` : '') : '';
@@ -1873,7 +2074,7 @@ renderProgress();
 }
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) return;
-  if (state === 'replay') { endReplay(true); toast('CLIP CANCELLED'); }   // rAF stops in the background: the recording would be junk
+  if (state === 'replay') { endReplay(true); toast('CLIP CANCELLED', 1.8, true); }   // rAF stops in the background: the recording would be junk
   if (state === 'fly' || state === 'crash') openMenu();
   audio.idle?.();
 });
@@ -1885,7 +2086,7 @@ else { document.addEventListener('touchstart', flyOnTouch, { passive: true }); d
 window.addEventListener('keydown', (e) => { if (/^(Key[WASD]|Arrow)/.test(e.code)) flyOnTouch(e); });
 // iOS: a left-edge swipe-back pauses instead of leaving the page
 window.addEventListener('popstate', () => {
-  if (state === 'replay') { endReplay(true); toast('CLIP CANCELLED'); }
+  if (state === 'replay') { endReplay(true); toast('CLIP CANCELLED', 1.8, true); }
   if (clipOpen || !$('clip').classList.contains('hidden')) closeClip();
   if (state === 'fly' || state === 'crash') openMenu();
 });

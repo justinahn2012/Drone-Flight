@@ -4,10 +4,15 @@
 // blur instead of the live 14-tap smear), the audio is re-synthesised on an OfflineAudioContext, and both are encoded
 // with WebCodecs into an MP4 by mp4-muxer (import map, jsdelivr, MIT; loaded only when a clip is made).
 // main.js falls back to the real-time MediaRecorder path when hqSupport() says no or renderHQ() throws.
+// U5: no AudioEncoder (Safari may lack it) is no longer "no HQ": the video is still rendered and encoded offline, the
+// MP4 has no audio track, and the result carries the offline-rendered AudioBuffer (`audio`) for main.js to lay under
+// it (real-time remux through MediaRecorder from an AudioBufferSourceNode).
 //
-//   hqSupport() -> Promise<{ video, audio } | null>      (codecs that will be used; cached)
+//   hqSupport() -> Promise<{ video, audio: {codec, mux} | null } | null>      (codecs that will be used; cached)
 //   renderHQ({ C, world, renderer, fpv, size:[w,h], sub, shutter, tiltFor, makeAudio, renderSub, composite, comp,
-//              onProgress, cancelled }) -> Promise<{ blob, stats }>
+//              onProgress(f, done, total, msPerFrame), onSub(N), budgetMs, minSub, cancelled })
+//     -> Promise<{ blob, audio: AudioBuffer | null (set when the MP4 has no audio track), stats }>
+//   budgetMs: if the first frames project past it, the render drops to minSub (default 4) sub-frames from there on.
 // C (main.js buildClip): f (frames, stabilised), raw (the same frames unstabilised), ot (output s), seg, sigma, dur.
 // Frames carry L (InputLog), k (ticks run in it), a (physAlpha), p/q (camera), mo, ... (pushReplay).
 import * as THREE from 'three';
@@ -20,19 +25,20 @@ export function hqSupport() {
   if (_support) return _support;
   _support = (async () => {
     try {
-      if (!window.VideoEncoder || !window.AudioEncoder || !window.VideoFrame || !window.AudioData || !(window.OfflineAudioContext)) return null;
+      if (!window.VideoEncoder || !window.VideoFrame || !(window.OfflineAudioContext)) return null;
       let video = null;
       for (const codec of ['avc1.640028', 'avc1.4d0028', 'avc1.42e028']) {
         const r = await VideoEncoder.isConfigSupported({ codec, width: 1080, height: 1920, bitrate: 14e6, framerate: FPS, avc: { format: 'avc' } }).catch(() => null);
         if (r?.supported) { video = codec; break; }
       }
       if (!video) return null;
-      let audio = null;
-      for (const [codec, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
-        const r = await AudioEncoder.isConfigSupported({ codec, sampleRate: SR, numberOfChannels: 2, bitrate: 160e3 }).catch(() => null);
-        if (r?.supported) { audio = { codec, mux }; break; }
+      let audio = null;                                            // null: video-only MP4 + AudioBuffer (main.js remuxes)
+      if (window.AudioEncoder && window.AudioData) {
+        for (const [codec, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
+          const r = await AudioEncoder.isConfigSupported({ codec, sampleRate: SR, numberOfChannels: 2, bitrate: 160e3 }).catch(() => null);
+          if (r?.supported) { audio = { codec, mux }; break; }
+        }
       }
-      if (!audio) return null;
       await import('mp4-muxer');                                   // prefetch; a failed CDN fetch = no HQ
       return { video, audio };
     } catch (e) { console.warn('HQ clips unavailable', e); return null; }
@@ -171,38 +177,46 @@ const tick = () => new Promise((ok) => setTimeout(ok, 0));
 export async function renderHQ(o) {
   const sup = await hqSupport(); if (!sup) throw new Error('no WebCodecs');
   const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
-  const { C, world, renderer, fpv, comp } = o, [RW, RH] = o.size, N = Math.max(1, o.sub | 0), sh = o.shutter;
+  const { C, world, renderer, fpv, comp } = o, [RW, RH] = o.size, sh = o.shutter;
+  let N = Math.max(1, o.sub | 0);
   const OW = comp.width, OH = comp.height, t0 = performance.now();
   const nF = Math.floor(C.dur * FPS + 1e-6) + 1;
   const smp = makeSampler(C, world, o.tiltFor);
   const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: OW, height: OH, frameRate: FPS },
-    audio: { codec: sup.audio.mux, numberOfChannels: 2, sampleRate: SR }, fastStart: 'in-memory', firstTimestampBehavior: 'offset' });
+    ...(sup.audio ? { audio: { codec: sup.audio.mux, numberOfChannels: 2, sampleRate: SR } } : {}), fastStart: 'in-memory', firstTimestampBehavior: 'offset' });
   let err = null; const fail = (e) => { err = err || e; };
   // ---- audio first (fast): the clip's own sound, re-synthesised offline on the output timeline
   const actx = new OfflineAudioContext(2, Math.ceil((nF / FPS) * SR), SR);
   o.makeAudio(actx);
   const ab = await actx.startRendering();
   if (o.cancelled()) return null;
-  const aenc = new AudioEncoder({ output: (c, m) => { try { muxer.addAudioChunk(c, m); } catch (e) { fail(e); } }, error: fail });
-  aenc.configure({ codec: sup.audio.codec, sampleRate: SR, numberOfChannels: 2, bitrate: 160e3 });
   const L = ab.getChannelData(0), R = ab.getChannelData(1), BL = 1024;
   let peak = 0, ss = 0;
-  for (let i = 0; i < ab.length; i += BL) {
-    const n = Math.min(BL, ab.length - i), d = new Float32Array(n * 2);
-    d.set(L.subarray(i, i + n), 0); d.set(R.subarray(i, i + n), n);
-    for (let j = 0; j < n; j++) { const v = (L[i + j] + R[i + j]) / 2; ss += v * v; peak = Math.max(peak, Math.abs(L[i + j]), Math.abs(R[i + j])); }
-    const ad = new AudioData({ format: 'f32-planar', sampleRate: SR, numberOfFrames: n, numberOfChannels: 2, timestamp: Math.round(i / SR * 1e6), data: d });
-    aenc.encode(ad); ad.close();
+  for (let i = 0; i < ab.length; i++) { const v = (L[i] + R[i]) / 2; ss += v * v; peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i])); }
+  if (sup.audio) {
+    const aenc = new AudioEncoder({ output: (c, m) => { try { muxer.addAudioChunk(c, m); } catch (e) { fail(e); } }, error: fail });
+    aenc.configure({ codec: sup.audio.codec, sampleRate: SR, numberOfChannels: 2, bitrate: 160e3 });
+    for (let i = 0; i < ab.length; i += BL) {
+      const n = Math.min(BL, ab.length - i), d = new Float32Array(n * 2);
+      d.set(L.subarray(i, i + n), 0); d.set(R.subarray(i, i + n), n);
+      const ad = new AudioData({ format: 'f32-planar', sampleRate: SR, numberOfFrames: n, numberOfChannels: 2, timestamp: Math.round(i / SR * 1e6), data: d });
+      aenc.encode(ad); ad.close();
+    }
+    await aenc.flush(); aenc.close();
   }
-  await aenc.flush(); aenc.close();
   const tA = performance.now();
   // ---- video: N sub-frames per output frame, accumulated, composited (captions), encoded
   const venc = new VideoEncoder({ output: (c, m) => { try { muxer.addVideoChunk(c, m); } catch (e) { fail(e); } }, error: fail });
   venc.configure({ codec: sup.video, width: OW, height: OH, bitrate: OW * OH >= 1.5e6 ? 14e6 : 8e6, framerate: FPS, latencyMode: 'quality', avc: { format: 'avc' } });
   const acc = new Accum(renderer, RW, RH), P = new THREE.Vector3(), Q = new THREE.Quaternion(), P2 = new THREE.Vector3(), Q2 = new THREE.Quaternion();
-  let i = 0, lastT = null, capFrames = [];
+  let i = 0, lastT = null, capFrames = [], tV = 0, subDrop = 0;
+  const minSub = Math.max(1, o.minSub | 0 || 4);
   try {
     for (let k = 0; k < nF; k++) {
+      if (k === 1) tV = performance.now();                       // frame 0 carries the shader warm-up: time from frame 1
+      // slow device (U5, ux #2): frames 1-3 project past the budget -> fewer sub-frames from here (same total shutter,
+      // coarser sampling of it; at 0.1 s into the clip the change doesn't show)
+      if (k === 4 && o.budgetMs > 0 && N > minSub && (performance.now() - tV) / 3 * nF > o.budgetMs) { subDrop = N; N = minSub; o.onSub?.(N); }
       if (err) throw err;
       if (o.cancelled()) return null;
       while (document.hidden) await new Promise((ok) => setTimeout(ok, 250));   // background: wait (rAF/timers are throttled)
@@ -227,7 +241,7 @@ export async function renderHQ(o) {
       const vf = new VideoFrame(comp, { timestamp: Math.round(k * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
       venc.encode(vf, { keyFrame: k % 60 === 0 }); vf.close();
       while (venc.encodeQueueSize > 2) await new Promise((ok) => setTimeout(ok, 4));
-      o.onProgress?.((k + 1) / nF);
+      o.onProgress?.((k + 1) / nF, k + 1, nF, k >= 1 ? (performance.now() - tV) / k : 0);
       await tick();
     }
     await venc.flush();
@@ -235,6 +249,6 @@ export async function renderHQ(o) {
   if (err) throw err;
   muxer.finalize();
   const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
-  return { blob, stats: { ...smp.stats, sub: N, frames: nF, video: sup.video, audio: sup.audio.codec, msAudio: Math.round(tA - t0), msTotal: Math.round(performance.now() - t0),
+  return { blob, audio: sup.audio ? null : ab, stats: { ...smp.stats, sub: N, subDrop, frames: nF, video: sup.video, audio: sup.audio ? sup.audio.codec : 'remux', msAudio: Math.round(tA - t0), msTotal: Math.round(performance.now() - t0),
     audioRms: +(10 * Math.log10(ss / ab.length + 1e-12)).toFixed(1), audioPeak: +(20 * Math.log10(peak + 1e-12)).toFixed(1), capFrames } };
 }
