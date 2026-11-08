@@ -396,6 +396,7 @@ function clearWorld() {
   world.scene = null; world.bvh = null; world.colliderScene = null; world.bounds = null; world.envelope = null; world.update = null;
   world.skimBvh = null; world.lines = null; world.takeStart = null; world.startPoints = null; world.funnels = null;
   world.grassAt = null;                                                                    // [F24] C7
+  try { world.audio?.detach?.(); } catch (e) {}                                             // [integ6] S4 city sound off with its level
   world.depthScene = null; world.aoUniforms = null; world.dispose = null; world.level = null; world.audio = null;   // [S0]
 }
 
@@ -446,7 +447,8 @@ async function loadProcWorld(def) {
   const build = mod[level.build];
   if (typeof build !== 'function') throw new Error(`${level.module} has no ${level.build}()`);
   clearWorld(); loadedId = null;
-  const scene0 = new THREE.Scene(), opts = { sky: def.sky, quality: S.quality, level: level.id, layout: level.layout, onProgress: (f, t) => setLoad(null, f, t) };
+  const scene0 = new THREE.Scene(), opts = { takeClock: () => ((inputLog?.ticks ?? 0) + physAlpha) * PHYS,   // [integ6] deterministic: sim ticks
+    sky: def.sky, quality: S.quality, level: level.id, layout: level.layout, onProgress: (f, t) => setLoad(null, f, t) };
   const args = (Array.isArray(level.args) ? level.args : ['renderer', 'scene', 'opts']).map((a) => (a === 'renderer' ? renderer : a === 'scene' ? scene0 : a === 'opts' ? opts : undefined));
   const w = await build(...args);
   if (!w || !(w.scene || scene0.children.length)) throw new Error(`${level.build}() returned no world`);
@@ -455,6 +457,8 @@ async function loadProcWorld(def) {
   Object.assign(world, { skimBvh: w.skimBvh || w.bvh || null, lines: w.lines || [], takeStart: w.takeStart || null, startPoints: w.startPoints || null, funnels: w.funnels || null });   // C: the take (C1)
   world.grassAt = typeof w.grassAt === 'function' ? w.grassAt : null;                     // [F24] C7 (V2, optional): grass height (m) at x, z
   world.level = level.id; world.dispose = typeof w.dispose === 'function' ? w.dispose : null; world.audio = w.audio || null;   // [S0]
+  // [integ6] S4: the level's city sound goes through the same camera-mic chain as the motors
+  if (world.audio?.attach && audio.ctx) { try { world.audio.attach(audio.ctx, audio.bus); } catch (e) { console.warn('level audio', e); } }
   world.spawn.copy(w.spawn?.isVector3 ? w.spawn : w.spawn?.pos ? new THREE.Vector3(...(w.spawn.pos.toArray?.() ?? w.spawn.pos)) : new THREE.Vector3(0, 2, 0)); world.yaw = w.yaw ?? w.spawn?.yaw ?? 0;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);

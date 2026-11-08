@@ -504,7 +504,8 @@ export async function buildSeoul(renderer, a, b) {
     envelope: { min: new THREE.Vector3(B.x0 - 30, -2, B.z0 - 30), max: new THREE.Vector3(B.x1 + 30, 160, B.z1 + 30) },
     aoUniforms: { uAO: { value: null }, uAOOn: { value: 0 }, uAOScale: { value: new THREE.Vector2(1, 1) } },
     rebakeShadows: () => {}, grassAt: null,
-    look: 'night', sky: 'night', layout, emitters, parts, NIT, NITS, nitScale: NITS, LUX,
+    look: 'night', sky: 'night', layout, emitters, parts, audio: parts.life?.audio || null,   // [integ6] S4 city sound (main.js attaches it)
+    NIT, NITS, nitScale: NITS, LUX,
   };
   scene.userData.seoul = { baseLight, emitters, parts, NIT, NITS, nitScale: NITS, LUX, stats, lotInfo: geo.lotInfo };
   scene.userData.depthScene = depthScene; scene.userData.aoUniforms = world.aoUniforms;
