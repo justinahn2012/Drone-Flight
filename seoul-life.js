@@ -95,37 +95,106 @@ function clearRange(path, mains, insetOf) {
   }
   return best;
 }
-export function signalPhase(t, offset = 0) {   // -> { car: 'G'|'A'|'R', walk: bool, tc: s into the cycle }
+export function signalPhase(t, offset = 0) {   // mid-block crosswalk: -> { car: 'G'|'A'|'R', walk, tc, w0, wlen }
   const S = LIFE.signal, tc = (((t + offset) % S.period) + S.period) % S.period;
   const car = tc < S.green ? 'G' : tc < S.green + S.amber ? 'A' : 'R';
   const w0 = S.green + S.amber + S.allRed;
-  return { car, walk: tc >= w0 && tc < w0 + S.walk, tc, w0 };
+  return { car, walk: tc >= w0 && tc < w0 + S.walk, tc, w0, wlen: S.walk };
+}
+// crosswalk c at take clock t. Intersections ('X') run two axis groups: axis 0 green 0-30 s, axis 1 green 35-65 s
+// (3 s amber, 2 s all-red); a crosswalk over an axis-g road walks while the other axis has its green.
+export function crossPhase(c, t) {
+  if (c.kind !== 'X') return signalPhase(t, c.offset);
+  const P = LIFE.signal.period, tc = (((t + c.offset) % P) + P) % P, g0 = c.axis ? 35 : 0, u = (tc - g0 + P) % P;
+  const car = u < 30 ? 'G' : u < 33 ? 'A' : 'R';
+  const w0 = c.axis ? 0 : 35, wlen = 27;
+  return { car, walk: tc >= w0 && tc < w0 + wlen, tc, w0, wlen };
 }
 
 // ---------------------------------------------------------------- the network shared by both sims
+// Works on both kinds of L1 layout: the synthetic one (street width = building line to building line) and S1's OSM one
+// (width = carriageway; ways split at every junction; Yanghwa-ro as two one-way carriageways). The street profile
+// (carriageway half-width, pavement band per side) comes from where the street's own lots actually stand.
 export function buildNetwork(layout) {
   const streets = (layout.streets || []).filter((s) => s.points && s.points.length >= 2).map((s) => ({ ...s, path: new Path(s.points) }));
-  const mains = streets.filter((s) => s.kind === 'main');
-  const crossings = [];   // main street x other street: crosswalk + signal
-  let ci = 0;
-  for (const m of mains) for (const o of streets) {
-    if (o === m) continue;
-    const hits = pathCross(m.path, o.path).map(([sm, so]) => ({ sm, so }));
-    // T-junctions: a side street that ends at the main street's kerb (the usual case in OSM-cut blocks)
-    for (const [k, so] of [[0, 0], [o.points.length - 1, o.path.len]]) {
-      const pr = m.path.project(o.points[k][0], o.points[k][1]);
-      if (pr.dist < m.width / 2 + 4 && pr.s > 5 && pr.s < m.path.len - 5 && !hits.some((h) => Math.abs(h.sm - pr.s) < o.width + 4)) hits.push({ sm: pr.s, so });
+  const byId = new Map(streets.map((s) => [s.id, s]));
+  const half = layout.half || null;
+  // ---- building lines per side, from the frontages of the street's own lots
+  const sides = new Map(streets.map((s) => [s, { L: [], R: [] }]));
+  for (const l of layout.lots || []) {
+    const st = byId.get(l.street); if (!st || !l.frontage) continue;
+    const m = [(l.frontage[0][0] + l.frontage[1][0]) / 2, (l.frontage[0][1] + l.frontage[1][1]) / 2], pr = st.path.project(m[0], m[1]);
+    if (pr.dist < 40) sides.get(st)[pr.d >= 0 ? 'R' : 'L'].push(Math.abs(pr.d));
+  }
+  const med = (a) => { if (!a.length) return null; const b = a.slice().sort((p, q) => p - q); return b[b.length >> 1]; };
+  for (const st of streets) {
+    const sd = sides.get(st), bl = [med(sd.L), med(sd.R)], w2 = st.width / 2;
+    if (st.kind === 'main') {
+      // building line well beyond width/2: width is the carriageway (OSM). Else width spans the pavements (synthetic).
+      const known = bl.filter((v) => v != null), b = known.length ? Math.min(...known) : null;
+      const carriage = b != null && b > w2 + 1.8 ? w2 : st.sidewalk ? w2 - st.sidewalk : w2 - LIFE.sidewalk(st.width);
+      st.carHalf = Math.max(1.7, carriage);
+      st.walk = [-1, 1].map((sg, i) => {
+        const line = bl[i] ?? (b != null && b <= w2 + 1.8 ? w2 : null);
+        if (line == null) return null;                                  // no buildings on this side (median of a dual carriageway)
+        const outer = Math.min(line, st.carHalf + 7), inner = st.carHalf + 0.5;
+        return outer - inner > 1.2 ? [inner, outer - 0.5] : null;
+      });
+      if (!st.walk[0] && !st.walk[1] && !known.length) st.walk = [[st.carHalf + 0.5, st.carHalf + 3], [st.carHalf + 0.5, st.carHalf + 3]];
+    } else {
+      const known = bl.filter((v) => v != null), b = known.length ? Math.min(...known) : w2;
+      st.walkHalf = Math.max(1.4, Math.min(Math.max(w2, b), w2 + 3) - 0.5);
     }
-    for (const { sm, so } of hits) crossings.push({ id: 'X' + ci, main: m, other: o, sm, so, offset: (ci++ * 13) % LIFE.signal.period });
   }
-  // crosswalk: one per crossing, on the near side of the side street (in main-street s), 3 m past its kerb line
-  for (const c of crossings) {
-    const sw = LIFE.sidewalk(c.main.width);
-    c.sc = Math.min(c.main.path.len - 2, c.sm + c.other.width / 2 + 3);   // crosswalk centre (main s)
-    c.halfSpan = c.main.width / 2 - sw * 0.5;                            // kerb-to-kerb, waiting on the pavement edge
-    c.cw = 5;                                                             // crosswalk width
+  // ---- one-way carriageways: st.oneway (1 = point order, -1 = reverse) or a same-named anti-parallel twin nearby
+  const mains = streets.filter((s) => s.kind === 'main');
+  const o1 = {}, o2 = {};
+  for (const a of mains) {
+    if (a.oneway != null) { a.ow = a.oneway === true ? 1 : +a.oneway || 0; continue; }
+    a.ow = 0; a.path.at(a.path.len / 2, o1);
+    for (const b of mains) {
+      if (b === a || (b.ko || b.name) !== (a.ko || a.name) || !(a.ko || a.name)) continue;
+      const pr = b.path.project(o1.x, o1.z); if (pr.dist > (a.width + b.width) / 2 + 22 || pr.dist < 2) continue;
+      b.path.at(pr.s, o2); if (o1.tx * o2.tx + o1.tz * o2.tz < -0.8) { a.ow = 1; break; }
+    }
   }
-  return { streets, mains, crossings, bounds: boundsOf(layout, streets) };
+  // ---- junction nodes: street end points clustered within 3 m
+  const nodes = [];
+  const nodeOf = (p) => { for (const n of nodes) if (Math.hypot(n.x - p[0], n.z - p[1]) < 3) return n; const n = { id: nodes.length, x: p[0], z: p[1], ends: [] }; nodes.push(n); return n; };
+  for (const st of streets) { st.n = [nodeOf(st.points[0]), nodeOf(st.points[st.points.length - 1])]; st.n[0].ends.push({ st, k: 0 }); st.n[1].ends.push({ st, k: 1 }); }
+  const edge = half ? half - 4 : Math.max(...streets.flatMap((s) => s.points.map((p) => Math.max(Math.abs(p[0]), Math.abs(p[1]))))) - 4;
+  for (const n of nodes) n.boundary = n.ends.length === 1 && (Math.abs(n.x) > edge || Math.abs(n.z) > edge);
+  // ---- crosswalks + signals
+  const crossings = []; let ci = 0;
+  const addCross = (c) => {
+    c.main.path.at(c.sc, o1); c.x = o1.x; c.z = o1.z;
+    if (crossings.some((d) => Math.hypot(d.x - c.x, d.z - c.z) < 14)) return;
+    c.id = 'X' + ci++; c.cw = 5; c.halfSpan = c.main.carHalf + 0.9; crossings.push(c);
+  };
+  for (const n of nodes) {   // intersections: >= 3 road pieces, or 2 of different names
+    const roads = n.ends.filter((e) => e.st.kind === 'main');
+    const names = new Set(roads.map((e) => e.st.ko || e.st.name || e.st.id));
+    if (!(roads.length >= 3 || (roads.length === 2 && names.size === 2))) continue;
+    const ax0 = (() => { const e = roads[0]; e.st.path.at(e.k ? e.st.path.len : 0, o1); return [o1.tx, o1.tz]; })();
+    const off = (n.id * 17) % LIFE.signal.period;
+    for (const e of roads) {
+      const P = e.st.path; P.at(e.k ? P.len : 0, o1);
+      const axis = Math.abs(o1.tx * ax0[1] - o1.tz * ax0[0]) < 0.5 ? 0 : 1;
+      const r = Math.max(...n.ends.filter((q) => q !== e).map((q) => (q.st.carHalf ?? q.st.width / 2))) + 3.5;
+      if (P.len < r + 3) continue;
+      addCross({ kind: 'X', node: n, main: e.st, sc: e.k ? P.len - r : r, toward: e.k ? 1 : -1, axis, offset: off });
+    }
+  }
+  for (const m of mains) for (const o of streets) {   // mid-block: a walking or club street meets a road
+    if (o.kind !== 'walking' && o.kind !== 'club') continue;
+    const hits = pathCross(m.path, o.path).map(([sm]) => sm);
+    for (const k of [0, o.points.length - 1]) { const pr = m.path.project(o.points[k][0], o.points[k][1]); if (pr.dist < m.carHalf + 8) hits.push(pr.s); }
+    for (const sm of hits) {
+      const sc = Math.max(3, Math.min(m.path.len - 3, sm + o.width / 2 + 3)); if (m.path.len < 8) continue;
+      addCross({ kind: 'T', main: m, sc, toward: 0, axis: 0, offset: (ci * 13) % LIFE.signal.period });
+    }
+  }
+  return { streets, mains, nodes, crossings, bounds: boundsOf(layout, streets) };
 }
 function boundsOf(layout, streets) {
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -159,33 +228,58 @@ export class TrafficSim {
   constructor(net, { seed = 1 } = {}) {
     this.net = net; this.seed = seed >>> 0; this.dt = 1 / LIFE.trafficHz;
     this.lanes = [];
-    const L = LIFE.laneW;
+    const LW = LIFE.laneW, o = {};
     for (const st of net.streets) {
+      const P = st.path;
       if (st.kind === 'main') {
-        const sw = LIFE.sidewalk(st.width), half = st.width / 2 - sw, n = Math.max(1, Math.min(4, Math.floor(half / L)));
-        for (const dir of [1, -1]) for (let k = 0; k < n; k++) {
-          const bus = n >= 3 && k === 0;                  // Seoul median bus lane (innermost)
-          this.lanes.push({ id: `${st.id}:${dir > 0 ? 'f' : 'b'}${k}`, street: st, base: st.path, dir, off: (k + 0.5) * (half / n), shared: false, bus, curb: k === n - 1, s0: 0, s1: st.path.len });
+        const ch = st.carHalf;
+        if (st.ow) {   // one-way: lanes across the whole carriageway, k = 0 leftmost (Seoul median bus lane)
+          const n = Math.max(1, Math.min(6, Math.round((2 * ch) / LW))), w = (2 * ch) / n;
+          for (let k = 0; k < n; k++) this.lanes.push({ street: st, base: P, dir: st.ow, k, lat: st.ow * (-ch + (k + 0.5) * w), shared: false, bus: n >= 3 && k === 0, curb: k === n - 1, s0: 0, s1: P.len });
+        } else {
+          const n = Math.max(1, Math.min(4, Math.round(ch / LW))), w = ch / n;
+          for (const dir of [1, -1]) for (let k = 0; k < n; k++) this.lanes.push({ street: st, base: P, dir, k, lat: dir * (k + 0.5) * w * (n === 1 ? 1.15 : 1), shared: false, bus: n >= 3 && k === 0, curb: k === n - 1, s0: 0, s1: P.len });
         }
       } else if (st.kind !== 'pedestrian') {
-        const r = clearRange(st.path, net.mains, (m) => m.width / 2 - LIFE.sidewalk(m.width) + 0.5);
-        for (const dir of [1, -1]) this.lanes.push({ id: `${st.id}:${dir > 0 ? 'f' : 'b'}`, street: st, base: st.path, dir, off: Math.min(1.6, st.width * 0.2), shared: true, bus: false, curb: true, s0: r[0], s1: r[1] });
+        const r = clearRange(P, net.mains, (m) => m.carHalf + 0.6);
+        if (r[1] - r[0] < 6) continue;
+        for (const dir of [1, -1]) this.lanes.push({ street: st, base: P, dir, k: 0, lat: dir * Math.min(1.6, st.walkHalf * 0.4), shared: true, bus: false, curb: true, s0: r[0], s1: r[1] });
       }
     }
-    for (const ln of this.lanes) {
-      ln.len = ln.s1 - ln.s0;
-      // stop lines: main-street lanes stop 4 m before each crosswalk (in travel s)
+    for (const [i, ln] of this.lanes.entries()) {
+      const st = ln.street;
+      ln.id = `${st.id}:${ln.dir > 0 ? 'f' : 'b'}${ln.k}`; ln.idx = i; ln.len = ln.s1 - ln.s0;
+      ln.start = ln.dir > 0 ? (ln.s0 < 0.5 ? st.n[0] : null) : (ln.s1 > st.path.len - 0.5 ? st.n[1] : null);
+      ln.end = ln.dir > 0 ? (ln.s1 > st.path.len - 0.5 ? st.n[1] : null) : (ln.s0 < 0.5 ? st.n[0] : null);
+      st.path.at(this.toBase(ln, 0), o); ln.h0 = [o.tx * ln.dir, o.tz * ln.dir];
+      st.path.at(this.toBase(ln, ln.len), o); ln.h1 = [o.tx * ln.dir, o.tz * ln.dir];
+      // stop lines: 2.5 m before each crosswalk this lane runs into
       ln.stops = [];
-      if (!ln.shared) for (const c of net.crossings) if (c.main === ln.street) {
-        const sc = ln.dir > 0 ? c.sc - ln.s0 : ln.s1 - c.sc;
-        ln.stops.push({ s: sc - c.cw / 2 - 3, c });
+      if (!ln.shared) for (const c of net.crossings) if (c.main === st && (c.toward === 0 || c.toward === ln.dir)) {
+        const sc = ln.dir > 0 ? c.sc - ln.s0 : ln.s1 - c.sc, sl = sc - c.cw / 2 - 2.5;
+        if (sl > 1) ln.stops.push({ s: sl, c });
       }
       ln.stops.sort((a, b) => a.s - b.s);
-      ln.busStops = ln.bus ? [ln.len * 0.3, ln.len * 0.72] : [];
+      ln.busStops = ln.bus && ln.len > 70 ? [ln.len * 0.45] : [];
     }
+    // successors: lanes of the other streets that start where this one ends, grouped by approach (street + dir)
+    for (const ln of this.lanes) {
+      ln.succ = []; ln.pred = 0;
+      if (!ln.end) continue;
+      const by = new Map();
+      for (const m of this.lanes) {
+        if (m.start !== ln.end || m.street === ln.street || m.shared !== ln.shared) continue;
+        const key = m.street.id + m.dir; let g = by.get(key); if (!g) by.set(key, (g = { lanes: [], turn: ln.h1[0] * m.h0[0] + ln.h1[1] * m.h0[1] })); g.lanes.push(m);
+      }
+      for (const g of by.values()) { g.lanes.sort((a, b) => a.k - b.k); if (g.turn > -0.7) ln.succ.push(g); }
+    }
+    for (const ln of this.lanes) for (const g of ln.succ) for (const m of g.lanes) m.pred++;
+    this.entries = { road: this.lanes.filter((l) => !l.shared && l.pred === 0 && l.len > 10), shared: this.lanes.filter((l) => l.shared && l.pred === 0 && l.len > 10) };
+    for (const k of ['road', 'shared']) if (!this.entries[k].length) this.entries[k] = this.lanes.filter((l) => l.shared === (k === 'shared') && l.len > 10);
+    this.twin = new Map();
+    for (const ln of this.lanes) this.twin.set(ln, this.lanes.find((m) => m.street === ln.street && m.dir === -ln.dir && m.k === ln.k) || null);
     this.reset();
   }
-  // lane s (travel direction, from the lane start) -> centre-line s and lateral offset
   toBase(ln, s) { return ln.dir > 0 ? ln.s0 + s : ln.s1 - s; }
   reset() {
     const R = this.R = new Rng(this.seed ^ 0x7a11c);
@@ -193,47 +287,85 @@ export class TrafficSim {
     for (const ln of this.lanes) {
       ln.veh = [];
       if (ln.len < 8) continue;
-      let s = ln.len - R.next() * 10;
+      let s = ln.len - R.next() * 12;
       while (s > 2) {
         const type = this.pickType(ln, R), c = VEH[type];
         const v = this.spawn(id++, type, ln, s, R);
-        v.v = v.v0 * (0.5 + 0.4 * R.next());
+        v.v = v.v0 * (0.4 + 0.4 * R.next());
         ln.veh.push(v); this.vehicles.push(v);
-        s -= c.L + (ln.shared ? 45 + R.next() * 90 : (type === 'bus' ? 60 + R.next() * 80 : 9 + R.next() * 26));
+        s -= c.L + (ln.shared ? 50 + R.next() * 110 : (type === 'bus' ? 70 + R.next() * 90 : 10 + R.next() * 30));
       }
     }
+    for (const v of this.vehicles) v.next = this.pickNext(v.lane, v, R);
   }
   pickType(ln, R) {
     if (ln.bus) return 'bus';
     if (ln.shared) return ln.street.kind === 'walking' || R.next() < 0.85 ? 'scooter' : 'car';
     const r = R.next();
-    return r < 0.52 ? 'car' : r < 0.8 ? 'taxi' : r < 0.9 ? 'truck' : ln.curb ? 'scooter' : 'car';
+    return r < 0.5 ? 'car' : r < 0.78 ? 'taxi' : r < 0.88 ? 'truck' : ln.curb ? 'scooter' : 'car';
   }
   spawn(id, type, ln, s, R) {
     const c = VEH[type], pal = PAINT[type];
     const v0 = (ln.shared ? (type === 'scooter' ? 5.5 : 3.5) : c.v0) * (0.85 + 0.3 * R.next());
     return { id, type, lane: ln, s, ps: s, v: 0, v0, acc: 0, L: c.L, W: c.W, H: c.H, paint: pal[Math.floor(R.next() * pal.length)], weave: R.next() * 6.283,
-      dwell: null, dwellT: 0, hazard: false, brake: 0, jumped: true, hidden: false, nextPick: R.next() * 40 };
+      dwell: null, dwellT: 0, hazard: false, brake: 0, jumped: true, hidden: false, nextPick: R.next() * 40, next: null, jx: 0, jz: 0, jhx: 0, jhz: 0, stepped: -1 };
+  }
+  // the lane v takes after ln: approaches weighted toward straight on; lane index kept (buses keep the bus lane)
+  pickNext(ln, v, R) {
+    if (!ln.succ.length) return null;
+    let tot = 0; const w = ln.succ.map((g) => { const c = Math.max(0, g.turn); const x = 0.25 + 3 * c * c; tot += x; return x; });
+    let r = R.next() * tot, g = ln.succ[ln.succ.length - 1];
+    for (let i = 0; i < w.length; i++) if ((r -= w[i]) < 0) { g = ln.succ[i]; break; }
+    const L = g.lanes;
+    if (v.type === 'bus') return L.find((m) => m.bus) || L[0];
+    let k = Math.min(L.length - 1, ln.k); if (L[k].bus) k = Math.min(L.length - 1, k + 1);
+    if (L[k].bus) return null;
+    return L[k];
+  }
+  hasRoom(ln, need) { for (const o of ln.veh) if (!o.hidden && o.s - o.L < need) return false; return true; }
+  enter(v, ln, s, R, carry) {   // move v into ln at s (carry: keep the world position continuous)
+    const old = v.lane, i = old.veh.indexOf(v); if (i >= 0) old.veh.splice(i, 1);
+    if (carry) {
+      const a = this.pose(v, 1, {}), ps = v.ps - old.len, vs = v.s;
+      v.lane = ln; v.s = 0; v.ps = 0; v.jx = 0; v.jz = 0; v.jhx = 0; v.jhz = 0;
+      const b = this.pose(v, 1, {});
+      v.jx = a.x - b.x; v.jz = a.z - b.z; v.jhx = a.hx - b.hx; v.jhz = a.hz - b.hz; v.s = s; v.ps = ps < s ? Math.max(-0.5, ps) : s; void vs;
+    } else { v.lane = ln; v.s = s; v.ps = s; v.jx = v.jz = v.jhx = v.jhz = 0; v.jumped = true; }
+    ln.veh.push(v); v.dwell = null; v.dwellT = 0; v.hazard = false; v.nextPick = s + 30 + R.next() * 150;
+    v.next = this.pickNext(ln, v, R);
+  }
+  respawn(v, R) {   // re-enter the block at an entry lane (off-stage), or wait hidden until there is room
+    const E = this.entries[v.lane.shared ? 'shared' : 'road'], ln = E[Math.floor(R.next() * E.length)];
+    const type = this.pickType(ln, R), nv = this.spawn(v.id, type, ln, 0, R), old = v.lane;
+    const i = old.veh.indexOf(v); if (i >= 0) old.veh.splice(i, 1);
+    Object.assign(v, nv); v.lane = old; v.hidden = true;
+    this.enter(v, ln, 0, R, false); v.hidden = !this.hasRoom(ln, v.L + 8); v.v = v.hidden ? 0 : Math.min(v.v0, 6);
   }
   step() {
-    const dt = this.dt, R = this.R, t = this.n * dt;
+    const dt = this.dt, R = this.R, t = this.n * dt, N = this.n;
     this.events.length = 0;
     for (const ln of this.lanes) {
-      const vs = ln.veh; vs.sort((a, b) => b.s - a.s);
+      const vs = ln.veh; vs.sort((a, b) => b.s - a.s || a.id - b.id);
       for (let i = 0; i < vs.length; i++) {
-        const v = vs[i], c = VEH[v.type]; v.ps = v.s; v.jumped = false;
-        if (v.hidden) continue;
-        // leader gap
+        const v = vs[i], c = VEH[v.type];
+        if (v.stepped === N) continue;
+        v.stepped = N; v.ps = v.s; v.jumped = false;
+        if (v.hidden) { if (this.hasRoom(ln, v.L + 8)) { v.hidden = false; v.v = Math.min(v.v0, 6); v.jumped = true; } continue; }
+        // leader: in this lane, else the last car of the lane we turn into
         let gap = Infinity, dv = 0;
         for (let j = i - 1; j >= 0; j--) { const l = vs[j]; if (!l.hidden) { gap = l.s - l.L - v.s; dv = v.v - l.v; break; } }
-        // signal stop lines
+        if (gap === Infinity && v.next) {
+          let last = null; for (const o of v.next.veh) if (!o.hidden && (!last || o.s < last.s)) last = o;
+          if (last) { gap = ln.len - v.s + last.s - last.L; dv = v.v - last.v; }
+        }
+        // signals
         for (const st of ln.stops) {
           const d = st.s - v.s; if (d < -0.5 || d > 120) continue;
-          const ph = signalPhase(t, st.c.offset);
+          const ph = crossPhase(st.c, t);
           const stop = ph.car === 'R' || (ph.car === 'A' && d > v.v * v.v / (2 * c.b) + 1);
           if (stop && d < gap) { gap = Math.max(0.01, d); dv = v.v; }
         }
-        // dwell (taxi pick-up, bus stop)
+        // dwell (taxi pick-up, bus stop); no exit: slow for the end of the lane only when it is a dead end on stage
         if (v.dwell != null) { const d = v.dwell - v.s; if (d < gap) { gap = Math.max(0.01, d); dv = v.v; } }
         // IDM
         const sstar = c.s0 + Math.max(0, v.v * c.T + v.v * dv / (2 * Math.sqrt(c.a * c.b)));
@@ -243,32 +375,24 @@ export class TrafficSim {
         v.acc = a; v.v += a * dt; if (v.v < 0) v.v = 0;
         v.s += v.v * dt;
         v.brake = a < -0.4 || v.v < 0.3 ? 1 : 0;
-        // arrival at a dwell point
         if (v.dwell != null && v.v < 0.15 && v.dwell - v.s < 1.5) {
           if (v.dwellT === 0) {
-            v.dwellT = this.n + Math.floor((v.type === 'bus' ? 9 + R.next() * 10 : 6 + R.next() * 14) * LIFE.trafficHz);
+            v.dwellT = N + Math.floor((v.type === 'bus' ? 9 + R.next() * 10 : 6 + R.next() * 14) * LIFE.trafficHz);
             if (v.type === 'bus') this.events.push({ type: 'kneel', id: v.id });
-          } else if (this.n >= v.dwellT) { v.dwell = null; v.dwellT = 0; v.hazard = false; v.nextPick = v.s + 80 + R.next() * 200; if (v.type === 'bus') this.events.push({ type: 'doors', id: v.id }); }
+          } else if (N >= v.dwellT) { v.dwell = null; v.dwellT = 0; v.hazard = false; v.nextPick = v.s + 80 + R.next() * 200; if (v.type === 'bus') this.events.push({ type: 'doors', id: v.id }); }
         }
-        // new dwell targets
         if (v.dwell == null) {
           if (v.type === 'bus') { for (const bs of ln.busStops) if (bs - v.s > 25 && bs - v.s < 30 + v.v) { v.dwell = bs; break; } }
           else if (v.type === 'taxi' && ln.curb && v.s > v.nextPick && v.s < ln.len - 40) { v.dwell = v.s + 18 + R.next() * 10; v.hazard = true; }
         }
-        // lane end: re-enter at the start when there is room (off-stage, both ends are outside the block)
-        if (v.s > ln.len + 4) {
-          let room = true; for (const o of vs) if (o !== v && !o.hidden && o.s < v.L + 10) { room = false; break; }
-          if (room) {
-            const type = this.pickType(ln, R), nv = this.spawn(v.id, type, ln, -1, R);
-            Object.assign(v, nv); v.v = Math.min(v.v0, 6); v.jumped = true; v.ps = v.s;
-            if (vs[vs.length - 1] !== v) { vs.splice(i, 1); vs.push(v); i--; }   // keep descending order for this pass
-          } else { v.s = ln.len + 4; v.v = 0; v.hidden = true; }
-        } else if (v.hidden) v.hidden = false;
-      }
-      // hidden (queued off-stage) vehicles retry
-      for (const v of vs) if (v.hidden) {
-        let room = true; for (const o of vs) if (o !== v && !o.hidden && o.s < v.L + 10) { room = false; break; }
-        if (room) { const type = this.pickType(ln, R), nv = this.spawn(v.id, type, ln, -1, R); Object.assign(v, nv); v.v = Math.min(v.v0, 6); v.jumped = true; v.ps = v.s; }
+        // end of the lane: turn into the next one, U-turn (alley scooters at a road kerb), or leave the block
+        if (v.s > ln.len) {
+          const nx = v.next;
+          if (nx && !this.hasRoom(nx, v.s - ln.len + 1)) { v.s = ln.len; v.v = 0; }   // merge conflict: wait at the line
+          else if (nx) { this.enter(v, nx, v.s - ln.len, R, true); i--; }
+          else if (ln.shared && !(ln.end && ln.end.boundary) && this.twin.get(ln)) { const tw = this.twin.get(ln); if (this.hasRoom(tw, 1.5)) { this.enter(v, tw, 0, R, true); v.v *= 0.3; i--; } else { v.s = ln.len; v.v = 0; } }
+          else { this.respawn(v, R); i--; }
+        }
       }
     }
     this.n++;
@@ -277,12 +401,14 @@ export class TrafficSim {
   pose(v, alpha, o = {}) {
     const ln = v.lane, s = v.jumped ? v.s : v.ps + (v.s - v.ps) * alpha, P = this._p || (this._p = {});
     ln.base.at(this.toBase(ln, s), P);
-    let off = ln.off;
-    if (ln.shared && v.type === 'scooter') off += 0.45 * Math.sin(s / 9 + v.weave);   // alley weave (render + collider)
-    off *= ln.dir;
-    o.x = P.x + P.nx * off; o.z = P.z + P.nz * off;
-    o.hx = P.tx * ln.dir; o.hz = P.tz * ln.dir;          // heading unit vector
-    o.v = v.v; o.hidden = v.hidden || s < -0.5 || s > ln.len + 3.5;
+    let lat = ln.lat;
+    if (ln.shared && v.type === 'scooter') lat += ln.dir * 0.45 * Math.sin(s / 9 + v.weave);   // alley weave
+    let x = P.x + P.nx * lat, z = P.z + P.nz * lat, hx = P.tx * ln.dir, hz = P.tz * ln.dir;
+    if (v.jx || v.jz || v.jhx || v.jhz) {   // ease out of a junction hand-off over 12 m
+      const f = s < 12 ? (1 - Math.max(0, s) / 12) ** 2 : 0;
+      x += v.jx * f; z += v.jz * f; hx += v.jhx * f; hz += v.jhz * f; const l = Math.hypot(hx, hz) || 1; hx /= l; hz /= l;
+    }
+    o.x = x; o.z = z; o.hx = hx; o.hz = hz; o.v = v.v; o.hidden = v.hidden;
     return o;
   }
 }
@@ -298,15 +424,16 @@ export class CrowdSim {
     this.ways = [];
     for (const st of net.streets) {
       if (st.kind === 'main') {
-        const sw = LIFE.sidewalk(st.width);
-        for (const side of [1, -1]) this.ways.push({ id: `${st.id}:${side > 0 ? 'R' : 'L'}`, street: st, base: st.path, c: side * (st.width / 2 - sw / 2), dmin: -sw / 2 + 0.5, dmax: sw / 2 - 0.7 * 1, s0: 0, s1: st.path.len, kind: 'main', side });
+        st.walk.forEach((band, i) => {
+          if (!band) return; const side = i ? 1 : -1, mid = (band[0] + band[1]) / 2, hw = (band[1] - band[0]) / 2;
+          this.ways.push({ id: `${st.id}:${side > 0 ? 'R' : 'L'}`, street: st, base: st.path, c: side * mid, dmin: -hw, dmax: hw, s0: 0, s1: st.path.len, kind: 'main', side });
+        });
       } else {
-        const r = clearRange(st.path, net.mains, (m) => m.width / 2 - LIFE.sidewalk(m.width) * 0.5);
-        this.ways.push({ id: `${st.id}:W`, street: st, base: st.path, c: 0, dmin: -st.width / 2 + 0.6, dmax: st.width / 2 - 0.6, s0: r[0], s1: r[1], kind: st.kind, side: 0 });
+        const r = clearRange(st.path, net.mains, (m) => m.carHalf + 0.3);
+        if (r[1] - r[0] < 3) continue;
+        this.ways.push({ id: `${st.id}:W`, street: st, base: st.path, c: 0, dmin: -st.walkHalf, dmax: st.walkHalf, s0: r[0], s1: r[1], kind: st.kind, side: 0 });
       }
     }
-    // the frontage side of a main sidewalk is the outer one: shift its usable band away from the shop displays
-    for (const w of this.ways) if (w.kind === 'main') { if (w.side > 0) w.dmax -= 0.3; else w.dmin += 0.3; }
     // junctions: each walkway end -> the walkways it touches
     const o = {};
     for (const w of this.ways) {
@@ -332,7 +459,7 @@ export class CrowdSim {
     // budgets: walkway area x density, then frontage people, then crossers; scaled to maxAgents
     const wayN = this.ways.map((w) => Math.max(0, (w.s1 - w.s0) * (w.dmax - w.dmin) * (D[w.kind] ?? D.alley) * this.density));
     const frontN = this.lots.map((l) => (l.use === 'club' ? 12 : l.use === 'pocha' ? 10 : ['conv', 'bar', 'karaoke', 'pc', 'cafe'].includes(l.use) ? 3 : 1.2) * this.density);
-    const crossN = this.net.crossings.map(() => 34 * this.density);
+    const crossN = this.net.crossings.map((c) => (c.kind === 'T' ? 30 : 12) * this.density);
     const tot = [...wayN, ...frontN, ...crossN].reduce((a, b) => a + b, 0);
     const k = tot > this.maxAgents ? this.maxAgents / tot : 1;
     this.ways.forEach((w, i) => {
@@ -506,11 +633,11 @@ export class CrowdSim {
     return 0;
   }
   stepCross(a, t, dt, R) {
-    const c = a.cross, ph = signalPhase(t, c.offset);
+    const c = a.cross, ph = crossPhase(c, t);
     const span = 2 * c.halfSpan;
     if (a.cp === 0) {   // waiting
       a.vc = 0; a.walkAmt = 0; a.ph = (a.ph + dt * 0.11) % 1;
-      if (ph.walk && ph.tc - ph.w0 > a.cdelay && ph.tc - ph.w0 < LIFE.signal.walk - span / a.v) { a.cp = 1e-4; a.cs = (R.next() - 0.5) * 0.6; }
+      if (ph.walk && ph.tc - ph.w0 > a.cdelay && ph.tc - ph.w0 < ph.wlen - span / a.v) { a.cp = 1e-4; a.cs = (R.next() - 0.5) * 0.6; }
       const ty = Math.atan2(a.tx, a.tz); let dy = ty - a.yaw; dy -= Math.round(dy / 6.283185307) * 6.283185307; a.yaw += dy * 0.2;
       a.pose = a.pose === P_SIT ? P_IDLE : a.pose;
     } else {
@@ -989,11 +1116,11 @@ export function build(layout, ctx = {}) {
 
   // ---- L3 emitters: one front cluster + one rear cluster per vehicle (mutated in place every update)
   const emitters = [];
-  const vEm = new Map();
+  const vEm = [];
   for (const v of traffic.vehicles) {
     const f = { id: `veh${v.id}:head`, pos: [0, 0, 0], normal: [0, 0, 1], w: v.W * 0.8, h: 0.15, rgb: [1, 0.97, 0.92], nits: 40000, kind: 'vehicle', animated: true, dynamic: true, beam: { cone: 0.35, range: 30 } };
     const r = { id: `veh${v.id}:tail`, pos: [0, 0, 0], normal: [0, 0, -1], w: v.W * 0.8, h: 0.15, rgb: [1, 0.04, 0.02], nits: 250, kind: 'vehicle', animated: true, dynamic: true };
-    emitters.push(f, r); vEm.set(v, [f, r]);
+    emitters.push(f, r); vEm[v.id] = [f, r];
   }
 
   const tmpF = [0, 0, 0, 0], M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S1 = new THREE.Vector3(1, 1, 1), V3 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0), PO = {};
@@ -1040,7 +1167,7 @@ export function build(layout, ctx = {}) {
     const aT = sim.aT, cnt = {}; for (const ty of VTYPES) cnt[ty] = 0;
     let np = 0;
     for (const v of traffic.vehicles) {
-      const p = traffic.pose(v, aT, PO), [ef, er] = vEm.get(v);
+      const p = traffic.pose(v, aT, PO), [ef, er] = vEm[v.id];
       if (p.hidden) { ef.nits = 0; er.nits = 0; continue; }
       const B = vByType[v.type], k = cnt[v.type]; if (k >= B.cap) continue; cnt[v.type]++;
       const y = groundAt(p.x, p.z), yaw = Math.atan2(p.hx, p.hz);

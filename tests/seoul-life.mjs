@@ -2,7 +2,7 @@
 // budgets (agents, vehicles, step cost), sanity (no NaN, vehicles never overlap in a lane, crossers obey the light).
 //   node tests/seoul-life.mjs [layout.json]
 import { readFileSync, existsSync } from 'fs';
-import { LifeSim, LIFE, signalPhase } from '../seoul-life.js';
+import { LifeSim, LIFE, crossPhase } from '../seoul-life.js';
 const arg = process.argv[2];
 const cands = [arg, 'seoul/layout.json', 'seoul/layout.provisional.json', 'tests/seoul-life-layout.json'].filter(Boolean);
 const file = cands.find((f) => existsSync(f)); const layout = JSON.parse(readFileSync(file, 'utf8'));
@@ -21,7 +21,7 @@ for (const g of a.crowd.agents) if (!isFinite(g.x) || !isFinite(g.z)) nan++;
 ok(nan === 0, 'no NaN'); ok(overlap === 0, `no bumper overlaps (${overlap})`);
 // crossers only on the road during walk
 let bad = 0, onRoad = 0; const s2 = new LifeSim(layout, { seed: 3 });
-for (let t = 0; t < 140; t += 0.5) { s2.advanceTo(t); for (const g of s2.crowd.agents) if (g.mode === 4 && g.cp > 0.25 && g.cp < 0.75) { onRoad++; const ph = signalPhase(t, g.cross.offset); if (ph.car === 'G') bad++; } }
+for (let t = 0; t < 140; t += 0.5) { s2.advanceTo(t); for (const g of s2.crowd.agents) if (g.mode === 4 && g.cp > 0.25 && g.cp < 0.75) { onRoad++; const ph = crossPhase(g.cross, t); if (ph.car === 'G') bad++; } }
 ok(bad === 0 && onRoad > 0, `crossers mid-road only off green (${onRoad} samples, ${bad} bad)`);
 // moving + stopping
 const mv = a.traffic.vehicles.filter((v) => v.v > 3).length, st = a.traffic.vehicles.filter((v) => v.v < 0.3 && !v.hidden).length;
