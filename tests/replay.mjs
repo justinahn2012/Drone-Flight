@@ -2,6 +2,8 @@
 //   node tests/replay.mjs            replay every committed tests/*.otil input log; fail beyond 1 mm
 //   node tests/replay.mjs --strict   (CI) a stale scripted log fails; a stale browser log is a warning
 //   node tests/replay.mjs --record   re-record the scripted logs (after an intentional flight-model or world change)
+//                                    and their expected Take events
+//   node tests/replay.mjs --record-take   re-record only the expected Take events (after an intentional take.js change)
 // Needs three + three-mesh-bvh resolvable from the repo (node_modules), like the other node tools.
 //
 // Checks:
@@ -11,6 +13,10 @@
 //  3. the main.js tick loop is frame-rate independent: one tick-input stream driven by 60 Hz, jittery 60 Hz, 30 Hz and
 //     144 Hz frame schedules gives bit-identical state (the old dt/steps sub-stepping drifted 19-73 cm)
 //  4. snapshot() -> JSON -> restore() continues bit-identically
+//  5. [P5] take parity (native #4, PORTING G4): each committed log's replay, with a Take ticked the way main.js
+//     updateTake does it (after every drone.step, sticks from the logged inputs), emits exactly the events committed
+//     in tests/<log>.take.json (type, name, pts, flow, total...; floats within 1e-6). --strict: a mismatch fails;
+//     if take.js changed since the file was recorded the message says so (re-record with --record-take).
 // A log recorded on another world (its header.world hash matches none of the candidate worlds) is reported as STALE
 // and skipped, not failed: re-record it.
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
@@ -21,6 +27,8 @@ import { Drone } from '../flight.js';
 import { Rng } from '../rng.js';
 import { InputLog, quantize, replayLog, worldHash } from '../inputlog.js';
 import { buildGeometry } from '../world-bando.js';
+import { Take } from '../take.js';
+import { createHash } from 'node:crypto';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const TOL = 0.001, PHYS = 1 / 240;
@@ -76,6 +84,30 @@ function record(name) {
   return { log, d };
 }
 
+// ---- take parity: the Take as main.js drives it, one update per physics tick after drone.step
+const TAKE_SHA = createHash('sha256').update(readFileSync(join(DIR, '..', 'take.js'))).digest('hex').slice(0, 16);
+const STICK_EPS = 2e-3;   // = main.js STICK_EPS
+function takeEvents(log, world) {
+  const take = new Take(), tw = { lines: G.lines ?? G.site?.lines ?? [], skimBvh: G.skimBvh, funnels: world.funnels ?? null };
+  const ev = [], first = {}; log.input(0, first);
+  let thrRef = first.thr ?? 0;   // main.js: thrRef = controls.thr at the flight start; a log starts at its first tick
+  replayLog(log, new Drone(log.header.craft), world, { onTick: (i, d, inp, mode) => {
+    // = main.js sticksActive() with no touch surface (a scripted log has no thumbs on glass)
+    const dt = 1 / log.header.hz, dth = inp.thr - thrRef; thrRef += dth * Math.min(1, dt / 0.5);
+    const steer = Math.max(Math.abs(inp.pitch), Math.abs(inp.roll), Math.abs(inp.yaw)) > STICK_EPS;
+    const moved = steer || (mode === 'cine' ? Math.abs(inp.climb) > STICK_EPS : Math.abs(dth) > 0.04);
+    for (const e of take.update(dt, d, tw, { hands: moved, moved, steer })) ev.push({ tick: i, ...JSON.parse(JSON.stringify(e)) });
+  } });
+  return { events: ev, total: take.total, state: take.state };
+}
+const sameEv = (a, b) => {
+  if (a === b) return true;
+  if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(b));
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  const ka = Object.keys(a).sort(), kb = Object.keys(b).sort();
+  return ka.join() === kb.join() && ka.every((k) => sameEv(a[k], b[k]));
+};
+
 let fail = 0;
 const STRICT = process.argv.includes('--strict');
 const ok = (cond, msg) => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${msg}`); if (!cond) fail++; };
@@ -85,6 +117,15 @@ if (process.argv.includes('--record')) {
     const { log, d } = record(name);
     console.log(`recorded tests/${name}.otil: ${log.ticks} ticks, ${log.snaps.length} snapshots, world ${log.header.world}, ` +
       `end ${d.pos.toArray().map((v) => v.toFixed(2)).join(',')}, unsticks ${d.unsticks}, crashed ${d.crashed}`);
+  }
+}
+if (process.argv.includes('--record') || process.argv.includes('--record-take')) {
+  for (const f of readdirSync(DIR).filter((f) => f.endsWith('.otil')).sort()) {
+    const log = InputLog.fromBytes(readFileSync(join(DIR, f))), w = byHash.get(log.header.world);
+    if (!w || !SCRIPTS[log.header.meta?.script]) continue;   // scripted logs on the current world only
+    const r = takeEvents(log, w.world), out = f.replace(/\.otil$/, '.take.json');
+    writeFileSync(join(DIR, out), JSON.stringify({ log: f, world: log.header.world, takeJs: TAKE_SHA, sticks: 'main.js sticksActive, no touches; thrRef starts at the first tick', ...r }, null, 1) + '\n');
+    console.log(`recorded tests/${out}: ${r.events.length} events (${[...new Set(r.events.map((e) => e.type))].join(', ') || 'none'}), total ${r.total}, state ${r.state}`);
   }
 }
 
@@ -105,6 +146,16 @@ for (const f of readdirSync(DIR).filter((f) => f.endsWith('.otil')).sort()) {
   ok(a.maxErr <= TOL, `${f} (${w.name}, ${(log.ticks / 240).toFixed(1)} s, ${a.snaps} snapshots): continuous max error ${(a.maxErr * 1000).toFixed(3)} mm`);
   ok(b.maxErr <= TOL, `${f}: re-synced max error ${(b.maxErr * 1000).toFixed(3)} mm`);
   ok(JSON.stringify(a.final) === JSON.stringify(c.final), `${f}: two replays end in identical state`);
+  // 5. take parity
+  const tf = join(DIR, f.replace(/\.otil$/, '.take.json'));
+  let exp = null; try { exp = JSON.parse(readFileSync(tf, 'utf8')); } catch (e) {}
+  if (!exp) { const msg = `${f}: no expected Take events (tests/${f.replace(/\.otil$/, '.take.json')}); record with --record-take`; if (STRICT && SCRIPTS[log.header.meta?.script]) ok(false, msg); else console.log(msg); continue; }
+  const got = takeEvents(log, w.world);
+  const k = got.events.findIndex((e, i) => !sameEv(e, exp.events[i]));
+  const same = k < 0 && got.events.length === exp.events.length && got.total === exp.total;
+  const why = same ? '' : ` first difference at event ${k < 0 ? Math.min(got.events.length, exp.events.length) : k}: got ${JSON.stringify(got.events[k < 0 ? exp.events.length : k] ?? null)} expected ${JSON.stringify(exp.events[k < 0 ? got.events.length : k] ?? null)}` +
+    (exp.takeJs !== TAKE_SHA ? ` (take.js changed since recorded: if intentional, node tests/replay.mjs --record-take)` : ' (take.js unchanged: a determinism or sim change)');
+  ok(same, `${f}: Take parity, ${got.events.length} events (${[...new Set(got.events.map((e) => e.type))].join(', ') || 'none'}), total ${got.total}${why}`);
 }
 
 // 3. frame-rate independence of the main.js accumulator loop (inputs are per tick, as the log stores them)

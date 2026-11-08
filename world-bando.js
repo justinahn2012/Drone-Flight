@@ -9,7 +9,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
 import { MeshBVH } from 'three-mesh-bvh';
-import { Raster2D } from './raster2d.js';
+import { GCOLS, GROWS, GCELLS, GTYPE, GRAFFITI_SEED, graffitiCells, graffitiPixels } from './graffiti.js';
+export { graffitiCells, graffitiPixels };   // [P5] drawn in graffiti.js (tools/export-world.mjs: graffiti.png)
 
 const PH = 'https://dl.polyhaven.org/file/ph-assets';
 export const SKIES = {
@@ -830,156 +831,96 @@ function distToPaths(x, z) {
   return best;
 }
 
-// ---------------------------------------------------------------- textures made on the fly
-function canvasTex(w, h, draw, srgb = true) {
-  const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); draw(g, w, h);
-  const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
-}
-// mean linear colour of a loaded texture (for distance fades / normalisation)
+// ---------------------------------------------------------------- texture means
 // [G5] 1x1 stand-ins when a download fails (flatTex was referenced but never defined: a failed meadow download threw)
 const px1 = (r, g, b) => { const t = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1, THREE.RGBAFormat); t.needsUpdate = true; return t; };
 function flatTex() { const t = px1(255, 255, 255); t.colorSpace = THREE.SRGBColorSpace; return t; }
 function flatNorm() { return px1(128, 128, 255); }
-function texMean(t, fallback) {
+// [P5] mean linear colour of each Poly Haven diffuse map (distance fades / normalisation), precomputed by
+// tools/texmean.py (32 x 32 box filter in sRGB, then linear: what the old load-time canvas measured), so the load
+// runs no Canvas2D (native #5) and world.json carries the same numbers. Keyed by texture id: a new or renamed map
+// misses, export-world warns and test-export fails until its line is added here.
+export const TEX_MEAN = {
+  'asphalt_02': [0.1037, 0.1022, 0.0902],
+  'bark_brown_02': [0.1183, 0.0966, 0.0568],
+  'concrete_floor_02': [0.1894, 0.1587, 0.1058],
+  'concrete_floor_worn_001': [0.0931, 0.0941, 0.0889],
+  'concrete_layers_02': [0.2064, 0.1957, 0.1762],
+  'concrete_wall_006': [0.1074, 0.0826, 0.0608],
+  'dirty_concrete': [0.2509, 0.2292, 0.189],
+  'factory_brick': [0.2428, 0.1526, 0.0944],
+  'forrest_ground_01': [0.2831, 0.2427, 0.1113],
+  'grass_ground': [0.1561, 0.118, 0.0481],
+  'grass_path_2': [0.2726, 0.2224, 0.1281],
+  'rust_coarse_01': [0.1277, 0.0427, 0.0146],
+  'rusty_metal_02': [0.4117, 0.2829, 0.1216],
+  'withered_grass': [0.4159, 0.2947, 0.1934],
+};
+// mean of MATS[key]'s diffuse map (null without one). A map missing from TEX_MEAN is measured from the loaded image
+// once (the old canvas path) with a warning, so a stale table never breaks the look.
+function texMean(key, t = null) {
+  const id = MATS[key]?.id, m = id && TEX_MEAN[id];
+  if (m) return m;
+  if (!t?.image || typeof document === 'undefined') return null;
+  console.warn(`[P5] TEX_MEAN has no entry for "${id}" (MATS.${key}): measuring at load; run python3 tools/texmean.py`);
   try {
     const c = document.createElement('canvas'); c.width = c.height = 32; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(t.image, 0, 0, 32, 32);
-    const d = g.getImageData(0, 0, 32, 32).data, m = [0, 0, 0], lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
-    for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) m[k] += lin(d[i + k]);
-    return m.map((v) => v / 1024);
-  } catch (e) { return fallback; }
+    const d = g.getImageData(0, 0, 32, 32).data, s = [0, 0, 0], lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) s[k] += lin(d[i + k]);
+    return s.map((v) => v / 1024);
+  } catch (e) { return null; }
 }
 
-// [B] graffiti atlas: 4 x 16 cells of 512 x 256 (2048 x 4096). Pieces (3D block, 6-10 px black outline, gradient fill,
-// highlights, arrows and flares), throw-ups (bubble letters), tag clusters and buffed patches; drips, overspray.
-// Nothing should read as a computer font: every word is skewed (+-0.35 rad) with per-letter jitter, and the decal
-// shader warps every piece by a 2-octave sine remap (+-6 atlas px) with its own phases, so a cell never repeats the
-// same way twice (WP_FRAG.decalMap). Little glow; the palette is desaturated 25 %.
-const CREWS = ['FCU', 'MSK', 'OX', 'SKEB', 'ZOMB', 'RISE', 'DOK', 'KAOS', 'VEX', 'NOPE', 'BANDO', 'GONZ', 'RAW', 'SEKT', 'MOHA', 'LUX', 'TWS', 'AOK', 'KEMS', 'ROEK', 'MUTE', 'HAZE', 'ODE', 'KRASH', 'BLUR', 'DRIP', 'NUKE', 'OMEN', 'REAX', 'UFO', 'SINE', 'BOLT',
-  'SMASH', 'TOPS', 'WERK', 'JOKER', 'GRIME', 'DUST', 'ZEPH', 'KILO', 'SOKE', 'MERZ', 'TRAK', 'VOID', 'ASKE', 'CREW', 'RUST', 'HYPE', 'NEKO', 'DAZE', 'FLUX', 'GORE', 'BRAT', 'SNOW', 'KRYM', 'ZYKO', 'PAX', 'WOLF', 'LOST', 'RIOT', 'MAZE', 'QUAK', 'SPOK', 'ECHO'];
-const desat = (hex, k) => { const n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255, l = 0.299 * r + 0.587 * g + 0.114 * b, m = (c) => Math.round(c + (l - c) * k); return `rgb(${m(r)},${m(g)},${m(b)})`; };
-const GPAL = [['#e8327c', '#ffb3d4', '#7a0f3c'], ['#1fa6e6', '#bdeeff', '#0b3f6e'], ['#f5c518', '#fff1a6', '#8a5a00'], ['#2fbf71', '#c9f7dc', '#0d5b33'], ['#f2641e', '#ffd0b5', '#7d2a05'],
-  ['#8e5cf0', '#e3d6ff', '#3a1d7a'], ['#c9ced6', '#ffffff', '#6b7079'], ['#d7263d', '#f7a072', '#5e0a14'], ['#0fb5ae', '#a6f0ea', '#05504d'], ['#c3e21b', '#f0ffb0', '#4f5e00']].map((p) => p.map((c) => desat(c, 0.25)));
-const GCOLS = 4, GROWS = 16, GCELLS = GCOLS * GROWS;
-const GTYPE = (k) => (k < 28 ? 'piece' : k < 44 ? 'throw' : k < 56 ? 'tags' : 'buff');
-// [G4] drawn with raster2d.js (pure-JS Canvas2D subset, Hershey stroke fonts) into a plain RGBA array: the same pixels
-// on every device, no 64 MB canvas kept alive, and node can write it as a PNG (tools/export-world.mjs, native #1.1).
-// graffitiCells(R, out, flip) draws cell by cell into `out` (RGBA8 straight alpha, W x H), yielding after each cell;
-// flip = rows bottom-up (texture order). graffitiPixels(R) -> {data, width, height} runs it to the end (node export).
-export function graffitiPixels(R = rng(1402), flip = false) {
-  const data = new Uint8Array(GCOLS * 512 * GROWS * 256 * 4);
-  for (const _ of graffitiCells(R, data, flip));
-  return { data, width: GCOLS * 512, height: GROWS * 256 };
+// [P5] graffiti atlas off the main thread (perf #1): graffiti-worker.js draws it (graffiti.js, ~1.1 s on a phone core)
+// while buildBando builds and bakes; the pixels come back as a transferred buffer and upload in 16 texSubImage2D strips
+// of 2048 x 256 (2 MB each, one per task) into storage allocated up front, mips generated once with the last strip.
+// No 33 MB texImage2D, no main-thread drawing, no CPU copy kept. Without module workers (or if the worker fails) it
+// falls back to the round-4 path: ~12 ms main-thread slices, one upload at the end. Until the pixels land the decals
+// sample three's empty texture. Rows bottom-up = the old flipY CanvasTexture's uv.
+function graffitiWorker() {
+  if (typeof Worker === 'undefined') return Promise.resolve(null);
+  return new Promise((res) => {
+    let w;
+    try { w = new Worker(new URL('./graffiti-worker.js', import.meta.url), { type: 'module' }); } catch (e) { res(null); return; }
+    const done = (v) => { res(v); try { w.terminate(); } catch (e) {} };
+    w.onmessage = (e) => done(e.data && e.data.data ? e.data : null);
+    w.onerror = (e) => { console.warn('[P5] graffiti worker failed, drawing on the main thread:', e.message || e); done(null); };
+    w.postMessage({ seed: GRAFFITI_SEED, flip: true });
+  });
 }
-export function* graffitiCells(R, out, flip = false) {
-  const W = GCOLS * 512, H = GROWS * 256;
-  {
-    const g = new Raster2D(512, 256);
-    const fontB = (px) => `900 ${px | 0}px "Arial Rounded MT Bold", "Arial Black", Futura, "Helvetica Neue", "DejaVu Sans", sans-serif`;
-    const fontT = (px) => `italic 700 ${px | 0}px "Marker Felt", Noteworthy, "Brush Script MT", "Snell Roundhand", "URW Chancery L", cursive`;
-    const pick = (a) => a[Math.floor(R() * a.length)];
-    const INK = '#0c0c0f';
-    const layout = (word, size, maxW, font, skew = 0.35) => {
-      g.font = font(size); const ws = [...word].map((ch) => g.measureText(ch).width * 0.86); let tot = ws.reduce((a, b) => a + b, 0);
-      const k = Math.min(1, maxW / Math.max(1, tot)); g.font = font(size * k); tot *= k;
-      let x = -tot / 2; const out = [...word].map((ch, i) => { const w = ws[i] * k, l = { ch, x: x + w / 2, y: (R() - 0.5) * size * k * 0.2, rot: (R() - 0.5) * 0.3, s: 0.9 + R() * 0.24 }; x += w; return l; });
-      out.sz = size * k; out.sk = Math.tan((R() - 0.5) * 2 * skew); out.w = tot; return out;
-    };
-    const each = (L, fn) => L.forEach((l) => { g.save(); g.translate(l.x, l.y); g.transform(1, 0, L.sk, 1, 0, 0); g.rotate(l.rot); g.scale(l.s, l.s); fn(l.ch); g.restore(); });
-    const drips = (col, n, x0, x1, y, w) => {
-      g.strokeStyle = col; g.fillStyle = col;
-      for (let i = 0; i < n; i++) { const x = x0 + R() * (x1 - x0), y0 = y + (R() - 0.5) * 24, len = 8 + R() * R() * 80; g.lineWidth = w * (0.6 + R() * 0.8);
-        g.beginPath(); g.moveTo(x, y0); g.lineTo(x + (R() - 0.5) * 2, y0 + len); g.stroke(); g.beginPath(); g.arc(x, y0 + len, g.lineWidth * 0.75, 0, 6.283); g.fill(); }
-    };
-    // an arrow flying off the letters: curved tapered shaft + head, outlined like the letters
-    const arrow = (x0, y0, ang, len, w, fill) => {
-      const bend = (R() - 0.5) * 0.9, x1 = x0 + Math.cos(ang) * len, y1 = y0 + Math.sin(ang) * len;
-      const qx = (x0 + x1) / 2 - Math.sin(ang) * len * bend, qy = (y0 + y1) / 2 + Math.cos(ang) * len * bend, ta = Math.atan2(y1 - qy, x1 - qx), hl = w * 2.1;
-      const shaft = () => { g.beginPath(); g.moveTo(x0, y0); g.quadraticCurveTo(qx, qy, x1, y1); };
-      const head = () => { g.beginPath(); g.moveTo(x1 + Math.cos(ta) * hl, y1 + Math.sin(ta) * hl); g.lineTo(x1 + Math.cos(ta + 2.3) * hl, y1 + Math.sin(ta + 2.3) * hl); g.lineTo(x1 + Math.cos(ta - 2.3) * hl, y1 + Math.sin(ta - 2.3) * hl); g.closePath(); };
-      g.strokeStyle = INK; g.fillStyle = INK; g.lineWidth = w + 16; shaft(); g.stroke(); head(); g.lineWidth = 16; g.stroke(); g.fill();
-      g.strokeStyle = fill; g.fillStyle = fill; g.lineWidth = w; shaft(); g.stroke(); head(); g.fill();
-    };
-    const flare = (x, y, s) => { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(x - s, y); g.lineTo(x, y - 1.6); g.lineTo(x + s, y); g.lineTo(x, y + 1.6); g.moveTo(x, y - s); g.lineTo(x + 1.6, y); g.lineTo(x, y + s); g.lineTo(x - 1.6, y); g.fill(); };
-    const piece = (word, pal, size, maxW) => {
-      const [c1, c2, c3] = pal, L = layout(word, size, maxW, fontB), sz = L.sz;
-      if (R() < 0.5) {                                                      // background cloud / bubbles
-        g.save(); const bg = pick(GPAL)[R() < 0.5 ? 0 : 2]; g.fillStyle = bg; g.globalAlpha = 0.8; g.shadowColor = bg; g.shadowBlur = 3;
-        for (let i = 0; i < 9; i++) { g.beginPath(); g.ellipse((R() - 0.5) * maxW, (R() - 0.5) * 70, 40 + R() * 60, 30 + R() * 40, 0, 0, 6.283); g.fill(); }
-        g.restore();
-      }
-      for (let a = 0, na = R() < 0.75 ? 1 + Math.floor(R() * 2) : 0; a < na; a++) {   // arrows off the first / last letter
-        const l = a ? L[0] : L[L.length - 1], dir = a ? Math.PI + (R() - 0.5) * 1.2 : (R() - 0.7) * 1.4;
-        arrow(l.x, l.y - sz * 0.1, dir, sz * (0.55 + R() * 0.4), 10 + R() * 8, R() < 0.6 ? c1 : c2);
-      }
-      const dk = R() < 0.5 ? '#141418' : c3;
-      each(L, (ch) => { g.fillStyle = dk; g.strokeStyle = dk; g.lineWidth = 22; for (let d = 12; d > 0; d -= 4) { g.strokeText(ch, d, d); g.fillText(ch, d, d); } });
-      const ow = 7 + 2 * (6 + R() * 4);                                      // outline: 6-10 px outside the fill's 7 px stroke
-      each(L, (ch) => { g.lineWidth = ow; g.strokeStyle = INK; g.strokeText(ch, 0, 0); });
-      each(L, (ch) => {
-        const gr = g.createLinearGradient(0, -sz * 0.4, 0, sz * 0.4); gr.addColorStop(0, c2); gr.addColorStop(0.45, c1); gr.addColorStop(1, R() < 0.5 ? c1 : c3);
-        g.shadowColor = c1; g.shadowBlur = 3; g.fillStyle = gr; g.strokeStyle = gr; g.lineWidth = 7; g.strokeText(ch, 0, 0); g.fillText(ch, 0, 0); g.shadowBlur = 0;
-      });
-      each(L, (ch) => { g.save(); g.beginPath(); g.rect(-sz, -sz, 2 * sz, sz * 0.75); g.clip(); g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,0.8)'; g.strokeText(ch, -3, -4); g.restore(); });
-      drips(c1, 4 + Math.floor(R() * 7), -maxW / 2, maxW / 2, sz * 0.3, 4);
-      for (let i = 0; i < 4; i++) flare((R() - 0.5) * maxW, (R() - 0.5) * sz * 0.6, 5 + R() * 9);
-    };
-    const throwUp = (word, size, maxW) => {
-      const fill = pick(['#efefeb', '#d9dde2', '#efefeb', desat('#ffd23f', 0.25), desat('#ff5fa2', 0.25), desat('#64d2ff', 0.25)]), line = R() < 0.8 ? '#101014' : pick(GPAL)[2];
-      const L = layout(word.slice(0, 2 + Math.floor(R() * 3)), size, maxW, fontB);
-      each(L, (ch) => { g.lineWidth = 24 + 2 * (6 + R() * 4); g.strokeStyle = line; g.strokeText(ch, 0, 0); });
-      each(L, (ch) => { g.shadowColor = fill; g.shadowBlur = 3; g.lineWidth = 24; g.strokeStyle = fill; g.fillStyle = fill; g.strokeText(ch, 0, 0); g.fillText(ch, 0, 0); g.shadowBlur = 0; });
-      g.globalCompositeOperation = 'source-atop'; g.fillStyle = 'rgba(40,40,40,0.2)';     // patchy one-coat fill
-      for (let i = 0; i < 16; i++) { g.beginPath(); g.ellipse((R() - 0.5) * maxW, (R() - 0.5) * 90, 10 + R() * 30, 6 + R() * 16, R() * 3, 0, 6.283); g.fill(); }
-      g.globalCompositeOperation = 'source-over';
-      if (R() < 0.4) arrow(L[L.length - 1].x + L.sz * 0.3, 0, (R() - 0.6) * 1.2, L.sz * 0.6, 12, fill);
-      drips(fill, 3 + Math.floor(R() * 6), -maxW / 2, maxW / 2, size * 0.35, 3);
-    };
-    const tags = (n, spread) => {
-      for (let i = 0; i < n; i++) {
-        g.save(); g.translate((R() - 0.5) * spread, (R() - 0.5) * 150); g.rotate((R() - 0.5) * 0.6);
-        const word = pick(CREWS), col = pick(['#111', '#111', '#111', '#c8ccd2', '#e5e5e5', desat('#d7263d', 0.25), desat('#1f6fe6', 0.25), desat('#f2641e', 0.25), desat('#2fbf71', 0.25)]);
-        const L = layout(R() < 0.6 ? word.toLowerCase() : word, 64 + R() * 50, 150 + R() * 140, fontT, 0.45);
-        const stroke = R() < 0.5, lw = 4 + R() * 3;
-        each(L, (ch) => { g.lineWidth = lw; g.strokeStyle = col; g.fillStyle = col; if (stroke) g.strokeText(ch, 0, 0); else g.fillText(ch, 0, 0); });
-        if (R() < 0.5) { g.lineWidth = 3; g.strokeStyle = col; g.beginPath(); g.moveTo(-90, 40); g.quadraticCurveTo(0, 60 + R() * 20, 110, 28); g.stroke(); }
-        if (R() < 0.4) drips(col, 2 + Math.floor(R() * 3), -60, 60, 25, 2);
-        g.restore();
-      }
-    };
-    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round'; g.lineCap = 'round';
-    for (let k = 0; k < GCELLS; k++) {
-      const type = GTYPE(k), word = CREWS[k % CREWS.length];
-      g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, 512, 256);
-      g.save(); g.beginPath(); g.rect(10, 10, 492, 236); g.clip(); g.translate(256, 126);
-      if (type === 'piece') { if (R() < 0.35) { g.save(); g.globalAlpha = 0.7; tags(3, 430); g.restore(); } piece(word, pick(GPAL), 150, 420); }
-      else if (type === 'throw') throwUp(word, 165, 410);
-      else if (type === 'tags') tags(4 + Math.floor(R() * 4), 370);
-      else {
-        g.save(); g.globalAlpha = 0.8; piece(word, pick(GPAL), 140, 410); g.restore();
-        g.fillStyle = pick(['#8d8a82', '#a39c8c', '#77756f', '#9a948a']); g.globalAlpha = 0.95;
-        const bw = 200 + R() * 220, bh = 120 + R() * 90, bx = (R() - 0.5) * (430 - bw);
-        for (let i = 0; i < 6; i++) g.fillRect(bx - bw / 2 + (R() - 0.5) * 14, -bh / 2 + (R() - 0.5) * 14, bw, bh);
-        g.globalAlpha = 1; tags(1 + Math.floor(R() * 2), 300);
-      }
-      g.restore();
-      g.copyTo(out, W, (k % GCOLS) * 512, Math.floor(k / GCOLS) * 256, flip, H);
-      yield k;
-    }
-  }
-}
-// The texture is returned at once and filled in ~12 ms main-thread slices (about 1-2 s of work in all) while the
-// loader compiles shaders and the first frames run; it uploads when the last cell is done (until then the decals
-// sample three's empty texture: alpha 0, invisible). Rows bottom-up = the old flipY CanvasTexture's uv.
-function graffitiAtlas(R) {
-  const W = GCOLS * 512, H = GROWS * 256, data = new Uint8Array(W * H * 4), gen = graffitiCells(R, data, true), t0 = performance.now();
-  const t = new THREE.DataTexture(data, W, H, THREE.RGBAFormat); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+function graffitiAtlas(renderer, workerP) {
+  const W = GCOLS * 512, H = GROWS * 256, t0 = performance.now();
+  const t = new THREE.DataTexture(null, W, H, THREE.RGBAFormat); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
   t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
-  t.onUpdate = () => { t.image.data = null; };   // uploaded: drop the 33 MB CPU copy (perf #4; a lost context reloads)
-  const slice = () => {
-    for (const end = performance.now() + 12; performance.now() < end;) if (gen.next().done) { t.needsUpdate = true; t.userData.ms = Math.round(performance.now() - t0); return; }
+  t.userData.graffiti = { path: 'pending' };
+  const strips = async (data, ms) => {
+    t.image = { data: null, width: W, height: H }; t.source.dataReady = false; t.needsUpdate = true;
+    renderer.initTexture(t);                         // texStorage2D: every mip level allocated, nothing uploaded
+    const strip = new THREE.DataTexture(null, W, 256, THREE.RGBAFormat), at = new THREE.Vector2(), tu = performance.now();
+    let worst = 0;
+    for (let r = 0; r < GROWS; r++) {
+      strip.image.data = data.subarray(r * W * 256 * 4, (r + 1) * W * 256 * 4);
+      t.generateMipmaps = r === GROWS - 1;           // three regenerates mips after a level-0 copy: only after the last
+      const a = performance.now();
+      renderer.copyTextureToTexture(strip, t, null, at.set(0, r * 256));
+      worst = Math.max(worst, performance.now() - a);
+      if (r < GROWS - 1) await yieldUI();
+    }
+    t.generateMipmaps = true; strip.image.data = null;
+    t.userData.graffiti = { path: 'worker', drawMs: ms, readyMs: Math.round(performance.now() - t0), uploadMs: Math.round(performance.now() - tu), worstStripMs: +worst.toFixed(1) };
+  };
+  const mainThread = () => {
+    const data = new Uint8Array(W * H * 4), gen = graffitiCells(rng(GRAFFITI_SEED), data, true);
+    t.image = { data, width: W, height: H };
+    t.onUpdate = () => { t.image.data = null; t.onUpdate = null; };   // uploaded: drop the 33 MB CPU copy
+    const slice = () => {
+      for (const end = performance.now() + 12; performance.now() < end;) if (gen.next().done) { t.needsUpdate = true; t.userData.graffiti = { path: 'main', readyMs: Math.round(performance.now() - t0) }; return; }
+      setTimeout(slice, 0);
+    };
     setTimeout(slice, 0);
   };
-  setTimeout(slice, 0);
+  t.userData.ready = (workerP || Promise.resolve(null)).then((r) => (r ? strips(r.data, r.ms) : mainThread()))
+    .catch((e) => { console.warn('[P5] graffiti upload failed, main-thread path:', e.message || e); mainThread(); });
   return t;
 }
 // [B] ground mask over the yard terrain tile (0.625 m texels): R grass density, G paved apron/road,
@@ -3129,6 +3070,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   uniforms.aAO = aoUniforms();          // [A1] contract C3 (world.aoUniforms): stream D fills it each frame
   const lmJP = lmFetchJSON();           // [A1] lm.json, fetched while the geometry builds
   const vegP = vegLoad();               // [V1] tree/shrub cards, wood, atlas (flat files next to this module)
+  const graffitiP = graffitiWorker();   // [P5] the graffiti atlas, drawn in a Worker while the world builds
 
   // textures (stream in parallel with the sky)
   const tl = new THREE.TextureLoader(); tl.setCrossOrigin('anonymous');
@@ -3192,11 +3134,11 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const gm = buildGroundMask(site, terr), { t: gmask, t2: gmask2 } = gm, grassAt = grassAtFn(gm);
   const maskU = { uMask: { value: gmask }, uMask2: { value: gmask2 }, uMaskO: { value: new THREE.Vector2(MASK.x0, MASK.z0) }, uMaskS: { value: MASK.size } };
   const lin3 = (a) => new THREE.Color().setRGB(a[0], a[1], a[2]);
-  const meanOf = (key) => { const m = MATS[key], t = texOf[key]?.diff, raw = t ? texMean(t, null) : null; return raw ? { raw, col: raw.map((v, i) => v * m.color[i]) } : { raw: [0.1, 0.1, 0.1], col: m.albedo }; };
+  const meanOf = (key) => { const m = MATS[key], t = texOf[key]?.diff, raw = t ? texMean(key, t) : null; return raw ? { raw, col: raw.map((v, i) => v * m.color[i]) } : { raw: [0.1, 0.1, 0.1], col: m.albedo }; };
   const kindU = (key) => {
     const m = MATS[key];
     if (m.kind === 'ground') {
-      const gm = meanOf('ground'), am = meanOf('apron'), at = texOf.apron?.diff, mt = texOf.meadow?.diff, mm = mt && texMean(mt, null);
+      const gm = meanOf('ground'), am = meanOf('apron'), at = texOf.apron?.diff, mt = texOf.meadow?.diff, mm = mt && texMean('meadow', mt);
       if (mt) { mt.repeat.set(1, 1); mt.anisotropy = 8; }
       return { ...maskU, uApron: { value: at || gmask }, uApronN: { value: texOf.apron?.nor_gl || flatNorm() }, uApronRep: { value: 1 / MATS.apron.tile }, uApronCol: { value: lin3(MATS.apron.color) },
         uGMean: { value: lin3(gm.col) }, uAMean: { value: new THREE.Vector4(...am.col, Math.max(0.02, 0.2126 * am.raw[0] + 0.7152 * am.raw[1] + 0.0722 * am.raw[2])) },
@@ -3224,13 +3166,14 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const pathMesh = new THREE.Mesh(pathG, mats.path); pathMesh.receiveShadow = true; pathMesh.renderOrder = 1; scene.add(pathMesh);
 
   lap('mask+materials');
+  let graffitiTex = null;   // [P5] its pixels arrive from graffiti-worker.js (uploaded in strips behind the loader)
   // [B] graffiti: ~260 pieces (~900 m2) placed by a raycast pass, so they follow whatever geometry the site builds:
   // big pieces (3.5-8 m) on the ground storey outside, the hall's ground storey densest, tags (0.4-1 m) on the hall and
   // table columns, the silo bases, the stair shaft and the workshop, plus Site.decalSpots as hints. Each piece is a grid
   // conformed to the surface by rays (it wraps silos and the chimney) and is rejected over openings, edges and steps.
   // The paint multiplies the wall texture and gets the same weathering as the wall under it.
   {
-    const GR = rng(1401), atlas = graffitiAtlas(rng(1402)); lap('graffitiAtlas');
+    const GR = rng(1401), atlas = (graffitiTex = graffitiAtlas(renderer, graffitiP)); lap('graffitiAtlas');
     const pos = [], uv = [], nor = [], aoA = [], boA = [], ayA = [], sdA = [], idx = [], placed = [];
     const ray = new THREE.Ray(), UP = new THREE.Vector3(0, 1, 0), DN = new THREE.Vector3(0, -1, 0), U = new THREE.Vector3(), V = new THREE.Vector3(), Q = new THREE.Vector3(), nd = new THREE.Vector3();
     const cast = (o, d, maxD) => { ray.origin.copy(o); ray.direction.copy(d); return bvh.raycastFirst(ray, THREE.DoubleSide, 0, maxD); };
@@ -3365,7 +3308,7 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     g.setAttribute('ao', new THREE.Float32BufferAttribute(aoA, 1)); g.setAttribute('bounce', new THREE.Float32BufferAttribute(boA, 3)); g.setAttribute('aY', new THREE.Float32BufferAttribute(ayA, 2)); g.setAttribute('aSeed', new THREE.Float32BufferAttribute(sdA, 1)); g.setIndex(idx);
-    const wallT = texOf.wall?.diff, wm = wallT ? texMean(wallT, null) : null;
+    const wallT = texOf.wall?.diff, wm = wallT ? texMean('wall', wallT) : null;
     const white = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1); white.needsUpdate = true;
     const m = weatherPatch(new THREE.MeshStandardMaterial({ map: atlas, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, roughness: 0.85, metalness: 0 }),
       { kind: 'decal', w: MATS.wall.w, roughMin: 0.8, uniforms: { uWallTex: { value: wallT || white }, uWallRep: { value: 1 / MATS.wall.tile }, uWallMean: { value: wm ? Math.max(0.01, 0.2126 * wm[0] + 0.7152 * wm[1] + 0.0722 * wm[2]) : 1 } } }, uniforms);
@@ -3867,6 +3810,8 @@ float terrH(vec2 p) { float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 9
   // depth for the shutter blur = the solid geometry
   const colScene = new THREE.Scene();
   const cm = new THREE.Mesh(colGeo, new THREE.MeshBasicMaterial()); cm.frustumCulled = false; colScene.add(cm);
+  // [P5] the graffiti strips land behind the loader (the worker is normally done long before this; never wait > 3 s)
+  if (graffitiTex) { await Promise.race([graffitiTex.userData.ready, new Promise((r) => setTimeout(r, 3000))]); Object.defineProperty(bStats, 'graffitiUpload', { get: () => graffitiTex.userData.graffiti, enumerable: true }); }
   prog(0.98, 'Ready');
   BAKE = null;   // [A] the probe solution was only needed while building (decals); free it
   if (lm) lm.irr.pix = null;   // [A1] the CPU copy of the lightmap (14 MB) served the build-time probes only

@@ -1,9 +1,10 @@
 {
   "name": "onetake-ci",
   "private": true,
-  "description": "Node test/export dependencies for CI only (.github/workflows/ci.yml). Lives in ci/ so the static site root has no package.json (Cloudflare Pages would otherwise npm-install on every deploy). Versions = the import map in index.html.",
+  "description": "Node test/export dependencies for CI only (.github/workflows/ci.yml). Lives in ci/ so the static site root has no package.json (Cloudflare Pages would otherwise npm-install on every deploy). Versions = the import map in index.html. playwright: the CI browser job (tests/browser.mjs; Chromium via npx playwright install chromium).",
   "devDependencies": {
     "three": "0.180.0",
-    "three-mesh-bvh": "0.9.1"
+    "three-mesh-bvh": "0.9.1",
+    "playwright": "1.64.1"
   }
 }

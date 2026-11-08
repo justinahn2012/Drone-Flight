@@ -1,0 +1,60 @@
+{
+ "log": "site.otil",
+ "world": "37cde404c8be75e8",
+ "takeJs": "549c46828df68dbd",
+ "sticks": "main.js sticksActive, no touches; thrRef starts at the first tick",
+ "events": [
+  {
+   "tick": 120,
+   "type": "start"
+  },
+  {
+   "tick": 532,
+   "type": "line",
+   "name": "DROP IN",
+   "caption": "DROP *IN*!",
+   "pts": 625,
+   "flow": 1,
+   "clean": true,
+   "micro": true,
+   "t0": 1.72,
+   "ago": 0,
+   "t": 1.72
+  },
+  {
+   "tick": 987,
+   "type": "skim",
+   "pts": 39
+  },
+  {
+   "tick": 1973,
+   "type": "scrape",
+   "impact": 5.36,
+   "flow": 1,
+   "lost": 1
+  },
+  {
+   "tick": 2632,
+   "type": "scrape",
+   "impact": 8.04,
+   "flow": 1,
+   "lost": 0
+  },
+  {
+   "tick": 3301,
+   "type": "scrape",
+   "impact": 5.39,
+   "flow": 1,
+   "lost": 0
+  },
+  {
+   "tick": 3936,
+   "type": "scrape",
+   "impact": 2.88,
+   "flow": 1,
+   "lost": 0
+  }
+ ],
+ "total": 0,
+ "state": "live"
+}

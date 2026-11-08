@@ -12,10 +12,15 @@
 //                 (solid / terrain / far / proxies) in extras; the skim / proximity set = triangles in the solid range.
 //   world.json    lines, spawn, takeStart, startPoints, funnels, bounds, envelope, SKIES, MATS, paths, footprints,
 //                 instance transforms (treeline crowns, trees), mesh table, hashes, file sizes + sha256.
-// Not exportable from buildGeometry (built inside buildBando with textures / probes): grass (shader-procedural),
-// foliage cards, graffiti, the light bake. world.json lists them under runtimeOnly.
-// The exact formats are in PORTING.md.
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+//   groundmask.png / groundmask2.png   [P5] buildGroundMask's two RGBA masks (grass density / apron / AO / height;
+//                 track distance / dry / flowers / lush), rows = z, first row at MASK.z0.
+//   veg.*         [P5] the vegetation assets (veg.json manifest, veg.bin cards + wood, atlases, bark) copied as is;
+//                 instances.veg = geo.vegInstances() (T5, contract C11) when world-bando.js has it.
+// Still generated at load (world.json runtimeOnly, each with what a port needs to rebuild it): grass (shader-procedural
+// from the masks + grass params), graffiti decal placement (raycasts), the per-vertex light fallback.
+// world.json `coverage` maps every class of scene mesh buildBando draws to its export entry; tests/browser.mjs fails
+// when the live scene has a mesh no rule covers. The exact formats are in PORTING.md.
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,10 +72,17 @@ const boundsOf = (pos) => {
   return { min: mn, max: mx };
 };
 
+/** Merged-material keys buildBando builds but never draws (`if (mat === 'bark') continue;`: the legacy trunks). */
+export function undrawnMerged(src) {
+  const body = functionBody(src, 'buildBando') || '';
+  return [...body.matchAll(/if\s*\(\s*mat\s*===\s*'(\w+)'\s*\)\s*continue/g)].map((m) => m[1]);
+}
+
 /** The render set in canonical order: merged site meshes sorted by material key, then terrain, far, path. */
-export function renderSet(geo, MATS = {}) {
+export function renderSet(geo, MATS = {}, skip = []) {
   const out = [];
   for (const key of Object.keys(geo.merged).sort()) {
+    if (skip.includes(key)) continue;   // [P5] not drawn by the game: a port drawing world.glb would show ghosts
     if (RESERVED.includes(key)) throw new Error(`export-world: site material "${key}" collides with a reserved mesh name`);
     out.push({ name: key, geo: geo.merged[key], mat: MATS[key] ? key : 'wall', kind: 'site' });   // buildBando: mats[mat] || mats.wall
   }
@@ -101,6 +113,50 @@ export function colliderRanges(geo, warn = () => {}) {
   return r;
 }
 
+/**
+ * [P5] instances.veg from geo.vegInstances() (contract C11: [{type, matrix, tint, ao, ...}], seeded, pure). Rows are
+ * [type index, ...every numeric field of the first entry in its key order]; short aliases (t, m, c, bo, th) are named.
+ */
+const VEG_ALIAS = { t: 'type', m: 'matrix', c: 'tint', bo: 'bounce', th: 'lod' };
+export function vegTable(list, man, warn) {
+  const rows = list.map((e) => Object.fromEntries(Object.entries(e).map(([k, v]) => [VEG_ALIAS[k] || k, v])));
+  if (!rows.length) return { count: 0, types: [], layout: [], data: [] };
+  const width = (v) => {
+    if (typeof v === 'number') return Number.isFinite(v) ? 1 : 0;
+    if (v?.isVector3) return 3;
+    if (v?.isMatrix4) return 16;
+    if ((Array.isArray(v) || ArrayBuffer.isView(v)) && v.length && Array.from(v).every((x) => typeof x === 'number')) return v.length;
+    return 0;
+  };
+  const flat = (v) => (typeof v === 'number' ? [v] : v.isVector3 ? [v.x, v.y, v.z] : v.isMatrix4 ? Array.from(v.elements) : Array.from(v));
+  // string fields (role...) become enum columns: an index into enums[field]
+  const enums = Object.fromEntries(Object.entries(rows[0]).filter(([k, v]) => k !== 'type' && typeof v === 'string').map(([k]) => [k, [...new Set(rows.map((r) => String(r[k])))].sort()]));
+  const cols = Object.entries(rows[0]).filter(([k, v]) => k !== 'type' && (width(v) > 0 || k in enums)).map(([k, v]) => [k, k in enums ? 1 : width(v)]);
+  const dropped = Object.keys(rows[0]).filter((k) => k !== 'type' && !cols.some(([c]) => c === k));
+  const types = [...new Set(rows.map((r) => String(r.type)))].sort();
+  const data = [];
+  let bad = 0;
+  for (const r of rows) {
+    const row = [types.indexOf(String(r.type))];
+    for (const [k, w] of cols) {
+      const v = r[k];
+      if (k in enums) row.push(enums[k].indexOf(String(v)));
+      else if (v == null || width(v) !== w) { bad++; for (let i = 0; i < w; i++) row.push(null); } else row.push(...flat(v));
+    }
+    data.push(...row);
+  }
+  if (bad) warn(`vegInstances: ${bad} fields missing or of another width than the first entry's`);
+  const byType = Object.fromEntries(types.map((t) => [t, rows.filter((r) => String(r.type) === t).length]));
+  const prototypes = Object.fromEntries(types.map((t) => [t, man?.types?.[t] ? { H: man.types[t].H, crown: man.types[t].crown, lods: man.types[t].lods } : null]));
+  return {
+    count: rows.length, source: 'geo.vegInstances() in world-bando.js (contract C11, seeded)', byType, types,
+    layout: ['type', ...cols.flatMap(([k, w]) => (w === 1 ? [k] : Array.from({ length: w }, (_, i) => `${k}${i}`)))],
+    fields: Object.fromEntries(cols), ...(Object.keys(enums).length ? { enums } : {}), ...(dropped.length ? { notExported: dropped } : {}),
+    matrix: 'column-major (three Matrix4.elements = simd float4x4 columns); model units of veg.json, metres in the world',
+    prototypes, meshes: 'veg.json meshes[name] = attribute (offset, count, itemSize) and index ranges into veg.bin', data,
+  };
+}
+
 function triCounts(index, ranges) {
   const out = Object.fromEntries(Object.keys(ranges).map((k) => [k, 0])), keys = Object.keys(ranges);
   for (let t = 0; t < index.length; t += 3) { const v = index[t]; for (const k of keys) if (v >= ranges[k][0] && v < ranges[k][1]) { out[k]++; break; } }
@@ -128,10 +184,21 @@ function buildBandoReturn(src, scope, fields, warn) {
   return out;
 }
 
+// [P5] every class of mesh buildBando puts in world.scene -> its export entry (tests/coverage.js applies these to the
+// live scene; a mesh no rule matches fails the browser job). Rules are tried in order; the first match wins.
+export const COVERAGE = [
+  { id: 'site', match: { mesh: 'world.glb' }, export: 'world.glb meshes[] (vertex count + bounds equal a world.json meshes[] row)' },
+  { id: 'graffiti', match: { program: '^wp:decal' }, export: 'graffiti.png + runtimeOnly.graffiti (placement)' },
+  { id: 'grass', match: { name: '^grass-' }, export: 'runtimeOnly.grass (groundmask*.png + world.json grass)' },
+  { id: 'veg', match: { name: '^veg$', instanced: true }, export: 'instances.veg (veg.json / veg.bin prototypes)', requires: 'instances.veg.count' },
+  { id: 'treeline', match: { parent: '^treeline$', instanced: true }, export: 'instances.treelineCrown (veg.json types A/B lods[3])' },
+];
+const readdirSafe = (d) => { try { return readdirSync(d); } catch (e) { return []; } };
+
 export async function exportWorld({ root = ROOT, out = root, seed = 7, check = false, log = console.log } = {}) {
   const t0 = performance.now();
   const warnings = [], warn = (s) => { warnings.push(s); log('  warning: ' + s); };
-  const mods = await exposeAndImport(root, { 'world-bando.js': ['MATS', 'terrainHeight', 'PATHS', 'texURL', 'PH', 'rng', 'crownGeometry'] });
+  const mods = await exposeAndImport(root, { 'world-bando.js': ['MATS', 'terrainHeight', 'PATHS', 'texURL', 'PH', 'rng', 'crownGeometry', 'buildGroundMask', 'MASK', 'TEX_MEAN'] });
   const wb = mods['world-bando.js'], X = wb.__G_EXPOSED || {};
   const MATS = X.MATS || {};
   if (!X.MATS) warn('MATS not found: materials exported without albedo / texture data');
@@ -140,7 +207,9 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
   const tGeo = performance.now();
 
   // ---------------------------------------------------------------- hashes (see tools/geohash.mjs)
-  const render = renderSet(geo, MATS);
+  const src = readFileSync(join(root, 'world-bando.js'), 'utf8');
+  const notDrawn = undrawnMerged(src).filter((k) => geo.merged[k]);
+  const render = renderSet(geo, MATS, notDrawn);
   const colList = [['collider', geo.colGeo]];
   const hRender = setHash('render', render.map((r) => [r.name, r.geo])), hCol = setHash('collider', colList);
   const hWorld = new GeoHash().str(hRender).str(hCol).hex();
@@ -193,8 +262,40 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
   CW.mesh('collider', colAttrs, col.index.array, { extras: { kind: 'collider' }, primExtras: { ranges, triangleCounts: colInfo.triangleCounts } });
   const colGlb = CW.toGLB();
 
+  // ---------------------------------------------------------------- ground masks (P5, native #1)
+  let masks = null; const maskPngs = {};
+  if (typeof X.buildGroundMask === 'function' && X.MASK) {
+    try {
+      const m = X.buildGroundMask(geo.site, geo.terr), M = X.MASK;
+      const list = [['groundmask.png', m.t, 'R grass density, G paved apron/road, B terrain AO (baked), A grass height / 2 m'],
+        ['groundmask2.png', m.t2, 'R distance to the nearest track centreline / 8 m, G dry (straw) field, B wildflowers, A lush field']];
+      masks = { N: M.N, x0: M.x0, z0: M.z0, size: M.size, texel: M.size / M.N, uv: 'u = (x - x0) / size, v = (z - z0) / size; PNG row j (top-down) = v, i.e. load it top-left origin (the game uploads row 0 first, flipY false)', filter: 'linear, clamp, no mips', colorSpace: 'linear (data)', files: {} };
+      for (const [f, t, ch] of list) {
+        if (!t?.image?.data) continue;
+        maskPngs[f] = encodePNG(t.image.data, t.image.width, t.image.height);
+        masks.files[f] = { size: [t.image.width, t.image.height], channels: ch };
+      }
+    } catch (e) { warn('ground masks: buildGroundMask threw offline: ' + e.message); }
+  } else warn('buildGroundMask / MASK not found: ground masks not exported');
+
+  // ---------------------------------------------------------------- vegetation (P5: assets + C11 instances)
+  let man = null; const vegFiles = {};
+  try {
+    man = JSON.parse(readFileSync(join(root, 'veg.json'), 'utf8'));
+    for (const f of ['veg.json', 'veg.bin', man.atlas?.file, man.atlas?.alpha, ...readdirSafe(root).filter((f) => /^veg_bark_\w+\.jpg$/.test(f))]) if (f && existsSync(join(root, f))) vegFiles[f] = join(root, f);
+  } catch (e) { warn('veg.json unreadable: ' + e.message); }
+  let vegInst;
+  if (typeof geo.vegInstances === 'function') {
+    try {
+      const list = await geo.vegInstances(man);
+      if (!Array.isArray(list)) throw new Error('did not return an array');
+      vegInst = vegTable(list, man, warn);
+    } catch (e) { warn('geo.vegInstances() failed offline: ' + e.message); vegInst = { count: 0, status: 'error', error: e.message }; }
+  } else {
+    vegInst = { count: 0, status: 'pending', note: 'geo.vegInstances() (T5, contract C11) is not in this world-bando.js: trees/shrubs are placed inside buildBando (runtime). tools/test-export.mjs requires it once world-bando.js defines it.' };
+  }
+
   // ---------------------------------------------------------------- world.json
-  const src = readFileSync(join(root, 'world-bando.js'), 'utf8');
   const site = geo.site || {};
   // buildBando destructures these from buildGeometry; the return literal may use any of them
   const scope = { THREE, Math, terrainHeight: X.terrainHeight, geo, seed, ...Object.fromEntries(Object.entries(geo).filter(([k]) => /^[A-Za-z_$][\w$]*$/.test(k))) };
@@ -209,21 +310,35 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
   if (hdrTpl && X.PH) for (const s of Object.values(skies)) if (s.id) s.hdr = X.PH + hdrTpl.replace(/\$\{id\}/g, s.id).replace(/\$\{def\.id\}/g, s.id);
   const instances = {
     treelineCrown: {
-      count: geo.treeline?.length ?? 0, prototype: X.crownGeometry ? 'crownGeometry(5) in world-bando.js (instanced in buildBando)' : 'treeline crown (world-bando.js)',
-      transform: 'M = T(x,y,z) * Ry(rotY) * S(sx,sy,sz); tint 0..1 picks one of 4 greens', layout: ['x', 'y', 'z', 'rotY', 'sx', 'sy', 'sz', 'tint'],
+      count: geo.treeline?.length ?? 0,
+      prototype: 'veg.json types[A|B].lods[3].cards (camera-facing cards): type A when (tint * 7) mod 1 < 0.45, else B (buildBando, treeline block)',
+      transform: 'M = T(x,y,z) * Ry(rotY) * S(sxz, sy, sxz) with sy = h / H, sxz = sy * clamp((w / h) / (2 max(crown.r.x, crown.r.z) / H), 0.85, 1.6); colour = greens[floor(tint * 4)] * (0.88 + 0.24 tint)',
+      layout: ['x', 'y', 'z', 'rotY', 'w', 'h', 'd', 'tint'], outer: (geo.treeline || []).filter((t) => t.outer).length,
       data: (geo.treeline || []).flatMap((t) => [t.x, t.y, t.z, t.rot, t.w, t.h, t.d, t.tint]),
     },
     tree: {
-      count: geo.treeSpots?.length ?? 0, prototype: 'trunk is in the bark mesh; crown = leaf-card balls built in buildBando (runtime)',
+      count: geo.treeSpots?.length ?? 0, prototype: 'tree spots (buildGeometry); the drawn trees are instances.veg',
       layout: ['x', 'y', 'z', 'h', 'r'], data: (geo.treeSpots || []).flatMap((t) => [t.x, t.y, t.z, t.h, t.r]),
     },
+    veg: vegInst,
   };
+  // grass: shader-procedural; what a port needs besides the masks (the per-quality tiers are a literal in buildBando)
+  let grass = null;
+  try {
+    const body = functionBody(src, 'buildBando') || '', lit = sourceLiteral(body, 'const GQS', '{');
+    grass = { tiers: lit ? evalLiteral(lit) : null, cell: Number(/gCell\s*=\s*([\d.]+)/.exec(body)?.[1]) || null, masks: masks ? Object.keys(masks.files) : [], shader: 'GRASS_VS_CORE / GRASS_SHADE in world-bando.js (integer cell hash -> tuft; every random number from the base cell)' };
+  } catch (e) { warn('grass params did not evaluate offline: ' + e.message); }
+  const texMean = X.TEX_MEAN || wb.TEX_MEAN || null;
+  if (!texMean) warn('TEX_MEAN not found in world-bando.js');
+  else for (const [k, m] of Object.entries(MATS)) if (m.id && (m.maps || []).includes('diff') && !texMean[m.id]) warn(`TEX_MEAN has no entry for ${m.id} (MATS.${k}); run python3 tools/texmean.py <dir of *_diff_1k.jpg>`);
   const siteOut = {}; for (const [k, v] of Object.entries(site)) if (!['parts', 'colliders', 'lines', 'takeStart'].includes(k)) { const p = plain(v); if (p !== undefined) siteOut[k] = p; }
   let lightmap = null;
   const lmPath = join(root, 'lm.json');
   if (existsSync(lmPath)) { try { lightmap = { file: 'lm.json', ...JSON.parse(readFileSync(lmPath, 'utf8')) }; } catch (e) { warn('lm.json unreadable: ' + e.message); } }
   const hasUV2 = render.some((r) => r.geo.attributes.uv1 || r.geo.attributes.uv2);
 
+  const outFiles = { 'world.glb': worldGlb, 'collider.glb': colGlb, ...(graffitiPng ? { 'graffiti.png': graffitiPng } : {}), ...maskPngs };
+  const vegBytes = Object.fromEntries(Object.entries(vegFiles).map(([f, p]) => [f, readFileSync(p)]));
   const world = {
     format: WORLD_FORMAT,
     generator: 'tools/export-world.mjs',
@@ -235,11 +350,12 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
       attributes: '_AY (aY) = (bottom, top) world height of the element a vertex belongs to (weathering); COLOR_0 on path = (1,1,1,edge alpha)',
     },
     hash,
-    files: { 'world.glb': { bytes: worldGlb.byteLength, sha256: sha256(worldGlb) }, 'collider.glb': { bytes: colGlb.byteLength, sha256: sha256(colGlb) },
-      ...(graffitiPng ? { 'graffiti.png': { bytes: graffitiPng.byteLength, sha256: sha256(graffitiPng) } } : {}) },
+    files: Object.fromEntries(Object.entries({ ...outFiles, ...vegBytes }).map(([f, b]) => [f, { bytes: b.byteLength, sha256: sha256(b) }])),
     textures: graffitiPng ? { graffiti: { file: 'graffiti.png', size: [GA.width, GA.height], cells: [4, GA.height / 256], cellPx: [512, 256], rows: 'top-down (PNG); the game uploads it bottom-up (flipY)', alpha: 'straight', colorSpace: 'sRGB', drawnBy: 'world-bando.js graffitiCells via raster2d.js (rng 1402)' } } : {},
     meshes: meshTable,
+    notDrawn: notDrawn.length ? { meshes: notDrawn, why: 'built by buildGeometry (collider / lightmap hash) but never drawn by buildBando; left out of world.glb' } : undefined,
     collider: colInfo,
+    groundMasks: masks,
     spawn,
     takeStart: pick('takeStart'),
     startPoints: pick('startPoints'),
@@ -248,22 +364,24 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
     envelope: plain(ret.envelope ?? null),
     lines: plain(geo.lines ?? site.lines ?? []),
     skies,
-    materials: Object.fromEntries(Object.entries(MATS).map(([k, m]) => [k, { ...plain(m), textures: texOf(m) }])),
+    materials: Object.fromEntries(Object.entries(MATS).map(([k, m]) => [k, { ...plain(m), textures: texOf(m), ...(texMean?.[m.id] ? { texMean: texMean[m.id] } : {}) }])),
     paths: plain(X.PATHS ?? null),
     site: siteOut,
     instances,
     lightmap,
     uv2: hasUV2 ? 'present (lightmap UVs: see meshes[].attributes)' : 'absent (A1 adds it at the end of buildGeometry)',
-    runtimeOnly: [
-      'grass: instanced cross cards placed in the vertex shader from an integer cell hash + the ground mask (buildBando, buildGroundMask)',
-      'foliage: tree crowns, wall thickets, field shrubs, saplings (leaf-card balls; placement uses BVH probes in buildBando)',
-      'graffiti placement: ~260 decal grids conformed to walls by raycasts (buildBando; the atlas itself is graffiti.png)',
-      'ground mask texture, canvas atlases (grass / leaf), the per-vertex light bake (bakeLight)',
-    ],
+    grass,
+    runtimeOnly: {
+      grass: 'two instanced tiers of geometric blades built in the vertex shader from an integer cell hash + groundmask*.png (world.json grass: tiers, cell)',
+      graffiti: 'placement: ~260 decal grids conformed to walls by raycasts (buildBando, rng 1401); the atlas is graffiti.png',
+      ...(vegInst.status === 'pending' ? { veg: 'trees / shrubs / saplings placed in buildBando (instances.veg pending, contract C11)' } : {}),
+      light: 'the per-vertex light bake (bakeLight) when lm.json does not match; otherwise the committed lightmaps',
+    },
+    coverage: COVERAGE,
     warnings,
   };
   const worldJson = stringify(world) + '\n';
-  const outputs = { 'world.glb': worldGlb, 'collider.glb': colGlb, 'world.json': new TextEncoder().encode(worldJson), ...(graffitiPng ? { 'graffiti.png': graffitiPng } : {}) };
+  const outputs = { ...outFiles, 'world.json': new TextEncoder().encode(worldJson), ...vegBytes };
 
   if (check) {   // the export is deterministic: up to date <=> every file on disk is byte-identical to a fresh one
     const stale = Object.entries(outputs).filter(([f, b]) => !existsSync(join(out, f)) || sha256(readFileSync(join(out, f))) !== sha256(b)).map(([f]) => f);
@@ -271,7 +389,7 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
     return { ok: !stale.length, stale, hash, warnings };
   }
   mkdirSync(out, { recursive: true });
-  for (const [f, b] of Object.entries(outputs)) writeFileSync(join(out, f), b);
+  for (const [f, b] of Object.entries(outputs)) if (!(f in vegBytes) || resolve(out) !== resolve(root)) writeFileSync(join(out, f), b);   // veg.* already live in the root
   const verts = meshTable.reduce((s, m) => s + m.vertices, 0), tris = meshTable.reduce((s, m) => s + m.triangles, 0);
   log(`world.glb ${(worldGlb.byteLength / 1e6).toFixed(2)} MB (${meshTable.length} meshes, ${verts} verts, ${tris} tris)` +
     ` | collider.glb ${(colGlb.byteLength / 1e6).toFixed(2)} MB (${colInfo.triangles} tris) | world.json ${(worldJson.length / 1e3).toFixed(0)} kB` +
