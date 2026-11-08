@@ -361,10 +361,10 @@ async function loadProcWorld(def) {
   world.spawn.copy(w.spawn); world.yaw = w.yaw;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);
-  // [D] HDR look (colorist r2/r3, PLAN4 decision 1): evMax 3.6; WB fitted to the puresky sun+sky (grey card R/G 1.015,
+  // [D] HDR look (colorist r2/r3, PLAN4 decision 1): evMax 4.4 (integration: chimney walls to luma ~9–18); WB fitted to the puresky sun+sky (grey card R/G 1.015,
   // B/G 0.95); overcast shade WB = its WB (no sepia hall); evBias sunny -0.30 / overcast 0.0 (with GRADES.hdr clipEv 3.0).
   // The integrator retunes this line against the golden stills; every other knob is a GRADES.hdr key.
-  Object.assign(fpv.look, { evMin: -5.5, evMax: 3.6, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.036, 0.994, 0.956],
+  Object.assign(fpv.look, { evMin: -5.5, evMax: 4.4, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.036, 0.994, 0.956],
     wbShade: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.125, 0.978, 0.845], evBias: def.sky === 'overcast' ? 0.0 : -0.30 });
   Object.assign(world, { depthScene: w.depthScene || null, aoUniforms: w.aoUniforms || null });   // [D] contracts C2/C3 (optional inputs)
   fpv.warmup?.(world);                                                                              // [D] post + depth programs, textures
