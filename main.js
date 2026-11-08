@@ -1639,4 +1639,5 @@ window.__onetake = {
 };
 window.__onetake.flight = { PHYS, get log() { return inputLog; }, get lastLog() { return lastInputLog; }, get alpha() { return physAlpha; } };   // [E] input logs
 if (MANUAL) { setInterval(() => { if (state === 'loading') { last = performance.now() - 16; } }, 500); }
+else if (params.has('perf')) import('./perf.js').then((m) => m.perfProbe(window.__onetake, +params.get('perf') || 120));   // [G4] ?perf drives its own frames
 else requestAnimationFrame(frame);
