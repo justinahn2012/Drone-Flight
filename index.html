@@ -245,9 +245,20 @@ body.dev .dev{display:revert!important}
 @media (max-width:420px){.coach{flex-direction:column;align-items:flex-start}}
 #clip{position:fixed;inset:0;z-index:30;display:grid;place-items:center;background:rgba(0,0,0,.88);padding:calc(16px + var(--st)) calc(16px + var(--sr)) calc(16px + var(--sb)) calc(16px + var(--sl))}
 #clip .box{width:min(620px,92vw);text-align:center}
-#clip video{width:100%;max-height:62vh;border-radius:10px;background:#000}
-#clip .row{display:flex;gap:10px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+#clip video{display:block;margin:0 auto;height:min(60vh,720px);width:auto;max-width:100%;aspect-ratio:9/16;border-radius:10px;background:#000}
+#clip .row,#clip .cuts{display:flex;gap:10px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+#clip .cuts{gap:6px}
+#clip .cuts .pill{min-height:44px;padding:0 14px;font:600 12px var(--mono);letter-spacing:.06em;color:var(--mute)}
+#clip .cuts .pill.on{color:#000;background:var(--ink);border-color:var(--ink)}
+#clip .cuts .pill:disabled{opacity:.35}
 #clip .meta{margin-top:8px;font:12px var(--mono);color:var(--mute)}
+/* landscape phone: the 9:16 preview takes the full height, actions in a column beside it */
+@media (orientation:landscape) and (max-height:500px){
+  #clip .box{width:auto;max-width:94vw;display:grid;grid-template-columns:auto minmax(0,320px);gap:16px;align-items:center;text-align:left}
+  #clip video{height:calc(100vh - 32px - var(--st) - var(--sb));max-height:none;margin:0}
+  #clip .row,#clip .cuts{justify-content:flex-start;margin-top:10px}
+  #clip .meta{margin-top:10px}
+}
 </style>
 <script type="importmap">
 {
@@ -395,10 +406,13 @@ body.dev .dev{display:revert!important}
   <div id="ldTip"></div>
 </div></div>
 
-<div id="clip" class="hidden"><div class="box">
+<div id="clip" class="hidden ui"><div class="box">
   <video id="clipVid" playsinline controls loop muted></video>
-  <div class="row"><button class="pill rec" id="clipShare">SAVE VIDEO</button><a class="pill" id="clipSave" download>DOWNLOAD</a><button class="pill" id="clipClose">CLOSE</button></div>
-  <div class="meta" id="clipMeta"></div>
+  <div class="side">
+    <div class="cuts" id="clipCuts"><button class="pill" data-cut="short">SHORT</button><button class="pill" data-cut="last">LAST 20 S</button><button class="pill" data-cut="full">FULL TAKE</button></div>
+    <div class="row"><button class="pill rec" id="clipShare">SAVE VIDEO</button><a class="pill" id="clipSave" download>DOWNLOAD</a><button class="pill" id="clipClose">CLOSE</button></div>
+    <div class="meta" id="clipMeta"></div>
+  </div>
 </div></div>
 
 <script type="module" src="main.js"></script>
