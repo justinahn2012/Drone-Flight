@@ -65,8 +65,9 @@ function crossGate(G, a, b) {
   return Math.abs(dot(q, G.u)) <= G.hw && Math.abs(dot(q, G.v)) <= G.hh ? s : 0;
 }
 const plainCaption = (s) => String(s || '').replace(/\*/g, '');
-// inside one of world.funnels' shafts ({c:[x, z], top, bottom, r}: within r of the axis, bottom - 0.5 .. top)
-const inShaft = (p, world) => (world?.funnels || []).some((f) => p.y >= f.bottom - 0.5 && p.y <= f.top && Math.hypot(p.x - f.c[0], p.z - f.c[1]) < f.r);
+// down one of world.funnels' shafts ({c:[x, z], top, r}): within r of the axis, anywhere below its top (its floor
+// included: E's `bottom` is where the dive assist lets go, not the floor)
+const inShaft = (p, world) => (world?.funnels || []).some((f) => p.y <= f.top && Math.hypot(p.x - f.c[0], p.z - f.c[1]) < f.r);
 
 // ---- progress, shared by every Take instance (take + free fly): {name: {n: times flown, flow: best FLOW, pts: best pts}}
 const PKEY = 'onetake.lines';
@@ -107,7 +108,7 @@ export class Take {
     this._hover = 0; this._land = 0; this._gndAgo = 9; this._maxSpeed = 0; this._maxFlow = 1; this._log = []; this._done = new Set(); this._lastName = null;
     this._cool = {}; this._pre = new Map(); this._preT = -99; this._last = null; this._released = false; this._skim = 0; this._skimOff = 0;
     this._now = 0; this._holding = false; this._cutIn = 0; this._cutFrac = 0; this._cutKind = null;
-    this._dirty = false; this._imp = null; this._scrapeT = -99; this._scrapes = 0;
+    this._dirty = false; this._imp = null; this._scrapeT = -99; this._scrapes = 0; this._skimAcc = 0;
     for (const C of this._carves || []) C.st.forEach((s) => { s.ref = null; s.acc = 0; s.out = 0; });
   }
   // the take ends the hard way (out of bounds, a reset mid-take): same as a crash
@@ -278,7 +279,11 @@ export class Take {
     return { type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt };
   }
 
+  // the proximity query runs at most every 1/60 s on the accumulated dt (take.update may be called per 1/240 s tick)
   _skimTick(dt, drone, world, spd, ev) {
+    this._skimAcc += dt;
+    if (this._skimAcc < 1 / 60 - 1e-9) return;
+    dt = this._skimAcc; this._skimAcc = 0;
     const bvh = world?.skimBvh;
     let on = false; this._holding = false;
     if (bvh && this._unbanked > 0 && spd > T.skimSpeed) {

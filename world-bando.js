@@ -614,11 +614,13 @@ function buildSite(seed = 7) {
     { name: 'Silos', pos: [TOWER.x, 10.5, -36], yaw: yawTo(0, 1) },
   ];
   S.takeStart = { pos: S.startPoints[0].pos.slice(), yaw: S.startPoints[0].yaw };
-  // vertical lines a Cine dive assist may steer onto (stream E): axis c [x, z], open from `bottom` up to `top` (rim),
-  // catch radius r (m from the axis), rIn = clear radius at the top (the mouth / the well between the landings)
+  // vertical lines the Cine dive assist steers onto (stream E's flight.js): axis c [x, z]; a dive is captured within r
+  // of the axis from top - 0.5 up to top + 8 (chimney: its rim; stairwell: the head-house floor, so a dive entering
+  // the tower from the head house is caught) and let go below `bottom` (chimney: 4 m, free to turn out of the door).
+  // rIn = clear radius at the top (the mouth / the well between the landings). take.js: no touchdown CUT within r below top.
   S.funnels = [
-    { name: 'chimney', c: [CHIM.x, CHIM.z], top: CHIM.h, bottom: CHIM.base + 0.03, r: 3.5, rIn: CHIM.rt - CHIM.th },
-    { name: 'stairwell', c: [TOWER.x, TOWER.z], top: SILO.top + 0.4 + 5.4, bottom: 0, r: 3.5, rIn: (TOWER.w - 2 * TOWER.T) / 2 - 0.65 },
+    { name: 'chimney', c: [CHIM.x, CHIM.z], top: CHIM.h, bottom: 4, r: 3.5, rIn: CHIM.rt - CHIM.th },
+    { name: 'stairwell', c: [TOWER.x, TOWER.z], top: SILO.top + 0.4, bottom: 2, r: 3.0, rIn: (TOWER.w - 2 * TOWER.T) / 2 - 0.65 },
   ];
   return S;
 }
