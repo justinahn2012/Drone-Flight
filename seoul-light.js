@@ -53,7 +53,7 @@ export const SOURCE_TYPES = {
   street:   { nits: 9000,  rgb: [1.0, 0.82, 0.62], omni: 0.0,  range: 34 },   // LED street head (flux from `lumens`)
   store:    { nits: 80,    rgb: [0.9, 0.97, 1.0],  omni: 0.0,  range: 16 },   // shop interiors through glass 30-130
   tent:     { nits: 120,   rgb: [1.0, 0.55, 0.25], omni: 0.4,  range: 12 },   // pojangmacha tarp lit from inside
-  vehicle:  { nits: 20000, rgb: [1.0, 0.95, 0.88], omni: 0.0,  range: 30 },   // head lamps (beam lobe); tails ~250-1500 red
+  vehicle:  { nits: 20000, rgb: [1.0, 0.95, 0.88], omni: 0.0,  range: 40 },   // head lamps (beam lobe, 25 m pool); tails ~250-1500 red
 };
 // Night sky (plan-L5 2F): zenith and horizon radiance in cd/m2 (Seoul light pollution, low cloud lit orange-brown).
 export const NIGHT_SKY = { zenith: [0.018, 0.020, 0.030], horizon: [0.22, 0.13, 0.07], glowH: 0.18 };
@@ -218,22 +218,28 @@ float cityBeam(vec3 D, vec3 f){ float fw = dot(D.xz, f.xz); if (fw <= 1e-4) retu
 vec3 cityWorldPos(vec3 pv){ return transpose(mat3(viewMatrix)) * (pv - viewMatrix[3].xyz); }
 void cityOne(const in highp usampler2D tl, int idx, bool spec, vec3 wp, vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir, vec3 geometryClearcoatNormal, PhysicalMaterial material, inout ReflectedLight reflectedLight){
   ivec2 b0 = ivec2((idx & ${LW - 1}) * 2, idx >> 8);
-  uvec4 ra = texelFetch(tl, b0, 0);
-  vec3 Lw = uintBitsToFloat(ra.xyz) - wp; float d2 = max(dot(Lw, Lw), 1e-4);
-  uvec4 rb = texelFetch(tl, b0 + ivec2(1, 0), 0);
+  uvec4 ra = texelFetch(tl, b0, 0), rb = texelFetch(tl, b0 + ivec2(1, 0), 0);
+  vec3 P = uintBitsToFloat(ra.xyz), n = cityOct(unpackSnorm2x16(rb.x));
+  vec2 aa = unpackHalf2x16(ra.w);                                              // area, signed half length (+ horizontal, - vertical)
+  float a = abs(aa.y);
+  vec3 t = aa.y >= 0.0 ? normalize(vec3(n.z + 1e-5, 0.0, -n.x)) : vec3(0.0, 1.0, 0.0);
+  vec3 v = wp - P; float x = dot(v, t);
+  vec3 Lw = P + t * clamp(x, -a, a) - wp; float d2 = max(dot(Lw, Lw), 1e-4);   // representative point on the segment
   vec2 br = unpackHalf2x16(rb.z);                                              // I.b, range
   if (d2 >= br.y * br.y) return;
   float d = sqrt(d2); vec3 l = Lw / d;
-  vec2 ao = unpackHalf2x16(ra.w);                                              // area, omni
-  vec3 n = cityOct(unpackSnorm2x16(rb.x));
   uint m = rb.w, ty = m & 3u, ci = (m >> 2u) & 16383u;
   vec3 I = ci > 0u ? texelFetch(tCityLC, ivec2(int(ci - 1u) & 255, int(ci - 1u) >> 8), 0).rgb : vec3(unpackHalf2x16(rb.y), br.x);
-  float ce = -dot(l, n);
-  float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, ao.y) : ty == 1u ? cityStreet(-l, n) : cityBeam(-l, n);
+  float ce = -dot(l, n), omni = float(m >> 26u) / 63.0;
+  float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, omni) : ty == 1u ? cityStreet(-l, n) : cityBeam(-l, n);
   float q = d / br.y; q = 1.0 - q * q * q * q;
-  uint fq = m >> 16u; float fl = 1.0;
-  if (fq != 0u) fl = 1.0 - float(fq >> 8u) / 255.0 * (0.5 + 0.5 * sin(6.2831853 * float(fq & 255u) * 0.1 * uCityTime + mod(float(idx) * 2.399, 6.2831853)));
-  vec3 E = I * (fe * q * q * fl * uCityGain / (d2 + ao.x * 0.3183));          // near field: E -> pi L at the face
+  uint fh = (m >> 16u) & 63u; float fl = 1.0;
+  if (fh != 0u) fl = 1.0 - float((m >> 22u) & 15u) / 15.0 * (0.5 + 0.5 * sin(6.2831853 * float(fh) * 0.25 * uCityTime + mod(float(idx) * 2.399, 6.2831853)));
+  float F;                                                                     // geometry: point (near field E -> pi L) or line
+  if (a > 0.01) { float hs = sqrt(a * a + aa.x) - a, rp = sqrt(max(dot(v, v) - x * x, 0.0) + hs * hs * 0.3183);
+    F = (atan((a - x) / rp) + atan((a + x) / rp)) / (2.0 * a * rp); }
+  else F = 1.0 / (d2 + aa.x * 0.3183);
+  vec3 E = I * (fe * q * q * fl * uCityGain * F);
   vec3 lv = normalize((viewMatrix * vec4(l, 0.0)).xyz);
   if (spec) { IncidentLight il; il.direction = lv; il.color = E; il.visible = true; RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); }
   else reflectedLight.directDiffuse += E * saturate(dot(geometryNormal, lv)) * BRDF_Lambert(material.diffuseColor);
@@ -419,20 +425,26 @@ export function attach(world, emitters = [], ctx = {}) {
     if (e.kind === 'street' && n[1] < -0.7) {
       const [fx, fz] = streetForward(e), flux = e.lumens ?? nits * Math.PI * A;
       I0 = flux / OM.street * NS / cl; n[0] = fx; n[1] = 0; n[2] = fz; ty = LT.street; peak = I0 * cl * 30;
-    } else if (e.beam && e.kind === 'vehicle') {
+    } else if (e.beam) {
       const h = Math.hypot(n[0], n[2]) || 1, flux = (e.beam.lumens ?? HEADLIGHT.lumens) * Math.max(0, Math.min(1, nits / HEADLIGHT.refNits));
       I0 = flux / OM.beam * NS / cl; n[0] /= h; n[1] = 0; n[2] /= h; ty = LT.beam; peak = I0 * cl;
     } else { I0 = nits * NS / cl * A; peak = nits * NS * A; }
     I[0] = c[0] * I0; I[1] = c[1] * I0; I[2] = c[2] * I0;
     const range = Math.min(e.range ?? T.range, Math.sqrt(Math.max(peak, 1e-6) / E_MIN));
     const m = out || {};
+    // elongated faces are line lights along their long axis (+ horizontal tangent of the normal, - vertical)
+    let hl = 0; if (ty === LT.lambert) { const w = e.w || 0.5, h = e.h || 0.5, lo = Math.max(w, h), sh = Math.min(w, h); if (lo - sh > 0.5) hl = (w >= h ? 1 : -1) * (lo - sh) / 2; }
     m.x = e.pos[0]; m.y = e.pos[1]; m.z = e.pos[2]; m.A = A; m.omni = e.omni ?? T.omni; m.n = n; m.I = I; m.range = range; m.ty = ty; m.peak = peak; m.flick = e.flicker;
+    m.hl = hl; m.a = Math.abs(hl);
+    if (hl > 0) { const tl = Math.hypot(n[2] + 1e-5, n[0]); m.tx = (n[2] + 1e-5) / tl; m.ty_ = 0; m.tz = -n[0] / tl; } else { m.tx = 0; m.ty_ = 1; m.tz = 0; }
     return m;
   }
   // irradiance factor at a point (I x this = E), with the direction toward the light in L[0..2]
   const L3 = [0, 0, 0];
   function kAt(m, px, py, pz) {
-    const lx = m.x - px, ly = m.y - py, lz = m.z - pz, d2 = Math.max(lx * lx + ly * ly + lz * lz, 1e-4);
+    let lx = m.x - px, ly = m.y - py, lz = m.z - pz, x = 0, a = m.a;
+    if (a > 0) { x = -(lx * m.tx + ly * m.ty_ + lz * m.tz); const c = Math.max(-a, Math.min(a, x)); lx += m.tx * c; ly += m.ty_ * c; lz += m.tz * c; }
+    const d2 = Math.max(lx * lx + ly * ly + lz * lz, 1e-4);
     if (d2 >= m.range * m.range) return 0;
     const d = Math.sqrt(d2), ux = lx / d, uy = ly / d, uz = lz / d; L3[0] = ux; L3[1] = uy; L3[2] = uz;
     let fe;
@@ -441,14 +453,20 @@ export function attach(world, emitters = [], ctx = {}) {
     else fe = lobeBeam(-ux, -uy, -uz, m.n[0], m.n[2]);
     if (fe <= 0) return 0;
     let q = d / m.range; q = 1 - q * q * q * q;
+    if (a > 0.01) {
+      const vx = px - m.x, vy = py - m.y, vz = pz - m.z, hs = Math.sqrt(a * a + m.A) - a;
+      const rp = Math.sqrt(Math.max(vx * vx + vy * vy + vz * vz - x * x, 0) + hs * hs * 0.3183);
+      return fe * q * q * (Math.atan((a - x) / rp) + Math.atan((a + x) / rp)) / (2 * a * rp);
+    }
     return fe * q * q / (d2 + m.A * 0.3183);
   }
-  function pack(m, u32, i, ci = 0) {
+  function pack(m, u32, i, ci = 0) {   // misc: lobe 2 | colour index 14 | flicker hz x4 6 | depth x15 4 | omni x63 6
     const k = ((i >> 8) * LW * 2 + (i & (LW - 1)) * 2) * 4;
-    const hz = Math.min(255, Math.round((m.flick?.hz || 0) * 10)), dep = Math.min(255, Math.round(Math.min(1, m.flick?.depth || 0) * 255));
-    u32[k] = fbits(m.x); u32[k + 1] = fbits(m.y); u32[k + 2] = fbits(m.z); u32[k + 3] = h2(m.A, m.omni);
+    let hz = Math.min(63, Math.round((m.flick?.hz || 0) * 4)), dep = Math.min(15, Math.round(Math.min(1, m.flick?.depth || 0) * 15));
+    if (!hz || !dep) hz = dep = 0;
+    u32[k] = fbits(m.x); u32[k + 1] = fbits(m.y); u32[k + 2] = fbits(m.z); u32[k + 3] = h2(m.A, m.hl);
     u32[k + 4] = oct(m.n[0], m.n[1], m.n[2]); u32[k + 5] = h2(m.I[0], m.I[1]); u32[k + 6] = h2(m.I[2], m.range);
-    u32[k + 7] = (m.ty | (ci << 2) | ((dep > 0 ? hz : 0) << 16) | ((hz > 0 ? dep : 0) << 24)) >>> 0;
+    u32[k + 7] = (m.ty | (ci << 2) | (hz << 16) | (dep << 22) | (Math.min(63, Math.round(m.omni * 63)) << 26)) >>> 0;
   }
   const recTex = (n) => {
     const w = LW * 2, h = Math.max(1, Math.ceil(n / LW));
@@ -478,7 +496,7 @@ export function attach(world, emitters = [], ctx = {}) {
   const PROBE_H = YS;
   let pairs = 0, occl = 0;
   for (let i = 0; i < stat.length; i++) {
-    const e = stat[i], m = metas[i], r = m.range;
+    const m = metas[i], r = m.range + (m.hl > 0 ? m.a : 0);
     const cx0 = Math.max(0, Math.floor((m.x - r - x0) / cell)), cx1 = Math.min(gw - 1, Math.floor((m.x + r - x0) / cell));
     const cz0 = Math.max(0, Math.floor((m.z - r - z0) / cell)), cz1 = Math.min(gh - 1, Math.floor((m.z + r - z0) / cell));
     // nominal luminance colour for the volume (animated: their binning nominal at ~half average content)
@@ -486,7 +504,7 @@ export function attach(world, emitters = [], ctx = {}) {
     for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) {
       const ax = x0 + cx * cell, az = z0 + cz * cell, mx = ax + cell * 0.5, mz = az + cell * 0.5;
       const nx = Math.min(Math.max(m.x, ax), ax + cell), nz = Math.min(Math.max(m.z, az), az + cell);
-      const hd2 = (nx - m.x) ** 2 + (nz - m.z) ** 2; if (hd2 >= r * r) continue;
+      const hd2 = (nx - m.x) ** 2 + (nz - m.z) ** 2; if (hd2 >= r * r) continue;   // (r includes a line light's half length)
       // score: the best of the nearest point and the centre at 1.5 m, and (x0.5) the nearest point at the light's height
       let s = Math.max(kAt(m, nx, 1.5, nz), kAt(m, mx, 1.5, mz), 0.5 * kAt(m, nx, Math.max(0.5, m.y - 0.5), nz));
       s *= LUMA[0] * m.I[0] + LUMA[1] * m.I[1] + LUMA[2] * m.I[2];
@@ -1076,7 +1094,7 @@ export function attach(world, emitters = [], ctx = {}) {
         const m = movMeta[j] = meta(e, false, movMeta[j]);   // refreshed in place
         pack(m, tLD.image.data, a, 0);
         if (e.beam) poolR = Math.max(poolR, Math.hypot(e.pos[0] - cp.x, e.pos[2] - cp.z));
-        const r = m.range;
+        const r = m.range + (m.hl > 0 ? m.a : 0);
         const cx0 = Math.max(0, Math.floor((m.x - r - x0) / cell) - ox), cx1 = Math.min(DW - 1, Math.floor((m.x + r - x0) / cell) - ox);
         const cz0 = Math.max(0, Math.floor((m.z - r - z0) / cell) - oz), cz1 = Math.min(DW - 1, Math.floor((m.z + r - z0) / cell) - oz);
         const Il = LUMA[0] * m.I[0] + LUMA[1] * m.I[1] + LUMA[2] * m.I[2], oneSided = m.ty === LT.beam || (m.ty === LT.lambert && m.omni < 0.3 && Math.abs(m.n[1]) < 0.7);
@@ -1135,8 +1153,25 @@ export function attach(world, emitters = [], ctx = {}) {
       shader: { head: CITY_HEAD },
     };
   }
+  // CPU probe (tests, diagnostics): irradiance in lux at a point for a world normal, split into the per-fragment grid
+  // lights (static top-K of the cell, Lambert) and the volume (nearest probe column, layer-interpolated).
+  function probe(px, py, pz, nx = 0, ny = 1, nz = 0, detail = false) {
+    const cx = Math.floor((px - x0) / cell), cz = Math.floor((pz - z0) / cell); if (cx < 0 || cz < 0 || cx >= gw || cz >= gh) return null;
+    const gd = tG.image.data, row = gw * K4 * 4; let Ed = 0, n = 0; const list = detail ? [] : null;
+    for (let j = 0; j < K; j++) {
+      const id = gd[cz * row + cx * K4 * 4 + j]; if (id === NONE) break; n++;
+      const m = metas[id], f = kAt(m, px, py, pz); if (f <= 0) continue;
+      const cw = id >= animBase ? 0.5 : 1;
+      const El = (LUMA[0] * m.I[0] + LUMA[1] * m.I[1] + LUMA[2] * m.I[2]) * cw * f * Math.max(0, L3[0] * nx + L3[1] * ny + L3[2] * nz);
+      Ed += El; if (list) list.push({ id: stat[id].id, kind: stat[id].kind, lux: +(El / NS).toFixed(1) });
+    }
+    const ly = py < 4 ? (py - 0.5) / 3.5 : py < 12 ? 1 + (py - 4) / 8 : 2 + (py - 12) / 18, l = Math.max(0, Math.min(NL - 1, ly)), k0 = Math.floor(l), k1 = Math.min(NL - 1, k0 + 1), u = l - k0;
+    const ev = (k) => { const p = (cz * gw + cx) * NL + k, a = LUMA[0] * VA[p * 4] + LUMA[1] * VA[p * 4 + 1] + LUMA[2] * VA[p * 4 + 2]; return a * Math.max(0, 1 + VB[p * 4] * nx + VB[p * 4 + 1] * ny + VB[p * 4 + 2] * nz); };
+    const Ev = ev(k0) * (1 - u) + ev(k1) * u;
+    return { direct: Ed / NS, volume: Ev / NS, lights: n, ...(list ? { list } : {}) };
+  }
   const ctl = {
-    update, patchMaterial, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF,
+    update, patchMaterial, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe,
     setWet(v) { U.uCityWet.value = v; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
     dispose() {
       for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex]) t.dispose();

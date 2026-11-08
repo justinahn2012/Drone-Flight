@@ -16,6 +16,10 @@
 // Results: the overlay, window.__onetake.perf, and the console line "perf {json}".
 // A scale "fits 60 Hz" when every segment's p90 is under 14.2 ms (16.7 ms minus 15 % headroom).
 // URL options: ?perf=N, &soak=S (seconds; default 180 for N >= 60, else 0), &seg=cruise,hover (a subset).
+// Neon Seoul (?level=seoul&perf, phase 2 stream D perf #5): its own segments (walk: the Eoulmadang-ro walking street at
+// 5 m/s; canyon: the Yanghwa-ro screen strip at 8 m, 8 m/s; club: Wausan-ro 19-gil at 4 m/s; high: 60 m over the block,
+// 35 deg down), the same scales and soak, and world.update split per part (light / life / signs ms per frame) so the
+// phone's CPU line names its owner.
 const SCALES = [1.0, 1.2], WARM = 30, BUDGET = 14.2, TAIL = 30;
 const q = (a, p) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 const f1 = (v) => (Number.isFinite(v) ? v.toFixed(1) : '-');
@@ -65,10 +69,19 @@ const SEGMENTS = {
     pose: (o) => { const c = SEGMENTS.hover.at; return c ? [c.x, c.y, c.z, yawTo(c.cx - c.x, c.cz - c.z), 0, 0, 0, 0] : [-20, 4, 60, 0, 0, 0, 0, 0]; } },
 };
 
+const SEOUL_SEGMENTS = {
+  walk:   { pose: (o, t) => [-36, 3, -23 - 5 * t, 0, 4, 0, 0, -5] },
+  canyon: { pose: (o, t) => [31.8, 8, -309 - 8 * t, 0, 0, 0, 0, -8] },
+  club:   { pose: (o, t) => [63.7 - 4 * t, 3, 129.6, 90 * DEG, 4, -4, 0, 0] },
+  high:   { pose: (o, t) => [0, 60, 60 - 6 * t, 0, -35, 0, 0, -6] },
+};
+
 export function perfProbe(o, frames = 120) {
   const params = new URLSearchParams(location.search);
   const soakS = Math.max(0, +(params.get('soak') ?? (frames >= 60 ? 180 : 0)) || 0);
-  const segs = (params.get('seg') || Object.keys(SEGMENTS).join(',')).split(',').filter((s) => SEGMENTS[s]);
+  const level = String(o.S?.world || '');
+  const TABLE = /seoul/i.test(level) ? SEOUL_SEGMENTS : SEGMENTS;
+  const segs = (params.get('seg') || Object.keys(TABLE).join(',')).split(',').filter((s) => TABLE[s]);
   const box = document.createElement('div');
   box.id = 'perfProbe';
   box.style.cssText = 'position:fixed;left:8px;right:8px;top:calc(8px + env(safe-area-inset-top));z-index:99999;padding:10px 12px;max-height:calc(100% - 16px);overflow:auto;' +
@@ -103,12 +116,20 @@ export function perfProbe(o, frames = 120) {
       const gpu = tot.map((v, i) => v - cpu[i]);
       return { p50: q(tot, 0.5), p90: q(tot, 0.9), mean: tot.reduce((a, b) => a + b, 0) / Math.max(1, tot.length), max: Math.max(...tot), cpuP50: q(cpu, 0.5), gpuP50: q(gpu, 0.5), gpuP90: q(gpu, 0.9), n: tot.length };
     };
-    const res = { frames, warm, segments: segs, scales: [], out: [fpv.outW, fpv.outH], dpr: devicePixelRatio, quality: S.quality, msaa: fpv.samples | 0, ua: navigator.userAgent, hover: null, soak: null };
+    const res = { frames, warm, level, segments: segs, scales: [], out: [fpv.outW, fpv.outH], dpr: devicePixelRatio, quality: S.quality, msaa: fpv.samples | 0, ua: navigator.userAgent, hover: null, soak: null };
+    // world.update split (Seoul): time each part's update() for the run, restored after
+    const parts = o.world?.scene?.userData?.seoul?.parts || null, wrapped = [];
+    const split = { on: false, acc: {}, n: {}, reset() { this.acc = {}; this.n = {}; }, read() { const r = {}; for (const k in this.acc) r[k] = +(this.acc[k] / Math.max(1, this.n[k])).toFixed(2); return r; } };
+    if (parts) for (const k of ['light', 'life', 'signs']) {
+      const p = parts[k]; if (!p || typeof p.update !== 'function') continue;
+      const f = p.update; wrapped.push([p, f]); split.on = true;
+      p.update = function (...a) { const t0 = performance.now(); try { return f.apply(this, a); } finally { split.acc[k] = (split.acc[k] || 0) + performance.now() - t0; split.n[k] = (split.n[k] || 0) + 1; } };
+    }
     try {
       for (const s of SCALES) {
         const row = { scale: s, px: [Math.round(fpv.outW * s), Math.round(fpv.outH * s)], seg: {} };
         for (const name of segs) {
-          const seg = SEGMENTS[name]; seg.setup?.(o);
+          const seg = TABLE[name]; seg.setup?.(o); split.reset();
           if (name === 'hover') res.hover = seg.at ? { x: +seg.at.x.toFixed(1), y: +seg.at.y.toFixed(1), z: +seg.at.z.toFixed(1), crownH: +seg.at.h.toFixed(1) } : 'no crown found: fixed point';
           const tot = [], cpu = [];
           for (let i = 0; i < warm + frames; i++) {
@@ -118,7 +139,7 @@ export function perfProbe(o, frames = 120) {
             if (i >= warm) { tot.push(a); cpu.push(b); }
             if (i % 10 === 0) say(`PERF · ${s.toFixed(1)}× · ${name} · ${i < warm ? 'warm-up' : `frame ${i - warm}/${frames}`}`);
           }
-          row.seg[name] = stats(tot, cpu);
+          row.seg[name] = stats(tot, cpu); if (split.on) row.seg[name].parts = split.read();
         }
         const all = Object.values(row.seg);
         row.p90 = Math.max(...all.map((x) => x.p90)); row.worst = Object.keys(row.seg).find((k) => row.seg[k].p90 === row.p90);
@@ -126,9 +147,9 @@ export function perfProbe(o, frames = 120) {
       }
       if (soak > 0) {   // the phone heats up: cycle the segments at 1.0 for `soak` s, keep every sample with its time
         const T = [], tot = [], cpu = [], t0 = performance.now(); let k = 0, i = 0;
-        for (const name of segs) SEGMENTS[name].setup?.(o);
+        for (const name of segs) TABLE[name].setup?.(o);
         while ((performance.now() - t0) / 1000 < soak) {
-          const name = segs[Math.floor(k / 120) % segs.length], seg = SEGMENTS[name];
+          const name = segs[Math.floor(k / 120) % segs.length], seg = TABLE[name];
           await raf(); fpv.scale = 1.0; place(seg, (k % 120) / 60, k % 120 === 0); k++;
           const [a, b] = frame(); T.push((performance.now() - t0) / 1000); tot.push(a); cpu.push(b);
           if (i++ % 30 === 0) say(`PERF · SOAK ${Math.floor((performance.now() - t0) / 1000)} / ${soak} s · ${name}`);
@@ -138,6 +159,7 @@ export function perfProbe(o, frames = 120) {
         res.soak.throttle = +(res.soak.last30.p90 / res.soak.first30.p90).toFixed(2);
       }
     } finally {
+      for (const [p, f] of wrapped) p.update = f;
       delete fpv.frameTiming;
       S.mode = saved.mode; S.fps = saved.fps; o.applySettings();
     }
@@ -150,7 +172,7 @@ export function perfProbe(o, frames = 120) {
     const lines = ['PERF · ms per frame (CPU+GPU synced; gpu ≈ total − cpu)'];
     for (const x of res.scales) {
       lines.push(`${x.scale.toFixed(1)}×  ${x.px[0]}×${x.px[1]}  ${x.p90 <= BUDGET ? 'fits 60 Hz' : `over budget (${x.worst})`}`);
-      for (const [n, v] of Object.entries(x.seg)) lines.push(`  ${n.padEnd(6)} p50 ${f1(v.p50).padStart(5)}  p90 ${f1(v.p90).padStart(5)}  cpu ${f1(v.cpuP50)}  gpu ${f1(v.gpuP50)}`);
+      for (const [n, v] of Object.entries(x.seg)) lines.push(`  ${n.padEnd(6)} p50 ${f1(v.p50).padStart(5)}  p90 ${f1(v.p90).padStart(5)}  cpu ${f1(v.cpuP50)}  gpu ${f1(v.gpuP50)}` + (v.parts ? `  [${Object.entries(v.parts).map(([k, ms]) => `${k} ${ms}`).join(' · ')}]` : ''));
     }
     if (res.soak) lines.push(`SOAK ${res.soak.seconds} s · ${res.soak.frames} frames · 1.0×`, `  first 30 s p50 ${f1(res.soak.first30.p50)}  p90 ${f1(res.soak.first30.p90)}`,
       `  last 30 s  p50 ${f1(res.soak.last30.p50)}  p90 ${f1(res.soak.last30.p90)}  gpu ${f1(res.soak.last30.gpuP50)}  (×${res.soak.throttle})`);
