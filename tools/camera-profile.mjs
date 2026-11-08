@@ -139,7 +139,7 @@ export async function cameraProfile({ root = ROOT, out = root, log = console.log
       tiltDeg, camTiltDeg: Object.fromEntries(Object.entries(CRAFTS).map(([k, c]) => [k, c.camTilt])),
       hoverHz: Object.fromEntries(Object.entries(CRAFTS).map(([k, c]) => [k, c.hoverHz])),
       stabTau: STAB, stabReplaySigma: STAB_REPLAY,
-      note: 'Cine also pitches the view with the climb / dive angle (flight.js camPitch). Live stabilisation = slerp with time constant stabTau[setting]',
+      note: 'Cine also pitches the view with the climb / dive angle, looks down the tube in a vertical drop and counter-pitches the fast nods (flight.js camView, advanced in step()). Live stabilisation = slerp with time constant stabTau[setting]',
     },
     quality: QUALITY,
     defaults: { lens: DEF.lens ?? null, shutter: DEF.shutter ?? null, stab: DEF.stab ?? null, quality: DEF.quality ?? null, mode: DEF.mode ?? null, fps: DEF.fps ?? null },
