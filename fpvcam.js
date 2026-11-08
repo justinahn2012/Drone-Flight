@@ -45,20 +45,83 @@ vec2 lensD(vec2 uv, out float r, out float th){
 }
 `;
 
-const BLUR_FS = /* glsl */`precision highp float;
-${COMMON}
-in vec2 vUv;
-out vec4 fragColor;
-uniform sampler2D tColor;
-uniform sampler2D tDepth;
-uniform vec2 uScale;      // viewport / rt size (color)
-uniform vec2 uDVp;        // depth viewport size, texels
-uniform vec2 uVp;         // viewport size in px
+// camera motion over the exposure (shared by the shutter blur and its TileMax pass)
+const MOTION = /* glsl */`
 uniform vec2 uProj;       // P[0][0], P[1][1]
 uniform vec3 uVel;        // camera linear velocity, view space (m/s)
 uniform vec3 uAng;        // camera angular velocity, view space (rad/s)
 uniform float uExp;       // exposure time (s)
 uniform float uRO;        // rolling-shutter readout time (s)
+// small-angle rotation, 2nd order: < 0.3 px error at 720 deg/s over one exposure
+vec3 rotv(vec3 v, vec3 a){ vec3 c = cross(a, v); return v + c + 0.5 * cross(a, c); }
+// where does the point seen at this pixel by the camera at time tau appear in the rendered (t=0) frame? z: its t=0 depth
+vec2 warpz(vec3 P, float tau, vec3 J, out float z){
+  vec3 p0 = uVel * tau + rotv(P, uAng * tau + J);
+  z = -p0.z;
+  if (p0.z > -0.01) return vec2(-10.0);
+  return 0.5 + 0.5 * vec2(uProj.x * p0.x, uProj.y * p0.y) / -p0.z;
+}
+vec2 warp(vec3 P, float tau, vec3 J){ float z; return warpz(P, tau, J, z); }
+vec3 rayAt(vec2 uv){ vec2 n = uv * 2.0 - 1.0; return vec3(n.x / uProj.x, n.y / uProj.y, -1.0); }
+`;
+
+// TileMax (McGuire 2012): per tile of uTile render px, the nearest collider depth and the blur of that surface at the tile
+// centre: rg = blur direction, b = reach (px: farthest a pixel of it can be smeared), a = nearest depth (m)
+const TILE_FS = /* glsl */`precision highp float;
+${COMMON}
+${MOTION}
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D tDepth;
+uniform vec2 uDVp;
+uniform vec2 uVp;
+uniform float uTile;      // render px per tile (even)
+void main(){
+  int t2 = int(uTile * 0.5);
+  ivec2 b0 = ivec2(gl_FragCoord.xy) * t2, m = ivec2(uDVp) - 1;
+  float dmin = 2.0;
+  for (int y = 0; y < 32; y++) { if (y >= t2) break;
+    for (int x = 0; x < 32; x++) { if (x >= t2) break;
+      vec4 c = texelFetch(tDepth, min(b0 + ivec2(x, y), m), 0); dmin = min(dmin, c.r + c.g / 255.0); } }
+  float z = 0.02 * exp2(dmin * LOGR);
+  vec2 cpx = (vec2(ivec2(gl_FragCoord.xy)) + 0.5) * uTile, uv = cpx / uVp;
+  float tr = ((1.0 - uv.y) - 0.5) * uRO;
+  vec3 P = rayAt(uv) * z;
+  vec2 a = warp(P, tr - 0.5 * uExp, vec3(0.0)), b = warp(P, tr + 0.5 * uExp, vec3(0.0));
+  vec2 A = (a - uv) * uVp, B = (b - uv) * uVp;
+  float reach = (a.x < -5.0 || b.x < -5.0) ? 0.0 : max(length(A), length(B));
+  vec2 dir = length(B - A) > 1e-3 ? normalize(B - A) : vec2(1.0, 0.0);
+  fragColor = vec4(dir, reach, z);
+}`;
+
+// NeighborMax: (2r+1)^2 tiles: the direction/reach of the farthest-reaching tile, and the nearest depth among them
+const NBR_FS = /* glsl */`precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D tTile;
+uniform vec2 uTVp;
+uniform float uR;
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy), m = ivec2(uTVp) - 1, ri = ivec2(int(uR));
+  vec4 best = vec4(1.0, 0.0, 0.0, 1e4); float zmin = 1e4;
+  for (int y = -3; y <= 3; y++) { if (abs(y) > ri.y) continue;
+    for (int x = -3; x <= 3; x++) { if (abs(x) > ri.x) continue;
+      vec4 t = texelFetch(tTile, clamp(p + ivec2(x, y), ivec2(0), m), 0);
+      if (t.b > best.b) best = t; zmin = min(zmin, t.a); } }
+  fragColor = vec4(best.rg, best.b, zmin);
+}`;
+
+const BLUR_FS = /* glsl */`precision highp float;
+${COMMON}
+${MOTION}
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D tColor;
+uniform sampler2D tDepth;
+uniform sampler2D tNbr;   // NeighborMax tiles
+uniform vec2 uScale;      // viewport / rt size (color)
+uniform vec2 uDVp;        // depth viewport size, texels
+uniform vec2 uVp;         // viewport size in px
 uniform vec3 uJelloAmp;   // rad, already averaged over the exposure (sinc) on the CPU
 uniform vec3 uJelloW;     // rad/s
 uniform vec3 uJelloPh;    // phase at the rendered instant (CPU-integrated, wrapped to 2pi)
@@ -69,30 +132,22 @@ uniform vec3 uJ2Ph;
 uniform float uFrame;     // wrapped 0..63
 uniform float uMaxS;
 uniform float uLodMax;    // 0 on frames whose mip chain wasn't rebuilt
+uniform float uRecon;     // 1: reconstruction filter at silhouettes
+uniform float uTile;      // render px per tile
 
-// small-angle rotation, 2nd order: < 0.3 px error at 720 deg/s over one exposure
-vec3 rotv(vec3 v, vec3 a){ vec3 c = cross(a, v); return v + c + 0.5 * cross(a, c); }
-// where does the point seen at this pixel by the camera at time tau appear in the rendered (t=0) frame?
-vec2 warp(vec3 P, float tau, vec3 J){
-  vec3 p0 = uVel * tau + rotv(P, uAng * tau + J);
-  if (p0.z > -0.01) return vec2(-10.0);
-  return 0.5 + 0.5 * vec2(uProj.x * p0.x, uProj.y * p0.y) / -p0.z;
-}
 vec3 tap(vec2 uv, float lod){
   vec2 h = 0.5 * exp2(lod) / uVp;     // keep the mip footprint inside the live viewport
   return textureLod(tColor, clamp(uv, h, 1.0 - h) * uScale, lod).rgb;
 }
-float dlog(ivec2 p){ vec4 c = texelFetch(tDepth, clamp(p, ivec2(0), ivec2(uDVp) - 1), 0); return c.r + c.g / 255.0; }
+float zAt(vec2 uv){ vec4 c = texelFetch(tDepth, clamp(ivec2(uv * uDVp), ivec2(0), ivec2(uDVp) - 1), 0); return 0.02 * exp2((c.r + c.g / 255.0) * LOGR); }
+// soft depth compare in log2 depth: 1 when b is >15% nearer than a, 0 within 5%
+float nearer(float za, float zb){ return smoothstep(0.07, 0.2, log2(za / max(zb, 1e-3))); }
 void main(){
-  vec2 ndc = vUv * 2.0 - 1.0;
-  vec3 dir = vec3(ndc.x / uProj.x, ndc.y / uProj.y, -1.0);
-  // silhouette depth: bilinear in log depth (leans to the near side) at an IGN-jittered spot within +-0.75 half-res
-  // texel, so a near edge smears over the background along a dithered line instead of the half-res sawtooth
-  vec2 jo = vec2(ign(gl_FragCoord.xy + 17.0 + uFrame * 5.588238), ign(gl_FragCoord.yx + 41.0 + uFrame * 5.588238)) - 0.5;
-  vec2 q = vUv * uDVp - 0.5 + jo * 1.5;
-  vec2 f = fract(q); ivec2 i0 = ivec2(floor(q));
-  float dl = mix(mix(dlog(i0), dlog(i0 + ivec2(1, 0)), f.x), mix(dlog(i0 + ivec2(0, 1)), dlog(i0 + ivec2(1, 1)), f.x), f.y);
-  vec3 P = dir * (0.02 * exp2(dl * LOGR));
+  vec3 dir = rayAt(vUv);
+  // own depth: the nearest half-res collider texel, no jitter, no blend (a blended depth invents a surface in between;
+  // the reconstruction below makes the result independent of which side of the edge this texel falls)
+  float zX = zAt(vUv);
+  vec3 P = dir * zX;
   float tauRow = ((1.0 - vUv.y) - 0.5) * uRO;          // top rows are read out first
   vec3 J = uJelloAmp * sin(uJelloPh + uJelloW * tauRow) - uJello0   // prop jello, once per pixel (row time)
          + uJ2Amp * sin(uJ2Ph + uJ2W * tauRow);
@@ -103,14 +158,48 @@ void main(){
   float n = clamp(ceil(lenPx / 1.6), 1.0, uMaxS);
   float lod = clamp(log2(max(lenPx / n, 1.0) / 1.25), 0.0, uLodMax);   // prefilter: tap footprint ~ sample spacing
   float j = ign(gl_FragCoord.xy + uFrame * 5.588238);
-  vec3 acc = vec3(0.0);
+  // 1) own surface along its own (curved, rolling-shutter, jello) path. With the reconstruction on, taps that land on
+  //    something nearer than this surface would be at that instant are occluders: they come in through 2), not here.
+  vec3 acc = vec3(0.0); float wsum = 0.0;
   for (int i = 0; i < 24; i++) {
     if (float(i) >= n) break;
     float fi = (n > 1.0) ? (float(i) + j) / n - 0.5 : 0.0;   // box shutter, jittered
-    vec2 s = warp(P, tauRow + fi * uExp, J);
-    acc += tap(s.x < -5.0 ? vUv : s, lod);
+    float ze; vec2 s = warpz(P, tauRow + fi * uExp, J, ze);
+    float w = 1.0;
+    if (s.x < -5.0) s = vUv;
+    else if (uRecon > 0.5 && n > 1.0) w = 1.0 - nearer(ze, zAt(s));
+    acc += tap(s, lod) * w; wsum += w;
   }
-  fragColor = vec4(acc / n, 1.0);
+  vec3 cs = wsum > 1e-3 ? acc / wsum : tap(vUv, 0.0);
+  // 2) foreground smeared over this pixel (McGuire 2012, scatter-as-gather): walk the neighbourhood's longest blur;
+  //    a nearer surface Y covers X if X lies on Y's own smear, each tap carrying spacing / Y's smear length of coverage
+  if (uRecon > 0.5) {
+    vec4 nb = texelFetch(tNbr, ivec2(gl_FragCoord.xy / uTile), 0);
+    if (nb.b > 0.75 && log2(zX / nb.a) > 0.07) {
+      vec2 X = vUv * uVp;
+      float R = nb.b, m = clamp(ceil(2.0 * R / 2.5), 4.0, 12.0), dl = 2.0 * R / m;
+      float lf = clamp(log2(max(dl, 1.0) / 1.25), 0.0, uLodMax);
+      float cov = 0.0; vec3 fg = vec3(0.0); float fw = 0.0;
+      float j2 = fract(j + 0.5);
+      for (int i = 0; i < 12; i++) {
+        if (float(i) >= m) break;
+        vec2 Y = X + nb.rg * (((float(i) + j2) / m) * 2.0 - 1.0) * R;
+        vec2 uy = Y / uVp;
+        float zY = zAt(uy), f = nearer(zX, zY);
+        if (f <= 0.0) continue;
+        vec3 PY = rayAt(uy) * zY;
+        vec2 ay = warp(PY, tauRow - 0.5 * uExp, J), by = warp(PY, tauRow + 0.5 * uExp, J);
+        if (ay.x < -5.0 || by.x < -5.0) continue;
+        vec2 A = ay * uVp - Y, B = by * uVp - Y, q = Y - X, AB = B - A;   // X sees Y when Y - X = (warp - Y) at some tau
+        float L = length(AB), u = clamp(dot(q - A, AB) / max(L * L, 1e-4), 0.0, 1.0);
+        float perp = length(q - A - u * AB);
+        float w = f * (1.0 - smoothstep(0.75, 1.5 + 0.15 * L, perp)) * min(1.0, dl / max(L, dl));
+        cov += w; fg += tap(uy, lf) * w; fw += w;
+      }
+      if (fw > 1e-4) cs = mix(cs, fg / fw, min(cov, 1.0));
+    }
+  }
+  fragColor = vec4(cs, 1.0);
 }`;
 
 // Screen-space AO, half res, from the collider (+ depthScene) depth. SAO-style: normal from the flatter neighbour per
@@ -474,7 +563,8 @@ const sinc = (x) => (Math.abs(x) < 1e-4 ? 1 : Math.sin(x) / x);
 const clamp01 = (x) => (x > 0 ? (x < 1 ? x : 1) : 0);
 // per-axis blur-aware render scale: a box smear of L px kills detail above ~1/L cycles/px along it
 const axisScale = (L) => (L > 3 ? Math.max(0.6, Math.sqrt(3 / L)) : 1.0);
-const MSAA_OFF_BELOW = 0.9, MSAA_ON_ABOVE = 0.93;   // blurScale hysteresis for the non-MSAA scene target
+const MSAA_OFF_BELOW = 0.9, MSAA_ON_ABOVE = 0.93;
+const MASK_N = 64;   // lens mask boundary points   // blurScale hysteresis for the non-MSAA scene target
 
 export const LENSES = {
   // thetaS = half-angle across the viewport's SHORT side; k: 1 rectilinear, 0.5 stereographic, ->0 equidistant
@@ -565,8 +655,24 @@ export class FPVCamera {
       uExp: { value: 1 / 120 }, uRO: { value: 0.008 }, uJelloAmp: { value: new THREE.Vector3() },
       uJelloW: { value: new THREE.Vector3() }, uJelloPh: { value: new THREE.Vector3() }, uJello0: { value: new THREE.Vector3() },
       uJ2Amp: { value: new THREE.Vector3() }, uJ2W: { value: new THREE.Vector3() }, uJ2Ph: { value: new THREE.Vector3() },
-      uFrame: { value: 0 }, uMaxS: { value: 12 }, uLodMax: { value: 4 },
+      uFrame: { value: 0 }, uMaxS: { value: 12 }, uLodMax: { value: 4 }, tNbr: { value: null }, uRecon: { value: 0 }, uTile: { value: 16 },
     });
+    // TileMax / NeighborMax share the blur's motion uniforms (same objects: set once per frame)
+    const B = this.blur.u;
+    this.tile = pass(TILE_FS, { tDepth: { value: null }, uDVp: B.uDVp, uVp: B.uVp, uTile: B.uTile, uProj: B.uProj, uVel: B.uVel, uAng: B.uAng, uExp: B.uExp, uRO: B.uRO });
+    this.nbr = pass(NBR_FS, { tTile: { value: null }, uTVp: { value: new THREE.Vector2(1, 1) }, uR: { value: 2 } });
+    // early-Z mask over the render area the lens never shows (perf #3): depth 0 there, drawn first (after three's sky)
+    const mg = new THREE.BufferGeometry();
+    mg.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(MASK_N * 2 * 3), 3));
+    const mi = []; for (let i = 0; i < MASK_N; i++) { const a = 2 * i, b = 2 * ((i + 1) % MASK_N); mi.push(a, a + 1, b, b, a + 1, b + 1); }
+    mg.setIndex(mi);
+    this.lensMask = new THREE.Mesh(mg, new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3, depthTest: true, depthFunc: THREE.AlwaysDepth, depthWrite: true, colorWrite: false, side: THREE.DoubleSide,
+      vertexShader: 'precision highp float;\nin vec3 position;\nvoid main(){ gl_Position = vec4(position.xy, -1.0, 1.0); }',
+      fragmentShader: 'precision highp float;\nout vec4 o;\nvoid main(){ o = vec4(0.0); }',
+    }));
+    Object.assign(this.lensMask, { frustumCulled: false, renderOrder: -1e9, castShadow: false, receiveShadow: false, name: 'fpvcam.lensMask' });
+    this._maskKey = '';
     this.ssao = pass(SSAO_FS, {
       tDepth: { value: null }, uDVp: { value: new THREE.Vector2(1, 1) }, uProj: { value: new THREE.Vector2(1, 1) },
       uR: { value: 0.5 }, uMaxPx: { value: 24 }, uStrength: { value: 2.5 },
@@ -625,7 +731,7 @@ export class FPVCamera {
   }
 
   setQualityRange(min, max) {
-    this.minScale = min; this.maxScale = max; this.scale = Math.min(Math.max(this.scale, min), max);
+    this.minScale = min; this.maxScale = max; this.scale = Math.min(Math.max(this.scale, min), max); this.allocScale = max; this._realloc = 0;
     if (this.outW > 2) this._allocScene();
   }
 
@@ -648,7 +754,8 @@ export class FPVCamera {
 
   // scene / blur / collider-depth / AO targets: sized to the largest viewport the governor may use (out x maxScale)
   _allocScene() {
-    const cap = Math.max(0.3, this.maxScale);
+    // sized to the governor's ceiling (perf #3): a throttled phone stops clearing/storing the 1.2x targets it can't use
+    const cap = Math.max(0.3, Math.min(this.maxScale, this.allocScale || this.maxScale));
     const cw = Math.ceil(this.outW * cap), ch = Math.ceil(this.outH * cap);
     const type = this.hdr ? THREE.HalfFloatType : THREE.UnsignedByteType;
     this._msaaReq = this.look.msaa | 0;
@@ -665,6 +772,11 @@ export class FPVCamera {
     this.depthRT = rt(dw, dh, { filter: THREE.NearestFilter, depth: true });
     this.aoRT = rt(dw, dh, { filter: THREE.NearestFilter });                         // ao + packed depth, for the bilateral pass
     this.aoRT2 = rt(dw, dh, { format: THREE.RedFormat });                             // what the scene samples (bilinear)
+    // motion-blur tiles: ~1/21 of the frame height (16 px at 336), so 5x5 neighbours reach ~2.5 tiles of smear
+    this.tilePx = 2 * Math.max(8, Math.min(32, Math.round(ch / 42)));
+    for (const t of [this.tileRT, this.nbrRT]) t?.dispose();
+    const tw = Math.ceil(cw / this.tilePx), th = Math.ceil(ch / this.tilePx), tt = this.hdr ? THREE.HalfFloatType : THREE.UnsignedByteType;
+    this.tileRT = rt(tw, th, { filter: THREE.NearestFilter, type: tt }); this.nbrRT = rt(tw, th, { filter: THREE.NearestFilter, type: tt });
     this.samples = samples;
     this._fresh.clear(); this._fresh.add(this.colorRT); if (this.colorRT1) this._fresh.add(this.colorRT1);
     this._noMS = false;
@@ -692,20 +804,65 @@ export class FPVCamera {
     this.centerRatio = (1 / L.ty) / (L.F / L.hh);
   }
 
-  // Compile every post program now (behind the loader) instead of on the first flying frame.
-  warmup() {
+  // Lens mask geometry (render NDC): ring between the lens footprint pushed out by `margin` px and far outside the frame.
+  _updateMask(vw, vh, margin) {
+    const L = this.lens, key = `${vw}|${vh}|${Math.round(margin)}|${L.F}|${L.k}|${L.tx}|${L.hw}`;
+    if (key === this._maskKey) return;
+    this._maskKey = key;
+    const pos = this.lensMask.geometry.attributes.position, a = pos.array, N = MASK_N;
+    for (let i = 0; i < N; i++) {
+      // walk the output frame's perimeter
+      const t = i / N * 4, side = Math.floor(t), f = t - side;
+      const u = side === 0 ? f : side === 1 ? 1 : side === 2 ? 1 - f : 0, v = side === 0 ? 0 : side === 1 ? f : side === 2 ? 1 : 1 - f;
+      const lx = (u - 0.5) * 2 * L.hw, ly = (v - 0.5) * 2 * L.hh, rr = Math.hypot(lx, ly);
+      const th = L.k > 0.999 ? Math.atan(rr / L.F) : Math.atan(rr * L.k / L.F) / L.k;
+      const g = rr > 1e-5 ? Math.tan(th) / rr : 1 / L.F;
+      let px = lx * g / L.tx * vw / 2, py = ly * g / L.ty * vh / 2;   // render px from the centre
+      const d = Math.hypot(px, py) || 1, sc = (d + margin) / d;
+      px *= sc; py *= sc;
+      a[6 * i] = px / (vw / 2); a[6 * i + 1] = py / (vh / 2); a[6 * i + 2] = 0;
+      a[6 * i + 3] = 4 * px / (vw / 2); a[6 * i + 4] = 4 * py / (vh / 2); a[6 * i + 5] = 0;
+    }
+    pos.needsUpdate = true;
+  }
+
+  // Compile every program now (behind the loader) instead of on the first flying frames (perf #2): the post passes, the
+  // collider/depthScene depth programs (keyed on rendering into a target), every texture uploaded (initTexture), and,
+  // given a pose, one full frame with a forced shadow update so the shadow-depth programs and MSAA paths exist too.
+  warmup(world, pose) {
     const r = this.r; if (!r) return;
     const prev = r.getRenderTarget();
     try {
-      for (const p of [this.blur, this.ssao, this.aoBlur, this.down, this.meter, this.bloomH, this.final]) r.compile(p.scene, this.quadCam);
+      for (const p of [this.blur, this.tile, this.nbr, this.ssao, this.aoBlur, this.down, this.meter, this.bloomH, this.final]) r.compile(p.scene, this.quadCam);
       if (!this._warmScene) {
         this._warmScene = new THREE.Scene();
-        for (const m of [this.depthMat, this.sentinel.material]) { const o = new THREE.Mesh(TRI, m); o.frustumCulled = false; this._warmScene.add(o); }
+        for (const m of [this.depthMat, this.sentinel.material, this.lensMask.material]) { const o = new THREE.Mesh(TRI, m); o.frustumCulled = false; this._warmScene.add(o); }
       }
       if (this.depthRT) r.setRenderTarget(this.depthRT);     // the depth program's key depends on rendering into a target
       r.compile(this._warmScene, this.cam);
+      const ds = world && (world.depthScene ?? world.scene?.userData?.depthScene);
+      if (ds?.isScene) r.compile(ds, this.cam);
+      if (world?.scene) {
+        const seen = new Set();
+        const up = (v) => { if (v?.isTexture && !seen.has(v)) { seen.add(v); try { r.initTexture(v); } catch (e) {} } };
+        world.scene.traverse((o) => {
+          for (const m of Array.isArray(o.material) ? o.material : o.material ? [o.material] : []) {
+            for (const k in m) up(m[k]);
+            if (m.uniforms) for (const k in m.uniforms) up(m.uniforms[k]?.value);
+          }
+        });
+        this.texturesWarmed = seen.size;
+      }
     } catch (e) { console.warn('fpv warmup', e); }
     finally { r.setRenderTarget(prev); }
+    if (world && pose && this.colorRT) {
+      try {
+        r.shadowMap.needsUpdate = true;
+        const z = new THREE.Vector3();
+        this.render(world, pose, { vel: z, ang: z, vib: 0 }, 1 / 60);
+        this.resetExposure = true; this.settleN = Math.max(this.settleN, 60);
+      } catch (e) { console.warn('fpv warmup frame', e); }
+    }
   }
 
   frameTiming(ms) {
@@ -736,11 +893,17 @@ export class FPVCamera {
     if (this.slowT > 450) {
       if (band30 && !this.pinScale) this.pinScale = this.scale;
       this.ceilLock = this.scale; this.scale = Math.max(this.minScale, this.scale * 0.9); this.slowT = 0; this.capT = 60000;
+      // capped for 60 s at <= ceilLock*0.97: shrink the targets once that is worth a realloc (>8%)
+      const want = this.ceilLock * 0.97;
+      if (want < (this.allocScale || this.maxScale) * 0.92) this._realloc = want;
     }
     this.capT = Math.max(0, this.capT - ms);
     if (this.fastT > 2500) {
       const ceil = this.capT > 0 ? this.ceilLock * 0.97 : this.maxScale;
       this.scale = Math.min(this.maxScale, Math.max(this.scale, Math.min(ceil, this.scale * 1.02))); this.fastT = 0;
+      // climbing past the shrunk targets: grow them back to the full ceiling (scale is clamped to them until then)
+      const al = this.allocScale || this.maxScale;
+      if (this.scale > al * 0.999 && al < this.maxScale) { this.scale = al; this._realloc = this.capT > 0 ? Math.min(this.maxScale, this.ceilLock) : this.maxScale; }
     }
   }
 
@@ -763,6 +926,7 @@ export class FPVCamera {
   render(world, pose, motion, dt) {
     const r = this.r, lk = this.look;
     this.frame++; this.time += dt;
+    if (this._realloc > 0) { this.allocScale = this._realloc; this._realloc = 0; this._allocScene(); }
     if ((lk.msaa | 0) !== this._msaaReq) this._allocScene();
     if (this.resetExposure) this.settleN = Math.max(this.settleN, 60);
     const cam = this.cam;
@@ -851,13 +1015,21 @@ export class FPVCamera {
       const sc = world.scene, ac = r.autoClear, acc = r.autoClearColor, acd = r.autoClearDepth, acs = r.autoClearStencil;
       const W0 = sceneRT.width, H0 = sceneRT.height;
       sc.add(this.sentinel);
+      // lens mask: inset from the displayed footprint by this frame's blur reach (taps never land in the masked area)
+      // reach bound: rotation exact, translation for surfaces >= lk.maskNear m (closer ones are near the frame centre in
+      // practice); a frame that would need more than 1/5 of the view skips the mask (it's a calm-frame saving: MSAA frames)
+      const reach = lk.shutter * fpxMax * ((Math.abs(aView.x) + Math.abs(aView.y)) * (1 + rc * rc) + Math.abs(aView.z) * rc + vView.length() * (1 + rc) / (lk.maskNear || 1));
+      const margin = Math.max(lk.maxSamples * 1.6, reach + 4);
+      const useMask = !!lk.lensMask && margin < 0.2 * Math.min(vw, vh);
+      if (useMask) { this._updateMask(vw, vh, margin); sc.add(this.lensMask); }
+      this.maskOn = useMask;
       r.autoClear = true; r.autoClearColor = true; r.autoClearDepth = true; r.autoClearStencil = false;
       if (sceneRT.samples > 0) { sceneRT.width = vw; sceneRT.height = vh; }
       try { r.render(sc, cam); }
       finally {
         sceneRT.width = W0; sceneRT.height = H0;
         r.autoClear = ac; r.autoClearColor = acc; r.autoClearDepth = acd; r.autoClearStencil = acs;
-        sc.remove(this.sentinel);
+        sc.remove(this.sentinel); sc.remove(this.lensMask);
       }
     } else {
       r.clear(true, true, false);
@@ -901,6 +1073,19 @@ export class FPVCamera {
     }
     bu.uJ2Amp.value.fromArray(A2); bu.uJ2W.value.fromArray(W2); bu.uJ2Ph.value.fromArray(ph2);
     bu.uFrame.value = this.frame % 64; bu.uMaxS.value = lk.maxSamples; bu.uLodMax.value = needMips ? 4 : 0;
+    // reconstruction at silhouettes (art #2): TileMax -> NeighborMax -> gather. Half-float tiles only (HDR worlds).
+    const recon = !!(lk.mbRecon && this.hdr && world.colliderScene) && lk.shutter > 0;
+    bu.uRecon.value = recon ? 1 : 0; bu.uTile.value = this.tilePx;
+    if (recon) {
+      const tw = Math.ceil(vw / this.tilePx), th = Math.ceil(vh / this.tilePx);
+      this.tile.u.tDepth.value = this.depthRT.texture;
+      this.tileRT.viewport.set(0, 0, tw, th);
+      r.setRenderTarget(this.tileRT); r.clear(true, false, false); r.render(this.tile.scene, this.quadCam);
+      this.nbr.u.tTile.value = this.tileRT.texture; this.nbr.u.uTVp.value.set(tw, th); this.nbr.u.uR.value = Math.min(3, Math.max(1, lk.mbNbr ?? 2));
+      this.nbrRT.viewport.set(0, 0, tw, th);
+      r.setRenderTarget(this.nbrRT); r.clear(true, false, false); r.render(this.nbr.scene, this.quadCam);
+      bu.tNbr.value = this.nbrRT.texture;
+    } else bu.tNbr.value = this.tileRT.texture;
     this.blurRT.viewport.set(0, 0, vw, vh);
     r.setRenderTarget(this.blurRT); r.clear(true, false, false); r.render(this.blur.scene, this.quadCam);
 
@@ -982,7 +1167,7 @@ export class FPVCamera {
       world: this.hdr ? 'hdr' : 'ldr',
       output: { w: W, h: Hh, renderScale: { scale: this.scale, min: this.minScale, max: this.maxScale } },
       pipeline: ['depth(collider+depthScene, half res, log-packed rg8)', 'ssao(8 taps, half res) + 4x4 bilateral', 'scene(HDR half-float, MSAA)',
-        'shutter blur(analytic, rolling shutter, jello)', 'downsample 1/8 (lens-mapped taps, WB bright pass)', 'meter(9x7, AE lag)', 'bloom(2x separable 9-tap)',
+        'tilemax + neighbormax (nearest depth, reach)', 'shutter blur(analytic, rolling shutter, jello; McGuire-style silhouette reconstruction)', 'downsample 1/8 (lens-mapped taps, WB bright pass)', 'meter(9x7, AE lag)', 'bloom(2x separable 9-tap)',
         'final(lens, CA, sharpen, WB, bloom, vignette, contrast, veil, camCurve+clip, toe, saturation, selective colour, S-curve, lift, grain)'],
       lens: { ...lk.lens, cornerCapRad: 1.16, renderMargin: 1.035, solved: L, mapping: 'theta = atan(r*k/F)/k (k>0.999: atan(r/F)); render = tan(theta)/r', vignette: { amount: lk.vignette, cosPow: 2.2 }, caRadial: 'r_ch = r * (1 +- ca * (r/rc)^2)' },
       shutter: { exposure: lk.shutter, readout: lk.readout, shape: 'box, jittered (IGN)', tapSpacingPx: 1.6, maxSamples: lk.maxSamples, depthEncoding: 'd = clamp(log2(max(z,0.02)/0.02)/12.28771238,0,1) -> (floor(d*255)/255, fract(d*255))' },

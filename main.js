@@ -358,12 +358,13 @@ async function loadProcWorld(def) {
   world.spawn.copy(w.spawn); world.yaw = w.yaw;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);
-  // [D] HDR look (colorist round 2, PLAN3 decisions 4/5): evMax 3.6 (interiors ~p50 60-87, not pinned at +4); WB fitted to
-  // the puresky sun+sky (grey card R/G 1.015, B/G 0.95); overcast shade WB = its WB (no sepia hall); sunny evBias -0.15.
+  // [D] HDR look (colorist r2/r3, PLAN4 decision 1): evMax 3.6; WB fitted to the puresky sun+sky (grey card R/G 1.015,
+  // B/G 0.95); overcast shade WB = its WB (no sepia hall); evBias sunny -0.30 / overcast 0.0 (with GRADES.hdr clipEv 3.0).
+  // The integrator retunes this line against the golden stills; every other knob is a GRADES.hdr key.
   Object.assign(fpv.look, { evMin: -5.5, evMax: 3.6, invTone: 0, lift: 0, saturation: 1.1, expo: 0.85, wb: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.036, 0.994, 0.956],
-    wbShade: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.125, 0.978, 0.845], evBias: def.sky === 'overcast' ? 0.3 : -0.15 });
+    wbShade: def.sky === 'overcast' ? [1.038, 0.998, 0.907] : [1.125, 0.978, 0.845], evBias: def.sky === 'overcast' ? 0.0 : -0.30 });
   Object.assign(world, { depthScene: w.depthScene || null, aoUniforms: w.aoUniforms || null });   // [D] contracts C2/C3 (optional inputs)
-  fpv.warmup?.();                                                                                   // [D] post programs behind the loader
+  fpv.warmup?.(world);                                                                              // [D] post + depth programs, textures
   fpv.cam.near = 0.06; fpv.cam.far = 3000; fpv.cam.updateProjectionMatrix();
   // [A] shader warm-up behind the loader: compile every world program now (in parallel where
   // KHR_parallel_shader_compile exists) instead of hitching the first frames. Compiled against a
@@ -375,6 +376,8 @@ async function loadProcWorld(def) {
     renderer.setRenderTarget(prev); rt.dispose();
     console.info('shader warm-up ms', Math.round(performance.now() - t));
   } catch (e) { console.warn('shader warm-up skipped', e); }
+  // [D] perf #2: depthScene/shadow programs, every texture uploaded, one full frame from the spawn (no first-frame freeze)
+  fpv.warmup?.(world, { pos: world.spawn.clone().add(new THREE.Vector3(0, 1.2, 0)), quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), world.yaw || 0) });
 }
 
 async function loadWorld(def) {
