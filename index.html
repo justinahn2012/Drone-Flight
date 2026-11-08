@@ -29,7 +29,17 @@
     -.075em 0 0 #000,-.065em -.038em 0 #000,-.038em -.065em 0 #000,0 -.075em 0 #000,.038em -.065em 0 #000,.065em -.038em 0 #000,0 .09em .12em rgba(0,0,0,.6);
   --cell:clamp(14px,4.2vh,18px);
   --sl:env(safe-area-inset-left); --sr:env(safe-area-inset-right); --st:env(safe-area-inset-top); --sb:env(safe-area-inset-bottom);
+  /* [F2] the caption sub-line / place line stroke (ui #2): the 12-way ring at .06em (a 1 px keyline thinned out over white) */
+  --stroke6:.06em 0 0 #000,.052em .03em 0 #000,.03em .052em 0 #000,0 .06em 0 #000,-.03em .052em 0 #000,-.052em .03em 0 #000,
+    -.06em 0 0 #000,-.052em -.03em 0 #000,-.03em -.052em 0 #000,0 -.06em 0 #000,.03em -.052em 0 #000,.052em -.03em 0 #000,0 0 3px rgba(0,0,0,.6);
+  /* [F2] per-level UI (levels.json `ui`, set on body by main.js): the OSD accent's badge + its ink, the ghost diamond */
+  --accBadge:#C9450C; --accInk:#fff; --ghost:#ffd34d;
+  --ko:'OT KR','Apple SD Gothic Neo','Noto Sans KR',var(--cond);
 }
+/* [F2] hangul for the level select, loading card and the captions' place line: Noto Sans KR 800 (OFL), subset to the UI's
+   hangul by tools/seoul-ui-assets.py (seoul/ui/FONTS.txt). Only hangul, digits, space, '·' and '-' come from it. */
+@font-face{font-family:'OT KR';src:url(seoul/ui/OT-KR800.woff2) format('woff2');font-weight:800;font-display:swap;
+  unicode-range:U+AC00-D7A3,U+1100-11FF,U+3130-318F,U+0030-0039,U+0020,U+00B7,U+002D}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);overflow:hidden;overscroll-behavior:none;
   font-family:var(--cond);-webkit-user-select:none;user-select:none;touch-action:none;-webkit-touch-callout:none}
@@ -96,13 +106,22 @@ body.nohud.cutting #osd .o:not(.cc),body.portrait.cutting #osd .o:not(.cc){displ
 #oNextV{display:none}
 #oNext.v #oNextA{display:none}
 #oNext.v #oNextV{display:block}
-/* near a line (< 25 m, in view): a chevron over its first gate, projected through the lens. OSD only, never in clips */
-#oChev{left:0;top:0;display:none;flex-direction:column;align-items:center;gap:1px;will-change:transform;font-size:calc(var(--cell)*.78)}
-#oChev.on{display:flex}
-#oChev svg{width:26px;height:15px;overflow:visible}
-#oChev .kb,#oChev .kw{fill:none;stroke-linecap:round;stroke-linejoin:round}
-#oChev .kb{stroke:#000;stroke-width:5.4}
-#oChev .kw{stroke:#fff;stroke-width:2.6}
+/* [F2] gate brackets (ui #3, ux #1): four corner ticks on the projected w x h of every never-flown line's start gate in
+   view within 30 m (and the armed line's end gate), hidden when a BVH ray says a wall is in the way. White 2.6 over black
+   5.4; 40 % under 8 m so the gap itself stays readable. OSD only: never in clips. */
+#oBr{left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none}
+#oBr g{display:none}
+#oBr g.on{display:inline}
+#oBr g.near{opacity:.4}
+#oBr path{fill:none;stroke-linecap:round;stroke-linejoin:round}
+#oBr .kb{stroke:#000;stroke-width:5.4}
+#oBr .kw{stroke:#fff;stroke-width:2.6}
+.brl{left:0;top:0;display:none;will-change:transform;font-size:calc(var(--cell)*.78)}
+.brl.on{display:block}
+.brl.near{opacity:.4}
+/* [F2] ux #2: a line's start gate crossed -> the top-centre OSD reads "HONGIK-RO · 0:18" until its end gate (blinks < 5 s) */
+#oNext.armed .d{opacity:1}
+#oNext .d.low{animation:blink .5s steps(2) infinite}
 #oThr{display:none;width:10px;background:rgba(0,0,0,.35);height:clamp(90px,34vh,150px);border:1.5px solid #fff;box-shadow:0 0 0 1px #000,inset 0 0 0 1px #000;position:absolute}
 #oThr i{position:absolute;left:0;right:0;bottom:0;background:#fff}
 #oThr u{position:absolute;left:-6px;right:-6px;height:2px;background:var(--acc);box-shadow:0 0 0 1px #000}
@@ -122,8 +141,10 @@ body.thr #oThr{display:block}
 #oGhost svg{display:block;width:18px;height:18px;overflow:visible}
 #oGhost .kb,#oGhost .kw{fill:none;stroke-linejoin:round}
 #oGhost .kb{stroke:#000;stroke-width:4}
-#oGhost .kw{stroke:#ffd34d;stroke-width:1.8}
+#oGhost .kw{stroke:var(--ghost);stroke-width:1.8}
 #oGhost.far svg{width:12px;height:12px}
+/* [F2] ui #4: night levels halo the OSD (glyphs, take tag, brackets) over lit fascia: the keyline alone sat on 88 % lit pixels */
+body.night #osd .o,body.night #toast,body.night #warn{filter:drop-shadow(0 0 3px rgba(0,0,0,.65))}
 /* overlay levels: OSD (all) | Minimal (score + captions) | Clean (captions only) */
 body.hud-min #osd .o:not(.tr):not(.tl):not(.cc){display:none}
 body.nohud #osd, body.nohud #live{display:none}
@@ -150,8 +171,14 @@ body.portrait #live{display:none}   /* ui #2: the chain is on the OLED (with its
 body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 #pop .cap{font:900 clamp(26px,min(7.6vh,7.2vw),46px)/1.06 var(--cap);color:#fff;text-shadow:var(--stroke);letter-spacing:.005em;text-transform:uppercase}
 #pop .emo{display:block;font-size:1.25em;line-height:1.05;text-shadow:none}
-#pop .sub{margin-top:6px;font:600 var(--cell) var(--mono);color:#fff;text-shadow:var(--key);letter-spacing:.04em}
-#pop.score .cap{display:none}
+#pop .sub{margin-top:6px;font:600 var(--cell) var(--mono);color:#fff;text-shadow:var(--stroke6);letter-spacing:.04em}
+#pop.score .cap,#pop.score .place,#pop .place:empty{display:none}
+/* [F2] ui #6: the street under the line, in hangul, as the caption's second line (burned into clips too) */
+#pop .place{margin-top:3px;font:800 calc(var(--cell)*1.02)/1.2 var(--ko);letter-spacing:.06em;color:#fff;text-shadow:var(--stroke6)}
+/* [F2] ui #2: the luma-gated plate. main.js meters the picture under the caption (one async readback per caption) and adds
+   .plate when its 80th-percentile luma is over 0.6; captions only, the OSD keeps its no-plate rule. Burned into clips too. */
+#pop::before{content:"";position:absolute;inset:-5px -14px -4px;border-radius:10px;background:rgba(0,0,0,.35);opacity:0;transition:opacity .15s;z-index:-1}
+#pop.plate::before{opacity:1}
 #pop .sub b{font-weight:600;color:var(--amber)}
 #pop.show{animation:popA var(--popDur,1.3s) cubic-bezier(.2,.8,.2,1) forwards}
 @keyframes popA{0%{transform:translateX(-50%) scale(1.25);opacity:0}12%{transform:translateX(-50%) scale(1);opacity:1}80%{opacity:1}100%{transform:translateX(-50%) scale(1);opacity:0}}
@@ -160,7 +187,7 @@ body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 #warn.show{opacity:1;animation:blink .5s steps(2) infinite}
 /* info toasts: keyline OSD text, no box (UI #1) */
 #toast{position:absolute;left:50%;top:calc(17% + var(--st));transform:translate(-50%,-6px);padding:0 12px;background:none;text-shadow:var(--key);
-  font:600 13px/1.4 var(--mono);letter-spacing:.06em;color:#fff;opacity:0;transition:opacity .2s,transform .2s;max-width:86%;text-align:center}
+  font:600 15px/1.4 var(--mono);letter-spacing:.06em;color:#fff;opacity:0;transition:opacity .2s,transform .2s;max-width:86%;text-align:center}   /* [F2] ui #4: 15 px (13 px was unreadable over fascia) */
 #toast.show{opacity:1;transform:translate(-50%,0)}
 /* Clean overlay: only toasts that matter (clip ready / failed / cancelled) show over the picture */
 body.nohud #toast:not(.warn){display:none}
@@ -213,8 +240,8 @@ body.coaching:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 .stats span{color:#c6c3bc;font-size:12px;letter-spacing:.08em;align-self:center}
 .stats b{font-weight:600;color:#fff;text-align:right;white-space:nowrap}
 .stats b em,.blines em{font-style:normal;color:#fff;background:var(--acc);padding:0 .3em;border-radius:3px;text-shadow:none}
-/* NEW / NEXT badges: white on #C9450C is 4.8:1 (the accent gave 3.7:1) */
-.stats b em,.blines em,.ln.next b::after{background:#C9450C}
+/* NEW / NEXT badges: white on #C9450C is 4.8:1 (the accent gave 3.7:1); [F2] a level accent brings its own ink (cyan: dark) */
+.stats b em,.blines em,.ln.next b::after{background:var(--accBadge);color:var(--accInk)}
 .blines{margin-top:8px;font:600 12px var(--mono);color:#e2dfd9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .blines em{font-size:10px;letter-spacing:.06em;vertical-align:1px}
 .bnext{margin-top:6px;font:500 14px/1.35 var(--body);color:#c6c3bc}
@@ -300,9 +327,14 @@ body.portrait #radio{display:grid;grid-template-columns:1fr 1fr;grid-template-ro
 #menu{position:fixed;inset:0;z-index:10;overflow:auto;touch-action:pan-y;-webkit-overflow-scrolling:touch;
   background:linear-gradient(180deg,rgba(7,8,10,.80),rgba(7,8,10,.94) 60%);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
   padding:calc(22px + var(--st)) calc(20px + var(--sr)) 0 calc(20px + var(--sl))}
-/* first menu: a still of the site under the type (paused: the frozen live frame under the blur instead) */
-body:not(.paused) #menu{background:linear-gradient(180deg,rgba(7,8,10,.5),rgba(7,8,10,.94) 60%),url(hero.jpg) center/cover no-repeat #07080a;
-  -webkit-backdrop-filter:none;backdrop-filter:none}
+/* first menu: a still of the selected level under the type (paused: the frozen live frame under the blur instead).
+   [F2] ui #1: #mbg holds two layers that cross-fade when the level selection changes (levels.json backdrop, bando: hero.jpg) */
+body:not(.paused) #menu{background:none;-webkit-backdrop-filter:none;backdrop-filter:none}
+#mbg{position:fixed;inset:0;z-index:-1;pointer-events:none;background:#07080a}
+#mbg i{position:absolute;inset:0;background:center/cover no-repeat;opacity:0;transition:opacity .6s}
+#mbg i.on{opacity:1}
+#mbg::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(7,8,10,.5),rgba(7,8,10,.94) 60%)}
+body.paused #mbg{display:none}
 .wrap{max-width:860px;margin:0 auto;padding-bottom:calc(18px + var(--sb));display:flex;flex-direction:column}
 /* order: header block, (paused: START AT + LINES first), then world/game/flight, lines, FLY, settings */
 .wrap>*{order:2}
@@ -355,6 +387,20 @@ body.paused .brand .paused{display:inline}
 #worlds{display:grid;gap:8px;margin-top:8px}
 .world.level b em{font:600 11px var(--mono);font-style:normal;letter-spacing:.14em;margin-left:9px;padding:2px 6px;border-radius:4px;border:1px solid #ff3d9a;color:#ff7ac0;vertical-align:4px}
 .world.level.on{border-color:#ff3d9a;background:#1a1218}
+/* [F2] ui #1: level identity on the card: a 16:9 still that pans slowly on the selected card, the hangul subtitle, and the
+   level's 1 px hairline (Seoul: magenta -> cyan, U5's retrowave layer: menu only) along the top edge */
+.world{position:relative}
+.world.hasth{display:grid;grid-template-columns:var(--thw,112px) minmax(0,1fr);column-gap:12px;align-items:start}
+.world.hasth>.th{grid-column:1;grid-row:1/span 3;width:100%;aspect-ratio:16/9;border-radius:7px;background:#000 50% 50%/118% auto no-repeat;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+.world.hasth>:not(.th){grid-column:2}
+.world.hasth>.seg{grid-column:1/-1;justify-self:start}
+.world.on>.th{animation:pan 26s ease-in-out infinite alternate}
+@keyframes pan{from{background-position:22% 50%}to{background-position:78% 50%}}
+@media (prefers-reduced-motion:reduce){.world.on>.th{animation:none}}
+.world .ko{display:block;margin-top:4px;font:800 15px/1.25 var(--ko);font-style:normal;letter-spacing:.08em;color:#8ae8ff}
+.world.hair::before{content:"";position:absolute;left:12px;right:12px;top:-1px;height:1px;background:var(--hairC);opacity:.45;transition:opacity .2s}
+.world.hair.on::before{opacity:1;box-shadow:0 0 12px 1px rgba(255,61,154,.3)}
 .seg{display:inline-flex;padding:3px;border-radius:11px;background:var(--panel);border:1px solid var(--line);flex-wrap:wrap}
 .world .seg{background:#0b0c0e}
 .seg button{min-height:44px;padding:10px 14px;border-radius:8px;font-size:16px;font-weight:700;letter-spacing:.03em;color:#a3a09a}
@@ -384,9 +430,26 @@ body.dev .dev{display:revert!important}
 #custom input{font-family:var(--mono);font-size:12px;color:var(--mute)}
 @media (orientation:landscape) and (max-height:500px){
   .lede{display:none}
-  .brand h1{font-size:clamp(44px,15vh,72px)}
+  .brand h1{font-size:clamp(40px,12.5vh,60px)}
   #menu{padding-top:calc(14px + var(--st))}
   .sec{margin-top:12px}
+  /* [F2] ui #5 / ux #6: the FLY bar covered the selected card and rows 3-4 of the pause LINES grid. Short landscape: the
+     level cards two across (96 px stills, no note line) above Game | Flight, a slimmer bar, LINES at 150 px, no START AT
+     sentence. (The bar is sticky, in flow before Settings: at the end of the scroll it sits under the LINES grid, so no
+     extra bottom padding is needed; what mattered is that the selected card and START AT + LINES fit above it.) */
+  .cols>.lvl{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 8px;align-items:stretch}
+  .lvl>.sec,.lvl>#custom,.lvl>.world.custom{grid-column:1/-1}
+  #worlds{display:contents}
+  .world{--thw:96px;padding:10px 12px}
+  .world b{font-size:19px}
+  .world.hasth small{display:none}
+  .world.hasth>.seg{grid-column:2;margin-top:6px}
+  .world .seg button{min-height:40px;padding:8px 12px;font-size:15px}
+  .lines{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+  #startSec .hint{display:none}
+  .cta{padding:8px 4px calc(8px + var(--sb));margin-top:10px}
+  .hotbtn{min-height:46px;padding:8px 30px;font-size:21px}
+  .cta .ghost{min-height:44px;padding:8px 16px;font-size:16px}
 }
 
 /* ---------- Loading / clip ---------- */
@@ -396,6 +459,14 @@ body.dev .dev{display:revert!important}
 .bar{height:3px;background:#1f2125;border-radius:2px;overflow:hidden}
 .bar i{display:block;height:100%;width:0;background:var(--ink);transition:width .2s}
 #ldText{margin-top:10px;font-family:var(--mono);font-size:12px;color:var(--mute);min-height:16px}
+/* [F2] ui #6: the level's still under the loading card, a place kicker over the title ("홍대 HONGDAE · 01:00"), and the
+   progress bar in the level's hairline */
+#loading.still{background:linear-gradient(180deg,rgba(5,6,8,.72),rgba(5,6,8,.94) 70%),var(--ldbg) var(--ldpos,50% 50%)/cover no-repeat #050608}
+#loading.still .coach{background:rgba(13,14,17,.86)}
+.kick{margin:0 0 8px;font:600 12px/1.3 var(--mono);letter-spacing:.16em;color:#d6d3cd}
+.kick:empty{display:none}
+.kick .ko{font:800 15px/1 var(--ko);letter-spacing:.08em;color:#8ae8ff;margin-right:.3em}
+.bar i{background:var(--ldhair,var(--ink))}
 #ldErr{display:none;gap:10px;margin-top:16px}
 #ldErr.on{display:flex}
 .coach{display:flex;gap:18px;align-items:center;margin-top:20px;padding:14px;border-radius:12px;background:#0d0e11;border:1px solid var(--line)}
@@ -477,11 +548,12 @@ body.dev .dev{display:revert!important}
         <div class="o bc"><svg class="ic" viewBox="0 0 14 16" aria-hidden="true"><g class="kb"><path d="M7 15a5.3 5.3 0 1 0 0-10.6A5.3 5.3 0 0 0 7 15zM7 9.7V7.2M5.4 1.6h3.2M7 1.6v2.6"/></g><g class="kw"><path d="M7 15a5.3 5.3 0 1 0 0-10.6A5.3 5.3 0 0 0 7 15zM7 9.7V7.2M5.4 1.6h3.2M7 1.6v2.6"/></g></svg><span id="tmr">00:00</span></div>
         <div class="o br"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><g class="kb"><path d="M2.4 13a6.2 6.2 0 1 1 11.2 0M8 10.6l3.2-3.8"/></g><g class="kw"><path d="M2.4 13a6.2 6.2 0 1 1 11.2 0M8 10.6l3.2-3.8"/></g></svg><span id="spd">0</span> <small>KM/H</small></div>
         <div class="o" id="oGhost" aria-hidden="true"><svg viewBox="0 0 16 16"><path class="kb" d="M8 2.2L13.8 8 8 13.8 2.2 8z"/><path class="kw" d="M8 2.2L13.8 8 8 13.8 2.2 8z"/></svg></div>
-        <div class="o" id="oChev"><span id="oChevD"></span><svg viewBox="0 0 26 15" aria-hidden="true"><path class="kb" d="M3 3l10 9 10-9"/><path class="kw" d="M3 3l10 9 10-9"/></svg></div>
+        <svg class="o" id="oBr" aria-hidden="true"><g><path class="kb"/><path class="kw"/></g><g><path class="kb"/><path class="kw"/></g><g><path class="kb"/><path class="kw"/></g></svg>
+        <div class="o brl" aria-hidden="true"></div><div class="o brl" aria-hidden="true"></div><div class="o brl" aria-hidden="true"></div>
       </div>
       <div id="ghost"><div class="gg" id="gL"><span id="gLt">CLIMB · TURN</span></div><div class="gg" id="gR"><span id="gRt">SPEED · CARVE</span></div></div>
       <div id="live"><span id="liveT"><span id="liveK">FLOW</span><em id="liveX"></em> · <span id="liveU"></span></span><i id="drain"></i></div>
-      <div id="pop"><div class="cap"></div><div class="sub"></div></div>
+      <div id="pop"><div class="cap"></div><div class="place" lang="ko"></div><div class="sub"></div></div>
       <div id="warn"></div>
       <div id="toast"></div>
       <div id="recBar" class="ui"><b></b><span id="recT">REPLAY 0:00 / 0:00</span><span class="prog"><i id="recP"></i></span><button id="recCancel" class="ui">CANCEL</button></div>
@@ -520,6 +592,7 @@ body.dev .dev{display:revert!important}
 </div>
 
 <div id="menu" class="ui">
+  <div id="mbg" aria-hidden="true"><i></i><i></i></div>
   <div class="wrap">
     <div class="brand head"><h1>ONE TAKE</h1><span class="tag">FPV</span><span class="paused">PAUSED</span></div>
     <div class="strip head" id="mStrip"></div>
@@ -532,7 +605,7 @@ body.dev .dev{display:revert!important}
     </div>
 
     <div class="cols">
-      <div>
+      <div class="lvl">
         <div class="sec">Level</div>
         <div class="world" id="yardCard">
           <b>Silo Yard</b><small>Open bando · silos, chimney, factory hall, conveyor gallery</small>
@@ -591,12 +664,12 @@ body.dev .dev{display:revert!important}
       <div class="hint">Landscape: thumbs anywhere — left half climb/turn (throttle/yaw in Angle/Acro), right half speed/carve (pitch/roll in Angle/Acro). Portrait: use the radio gimbals. Gamepad, USB radio and keyboard (WASD + arrows, R reset) work too.</div>
     </div>
 
-    <div class="foot">Materials and sky: photo-scanned CC0 assets from Poly Haven, streamed at load (~20 MB first time, then cached).<span class="dev"> Splat worlds: Spark. Prototype build.</span></div>
+    <div class="foot"><span id="footT">Materials and sky: photo-scanned CC0 assets from Poly Haven, streamed at load (~20 MB first time, then cached).</span><span class="dev"> Splat worlds: Spark. Prototype build.</span></div>
   </div>
 </div>
 
 <div id="loading" class="hidden"><div class="box">
-  <h3 id="ldTitle">Loading</h3><div class="bar"><i id="ldBar"></i></div><div id="ldText"></div>
+  <div class="kick" id="ldKick"></div><h3 id="ldTitle">Loading</h3><div class="bar"><i id="ldBar"></i></div><div id="ldText"></div>
   <div id="ldErr"><button class="pill hot ui" id="ldBack">BACK</button><button class="pill ui" id="ldReload">RELOAD</button></div>
   <div class="coach" id="ldCoach">
     <svg viewBox="0 0 132 70" aria-hidden="true">
