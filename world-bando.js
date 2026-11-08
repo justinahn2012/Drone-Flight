@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
 import { MeshBVH } from 'three-mesh-bvh';
+import { Raster2D } from './raster2d.js';
 
 const PH = 'https://dl.polyhaven.org/file/ph-assets';
 export const SKIES = {
@@ -820,11 +821,19 @@ const GPAL = [['#e8327c', '#ffb3d4', '#7a0f3c'], ['#1fa6e6', '#bdeeff', '#0b3f6e
   ['#8e5cf0', '#e3d6ff', '#3a1d7a'], ['#c9ced6', '#ffffff', '#6b7079'], ['#d7263d', '#f7a072', '#5e0a14'], ['#0fb5ae', '#a6f0ea', '#05504d'], ['#c3e21b', '#f0ffb0', '#4f5e00']].map((p) => p.map((c) => desat(c, 0.25)));
 const GCOLS = 4, GROWS = 16, GCELLS = GCOLS * GROWS;
 const GTYPE = (k) => (k < 28 ? 'piece' : k < 44 ? 'throw' : k < 56 ? 'tags' : 'buff');
-function graffitiAtlas(R) {
-  return canvasTex(GCOLS * 512, GROWS * 256, (gA, W, H) => {
-    gA.clearRect(0, 0, W, H);
-    const cv = () => { const c = document.createElement('canvas'); c.width = 512; c.height = 256; return c; };
-    const cA = cv(), g = cA.getContext('2d');
+// [G4] drawn with raster2d.js (pure-JS Canvas2D subset, Hershey stroke fonts) into a plain RGBA array: the same pixels
+// on every device, no 64 MB canvas kept alive, and node can write it as a PNG (tools/export-world.mjs, native #1.1).
+// graffitiCells(R, out, flip) draws cell by cell into `out` (RGBA8 straight alpha, W x H), yielding after each cell;
+// flip = rows bottom-up (texture order). graffitiPixels(R) -> {data, width, height} runs it to the end (node export).
+export function graffitiPixels(R = rng(1402), flip = false) {
+  const data = new Uint8Array(GCOLS * 512 * GROWS * 256 * 4);
+  for (const _ of graffitiCells(R, data, flip));
+  return { data, width: GCOLS * 512, height: GROWS * 256 };
+}
+export function* graffitiCells(R, out, flip = false) {
+  const W = GCOLS * 512, H = GROWS * 256;
+  {
+    const g = new Raster2D(512, 256);
     const fontB = (px) => `900 ${px | 0}px "Arial Rounded MT Bold", "Arial Black", Futura, "Helvetica Neue", "DejaVu Sans", sans-serif`;
     const fontT = (px) => `italic 700 ${px | 0}px "Marker Felt", Noteworthy, "Brush Script MT", "Snell Roundhand", "URW Chancery L", cursive`;
     const pick = (a) => a[Math.floor(R() * a.length)];
@@ -913,9 +922,25 @@ function graffitiAtlas(R) {
         g.globalAlpha = 1; tags(1 + Math.floor(R() * 2), 300);
       }
       g.restore();
-      gA.drawImage(cA, (k % GCOLS) * 512, Math.floor(k / GCOLS) * 256);
+      g.copyTo(out, W, (k % GCOLS) * 512, Math.floor(k / GCOLS) * 256, flip, H);
+      yield k;
     }
-  });
+  }
+}
+// The texture is returned at once and filled in ~12 ms main-thread slices (about 1-2 s of work in all) while the
+// loader compiles shaders and the first frames run; it uploads when the last cell is done (until then the decals
+// sample three's empty texture: alpha 0, invisible). Rows bottom-up = the old flipY CanvasTexture's uv.
+function graffitiAtlas(R) {
+  const W = GCOLS * 512, H = GROWS * 256, data = new Uint8Array(W * H * 4), gen = graffitiCells(R, data, true), t0 = performance.now();
+  const t = new THREE.DataTexture(data, W, H, THREE.RGBAFormat); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
+  t.onUpdate = () => { t.image.data = null; };   // uploaded: drop the 33 MB CPU copy (perf #4; a lost context reloads)
+  const slice = () => {
+    for (const end = performance.now() + 12; performance.now() < end;) if (gen.next().done) { t.needsUpdate = true; t.userData.ms = Math.round(performance.now() - t0); return; }
+    setTimeout(slice, 0);
+  };
+  setTimeout(slice, 0);
+  return t;
 }
 // [B] ground mask over the yard terrain tile (0.625 m texels): R grass density, G paved apron/road,
 // B terrain AO (baked), A grass height. Replaces the per-vertex footprint/path loops of the grass shader.

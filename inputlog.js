@@ -1,7 +1,7 @@
 // inputlog.js: a compact, replayable record of a flight (native-readiness #1.3).
 //
 // A log holds everything Drone.step() consumed: the start state, then one quantised input per 1/240 s tick (and any
-// mode switch). Replayed through the same flight.js on the same world (header.world = worldHash) it reproduces the
+// mode switch). Replayed through the same flight.js on the same world (header.world = worldHash = world.json hash.collider) it reproduces the
 // flight bit for bit; a port (Swift) replays it to within 1 mm, re-syncing on the snapshot stored every `every` ticks.
 // Ghosts, challenge codes and clip re-renders can all be re-simulated from it instead of storing poses.
 //
@@ -14,6 +14,8 @@
 //
 // Caller contract (main.js frame()): per tick, quantize() the controls into a reusable object, record() it, then
 // drone.step(1 / hz, thatObject, mode, world). The sim must see exactly the values the log stores.
+
+import { setHash } from './geohash.js';
 
 export const LOG_VERSION = 1;
 export const CHANNELS = ['thr', 'pitch', 'roll', 'yaw', 'climb'];
@@ -116,24 +118,16 @@ export function replayLog(log, drone, world, { resync = false, onTick = null } =
   return { ticks: log.ticks, snaps: log.snaps.length, maxErr, worstTick, final: drone.snapshot() };
 }
 
-// FNV-1a over the collider (positions + index) and the flight-relevant world data (funnels, envelope): a log only
-// replays exactly on the world it was recorded on. Cached per BVH.
+// [G4] header.world = world.json `hash.collider` (geohash.js "mm3x2/1" over the collider mesh: positions + index in
+// three-mesh-bvh order), so a port computes it from collider.glb without copying JS number formatting (native #1.5).
+// A log only replays exactly on the collider it was recorded on. Funnels / envelope are not hashed: they are part of
+// world.json, and changing them means re-recording (node tests/replay.mjs --record). No collider (open air) hashes
+// the empty set. Cached per BVH.
 const _hashes = new WeakMap();
-const fnv = (h, x) => Math.imul(h ^ x, 16777619) >>> 0;
 export function worldHash(world) {
   const bvh = world?.bvh || world?.collider?.bvh;
   const geo = bvh?.geometry;
-  let h = 2166136261;
-  if (geo) {
-    if (_hashes.has(bvh)) h = _hashes.get(bvh);
-    else {
-      const p = geo.attributes.position.array, pu = new Uint32Array(p.buffer, p.byteOffset, p.length);
-      for (let i = 0; i < pu.length; i++) h = fnv(h, pu[i]);
-      const ix = geo.index?.array; if (ix) for (let i = 0; i < ix.length; i++) h = fnv(h, ix[i]);
-      _hashes.set(bvh, h);
-    }
-  }
-  const extra = JSON.stringify({ f: world?.funnels || null, e: world?.envelope ? [world.envelope.min, world.envelope.max].map((v) => [v.x, v.y, v.z]) : null });
-  for (let i = 0; i < extra.length; i++) h = fnv(h, extra.charCodeAt(i));
-  return h.toString(16).padStart(8, '0');
+  if (!geo) return setHash('collider', []);
+  if (!_hashes.has(bvh)) _hashes.set(bvh, setHash('collider', [['collider', geo]]));
+  return _hashes.get(bvh);
 }
