@@ -4,7 +4,8 @@ The web build (three.js r180, flat files) remains the design lab and the **refer
 against. The port is a Swift + Metal renderer with the game logic rewritten in Swift, built by GitHub Actions
 (XcodeGen `project.yml` → macOS runner → TestFlight). Nothing in the port depends on running JavaScript.
 
-Regenerate the exported data after any change to the world, camera or look (each is a single command, ~1 s):
+Regenerate the exported data after any change to the world, camera or look (each is a single command, ~1 s; Neon Seoul
+is §7):
 
 ```
 node tools/export-world.mjs      # world.glb, collider.glb, world.json   (--out DIR, --check = exit 1 if stale)
@@ -180,6 +181,7 @@ in round 3; check the names after merge.
 | G4 | take replay | same logs, `tests/<log>.take.json` (round 5: committed, asserted by `tests/replay.mjs`) | identical events (type, name, pts, flow, total; floats ±1e-6) | XCTest | M1 |
 | G5 | camera passes | `fpv.renderGolden()` dumps | per stage, max abs error ≤ 2e-3 linear (≤ 1 LSB at the 8-bit output), grain off | Metal device | M1–M2 |
 | G6 | reference frames | web smoke shots (spawn, silo, hall, chimney, takestart), exposure locked | SSIM and luma percentiles (p5/p50/p95) within thresholds set from the first M1 frames | Metal device | M2 |
+| G7 | Seoul parity (P2) | `tests/seoul/walking.otil` + `.take.json`, `tests/seoul/parity.json` | G3/G4 on the Seoul collider; traffic `hash` bit-exact and vehicle boxes within 1e-9 m at t = 0, 5, 37.5, 90 s (`node tests/seoul-parity.mjs`) | XCTest | M1 |
 
 - **G1–G4** are pure CPU and run on the CI macOS runner.
 - **G5–G6** need a Metal GPU. M0 checks whether the CI runner provides one; otherwise they run on a device (a
@@ -250,3 +252,89 @@ EdgeTX radios; use Bluetooth / ELRS backpack, and model input as raw channels.
   canvas atlases (V1/V2) still use Canvas2D; raster2d.js can draw them the same way.
 - Dump the expanded GLSL of every world and camera program next to `renderGolden()`, so the MSL port has exact
   sources.
+
+## 7. Neon Seoul (Hongdae, P2 stream H)
+
+```
+node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae [--check] [--strict]   # everything below, ~15 s
+node tools/export-seoul-data.mjs --out DIR       # the data files only (same code path)
+node tools/export-seoul-data.mjs --textures      # seoul/tex/textures.json vs SEOUL_MATS + sha256
+node tests/seoul-parity.mjs [--strict|--record]  # G7
+```
+`--check` compares every output byte for byte with DIR (CI exports, then re-checks in a second process). `--strict` fails on
+any `warnings` entry. A partner stream's exporter that doesn't exist yet is a `notes` entry (its shim is used), not a warning.
+Default seed 11 = the game's (`buildSeoul` `opts.seed ?? 11`).
+
+**Geometry entry (C, native #1).** export-world calls `world-seoul.js` `buildGeometry({seed, level, headless})` and expects
+`{merged, colGeo, colRanges, emitters, lines, funnels, startPoints, takeStart, spawn, bounds, envelope, materials, layout,
+facts, setPieces?}` (spawn / bounds / envelope exactly as `buildSeoul`'s world). Until C exports it, `LEVEL_SHIMS` in
+tools/export-world.mjs makes the same calls `buildSeoul` makes (layout.json, lines.json, `buildSeoulGeometry`, `boxOf`).
+
+**Files in exports/seoul-hongdae** (all listed with bytes + sha256 in world.json `files`):
+- `world.glb` (one mesh per material key, sorted; attributes POSITION, NORMAL, TEXCOORD_0 = planar world metres, `_AEM` = aEm,
+  the per-vertex emitted radiance of glass / shop / lamp in scene units), `collider.glb` (`extras.ranges`: vertex range per
+  material key, a triangle belongs to the range of its first vertex; skim = every range but walk / road / plaza).
+- `world.json` (`format onetake.world/1`, as §2 plus): `source.entry` (buildGeometry or the shim), `layout` summary, `facts`,
+  `materials[k].textures[map] = {url, ktx2}`, `data` (one entry per file below with counts and source), `textures`,
+  `runtimeOnly`, `coverage` + `coverageObjects`, `coverageNode` (the rules applied to the headless scene), `notes`, `warnings`.
+- `emitters.json` (`onetake.emitters/1`): every L3 record the game lights with (4,946 at t = 0: geometry stores + street
+  lights, signs, screens, vehicles), struct-of-arrays so each column decodes as one Swift array: `id[i]`, `kinds[kind[i]]`,
+  `sources[source[i]]`, `pos[3i..]`, `normal[3i..]`, `w`, `h`, `rgb[3i..]` (linear, luma 1), `nits` (cd/m2, mean over the
+  rect), `animated` (1 = per frame: screens from screens.json, vehicles from life.json), `lot`, sparse `flicker` / `extra`.
+  In nits on purpose: EDR on Metal keeps sign cores at 600-2000 nits instead of clipping (radiance = rgb x nits x NITS).
+- `signs.json` (`onetake.signs/1`): B's `exportData()`, else the generator's spec table (type, style, lot, floor, lit, colour
+  category / hue / rgb, face nits, flicker, name, `frame` = facade basis, `geo` = placement) + constants; `signs.glb` = the
+  static sign geometry (housing, lit, off, neon, scrollers; `COLOR_0` = face nits, `_FLK` = flicker hz / depth / phase). The
+  face atlas is still Canvas2D (browser-only) until B's MSDF glyph runs (graphics #2); `atlas.status` says which.
+- `screens.json` (`onetake.screens/1`): per screen pos / normal / w / h, LED grid `res` and `pitch`, `scanHz`, peak `nits`,
+  refresh-band and moire constants, and the playlist (`prog`, `t0`, `dur`, palette (linear), text rows, seed). **SCREEN_FRAG**
+  (source in `shaders`) is a function of: the playlist segment at `lt0 = fract((t + phase) / len) * len` (t = take clock),
+  `uProg` (PROG ids), `uC0..2`, `uRow` (text texture rows), the LED grid (`uRes`; SMD dots up close, moire at mid range
+  weighted by `uMoire`), louvre angle falloff, rolling refresh bands (`uBandDepth`, `uBandN = scanHz x 0.011`, `uBandRate`),
+  `uBlack`, and `uCut` (the first 1/30 s of a segment). The emitter colour follows `programMean` (source included).
+- `light.json` (`onetake.light/1`): D's `exportData()`, else NITS (0.1 scene units per cd/m2), SOURCE_TYPES, NIGHT_SKY, the
+  grid (`cell` 4 m, K / Kd per quality, LPR, LW, E_MIN), the binning / range / shading rules, `emitterRadiance` source, and
+  the GLSL heads (CITY_HEAD, WET_HEAD). On Metal: compute-clustered lights with no K cap.
+- `life.json` (`onetake.life/1`): G's `exportData()`, else LIFE, VEH, PAINT, the signal functions, the seed, the lane graph
+  (streets, nodes, crossings, lanes with stops / bus stops / successors) and the parity vectors.
+- `dressing.json`: E's set pieces (through C's buildGeometry, contract P2-1) and runtime parts; `status: pending` until then.
+- `look.json`: the night look as main.js applies it (FPVCamera → setHDR(true) → setLook('night') → levels.json `grade`).
+- `layout.json`, `lines.json`: the inputs, copied as is.
+- `tex/*.ktx2` + `tex/textures.json` (native #4): the Poly Haven maps SEOUL_MATS uses, vendored in `seoul/tex/` (CC0):
+  diffuse Basis ETC1S (sRGB), normal maps UASTC + zstd (linear), mipmapped, **rows pre-flipped** so sampling at uv with no
+  flip equals three's TextureLoader (flipY) on the JPG; transcode to ASTC 4x4 on device. 8.5 MB for 18 maps (the JPGs were
+  10.5 MB, fetched at runtime); GPU ~1.4 MB per map instead of 5.6. Re-encode after C adds a map:
+  `KTX2_NODE_MODULES=... node tools/export-seoul-data.mjs --vendor-textures` (`--textures` in CI fails until it is done).
+  Browser side (C / D): `KTX2Loader` (three/addons, transcoder from the same CDN path as three) with
+  `setTranscoderPath(.../examples/jsm/libs/basis/)` and `detectSupport(renderer)`, `seoul/tex/<id>_<map>.ktx2`, the JPG
+  URL as the fallback.
+
+**Partner exporters** (the shims step aside as soon as these exist): a module export `exportData(layout, ctx)` (or the
+same method on its named / default object), ctx = `{layout, seed, nitScale, NIT, quality, headless: true, world, emitters}`.
+Return the file's object (`light.json`, `life.json`), or for B `{signs, screens}` (or `{'signs.json', 'screens.json'}`),
+plus optional `files: {name: Uint8Array | {data, width, height} RGBA | object}` (an MSDF atlas, say). B may also return
+`signs.geometryMeshes: {name: BufferGeometry}` for signs.glb.
+
+**Coverage** (world.json `coverage`, tests/coverage.js; node: export-world, browser: `tests/browser.mjs --level`): every
+Mesh, Points and Line in the live Seoul scene must match a rule: `city` (world.glb rows), `signs`, `screens`, `crowd`,
+`traffic`, `life-props`, `headlight-pools`, `sky`, `steam`, `dressing` (any object under a group named `seoul-dressing*`:
+E, name your group that). A new mesh class needs a rule plus its data first, or CI fails.
+
+**Parity (G7).** `tests/seoul/walking.otil`: an autopilot flies WALKING STREET along the street's centreline in Cine,
+recorded on the Seoul collider (header.world = world.json `hash.collider`); `walking.take.json` = its Take events (start,
+line). `tests/seoul/parity.json`: `LifeSim(layout, {seed: 11})` at t = 0, 5, 37.5, 90: `hash()` (bit-exact) and 12
+vehicle boxes (1e-9 m: `TrafficSim.pose` still uses `Math.sin` for the scooter weave). After an intentional change to the
+Seoul geometry, lines.json, flight.js, take.js or seoul-life.js: `node tests/seoul-parity.mjs --record` and commit
+tests/seoul/. Once F1's movers land (`world.movers`), the log should be re-recorded with traffic in the world.
+
+**CI** (`.github/workflows/ci.yml`): the test job adds test-seoul, seoul-life, seoul-signs, `seoul-parity --strict`, and
+the Seoul export (`--strict`, then `--check --strict` in a second process); `exports/seoul-hongdae` rides in the `exports`
+artifact. The `browser-seoul` job loads `?level=seoul-hongdae&perf` in SwiftShader: no errors, the level's ?perf segments
+(perf-levels.js: walk, canyon, club, high, each with `upd` = world.update() alone), coverage, three stills vs
+tests/golden-seoul-hongdae.json (`--update` writes it). tests/seoul-audio.mjs needs node-web-audio-api and stays local.
+
+**What Metal buys this level** (panel native #6): EDR sign cores at 1000+ nits (emitters.json is already in nits); MetalFX
+temporal upscaling from ~0.6x against cable and window-grid shimmer; in-tile MSAA resolve (~0.8 ms); ICB culling of the
+340 lots; compute-clustered lights with no K cap and RT shadow rays for the brightest emitters; ASTC (206 → ~70 MB);
+120 Hz ProMotion with `thermalState` feeding the governor; LifeSim on its own thread (it is pure and deterministic).
+

@@ -179,6 +179,8 @@ async function jsonText(obj, tables = []) {
   return new TextEncoder().encode('{\n' + out.join(',\n') + '\n}\n');
 }
 const fnSrc = (f) => (typeof f === 'function' ? f.toString() : null);
+/** Drop wall-clock fields (buildMs, binMs, ms...) so every output is byte-identical run to run. */
+export const noTimes = (o) => (Array.isArray(o) ? o.map(noTimes) : o && typeof o === 'object' && !ArrayBuffer.isView(o) ? Object.fromEntries(Object.entries(o).filter(([k]) => !/^ms$|Ms$/.test(k)).map(([k, v]) => [k, noTimes(v)])) : o);
 const r6 = (v) => (typeof v === 'number' ? +v.toFixed(6) : v);
 
 // ================================================================================================================
@@ -210,7 +212,7 @@ function signsShim(parts, X, signsMod) {
     units: 'nits = lit face luminance (cd/m2) of the sign (not the rect mean); emitters.json carries the rect mean (x cover)',
     frame: 'frame = the facade: o (x,z) origin at the reader\'s left end of the frontage, r reading direction, n outward normal, L length, top roof height; geo = {u along r, y up, w, h, d depth, out projection}',
     constants: { NIT_SCALE: signsMod?.NIT_SCALE, NITS: signsMod?.NITS, COVER: X.COVER, CENSUS: signsMod?.CENSUS, SHIPPED: signsMod?.SHIPPED, PUSH_BY_KIND: signsMod?.PUSH_BY_KIND, COLOR_CATS: signsMod?.COLOR_CATS, HEX: X.HEX, LIT_P: X.LIT_P, USE_PUSH: X.USE_PUSH },
-    stats: S.stats,
+    stats: noTimes(S.stats),
     atlas: { status: 'browser-only', size: S.stats?.atlas ?? null, pxPerM: S.stats?.pxPerM ?? null, note: 'the face atlas is painted on a Canvas2D (fonts); signs.glb UVs index it. Headless once B ships MSDF glyph runs (graphics #2).' },
     geometry: 'signs.glb: one mesh per bucket (signs-housing, signs-lit, signs-off, signs-neon, signs-scrollers); COLOR_0 = per-vertex face nits (lit) or albedo, _FLK = flicker (hz, depth, phase)',
     specs,
@@ -251,7 +253,7 @@ function lightShim(parts, X, lightMod) {
       shading: 'one-sided rectangular emitters, GGX + Lambert, near-field limit E <= pi L, windowed range; omni = share emitted all round',
     },
     emitterRadiance: fnSrc(lightMod.emitterRadiance),
-    stats: parts.light?.stats ?? null,
+    stats: noTimes(parts.light?.stats ?? null),
     shaders: { CITY_HEAD: X.CITY_HEAD ?? null, WET_HEAD: X.WET_HEAD ?? null },
     native: 'Metal: compute-clustered lights with no K cap; EDR output keeps sign cores above 1000 nits (PORTING.md, Neon Seoul)',
   };

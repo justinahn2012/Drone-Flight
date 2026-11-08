@@ -499,7 +499,7 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
     bounds: plain(toBox(geo.bounds)), envelope: plain(toBox(geo.envelope)), lines: plain(geo.lines ?? []),
     materials: matOut, site: plain(geo.site ?? null), extra: plain(geo.extra ?? null),
     ...(L1 ? { layout: { file: 'layout.json', origin: plain(L1.origin ?? null), box: plain(L1.box ?? null), lots: L1.lots?.length ?? 0, streets: L1.streets?.length ?? 0, screens: L1.screens?.length ?? 0 } } : {}),
-    ...(geo.facts ? { facts: plain(geo.facts) } : {}),
+    ...(geo.facts ? { facts: plain(Object.fromEntries(Object.entries(geo.facts).filter(([k]) => !/^ms$|Ms$/.test(k)))) } : {}),   // no wall-clock fields: --check compares bytes
     ...(D ? { data: D.data, textures: D.textures, runtimeOnly: D.runtimeOnly, coverage: D.coverage, coverageObjects: D.coverageObjects } : {}),
     notes, warnings,
   };
