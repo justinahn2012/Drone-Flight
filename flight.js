@@ -15,13 +15,14 @@ const G = 9.81, RHO_HALF = 0.6, DEG = Math.PI / 180;
 // camTilt: uptilt (deg) in acro; main.js defTilt scales it for the assisted modes. maxAngle: angle-mode limit (deg).
 // hoverHz: motor/prop frequency at hover (camera jello follows rpm ~ sqrt(thrust)).
 // Cine Assist: stick = target velocity, release = brake to hover. cineClimb / cineDive = full-stick climb / descent
-// (m/s); assistCrash = how much harder a tap the assisted modes forgive.
+// (m/s); funDive = full-stick descent while a 'down' funnel holds the quad inside its shaft (FPV r4 #2b: the chimney's
+// dark stretch; default cineDive); assistCrash = how much harder a tap the assisted modes forgive.
 export const CRAFTS = {
   freestyle5: {
     label: '5" Freestyle', mass: 0.68, twr: 6.5, radius: 0.12, cdA: [0.026, 0.06, 0.016], pitchSpeed: 60,
     rates: { roll: [200, 720, 0.55], pitch: [200, 720, 0.55], yaw: [160, 520, 0.45] },
     tauRate: 0.022, tauMotor: 0.035, camTilt: 28, crashSpeed: 7.0, maxAngle: 55, hoverHz: 170,
-    cineSpeed: 18, cineTilt: 40, cineYaw: 90, cineClimb: 6, cineDive: 12, assistCrash: 1.8,
+    cineSpeed: 18, cineTilt: 40, cineYaw: 90, cineClimb: 6, cineDive: 12, funDive: 16, assistCrash: 1.8,
   },
   cinewhoop: {
     label: '3" Cinewhoop', mass: 0.34, twr: 4.0, radius: 0.085, cdA: [0.022, 0.07, 0.022], pitchSpeed: 32,
@@ -56,16 +57,28 @@ const FLOOR_HOLD = 0.25, LIFT_DZ = 0.15, LIFT_VZ = 1.2, LAND_VZ = 0.5;
 // Dive guard: target clearance GUARD_H m, approach gain GUARD_K /s (vz >= -GUARD_K (h - GUARD_H)), and the slowest
 // descent it leaves alone / lets through at the floor (GUARD_MIN m/s, under take.js SCRAPE 2.5; design r3 #4: a held full dive used to touch
 // down at 3.76 m/s, which read as a SCRAPE).
-const GUARD_H = 0.6, GUARD_K = 2.0, GUARD_MIN = 1.8;
+// Final approach (FPV r4: a held dive took 1.5 s from 8 m to touchdown): the descent the guard allows never drops under
+// a constant-deceleration profile sqrt(GUARD_MIN^2 + 2 GUARD_A (h - GUARD_H)), which is 4 m/s at 2 m clearance; the
+// exponential profile still governs higher up (it is the larger of the two above ~3.3 m).
+const GUARD_H = 0.6, GUARD_K = 2.0, GUARD_MIN = 2.2, GUARD_A = 4.6;
 // Cine camera (main.js rigCamera via camView): pitch-follow smoothing (s; slower after an impact so bounces don't nod
 // the view) and the counter-pitch (FPV r3 #5): CAM_KP x (body pitch low-passed at CAM_TF minus at CAM_TS), which trims
 // the 1.5x-reference pitch nods but keeps the slow cruise lean and brake pitch-up.
 const CAM_TAU = 0.2, CAM_TAU_BUMP = 0.8, CAM_KP = 0.45, CAM_TF = 0.12, CAM_TS = 1.5;
+// Counter-yaw (FPV r4 #5: Cine yaw rate 31 deg/s RMS against the reference's 20): the view turns about world up by
+// -CAM_KY x (body heading low-passed at CAM_TF minus at CAM_TS), camera only (its rate is that low-pass difference x
+// CAM_KY: main.js adds it to motion.ang). Pull-out (FPV r4 regression: +26 deg for 0.4 s after a dive): no
+// counter-pitch while camH (1 in a vertical drop, then a CAM_TH s linear fade) lasts.
+// Ready view (design r4 #6, UX r4 #3): until the first stick input after a reset, hovering over the mouth of a 'down'
+// funnel (inside its capture span), the view pitches CAM_READY down so the mouth reads; it eases back (CAM_TR) once a
+// stick moves (the take starts on that same input).
+const CAM_KY = 0.35, CAM_TH = 2.0, CAM_READY = -35 * DEG, CAM_TR = 0.35, READY_EPS = 2e-3;
 // proximity probe radius (m): turbulence near surfaces, and main.js's world.lastDist (audio, OLED bars)
 const PROX_R = 2.0;
 // snapshot format version (bump when fields change; committed input logs record it). 2: floorT, guard feed-forward and
-// the camera state (camP/camD/camK + filters, pc* = the previous tick). restore() reads version 1 with those at rest.
-export const SNAP_VERSION = 2;
+// the camera state (camP/camD/camK + filters, pc* = the previous tick). 3: counter-yaw (camY/cyF/cyS/pcY), pull-out
+// hold camH, ready view (camR/pcR, rdy). restore() reads versions 1-2 with those at rest (rdy 0: mid-flight).
+export const SNAP_VERSION = 3;
 
 // Betaflight "Actual" rates (centre sensitivity, max rate, expo) -> rad/s
 export function actualRate(x, [center, max, expo]) {
@@ -132,6 +145,9 @@ export class Drone {
     // Cine camera, integrated in step() (see _camStep): camP pitch-follow (rad, + up), camD drop factor (0-1), camK
     // counter-pitch (rad), camW Cine weight, camF / camS body-pitch filters; pcP / pcD / pcK = one tick ago (render lerp)
     this.camP = 0; this.camD = 0; this.camK = 0; this.camW = 0; this.camF = 0; this.camS = 0; this.pcP = 0; this.pcD = 0; this.pcK = 0;
+    // counter-yaw camY (rad, + = left) from heading filters cyF / cyS; camH pull-out hold; camR ready pre-pitch (rad);
+    // rdy 1 = no stick input since reset()
+    this.camY = 0; this.cyF = 0; this.cyS = 0; this.pcY = 0; this.camH = 0; this.camR = 0; this.pcR = 0; this.rdy = 0;
     this.floorT = 0; this.guardFF = 0;                                // floor-push timer (s); dive-guard feed-forward (m/s^2)
     this.wallN = new THREE.Vector3(); this.wallT = 0;                 // Cine wall-slide: last two wall normals + hold
     this.wallN2 = new THREE.Vector3(); this.wallT2 = 0;
@@ -150,6 +166,7 @@ export class Drone {
     this.vzI = 0; this.contactT = 0; this.bump = 0; this.wash = 0; this.limitHit = 0; this.contactN.set(0, 0, 0);
     this.vfS = 0; this.yawS = 0; this.wallT = 0; this.wallT2 = 0;
     this.camP = 0; this.camD = 0; this.camK = 0; this.camW = 0; this.camF = 0; this.camS = 0; this.pcP = 0; this.pcD = 0; this.pcK = 0;
+    this.camY = 0; this.cyF = yaw; this.cyS = yaw; this.pcY = 0; this.camH = 0; this.camR = 0; this.pcR = 0; this.rdy = 1;
     this.floorT = 0; this.guardFF = 0;
     this._sP.copy(pos); this._sN.set(0, 0, 0); this._sT = 0; this._sC = 0;
     this.prox = Infinity; this.dropOn = 0; this.funI = -1;
@@ -169,6 +186,7 @@ export class Drone {
       contactT: this.contactT, contactN: v(this.contactN), limitHit: this.limitHit,
       vfS: this.vfS, yawS: this.yawS, camP: this.camP,
       camD: this.camD, camK: this.camK, camW: this.camW, camF: this.camF, camS: this.camS, pcP: this.pcP, pcD: this.pcD, pcK: this.pcK,
+      camY: this.camY, cyF: this.cyF, cyS: this.cyS, pcY: this.pcY, camH: this.camH, camR: this.camR, pcR: this.pcR, rdy: this.rdy,
       floorT: this.floorT, guardFF: this.guardFF,
       wallN: v(this.wallN), wallT: this.wallT, wallN2: v(this.wallN2), wallT2: this.wallT2,
       sP: v(this._sP), sN: v(this._sN), sT: this._sT, sC: this._sC, unsticks: this.unsticks,
@@ -189,6 +207,9 @@ export class Drone {
     this.camD = s.camD ?? 0; this.camK = s.camK ?? 0; this.camW = s.camW ?? 0; this.camF = s.camF ?? 0; this.camS = s.camS ?? 0;
     this.pcP = s.pcP ?? s.camP; this.pcD = s.pcD ?? this.camD; this.pcK = s.pcK ?? this.camK;
     this.floorT = s.floorT ?? 0; this.guardFF = s.guardFF ?? 0;
+    // version 1-2: no counter-yaw / pull-out hold / ready view (heading filters at the current heading, mid-flight)
+    this.camY = s.camY ?? 0; this.cyF = s.cyF ?? s.heading; this.cyS = s.cyS ?? s.heading; this.pcY = s.pcY ?? this.camY;
+    this.camH = s.camH ?? 0; this.camR = s.camR ?? 0; this.pcR = s.pcR ?? this.camR; this.rdy = s.rdy ?? 0;
     v(this.wallN, s.wallN); this.wallT = s.wallT; v(this.wallN2, s.wallN2); this.wallT2 = s.wallT2;
     v(this._sP, s.sP); v(this._sN, s.sN); this._sT = s.sT; this._sC = s.sC; this.unsticks = s.unsticks;
     this.prox = s.prox == null ? Infinity : s.prox; this.dropOn = s.dropOn | 0; v(this.dropP, s.dropP); this.funI = s.funI;
@@ -211,8 +232,12 @@ export class Drone {
   //    wall. Smoothed (CAM_TAU, CAM_TAU_BUMP right after an impact); eases to 0 out of Cine or crashed.
   //  - counter-pitch: + CAM_KP x (body pitch, nose-down +, through a CAM_TF low-pass minus a CAM_TS one): the camera
   //    half-cancels the velocity loop's fast pitch nods and keeps the slow lean. Cine only (camW eases in and out).
-  _camStep(dt, on) {
-    this.pcP = this.camP; this.pcD = this.camD; this.pcK = this.camK;
+  //  - pull-out: no counter-pitch in a vertical drop and for ~CAM_TH s after it (camH: the slow filter follows the fast).
+  //  - counter-yaw: camY = -CAM_KY x (heading through CAM_TF minus through CAM_TS), Cine only: fast yaw is half-damped.
+  //  - ready view: camR -> CAM_READY while rdy (no stick since reset) over a 'down' funnel's mouth, hovering in Cine
+  //    (snapped on the first tick after a reset, so the spawn doesn't tilt in), else eases to 0 at CAM_TR.
+  _camStep(dt, on, world) {
+    this.pcP = this.camP; this.pcD = this.camD; this.pcK = this.camK; this.pcY = this.camY; this.pcR = this.camR;
     const live = on && !this.crashed, vH = Math.hypot(this.vel.x, this.vel.z), vy = this.vel.y;
     let tP = 0, tD = 0;
     if (live) {
@@ -224,16 +249,40 @@ export class Drone {
     this.camP += (tP - this.camP) * k; this.camD += (tD - this.camD) * k;
     const fy = _v1.set(0, 0, -1).applyQuaternion(this.q).y, th = -Math.asin(Math.max(-1, Math.min(1, fy)));
     this.camF += (th - this.camF) * (1 - Math.exp(-dt / CAM_TF));
-    this.camS += (th - this.camS) * (1 - Math.exp(-dt / CAM_TS));
+    // pull-out: camH = 1 in a vertical drop (camD > 0.2) and until the descent ends, then a linear fade over CAM_TH s; while it lasts the
+    // slow filter follows the fast one (no counter-pitch, so the pull-out's nose-down lean can't swing the view up)
+    this.camH = this.camD > 0.2 || (this.camH > 0 && vy < -0.5) ? 1 : Math.max(0, this.camH - dt / CAM_TH);
+    this.camS += (th - this.camS) * (1 - Math.exp(-dt / (CAM_TS + (CAM_TF - CAM_TS) * Math.sqrt(this.camH))));
     this.camW += ((live ? 1 : 0) - this.camW) * (1 - Math.exp(-dt / CAM_TAU));
     this.camK = this.camW * CAM_KP * (this.camF - this.camS);
+    // counter-yaw: body heading from the nose (or the belly when the nose points straight up / down)
+    const nz = _v1.set(0, 0, -1).applyQuaternion(this.q);
+    if (Math.hypot(nz.x, nz.z) < 0.2) _v1.set(0, -1, 0).applyQuaternion(this.q);
+    const psi = Math.atan2(-_v1.x, -_v1.z), wr = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+    this.cyF += wr(psi - this.cyF) * (1 - Math.exp(-dt / CAM_TF));
+    this.cyS += wr(psi - this.cyS) * (1 - Math.exp(-dt / CAM_TS));
+    this.camY = -this.camW * CAM_KY * wr(this.cyF - this.cyS);
+    // ready view over a 'down' funnel's mouth
+    let tR = 0;
+    if (this.rdy && live && Math.hypot(this.vel.x, this.vel.y, this.vel.z) < 1) {
+      const p = this.pos;
+      for (const f of world?.funnels || []) {
+        if (f.dir === 'up' || Math.hypot(f.c[0] - p.x, f.c[1] - p.z) >= f.r) continue;
+        if (p.y > f.top - 0.5 && p.y < f.top + (f.reach ?? FUN_REACH)) { tR = CAM_READY; break; }
+      }
+    }
+    if (this.rdy === 1) { this.camR = tR; this.pcR = tR; this.rdy = 2; }            // first tick after reset(): no tilt-in
+    else this.camR += (tR - this.camR) * (1 - Math.exp(-dt / CAM_TR));
   }
   // The camera's pitch offset (rad, + looks up) on top of an uptilt of `tilt` rad, at `alpha` between the previous tick
   // (0) and the last one (1): main.js passes physAlpha, as for the pose.
   camView(alpha = 1, tilt = 0) {
     const a = alpha, P = this.pcP + (this.camP - this.pcP) * a, D = this.pcD + (this.camD - this.pcD) * a;
-    return Math.max(-100 * DEG, Math.min(20 * DEG, P - D * tilt)) + this.pcK + (this.camK - this.pcK) * a;
+    return Math.max(-100 * DEG, Math.min(20 * DEG, P - D * tilt)) + this.pcK + (this.camK - this.pcK) * a + this.pcR + (this.camR - this.pcR) * a;
   }
+  // The camera's counter-yaw (rad, + turns the view left, about world up) at `alpha` between the last two ticks (C12 /
+  // FPV r4 #5). main.js rigCamera: camQ = R_worldUp(camYaw) x bodyQ x tilt, and its rate goes into motion.ang.
+  camYaw(alpha = 1) { return this.pcY + (this.camY - this.pcY) * alpha; }
   // round-3 name (labs, tools): no longer integrates anything; step() advances the camera
   camPitch(dt, on = true, tilt = 0) { return this.camView(1, tilt); }
 
@@ -281,10 +330,12 @@ export class Drone {
       const hp = col.raycast(this.pos, dir, 40);
       if (hp && Math.abs(hp.n.y) > 0.5) h = Math.min(h, hp.t * -dir.y);
     }
-    const prof = (h - GUARD_H) * GUARD_K, lim = vFloor - (skim ? Math.max(0, prof) : Math.max(GUARD_MIN, prof));
+    const prof = (h - GUARD_H) * GUARD_K, fin = skim ? 0 : Math.sqrt(GUARD_MIN * GUARD_MIN + 2 * GUARD_A * Math.max(0, h - GUARD_H));
+    const lim = vFloor - (skim ? Math.max(0, prof) : Math.max(fin, prof));
     if (vzCmd >= lim) return vzCmd;
     this.vzI = Math.max(0, this.vzI);                               // the free dive's wound-down integral would fight it
-    if (prof > (skim ? 0 : GUARD_MIN)) this.guardFF = GUARD_K * Math.max(0, vFloor - this.vel.y);
+    if (!skim && fin >= prof) { if (h > GUARD_H) this.guardFF = GUARD_A; }   // final approach: constant deceleration
+    else if (prof > (skim ? 0 : GUARD_MIN)) this.guardFF = GUARD_K * Math.max(0, vFloor - this.vel.y);
     return lim;
   }
 
@@ -332,6 +383,9 @@ export class Drone {
   step(dt, inp, mode, world) {
     const c = this.c, m = c.mass, col = colliderOf(world);
     this.prev.copy(this.pos); this.prevQ.copy(this.q);
+    // ready view: any stick past the take's start threshold (main.js STICK_EPS) ends it; Cine's throttle doesn't count
+    if (this.rdy && (Math.abs(inp.pitch) > READY_EPS || Math.abs(inp.roll) > READY_EPS || Math.abs(inp.yaw) > READY_EPS || Math.abs(inp.climb) > READY_EPS ||
+      (mode !== 'cine' && Math.abs(inp.thr - 0.39) > 0.04))) this.rdy = 0;
     const up = this.up(_v2);
     let tCmd = 0;
     let wDes;
@@ -409,7 +463,9 @@ export class Drone {
       const rollDeg = Math.atan((ax * rx + az * rz) / G) / DEG;
       wDes = this._rateForAttitude(pitchDeg, rollDeg, yawRate, dt, 7);
       // vertical: progressive curve, half stick ~ the old 4.5 m/s-linear feel, full stick cineClimb up / cineDive down
-      let vz = cz >= 0 ? c.cineClimb * cz * (0.6 + 0.4 * cz) : c.cineDive * cz * (0.15 - 0.85 * cz);
+      // inside a 'down' funnel's shaft the full-stick descent is funDive (the guard still stops it from that in ~8 m)
+      const dive = fun && fun.dir !== 'up' && !this._fOut ? (c.funDive ?? c.cineDive) : c.cineDive;
+      let vz = cz >= 0 ? c.cineClimb * cz * (0.6 + 0.4 * cz) : dive * cz * (0.15 - 0.85 * cz);
       if (holdV) vz = fun.dir === 'up' ? Math.min(vz, FUN_HOLD) : Math.max(vz, -FUN_HOLD);
       // sat on the rim / coping while the funnel steers in: lift off it (pressing down, friction pinned the quad there)
       if (fun && this._fOut && this.floorT > 0 && this._fdh > FUN_IN) vz = Math.max(vz, FUN_LIFT);
@@ -471,7 +527,7 @@ export class Drone {
     let prox = Infinity;
     if (col && !this.crashed) { const r = col.closest(this.pos, PROX_R); if (r) prox = r.d - c.radius; }
     this.prox = prox;
-    this._camStep(dt, mode === 'cine');
+    this._camStep(dt, mode === 'cine', world);
   }
 
   // Keep the quad inside the part of the world that was actually built in 3D.

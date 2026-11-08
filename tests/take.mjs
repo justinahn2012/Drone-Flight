@@ -88,9 +88,14 @@ const types = (evs) => evs.map((e) => e.type);
   const tk2 = new Take(), d2 = mk(), e2 = [];
   flyTo(tk2, d2, 1, 10, true, e2); wallX = 1.0; hold(tk2, d2, 5.3, true, e2, 3); wallX = 1e9;
   ok(!types(e2).includes('bank') && tk2.holding, 'r4: the hold zone holds from 2 m/s (3 m/s here), no skim pts below skimSpeed');
+  // r5 (design r4 #5): a crawl with hands on still banks, at idleSlow (0.4x): 12.5 s; hands off it waits
   const tk3 = new Take(), d3 = mk(), e3 = [];
-  flyTo(tk3, d3, 1, 10, true, e3); hold(tk3, d3, 30, true, e3, 1.5);
-  ok(!types(e3).includes('bank') && near(tk3.bankIn, T.bankT, 0.25), `r4: at 1.5 m/s the bank timer waits (bankIn ${tk3.bankIn.toFixed(2)})`);
+  flyTo(tk3, d3, 1, 10, true, e3); hold(tk3, d3, 10, true, e3, 1.5);
+  ok(!types(e3).includes('bank') && near(tk3.bankIn, T.bankT - 10 * T.idleSlow, 0.25), `r5: at 1.5 m/s the bank timer runs at 0.4x (bankIn ${tk3.bankIn.toFixed(2)})`);
+  hold(tk3, d3, 3, false, e3, 1.5);
+  ok(!types(e3).includes('bank') && near(tk3.bankIn, T.bankT - 10 * T.idleSlow, 0.25), 'r5: crawling hands-off it waits');
+  hold(tk3, d3, 3, true, e3, 1.5);
+  ok(types(e3).includes('bank'), 'r5: a hands-on crawl banks after bankT / idleSlow s');
 }
 
 // ---- 4. CUT: 3 s hands-off hover, ring from 1 s, cutSpeed 1.0, x1.5, needs something to show
@@ -194,7 +199,7 @@ const types = (evs) => evs.map((e) => e.type);
 
 // ---- 9. stars, best, progress, lineList
 {
-  ok(starsFor(59999) === 0 && starsFor(60000) === 1 && starsFor(149999) === 1 && starsFor(150000) === 2 && starsFor(260000) === 3, 'r4 stars 60k/150k/260k');
+  ok(starsFor(59999) === 0 && starsFor(60000) === 1 && starsFor(179999) === 1 && starsFor(180000) === 2 && starsFor(324999) === 2 && starsFor(325000) === 3, 'r5 stars 60k/180k/325k');
   resetProgress();
   const tk = new Take(), d = mk(), evs = [];
   flyTo(tk, d, 41, 10, true, evs); hold(tk, d, 4.5, true, evs, 5); hold(tk, d, 3.1, false, evs, 0);
@@ -208,6 +213,12 @@ const types = (evs) => evs.map((e) => e.type);
   ok(L.length === 6 && L[0].name === 'A' && L[0].flown && L[3].micro && !L[3].flown && L[1].bestFlow === 2, 'lineList');
   // a new instance (page reload) sees the stored progress and best
   const tk2 = new Take(); ok(tk2.best === cut.total && tk2.progress(world).flown === 3, 'progress + best persist');
+  // r5 bestT: the take time a line was first reached at, best over takes (lower), in lineList
+  ok(near(P.A.bestT, 2.0, 0.05) && near(P.B.bestT, 4.0, 0.05) && L[0].bestT === P.A.bestT && L[3].bestT === 0, `bestT splits (A ${P.A.bestT}, B ${P.B.bestT})`);
+  const tk3 = new Take(), d3 = mk(); d3.pos = { x: 0, y: 2, z: -30 }; flyTo(tk3, d3, 1, 10, true);
+  ok(near(JSON.parse(store['onetake.lines']).A.bestT, 2.0, 0.05), 'a slower take does not raise bestT');
+  const tk4 = new Take(), d4 = mk(); d4.pos = { x: 0, y: 2, z: -10 }; flyTo(tk4, d4, 1, 10, true);
+  ok(near(JSON.parse(store['onetake.lines']).A.bestT, 1.0, 0.05), 'a faster one lowers it');
 }
 
 // ---- 10. nextHint: nearest never-flown line by its first gate; bearing + = right, elev
@@ -385,6 +396,86 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
   d2.pos = { x: 0, y: 12, z: 40.5 }; t2.update(DT, d2, w3, true); ok(t2.readyHint(d2, w3) === null, 'not once live');
   const P = JSON.parse(store['onetake.lines'] || '{}'); P.SHAFT = { n: 3, flow: 1, pts: 1 }; store['onetake.lines'] = JSON.stringify(P);
   resetProgress();
+}
+
+// ---- 20. r5 PERFECT (CUT, 3 stars, every line CLEAN, 0 SCRAPE), perfectLive; C12 ghostPose
+{
+  resetProgress();
+  const stars0 = T.stars; T.stars = [1, 2, 3];
+  const run = (scrape, crash) => {
+    const tk = new Take(), d = mk(), evs = [];
+    flyTo(tk, d, 21, 10, true, evs);
+    const live = tk.perfectLive;
+    if (scrape) { d.lastImpact = 3.5; hold(tk, d, DT, true, evs, 3); d.lastImpact = 0; }
+    if (crash) { d.crashed = true; hold(tk, d, DT, true, evs); return { tk, evs, live }; }
+    hold(tk, d, 5, false, evs, 0);
+    return { tk, evs, live };
+  };
+  const a = run(false, false), ca = a.evs.find((e) => e.type === 'cut');
+  ok(a.live && a.tk.perfect && ca?.perfect === true && ca.stats.perfect === true && a.tk.progress(world).perfects === 1, 'clean CUT at 3 stars: PERFECT');
+  const b = run(true, false), cb = b.evs.find((e) => e.type === 'cut');
+  ok(cb && cb.perfect === false && !b.tk.perfect && !b.tk.perfectLive, 'a SCRAPE: no PERFECT');
+  const c = run(false, true);
+  ok(c.evs.find((e) => e.type === 'crash') && !c.tk.perfect, 'a crash: no PERFECT');
+  T.stars = [1, 2, 1e9];
+  const e = run(false, false); ok(e.evs.find((x) => x.type === 'cut') && !e.tk.perfect, 'under 3 stars: no PERFECT');
+  T.stars = stars0;
+  ok(a.tk.progress(world).perfects === 1, 'perfects counted once');
+  // ghostPose: the attached ghost at the take clock (0 while ready), alpha passed through while live; null after
+  const calls = [];
+  const tk = new Take(), d = mk(); tk.ghost = { pose: (t, al) => { calls.push([t, al]); return { pos: [t, 0, 0] }; } };
+  ok(tk.ghostPose(0.5).pos[0] === 0 && calls[0][1] === 1, 'ready: ghost at t 0');
+  flyTo(tk, d, 1, 10, true);
+  const gp = tk.ghostPose(0.25); ok(near(gp.pos[0], tk.stats.time) && calls.at(-1)[1] === 0.25, 'live: ghost at the take time, alpha');
+  tk.fail(); ok(tk.ghostPose() === null, 'done: no ghost pose');
+  tk.reset(); ok(tk.ghost && tk.ghostPose() !== null, 'the ghost survives reset()');
+  ok(new Take().ghostPose() === null, 'no ghost: null');
+  resetProgress();
+}
+
+// ---- 21. r5 ghost.js (C12): trimmed take log -> second Drone re-sim is bit-exact at the take clock, seeks both ways,
+// survives the .otil round trip, refuses another world; GhostKeeper keeps the best CUT. Open air (no geometry), so it
+// is quick; needs three (skipped, with a note, where the repo's node_modules aren't there).
+{
+  let mods = null;
+  try { mods = { G: await import(DIR + '/ghost.js'), F: await import(DIR + '/flight.js'), I: await import(DIR + '/inputlog.js'), THREE: await import('three').catch(() => import(DIR + '/node_modules/three/build/three.module.js')) }; }
+  catch (e) { console.log('ghost tests skipped (three not resolvable):', e.message); }
+  if (mods) {
+    const { G: GH, F, I, THREE } = mods, PH = 1 / 240;
+    const world = { envelope: { min: new THREE.Vector3(-440, -2, -440), max: new THREE.Vector3(440, 220, 440) } };
+    const d = new F.Drone('freestyle5'); d.reset(new THREE.Vector3(0, 40, 0), 0.3);
+    const log = new I.InputLog({ seed: d.seed, world: I.worldHash(world), craft: d.key, mode: 'cine', hz: 240, start: d.snapshot() });
+    const fake = { ghost: null }, keeper = new GH.GhostKeeper(fake, () => log, () => world);
+    const inp = {}, poses = new Map(); let t = null, startK = 0, mode = 'cine';
+    for (let i = 0; i < 240 * 12; i++) {
+      const s = i / 240;
+      mode = s < 7 ? 'cine' : 'angle';
+      I.quantize({ thr: mode === 'cine' ? 0.4 : 0.45 + 0.1 * Math.sin(s), pitch: i < 300 ? 0 : 0.5 + 0.4 * Math.sin(s * 1.3), roll: 0.6 * Math.sin(s * 0.7), yaw: 0.3 * Math.cos(s * 0.5), climb: 0.5 * Math.sin(s * 0.9) }, inp);
+      log.record(inp, mode, d); d.step(PH, inp, mode, world);
+      if (i === 300) { keeper.event({ type: 'start' }); t = 0; startK = log.ticks - 1; }
+      if (t !== null) { t += PH; poses.set(Math.round(t * 240), [d.pos.x, d.pos.y, d.pos.z]); }
+    }
+    const endK = log.ticks, e = { type: 'cut', total: 123456, stars: 2, perfect: false, stats: { time: t, lines: [{ name: 'A', t: 1.5 }] } };
+    await keeper._loading;
+    keeper.event(e);
+    const rec = keeper.best;
+    ok(rec && rec.total === 123456 && rec.startTick >= 0 && rec.startTick < 240 && rec.bytes.length < log.toBytes().length, `GhostKeeper keeps the CUT as best (startTick ${rec?.startTick}, ${rec?.bytes.length} B)`);
+    ok(fake.ghost && fake.ghost.k === rec.startTick, 'the ghost is attached and parked at the take start');
+    const same = (g, n) => { const p = g.pose(n / 240), q = poses.get(n); return p && q && p.pos[0] === q[0] && p.pos[1] === q[1] && p.pos[2] === q[2]; };
+    const g = fake.ghost, ns = [1, 2, 240, 1000, 1700, 1690, 3, 2000, (endK - startK) - 1];
+    ok(ns.every((n) => same(g, n)), 'ghost pose = the take, bit for bit, forwards, backwards and across the mode switch');
+    const p0 = g.pose(10 / 240, 0), pa = poses.get(9); ok(p0.pos[0] === pa[0] && p0.pos[2] === pa[2], 'alpha 0 = the previous tick');
+    ok(g.pose(1e4).done && !g.pose(1).done, 'done past its end');
+    const r2 = await GH.recordFromBytes(rec.bytes);
+    ok(r2.total === 123456 && r2.startTick === rec.startTick && r2.lines[0][0] === 'A' && same(new GH.Ghost(r2, world), 1500), '.otil round trip (a CHALLENGE file) replays the same');
+    const bad = I.InputLog.fromBytes(rec.bytes); bad.header.world = 'other';
+    const gs = new GH.Ghost({ ...rec, _log: bad }, world); ok(gs.stale && gs.pose(1) === null, 'another world: stale, no pose');
+    keeper.event({ type: 'start' }); keeper.event({ ...e, total: 5 });
+    ok(keeper.best.total === 123456 && keeper.last.total === 5, 'a lower CUT is kept as last, not best');
+    ok(GH.challengeText(rec).includes('123,456') && GH.challengeText(rec).includes('★★'), 'challenge text');
+    ok((await keeper.load(new Uint8Array([1, 2, 3]))) === null && keeper.error, 'garbage challenge refused');
+    ok((await keeper.load(rec.bytes)) && keeper.rival && fake.ghost.rec.total === 123456, 'a challenge becomes the ghost');
+  }
 }
 
 console.log(`take tests: ${pass} passed, ${fail} failed`);
