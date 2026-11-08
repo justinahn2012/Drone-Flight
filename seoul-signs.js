@@ -1032,19 +1032,29 @@ export async function build(layout, ctx = {}) {
 
   // --- tiles (80 m): faces + housings, so the city's signs frustum-cull ---
   const TILE = ctx.tileSize ?? 80; const tiles = new Map();
-  const tileOf = (p) => { const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`; let t = tiles.get(k); if (!t) { t = { key: k, f: { p: [], uv: [], col: [], alb: [], k: [], fl: [], idx: [], n: 0 }, h: { p: [], n: [], c: [] } }; tiles.set(k, t); } return t; };
-  for (const f of D.faces) {
-    const T = tileOf(f.c).f; const m = f.m; const rr = cross(UP, m); const rl = Math.hypot(...rr) || 1; rr[0] /= rl; rr[1] /= rl; rr[2] /= rl;
-    for (const e of f.els) {
-      const base = T.n; const z = e.z || 0;
-      for (let j = 0; j < 4; j++) {
-        const x = e.q[j * 2], y = e.q[j * 2 + 1];
-        T.p.push(f.c[0] + rr[0] * x + m[0] * z, f.c[1] + y, f.c[2] + rr[2] * x + m[2] * z);
-        T.uv.push(e.uv[j * 2], e.uv[j * 2 + 1]); T.col.push(e.col[0], e.col[1], e.col[2]);
-        T.alb.push(Math.round(Math.min(1, e.alb[0]) * 255), Math.round(Math.min(1, e.alb[1]) * 255), Math.round(Math.min(1, e.alb[2]) * 255), 255);
-        T.k.push(e.k + 16 * (e.layer || 0), e.p[0], e.p[1], e.p[2]); T.fl.push(f.flk[0], f.flk[1]);
+  const tileOf = (p) => { const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`; let t = tiles.get(k); if (!t) { t = { key: k, faces: [], nq: 0, h: { p: [], n: [], c: [] } }; tiles.set(k, t); } return t; };
+  for (const f of D.faces) { const t = tileOf(f.c); t.faces.push(f); t.nq += f.els.length; }
+  // fill typed arrays directly (two passes: count, then write) — this runs once at load on the phone
+  for (const t of tiles.values()) {
+    if (!t.nq) continue;
+    const nv = t.nq * 4, T = t.f = { p: new Float32Array(nv * 3), uv: new Float32Array(nv * 2), col: new Float32Array(nv * 3), alb: new Uint8Array(nv * 4),
+      k: new Float32Array(nv * 4), fl: new Float32Array(nv * 2), idx: nv > 65535 ? new Uint32Array(t.nq * 6) : new Uint16Array(t.nq * 6), n: nv };
+    let v = 0, ii = 0;
+    for (const f of t.faces) {
+      const m = f.m; const rr = cross(UP, m); const rl = Math.hypot(...rr) || 1; const rx = rr[0] / rl, rz = rr[2] / rl;
+      for (const e of f.els) {
+        const z = e.z || 0, a0 = Math.round(Math.min(1, e.alb[0]) * 255), a1 = Math.round(Math.min(1, e.alb[1]) * 255), a2 = Math.round(Math.min(1, e.alb[2]) * 255), kk = e.k + 16 * (e.layer || 0);
+        T.idx[ii++] = v; T.idx[ii++] = v + 1; T.idx[ii++] = v + 2; T.idx[ii++] = v; T.idx[ii++] = v + 2; T.idx[ii++] = v + 3;
+        for (let j = 0; j < 4; j++, v++) {
+          const x = e.q[j * 2], y = e.q[j * 2 + 1];
+          T.p[v * 3] = f.c[0] + rx * x + m[0] * z; T.p[v * 3 + 1] = f.c[1] + y; T.p[v * 3 + 2] = f.c[2] + rz * x + m[2] * z;
+          T.uv[v * 2] = e.uv[j * 2]; T.uv[v * 2 + 1] = e.uv[j * 2 + 1];
+          T.col[v * 3] = e.col[0]; T.col[v * 3 + 1] = e.col[1]; T.col[v * 3 + 2] = e.col[2];
+          T.alb[v * 4] = a0; T.alb[v * 4 + 1] = a1; T.alb[v * 4 + 2] = a2; T.alb[v * 4 + 3] = 255;
+          T.k[v * 4] = kk; T.k[v * 4 + 1] = e.p[0]; T.k[v * 4 + 2] = e.p[1]; T.k[v * 4 + 3] = e.p[2];
+          T.fl[v * 2] = f.flk[0]; T.fl[v * 2 + 1] = f.flk[1];
+        }
       }
-      T.idx.push(base, base + 1, base + 2, base, base + 2, base + 3); T.n += 4;
     }
   }
   const colP = [];
@@ -1060,15 +1070,15 @@ export async function build(layout, ctx = {}) {
   for (const b of D.boxes) boxInto(tileOf(b.c).h, b, b.collide ? colP : null);
   const meshes = []; let tris = 0;
   for (const t of [...tiles.values()].sort((a, b) => (a.key < b.key ? -1 : 1))) {
-    if (t.f.n) {
+    if (t.f) {
       const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(t.f.p, 3));
-      g.setAttribute('aUv', new THREE.Float32BufferAttribute(t.f.uv, 2));
-      g.setAttribute('aCol', new THREE.Float32BufferAttribute(t.f.col, 3));
-      g.setAttribute('aAlb', new THREE.Uint8BufferAttribute(t.f.alb, 4, true));
-      g.setAttribute('aK', new THREE.Float32BufferAttribute(t.f.k, 4));
-      g.setAttribute('aF', new THREE.Float32BufferAttribute(t.f.fl, 2));
-      g.setIndex(t.f.n > 65535 ? new THREE.Uint32BufferAttribute(t.f.idx, 1) : new THREE.Uint16BufferAttribute(t.f.idx, 1));
+      g.setAttribute('position', new THREE.BufferAttribute(t.f.p, 3));
+      g.setAttribute('aUv', new THREE.BufferAttribute(t.f.uv, 2));
+      g.setAttribute('aCol', new THREE.BufferAttribute(t.f.col, 3));
+      g.setAttribute('aAlb', new THREE.BufferAttribute(t.f.alb, 4, true));
+      g.setAttribute('aK', new THREE.BufferAttribute(t.f.k, 4));
+      g.setAttribute('aF', new THREE.BufferAttribute(t.f.fl, 2));
+      g.setIndex(new THREE.BufferAttribute(t.f.idx, 1));
       g.computeBoundingSphere(); g.computeBoundingBox();
       const m = new THREE.Mesh(g, faceMat); m.name = `signs-faces-${t.key}`; m.matrixAutoUpdate = false;
       m.onBeforeRender = (renderer) => { const rt = renderer.getRenderTarget(); uMS.value = rt && rt.samples > 0 ? 1 : 0; };
