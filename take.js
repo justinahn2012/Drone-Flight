@@ -5,8 +5,9 @@
 // LINES are invisible portals in world.lines (a segment of flight crossing a rectangle), or carves (half way round a
 // silo / the chimney, a U-turn over the hall roof). Each new line scores pts x FLOW (x1.25 if CLEAN: no contact since
 // the previous line) into an unbanked chain and adds +1 FLOW (cap x8). 5 s with no line banks the chain and FLOW drops
-// back to x1; flying within 2 m of structure (holdZone) keeps the chain alive. The bank timer and the hold only run
-// faster than 2 m/s (lining up under a hole is not idling). A crash loses whatever is unbanked; a CUT banks the live
+// back to x1; flying within 2 m of structure (holdZone) keeps the chain alive. The bank timer runs at 0.4x below 2 m/s
+// with hands on (lining up under a hole is barely idling, but a crawl still banks: design r4 #5) and the hold only
+// counts faster than 2 m/s. A crash loses whatever is unbanked; a CUT banks the live
 // chain at x1.5 x PACE (x1.5 when the last new line came at <= 45 s of take time, x1.0 at >= 90 s). An impact over
 // 2.5 m/s that isn't a crash or a floor contact (SCRAPE) costs 1 FLOW. A line already flown
 // this take is a repeat: 25 % of its pts, no FLOW, and only after some other line (no ping-pong through one gate).
@@ -17,7 +18,10 @@
 // past its deadzone, steer: pitch/roll/yaw past it}. A take starts on `moved`; the hover CUT needs no hands, and never
 // fires down a shaft (world.funnels); the touchdown CUT needs `steer` idle (holding the dive down is landing). A plain
 // boolean still works (hands = moved = it, steer = false: the round-3 behaviour).
-// Progress (lines ever flown, best FLOW / pts per line) and the best take persist in localStorage.
+// Progress (lines ever flown, best FLOW / pts / take time per line) and the best take persist in localStorage.
+// PERFECT (design r4 #1): a take that ends in a CUT with 3 stars, every line CLEAN and no SCRAPE.
+// Ghost (C12, ghost.js): `take.ghost` holds a Ghost (the best take re-simulated from its input log, or a CHALLENGE);
+// take.ghostPose(alpha) is its pose at this take's clock, for the UI's OSD diamond (never drawn into clips).
 // No three.js import: plain vector maths, runs headless in node too.
 
 export const TAKE_TUNING = {
@@ -43,8 +47,9 @@ export const TAKE_TUNING = {
   carveGap: 1.0,       // s out of a carve's zone before its sweep resets
   cooldown: 1.5,       // s before the same line can fire again
   teleport: 25,        // m in one update = a reset/teleport, not flight
-  stars: [60000, 150000, 260000],  // take total for 1 / 2 / 3 stars (design r3 #1, with PACE)
-  idleSpeed: 2.0,      // m/s: the bank timer and the hold zone only count faster than this
+  stars: [60000, 180000, 325000],  // 1 / 2 / 3 stars: design r4 #1's 60k/160k/290k scaled by the +12 % the r5 micros add at the top
+  idleSpeed: 2.0,      // m/s: the hold zone only counts faster than this; slower, the bank timer runs at idleSlow
+  idleSlow: 0.4,       // bank-timer rate below idleSpeed with hands on (a crawl banks in 12.5 s, not never)
   pace: [45, 90, 1.5], // PACE at CUT: x1.5 when the last new line is at <= 45 s take time, x1.0 at >= 90 s (linear)
   skimNear: 5.0,       // s after a line during which skimming pays
   sameT0: 0.06,        // s: two lines whose t0 agree this closely share one clip caption (the bigger one)
@@ -83,13 +88,14 @@ const plainCaption = (s) => String(s || '').replace(/\*/g, '');
 // 'down' funnels only (E4): an 'up' funnel's column includes the hall's ground floor, where a landing must still CUT
 const inShaft = (p, world) => (world?.funnels || []).some((f) => f.dir !== 'up' && p.y <= f.top && Math.hypot(p.x - f.c[0], p.z - f.c[1]) < f.r);
 
-// ---- progress, shared by every Take instance (take + free fly): {name: {n: times flown, flow: best FLOW, pts: best pts}}
+// ---- progress, shared by every Take instance (take + free fly): {name: {n: times flown, flow: best FLOW, pts: best pts,
+// bestT: best take time (s, stats.time clock) at which it was first flown in a scored take: a split, lower is better}}
 const PKEY = 'onetake.lines';
 const PROG = (() => { try { const o = JSON.parse(globalThis.localStorage?.getItem(PKEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } })();
 const saveProg = () => { try { globalThis.localStorage?.setItem(PKEY, JSON.stringify(PROG)); } catch (e) {} };
 export function resetProgress() {
   for (const k of Object.keys(PROG)) delete PROG[k];
-  try { globalThis.localStorage?.removeItem(PKEY); globalThis.localStorage?.removeItem('onetake.best'); } catch (e) {}
+  try { for (const k of [PKEY, 'onetake.best', 'onetake.perfect']) globalThis.localStorage?.removeItem(k); } catch (e) {}
 }
 
 export class Take {
@@ -98,6 +104,7 @@ export class Take {
     this._best = 0;
     try { this._best = +globalThis.localStorage?.getItem('onetake.best') || 0; } catch (e) {}
     this._src = null; this._lines = []; this._carves = [];
+    this.ghost = null;             // C12: a ghost.js Ghost (main.js / GhostKeeper sets it); survives reset()
     this.reset();
   }
   get state() { return this._state; }
@@ -121,9 +128,21 @@ export class Take {
     return Math.round((1 + (pm - 1) * f) * 100) / 100;
   }
   get cutValue() { return Math.round(this._unbanked * T.cutMult * this.pace); }   // what a CUT now would bank
+  // C12 PERFECT: this take ended in a CUT at 3 stars with every line (repeats too) CLEAN and 0 SCRAPEs
+  get perfect() { return this._state === 'done' && this._how === 'cut' && this._perfectSoFar() && starsFor(this._total) === 3; }
+  // still on for PERFECT (live: no SCRAPE and nothing but CLEAN lines yet, at least one line): a HUD may tint gold
+  get perfectLive() { return this._state === 'live' && this._perfectSoFar(); }
+  _perfectSoFar() { return this._log.length > 0 && this._scrapes === 0 && this._log.every((l) => l.clean); }
   get stats() {
     return { maxSpeed: this._maxSpeed, time: this._t, lines: this._log.slice(), maxFlow: this._maxFlow, stars: starsFor(this._total),
-      scrapes: this._scrapes, clean: this._log.filter((l) => l.clean).length };
+      scrapes: this._scrapes, clean: this._log.filter((l) => l.clean).length, perfect: this.perfect };
+  }
+  // C12 ghost: the attached Ghost's pose at this take's clock ({pos:[x,y,z], q:[x,y,z,w], heading, t, done, crashed}),
+  // alpha = main.js physAlpha (the render sits between the last two ticks, like the drone). While ready: the ghost's
+  // take-start pose. null with no ghost, after the take, or when the ghost can't be shown (another world).
+  ghostPose(alpha = 1) {
+    const g = this.ghost; if (!g || this.free || this._state === 'done') return null;
+    return g.pose(this._state === 'live' ? this._t : 0, this._state === 'live' ? alpha : 1);
   }
 
   reset() {
@@ -131,7 +150,7 @@ export class Take {
     this._hover = 0; this._land = 0; this._gndAgo = 9; this._maxSpeed = 0; this._maxFlow = 1; this._log = []; this._done = new Set(); this._lastName = null;
     this._cool = {}; this._pre = new Map(); this._preT = -99; this._last = null; this._released = false; this._skim = 0; this._skimOff = 0;
     this._now = 0; this._holding = false; this._cutIn = 0; this._cutFrac = 0; this._cutKind = null;
-    this._dirty = false; this._imp = null; this._scrapeT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._pace = 1;
+    this._dirty = false; this._imp = null; this._scrapeT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._how = null;
     for (const C of this._carves || []) C.st.forEach((s) => { s.ref = null; s.acc = 0; s.out = 0; });
   }
   // the take ends the hard way (out of bounds, a reset mid-take): same as a crash
@@ -170,8 +189,9 @@ export class Take {
       if (!moved || drone.crashed) { this._last = { x: p.x, y: p.y, z: p.z }; return ev; }
       this._state = 'live'; this._dirty = false; ev.push({ type: 'start' });
     }
-    // live (hands off, the bank timer waits: letting go settles into a CUT, which banks the chain at x1.5)
-    this._t += dt; if (hands && spd > T.idleSpeed) this._idle += dt;
+    // live (hands off, the bank timer waits: letting go settles into a CUT, which banks the chain at x1.5; hands on below
+    // idleSpeed it runs at idleSlow)
+    this._t += dt; if (hands) this._idle += spd > T.idleSpeed ? dt : dt * T.idleSlow;
     this._maxSpeed = Math.max(this._maxSpeed, spd);
     if (drone.crashed) { ev.push(...this._end('crash')); return ev; }
     if (hit.touch) this._dirty = true;
@@ -303,7 +323,9 @@ export class Take {
     this._flow = Math.min(T.flowMax, flow + 1); this._maxFlow = Math.max(this._maxFlow, flow);
     const e = this._dedupe({ type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt });
     this._log.push({ name, pts, t: tt, t0: tt0, flow, clean, micro });
-    rec.n++; rec.flow = Math.max(rec.flow, flow); rec.pts = Math.max(rec.pts, pts); saveProg();
+    rec.n++; rec.flow = Math.max(rec.flow, flow); rec.pts = Math.max(rec.pts, pts);
+    if (!(rec.bestT > 0) || tt < rec.bestT) rec.bestT = tt;
+    saveProg();
     return e;
   }
   // two lines that began at the same moment (CHIMNEY DIVE's pre-gate is DROP IN's gate; THREAD THE NEEDLE's is THE
@@ -343,14 +365,16 @@ export class Take {
       const lost = Math.round(this._unbanked);
       if (lost > 0) ev.push({ type: 'lost', pts: lost });
       this._unbanked = 0;
-      this._finish();
+      this._how = 'crash'; this._finish();
       ev.push({ type: 'crash', total: this.total, stats: this.stats, lost, stars: starsFor(this._total) });
     } else {
       const pace = this.pace, pts = Math.round(this._unbanked * T.cutMult * pace);
       this._total += pts; this._unbanked = 0;
       if (pts > 0) ev.push({ type: 'bank', pts, total: this.total, cut: true, pace });
-      this._finish();
-      ev.push({ type: 'cut', total: this.total, stats: this.stats, pts, how, pace, stars: starsFor(this._total) });
+      this._how = 'cut'; this._finish();
+      const perfect = this.perfect;
+      if (perfect) { try { const L = globalThis.localStorage; L?.setItem('onetake.perfect', String((+L.getItem('onetake.perfect') || 0) + 1)); } catch (e) {} }
+      ev.push({ type: 'cut', total: this.total, stats: this.stats, pts, how, pace, stars: starsFor(this._total), perfect });
     }
     return ev;
   }
@@ -361,17 +385,19 @@ export class Take {
   }
 
   // ---- discovery
-  // every line once, in world order: [{name, caption, pts, micro, flown (ever), n, bestFlow, bestPts, inTake}]
+  // every line once, in world order: [{name, caption, pts, micro, flown (ever), n, bestFlow, bestPts, bestT (s, best take
+  // time it was first reached at in a scored take; 0 = never), inTake}]
   lineList(world) {
     if (world) this._compile(world);
     return (this._names || []).map((l) => { const r = PROG[l.name]; return { name: l.name, caption: l.caption || l.name, pts: l.pts || 0, micro: !!l.micro,
-      flown: !!r?.n, n: r?.n || 0, bestFlow: r?.flow || 0, bestPts: r?.pts || 0, inTake: this._done.has(l.name) }; });
+      flown: !!r?.n, n: r?.n || 0, bestFlow: r?.flow || 0, bestPts: r?.pts || 0, bestT: r?.bestT || 0, inTake: this._done.has(l.name) }; });
   }
-  // {flown, total}: named lines (not micro) ever flown; micro: the same for micro-lines; best: best take; stars: its stars
+  // {flown, total}: named lines (not micro) ever flown; micro: the same for micro-lines; best: best take; stars: its stars;
+  // perfects: PERFECT takes ever
   progress(world) {
     const L = this.lineList(world), main = L.filter((l) => !l.micro), mic = L.filter((l) => l.micro);
     return { flown: main.filter((l) => l.flown).length, total: main.length, micro: { flown: mic.filter((l) => l.flown).length, total: mic.length },
-      best: this.best, stars: starsFor(this.best) };
+      best: this.best, stars: starsFor(this.best), perfects: (() => { try { return +globalThis.localStorage?.getItem('onetake.perfect') || 0; } catch (e) { return 0; } })() };
   }
   // The line to fly next and where to point: {name, caption, pos:[x,y,z] (the point to steer at), dist (m to pos),
   // bearing (rad from the nose, + = right), elev (rad above level), fresh (never flown), vert ('down' | 'up' | null:
@@ -466,7 +492,7 @@ export function defaultTakeUI(e, pop) {
     case 'repeat': pop(`${plainCaption(e.caption || e.name)}  REPEAT +${n(e.pts)}`, 'line'); break;
     case 'bank': if (!e.cut) pop(`BANKED +${n(e.pts)}`, 'score'); break;
     case 'scrape': if (e.lost) pop(`SCRAPE · FLOW ×${e.flow}`, 'warn'); break;
-    case 'cut': pop(`CUT!  ${e.pts ? `+${n(e.pts)}  ` : ''}${n(e.total)} PTS${e.stars ? '  ' + '★'.repeat(e.stars) : ''}`, 'score'); break;
+    case 'cut': pop(`CUT!  ${e.pts ? `+${n(e.pts)}  ` : ''}${n(e.total)} PTS${e.stars ? '  ' + '★'.repeat(e.stars) : ''}${e.perfect ? '  PERFECT' : ''}`, 'score'); break;
     case 'crash': pop(e.lost ? `CRASHED · CHAIN LOST −${n(e.lost)}` : `CRASHED · ${n(e.total)} PTS`, 'warn'); break;
     default: break;
   }

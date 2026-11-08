@@ -683,7 +683,8 @@ function buildSite(seed = 7) {
   S.funnels = [
     { name: 'chimney', dir: 'down', c: [CHIM.x, CHIM.z], top: CHIM.h, bottom: 4, r: 3.5, rIn: CHIM.rt - CHIM.th },
     { name: 'stairwell', dir: 'down', c: [TOWER.x, TOWER.z], top: SILO.top + 0.4, bottom: 2, r: 3.0, rIn: (TOWER.w - 2 * TOWER.T) / 2 - 0.65 },
-    { name: 'hall stack', dir: 'up', c: [STACK[0], STACK[1]], bottom: HALL.fh - 0.35, top: 3 * HALL.fh + 0.5, r: 2.5, rIn: 1.0 },
+    // r 3.0 (UX r4: climbs starting 2.4 m off the axis while drifting missed at r 2.5)
+    { name: 'hall stack', dir: 'up', c: [STACK[0], STACK[1]], bottom: HALL.fh - 0.35, top: 3 * HALL.fh + 0.5, r: 3.0, rIn: 1.0 },
   ];
   return S;
 }
@@ -705,6 +706,10 @@ function buildLines() {
   const mouth = g([CHIM.x, CHIM.h - 3, CHIM.z], [0, -1, 0], 2.4, 2.4, [1, 0, 0]);
   const door = g([CHIM.x + dx * (CHIM.rb + 0.15), CHIM.base + 2.0, CHIM.z + dz * (CHIM.rb + 0.15)], [dx, 0, dz], 3.0, 3.9, perp);
   add('DROP IN', 'DROP *IN*!', 500, mouth, { micro: true });
+  // half way down the flue in time (design r4 #4: DROP IN -> CHIMNEY DIVE was 5-7 s with no beat; at y 26 it came 1.8 s
+  // after DROP IN and 3.9 s before the door, at y 20 it splits 2.3 / 3.4 s); 3.6 m square, inside the 5.0 m bore at y 20
+  // and clear of the outside of the wall (2.85 m radius there)
+  add('HALFWAY', '*HALFWAY*!', 500, g([CHIM.x, 20, CHIM.z], [0, -1, 0], 3.6, 3.6, [1, 0, 0]), { micro: true });
   add('CHIMNEY DIVE', 'CHIMNEY *DIVE*!', 3000, door, { pre: [mouth], within: 16 });
   // under the pipe rack, end to end
   const rk = g([RACK.K[0] + dx * 0.3, 3.4, RACK.K[1] + dz * 0.3], [dx, 0, dz], 2.9, 6.6, perp);
@@ -723,6 +728,9 @@ function buildLines() {
     const A = new THREE.Vector3(...GAL.A), B = new THREE.Vector3(...GAL.B), dir = B.clone().sub(A), L = dir.length(); dir.normalize();
     const zA = new THREE.Vector3().crossVectors(dir, Y_UP).normalize(), yA = new THREE.Vector3().crossVectors(zA, dir).normalize();
     const at = (s, sg) => g(A.clone().addScaledVector(dir, s).addScaledVector(yA, 1.35).toArray(), dir.clone().multiplyScalar(sg).toArray(), 2.8, 2.2, zA.toArray());
+    // the bottom mouth on the way up (design r4 #4: ROOF U-TURN -> GALLERY CLIMB was 6.6-8.8 s): GALLERY CLIMB's own
+    // pre-gate, so in a clip the two share one caption (take.js sameT0: GALLERY CLIMB's replaces it)
+    add('BRIDGE ENTRY', 'BRIDGE *ENTRY*!', 500, at(L - 1.5, -1), { micro: true });
     add('GALLERY CLIMB', 'UP THE *GALLERY*!', 2000, at(1.5, -1), { pre: [at(L - 1.5, -1)], within: 9 });
     add('GALLERY DROP', 'DOWN THE *GALLERY*!', 1500, at(L - 1.5, 1), { pre: [at(1.5, 1)], within: 9 });
   }
