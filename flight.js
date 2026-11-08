@@ -46,7 +46,7 @@ const WALL_HOLD = 0.35, WALL_RAY = 1.6;
 // spot where the drop began (gain LOCK_K /s, <= LOCK_V m/s), if it began slower than LOCK_ENGAGE m/s (a brake-and-drop
 // from cruise isn't yanked back).
 const FUN_V = 2.0, FUN_V_IN = 3.5, FUN_K = 2.7, FUN_TAU_V = 0.12, FUN_HOLD = 1.5, FUN_IN = 1.0;
-const FUN_CLIMB = -0.3, FUN_UP = 0.3, FUN_REACH = 8;
+const FUN_CLIMB = -0.3, FUN_UP = 0.3, FUN_REACH = 8, FUN_LIFT = 0.6;   // FUN_LIFT: m/s off a rim it landed on
 const LOCK_K = 3.0, LOCK_V = 4.0, LOCK_DZ = 0.12, LOCK_CLIMB = -0.5, LOCK_ENGAGE = 3.5;
 // Floor push (UX r3 #1). An up-facing contact keeps floorT alive for FLOOR_HOLD s; while it lasts, a right stick past
 // LIFT_DZ climbs off at >= LIFT_VZ m/s (before, the altitude hold pinned a landed quad and the right stick moved it
@@ -411,6 +411,8 @@ export class Drone {
       // vertical: progressive curve, half stick ~ the old 4.5 m/s-linear feel, full stick cineClimb up / cineDive down
       let vz = cz >= 0 ? c.cineClimb * cz * (0.6 + 0.4 * cz) : c.cineDive * cz * (0.15 - 0.85 * cz);
       if (holdV) vz = fun.dir === 'up' ? Math.min(vz, FUN_HOLD) : Math.max(vz, -FUN_HOLD);
+      // sat on the rim / coping while the funnel steers in: lift off it (pressing down, friction pinned the quad there)
+      if (fun && this._fOut && this.floorT > 0 && this._fdh > FUN_IN) vz = Math.max(vz, FUN_LIFT);
       // floor push: on (or just off) a floor the right stick means go, and with it on a dive skims instead of landing
       const rs = Math.max(Math.abs(inp.pitch), Math.abs(inp.roll));
       if (rs > LIFT_DZ && this.floorT > 0) vz = Math.max(vz, LIFT_VZ);
