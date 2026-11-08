@@ -1,5 +1,6 @@
 // Determinism tests for the flight model (native-readiness #1.1-#1.3). Node 18+, run from the repo root:
 //   node tests/replay.mjs            replay every committed tests/*.otil input log; fail beyond 1 mm
+//   node tests/replay.mjs --strict   (CI) a stale scripted log fails; a stale browser log is a warning
 //   node tests/replay.mjs --record   re-record the scripted logs (after an intentional flight-model or world change)
 // Needs three + three-mesh-bvh resolvable from the repo (node_modules), like the other node tools.
 //
@@ -33,7 +34,8 @@ const WORLDS = {
   site: { bvh: G.bvh, envelope: ENV, ...(funnels ? { funnels } : {}) },
   siteNoFunnels: { bvh: G.bvh, envelope: ENV },
 };
-const byHash = new Map(Object.entries(WORLDS).map(([k, w]) => [worldHash(w), { name: k, world: w }]));
+// worldHash = hash.collider: site and siteNoFunnels share it, so logs match against air / site only
+const byHash = new Map(['air', 'site'].map((k) => [k, WORLDS[k]]).map(([k, w]) => [worldHash(w), { name: k, world: w }]));
 
 // ---- scripted pilots: a pure function of the tick index (seeded OU thumbs + a plan), so recording is reproducible
 function pilot(seed, plan) {
@@ -75,6 +77,7 @@ function record(name) {
 }
 
 let fail = 0;
+const STRICT = process.argv.includes('--strict');
 const ok = (cond, msg) => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${msg}`); if (!cond) fail++; };
 
 if (process.argv.includes('--record')) {
@@ -89,7 +92,13 @@ if (process.argv.includes('--record')) {
 for (const f of readdirSync(DIR).filter((f) => f.endsWith('.otil')).sort()) {
   const log = InputLog.fromBytes(readFileSync(join(DIR, f)));
   const w = byHash.get(log.header.world);
-  if (!w) { console.log(`STALE ${f}: recorded on world ${log.header.world}, which none of [${[...byHash.keys()].join(', ')}] match (re-record it)`); continue; }
+  if (!w) {
+    const msg = `STALE ${f}: recorded on world ${log.header.world}, which none of [${[...byHash.keys()].join(', ')}] match (re-record it)`;
+    // --strict (CI): a stale scripted log fails (node tests/replay.mjs --record fixes it); a browser-recorded one warns
+    if (STRICT && SCRIPTS[log.header.meta?.script]) ok(false, msg);
+    else console.log(STRICT ? `::warning file=tests/${f}::${msg}` : msg);
+    continue;
+  }
   const a = replayLog(log, new Drone(log.header.craft), w.world);
   const b = replayLog(log, new Drone(log.header.craft), w.world, { resync: true });
   const c = replayLog(log, new Drone(log.header.craft), w.world);
