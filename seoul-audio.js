@@ -280,7 +280,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
       A.scanT = t; A.scanP = [cam.x, cam.z];
       let crowdN = 0, trafN = 0; const cand = { engine: [], bus: [], scooter: [] };
       if (sim) {
-        for (const a of sim.crowd.agents) { const dx = a.x - cam.x, dz = a.z - cam.z, d2 = dx * dx + dz * dz; if (d2 < 900) crowdN += 1 / (1 + Math.sqrt(d2) / 6); }
+        crowdN = life.near ? life.near.crowdN : 0;
         for (const v of sim.traffic.vehicles) {
           if (v.hidden) continue; const p = sim.traffic.pose(v, 1, PO), d = Math.hypot(p.x - cam.x, p.z - cam.z, cam.y - 0.6);
           if (d < 150) trafN += (0.3 + v.v / 12) / (1 + (d / 15) * (d / 15));
