@@ -1668,6 +1668,16 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       ssao: { enabled: lk.ssao, radius: lk.aoRadius, strength: lk.aoStrength, taps: 8, resolution: 0.5, method: 'SAO-style: depth-derived normal, cos term, (1-vv/R^2)^2 falloff, bias 0.1, golden-angle spiral', blur: '4x4 bilateral (1/3 stop)', apply: 'indirect *= mix(1, ao, 0.8) (world shader, contract C3)' },
       msaa: { requested: lk.msaa, samples: this.samples, offBelowBlurScale: MSAA_OFF_BELOW, onAboveBlurScale: MSAA_ON_ABOVE },
       look, grades: GRADES, lenses: LENSES, shutters: SHUTTERS,
+      // [P2-A] night camera v2 (only when the night preset is on: bando's profile is unchanged)
+      ...(lk.night ? { night: {
+        tone: { curve: 'lottes2016 per channel: t = x^a / (x^(a d) b + c), x = exposed radiance; mix(hue-preserving on max(rgb), per-channel, tonePc); clamp 1',
+          a: (lk.tone || [])[0], d: (lk.tone || [])[1], midIn: 0.24, midOut: (lk.tone || [])[2], whitePoint: 0.24 * Math.pow(2, ce ?? 6.5), bc: lk.tone ? nightToneBC(lk.tone[0], lk.tone[1], lk.tone[2], 0.24 * Math.pow(2, ce ?? 6.5)) : null, tonePc: lk.tonePc },
+        core: { key: 'mix(min(rgb), max(rgb), coreXtalk) of the pre-halo exposure, EV over the white point', xtalk: lk.coreXtalk, ev: lk.coreEv },
+        meter: { grid: [16, 12], reject: lk.aeReject, areaSource: lk.aeArea, matrix: lk.aeMatrix, veilCapEv: lk.veilCapEv, resetSolvesCap: true },
+        psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, ghosts: lk.ghosts, cap: lk.bloomCap },
+        noise: { shot: (lk.noise || [])[0], read: (lk.noise || [])[1], chroma: (lk.noise || [])[2], floor: lk.noiseFloor, cellPx: lk.noiseCell, chromaDark: lk.chromaDark, temporal: 'mean of this and last frame lattice (corr 0.5)', texture: '256^2 gaussian, seed 0x9e3779b9 mulberry32' },
+        codec: lk.codec, sharpDark: lk.sharpDark, objectBlur: { on: lk.objBlur, contract: 'P2-A1: world.motionMeshes / scene.userData.motionMeshes, geometry attribute instanceVelocity (m/s)' },
+      } } : {}),
     });
   }
 
