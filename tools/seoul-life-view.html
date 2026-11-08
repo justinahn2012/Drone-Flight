@@ -3,7 +3,7 @@
 <title>Seoul Life View</title>
 <style>html,body{margin:0;background:#000;color:#ccc;font:12px system-ui;overflow:hidden}#hud{position:fixed;left:8px;top:6px;white-space:pre;pointer-events:none;text-shadow:0 0 2px #000}</style>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}</script>
-</head><body><div id="hud"></div>
+</head><body><div id="hud"></div><button id="snd" style="position:fixed;right:8px;top:6px">sound</button>
 <script type="module">
 // S4 dev viewer: the life + sound modules on a stand-in block (boxes, lit frontages, ground lit from the life fill grid).
 // Not the level: S1 builds the site, S3 the lighting. ?layout=../seoul/layout.json&t=30&cam=x,y,z,yawDeg,pitchDeg&exp=18&rain=1
@@ -95,5 +95,15 @@ window.__view = {
 };
 if (!Q.has('manual')) { let last = performance.now(); const loop = (now) => { frame(Math.min(0.1, (now - last) / 1000)); last = now; requestAnimationFrame(loop); }; requestAnimationFrame(loop); }
 else { console.log('stage pre-frame', (performance.now() - T0) | 0); frame(0); console.log('stage frame', (performance.now() - T0) | 0); }
+// sound: tap to start (straight to the speakers here; in the game it goes through MotorAudio's camera-mic chain)
+document.getElementById('snd').onclick = () => {
+  const ac = new (window.AudioContext || window.webkitAudioContext)(); const g = ac.createGain(); g.gain.value = 4; g.connect(ac.destination);
+  life.audio.attach(ac, g); ac.resume();
+};
+// fly-through: WASD + arrows (look), Q/E down/up
+const keys = new Set(); addEventListener('keydown', (e) => keys.add(e.key)); addEventListener('keyup', (e) => keys.delete(e.key));
+setInterval(() => { const sp = 0.25 * (keys.has('Shift') ? 4 : 1); const f = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion), r = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+  if (keys.has('w')) cam.position.addScaledVector(f, sp); if (keys.has('s')) cam.position.addScaledVector(f, -sp); if (keys.has('d')) cam.position.addScaledVector(r, sp); if (keys.has('a')) cam.position.addScaledVector(r, -sp);
+  if (keys.has('e')) cam.position.y += sp; if (keys.has('q')) cam.position.y -= sp; if (keys.has('ArrowLeft')) cam.rotation.y += 0.03; if (keys.has('ArrowRight')) cam.rotation.y -= 0.03; if (keys.has('ArrowUp')) cam.rotation.x += 0.02; if (keys.has('ArrowDown')) cam.rotation.x -= 0.02; }, 16);
 window.__ready = true;
 </script></body></html>

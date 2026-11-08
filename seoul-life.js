@@ -21,6 +21,7 @@
 // ctx.nitScale (scene units per nit; S3 owns the calibration). Fill grid is in lux.
 import * as THREE from 'three';
 import { Rng } from './rng.js';
+import { createSeoulAudio } from './seoul-audio.js';
 
 export const LIFE = {
   crowdHz: 10, trafficHz: 60,
@@ -1210,7 +1211,8 @@ export function build(layout, ctx = {}) {
     audio: null,
     dispose() { group.traverse((o) => { o.geometry?.dispose?.(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose()); }); group.removeFromParent(); },
   };
-  if (ctx.audio !== false && ctx.createAudio) life.audio = ctx.createAudio(layout, life);
+  life.crossPhase = crossPhase;
+  if (ctx.audio !== false) life.audio = createSeoulAudio(layout, life, { signs: ctx.emitters, rain: ctx.rain });
   return life;
 }
 
