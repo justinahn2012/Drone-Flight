@@ -4,9 +4,9 @@
  "generated": "seoul/tools/lines.mjs from layout.json + buildSeoulGeometry",
  "tuning": {
   "stars": [
-   12000,
-   28000,
-   45000
+   18000,
+   60000,
+   150000
   ],
   "bankT": 10,
   "holdZone": 1.5,
@@ -66,9 +66,9 @@
    "first": true,
    "tuning": {
     "stars": [
-     12000,
-     28000,
-     45000
+     18000,
+     60000,
+     150000
     ],
     "bankT": 10,
     "holdZone": 1.5,

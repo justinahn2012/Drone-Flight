@@ -362,10 +362,13 @@ const startPoints = [
   { ...st('Hongik-ro', 10, hong.points, 6.5), ...hint('DOWN HONGIK-RO · OVER THE TRAFFIC', 'HONGIK-RO') },
   { name: 'Rooftops', pos: [r3(at(walk.points, WL * 0.3 - 20).x), r3(lines.find((l) => l.name === 'ROOFLINE').c[1]), r3(at(walk.points, WL * 0.3 - 20).z)], yaw: r3(yawTo(at(walk.points, WL * 0.3).tx, at(walk.points, WL * 0.3).tz)), ...hint('ALONG THE ROOFLINE · OVER THE TANKS', 'ROOFLINE') },
 ];
-// ---- [P2-F1 design #1] the level's take tuning, merged over take.js TAKE_TUNING (bando keeps its own): stars fitted from
-// noisy-pilot sims (seoul/tools/take-sim.mjs), the chain held while a line is armed (UX #2), the bank timer and the hold
-// zone sized for 6-10 m streets, PACE scaled to a 1 km map, the first-line guide only near the spawn (design #4)
-const tuning = { stars: [12000, 28000, 45000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [120, 300, 1.5], microFlow: 0 };
+// ---- [P2-F1 design #1] the level's take tuning, merged over take.js TAKE_TUNING (bando keeps its own). Stars fitted from
+// noisy-pilot sims (seoul/tools/take-sim.mjs, movers on; clean bots, so a little under their numbers): the walking street
+// alone + CUT 25k (1 star at 18k), the walking street / Hongik-ro / bar alley loop 51-112k (2 at 60k), six lines and 23
+// micros chained 164-190k, or 54-78k with a bank (3 at 150k). The chain is held while a line is armed (UX #2), micros add
+// no FLOW (FLOW counts lines: x4-6 on a long take), the bank timer covers a 50-100 m transit between streets, the hold
+// zone is 1.5 m (6-10 m streets), PACE is scaled to a 1 km map, and the first-line guide only works near the spawn (design #4).
+const tuning = { stars: [18000, 60000, 150000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [120, 300, 1.5], microFlow: 0 };
 // a copy on the `first` line for world loaders that pass lines[] only (take.js reads either)
 const firstLine = lines.find((l) => l.first); if (firstLine) firstLine.tuning = tuning;
 const out = { version: 2, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', tuning, lines, funnels, startPoints,
