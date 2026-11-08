@@ -36,7 +36,7 @@ try {
   ok(run(['tools/export-world.mjs', '--out', B, '--quiet']).status === 0, 'export-world (second run) exits 0');
   ok(run(['tools/camera-profile.mjs', '--out', A, '--quiet']).status === 0, 'camera-profile exits 0');
   ok(run(['tools/camera-profile.mjs', '--out', B, '--quiet']).status === 0, 'camera-profile (second run) exits 0');
-  for (const f of ['world.glb', 'collider.glb', 'world.json', 'camera.json']) ok(existsSync(join(A, f)) && sha(readFileSync(join(A, f))) === sha(readFileSync(join(B, f))), `${f} byte-identical across runs`);
+  for (const f of ['world.glb', 'collider.glb', 'world.json', 'camera.json', 'graffiti.png']) ok(existsSync(join(A, f)) && sha(readFileSync(join(A, f))) === sha(readFileSync(join(B, f))), `${f} byte-identical across runs`);
   ok(run(['tools/export-world.mjs', '--out', A, '--check', '--quiet']).status === 0, 'export-world --check passes on a fresh export');
   const tCli = performance.now();
 

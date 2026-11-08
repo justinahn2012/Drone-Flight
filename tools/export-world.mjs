@@ -1,8 +1,8 @@
 // tools/export-world.mjs — export the procedural site for the native (Swift + Metal) port and offline tools.
 //
-//   node tools/export-world.mjs                 writes world.glb, collider.glb, world.json to the repo root (flat)
+//   node tools/export-world.mjs                 writes world.glb, collider.glb, world.json, graffiti.png to the repo root
 //   node tools/export-world.mjs --out DIR       ...to DIR instead
-//   node tools/export-world.mjs --check         write nothing; exit 1 if the three files in --out differ from a fresh export
+//   node tools/export-world.mjs --check         write nothing; exit 1 if the files in --out differ from a fresh export
 //
 // Source of truth: buildGeometry() in world-bando.js (pure CPU, no renderer), so this runs headless in node / CI.
 //   world.glb     one node per render mesh: the merged site meshes per material (sorted by key), then terrain, far
@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
 import { exposeAndImport, sourceLiteral, evalLiteral, literalFields, functionBody } from './expose.mjs';
 import { GLBWriter, semanticsFor } from './glb.mjs';
+import { encodePNG } from './png.mjs';
 import { GeoHash, HASH_ALGO, attrArray, meshHash, setHash } from './geohash.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -143,6 +144,11 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
   const hash = { algo: HASH_ALGO, world: hWorld, render: hRender, collider: hCol, meshes: Object.fromEntries(render.map((r) => [r.name, meshHash(r.name, r.geo)])) };
   for (const fn of ['geometryHash', 'geoHash', 'hashGeometry']) if (typeof wb[fn] === 'function') { try { hash.worldBando = { fn, value: await wb[fn](geo) }; } catch (e) { warn(`${fn}() threw: ${e.message}`); } break; }
 
+  // ---------------------------------------------------------------- graffiti.png (G4: drawn in pure JS, raster2d.js)
+  let GA = null, graffitiPng = null;
+  if (typeof wb.graffitiPixels === 'function') { GA = wb.graffitiPixels(); graffitiPng = encodePNG(GA.data, GA.width, GA.height); }
+  else warn('graffitiPixels() not found: graffiti.png not exported');
+
   // ---------------------------------------------------------------- world.glb
   const texOf = (m) => {
     if (!m || !m.maps) return undefined;
@@ -226,7 +232,9 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
       attributes: '_AY (aY) = (bottom, top) world height of the element a vertex belongs to (weathering); COLOR_0 on path = (1,1,1,edge alpha)',
     },
     hash,
-    files: { 'world.glb': { bytes: worldGlb.byteLength, sha256: sha256(worldGlb) }, 'collider.glb': { bytes: colGlb.byteLength, sha256: sha256(colGlb) } },
+    files: { 'world.glb': { bytes: worldGlb.byteLength, sha256: sha256(worldGlb) }, 'collider.glb': { bytes: colGlb.byteLength, sha256: sha256(colGlb) },
+      ...(graffitiPng ? { 'graffiti.png': { bytes: graffitiPng.byteLength, sha256: sha256(graffitiPng) } } : {}) },
+    textures: graffitiPng ? { graffiti: { file: 'graffiti.png', size: [GA.width, GA.height], cells: [4, GA.height / 256], cellPx: [512, 256], rows: 'top-down (PNG); the game uploads it bottom-up (flipY)', alpha: 'straight', colorSpace: 'sRGB', drawnBy: 'world-bando.js graffitiCells via raster2d.js (rng 1402)' } } : {},
     meshes: meshTable,
     collider: colInfo,
     spawn,
@@ -246,13 +254,13 @@ export async function exportWorld({ root = ROOT, out = root, seed = 7, check = f
     runtimeOnly: [
       'grass: instanced cross cards placed in the vertex shader from an integer cell hash + the ground mask (buildBando, buildGroundMask)',
       'foliage: tree crowns, wall thickets, field shrubs, saplings (leaf-card balls; placement uses BVH probes in buildBando)',
-      'graffiti: ~100 decal grids conformed to walls by raycasts (buildBando)',
-      'ground mask texture, canvas atlases (grass / leaf / graffiti), the per-vertex light bake (bakeLight)',
+      'graffiti placement: ~260 decal grids conformed to walls by raycasts (buildBando; the atlas itself is graffiti.png)',
+      'ground mask texture, canvas atlases (grass / leaf), the per-vertex light bake (bakeLight)',
     ],
     warnings,
   };
   const worldJson = stringify(world) + '\n';
-  const outputs = { 'world.glb': worldGlb, 'collider.glb': colGlb, 'world.json': new TextEncoder().encode(worldJson) };
+  const outputs = { 'world.glb': worldGlb, 'collider.glb': colGlb, 'world.json': new TextEncoder().encode(worldJson), ...(graffitiPng ? { 'graffiti.png': graffitiPng } : {}) };
 
   if (check) {   // the export is deterministic: up to date <=> every file on disk is byte-identical to a fresh one
     const stale = Object.entries(outputs).filter(([f, b]) => !existsSync(join(out, f)) || sha256(readFileSync(join(out, f))) !== sha256(b)).map(([f]) => f);
