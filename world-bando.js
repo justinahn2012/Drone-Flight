@@ -1105,7 +1105,7 @@ ${foliage ? `#ifdef DOUBLE_SIDED
 #include <aomap_fragment>`);
     if (opt.fsFog) sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', `${opt.fsFog}\n#include <fog_fragment>`);   // before, never instead of
     // [A-lighting] begin: baked sun/sky bounce, sun mask, far shadow map, forward-scatter haze (see aLightingPatch)
-    aLightingPatch(sh, uniforms);
+    aLightingPatch(sh, uniforms, mat, kind);   // [A1] + material (lightmap flag) and kind (SSAO surfaces)
     aSkyShadowPatch(sh, uniforms);   // [A2] treeline ring shadow map, multiplied into aLightingPatch's sun shadow
     // [A-lighting] end
   };
@@ -1135,7 +1135,8 @@ let BAKE = null;
 function lightProbe(bvh, p, n, maxD, rays) {
   if (!BAKE) { LP.out.set(0, 0, 0); return skyVisibility(bvh, p, n, maxD, rays); }
   const r = BAKE.probe(p, n, Math.max(4, rays), maxD);
-  LP.out.set(r.bs[0] * LP.sunRGB.x + r.bk[0] * LP.skyRGB.x, r.bs[1] * LP.sunRGB.y + r.bk[1] * LP.skyRGB.y, r.bs[2] * LP.sunRGB.z + r.bk[2] * LP.skyRGB.z);
+  if (r.out) LP.out.set(r.out[0], r.out[1], r.out[2]);   // [A1] lightmap probe: final units already
+  else LP.out.set(r.bs[0] * LP.sunRGB.x + r.bk[0] * LP.skyRGB.x, r.bs[1] * LP.sunRGB.y + r.bk[1] * LP.skyRGB.y, r.bs[2] * LP.sunRGB.z + r.bk[2] * LP.skyRGB.z);
   return r.open;
 }
 function skyVisibility(bvh, p, n, maxD, rays) {
@@ -1370,16 +1371,26 @@ export async function bakeLight(geo, { sunDir, sun = true, quality = 'auto', onT
 // over where the live (camera-following) map ends; uSunW/uHaze = forward-scatter haze in the fog.
 function lightUniforms() {
   return { uSunB: { value: new THREE.Vector3() }, uSkyB: { value: new THREE.Vector3() }, uFarSM: { value: null }, uFarMat: { value: new THREE.Matrix4() },
-    uFarOn: { value: 0 }, uFarTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) }, uSunW: { value: new THREE.Vector3(0, 1, 0) }, uHaze: { value: 1.2 } };
+    uFarOn: { value: 0 }, uFarTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) }, uSunW: { value: new THREE.Vector3(0, 1, 0) }, uHaze: { value: 1.2 },
+    // [A1] committed lightmap (see lmLoad): indirect irradiance, aux = (openness, sun mask), log2 range, live scale
+    uLM: { value: null }, uLMAux: { value: null }, uLMRange: { value: new THREE.Vector2(-12, 3) }, uLMScale: { value: new THREE.Vector3(1, 1, 1) } };
 }
+// [A1] contract C3: SSAO from stream D. world.aoUniforms; D fills uAO (the SSAO texture), uAOOn and uAOScale (1 / the
+// scene RT size in pixels) every frame, so texture(uAO, gl_FragCoord.xy * uAOScale).r is the AO under this pixel.
+// Indirect diffuse x mix(1, ao, 0.8) on the surfaces that are in D's depth pass (not foliage, grass, treeline).
+function aoUniforms() { return { uAO: { value: null }, uAOOn: { value: 0 }, uAOScale: { value: new THREE.Vector2(1, 1) } }; }
+const AO_KINDS = new Set(['built', 'ground', 'track', 'bark', 'decal']);
 const A_DIR_LINE = 'directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;';
 const A_LIGHTS_BEGIN = THREE.ShaderChunk.lights_fragment_begin.includes(A_DIR_LINE)
   ? THREE.ShaderChunk.lights_fragment_begin.replace(A_DIR_LINE, A_DIR_LINE.replace('? getShadow(', '? aDirShadow( getShadow(').replace(' ) : 1.0;', ' ), vDirectionalShadowCoord[ i ] ) : 1.0;'))
   : null;
 if (!A_LIGHTS_BEGIN) console.warn('[A-lighting] three lights_fragment_begin changed: far shadows + sun mask disabled');
-function aLightingPatch(sh, uniforms) {
+function aLightingPatch(sh, uniforms, mat, kind) {
   const U = uniforms?.aLight; if (!U) return;
-  Object.assign(sh.uniforms, U);
+  // [A1] lightmapped material (mat.userData.aLM, set by lmEnable with its own program key): the indirect diffuse is
+  // the committed lightmap, vAO (B's weathering + specular occlusion) its aux openness, the sun mask its aux.g
+  const lm = !!(mat?.userData?.aLM && U.uLM.value), AO = uniforms.aAO, ssao = !!AO && AO_KINDS.has(kind);
+  Object.assign(sh.uniforms, U); if (AO) Object.assign(sh.uniforms, AO);
   sh.vertexShader = sh.vertexShader
     .replace('#include <common>', `#include <common>
 attribute vec3 aBSun;
@@ -1389,9 +1400,13 @@ uniform vec3 uSunB;
 uniform vec3 uSkyB;
 uniform mat4 uFarMat;
 varying vec3 vBounceA;
-varying vec4 vFarC;`)
+varying vec4 vFarC;
+${lm ? `#ifndef USE_UV2
+attribute vec2 uv2;
+#endif
+centroid varying vec2 vLmUv;` : ''}`)
     .replace('#include <fog_vertex>', `#include <fog_vertex>
-  vBounceA = aBSun * uSunB + aBSky * uSkyB;
+  vBounceA = aBSun * uSunB + aBSky * uSkyB;${lm ? '\n  vLmUv = uv2;' : ''}
   {
     vec4 aW = vec4( transformed, 1.0 );
     #ifdef USE_INSTANCING
@@ -1410,6 +1425,18 @@ uniform vec3 uSunW;
 uniform float uHaze;
 varying vec3 vBounceA;
 varying vec4 vFarC;
+${ssao ? `uniform sampler2D uAO;
+uniform float uAOOn;
+uniform vec2 uAOScale;
+float aSSAO() { return uAOOn > 0.5 ? mix( 1.0, texture2D( uAO, gl_FragCoord.xy * uAOScale ).r, 0.8 ) : 1.0; }` : 'float aSSAO() { return 1.0; }'}
+${lm ? `uniform sampler2D uLM;
+uniform sampler2D uLMAux;
+uniform vec2 uLMRange;
+uniform vec3 uLMScale;
+centroid varying vec2 vLmUv;
+float aLmAO;
+vec4 aLmX;
+vec3 aLmIrr() { return exp2( mix( vec3( uLMRange.x ), vec3( uLMRange.y ), texture2D( uLM, vLmUv ).rgb ) ) * uLMScale; }` : ''}
 float aFarShadow() {
   vec3 c = vFarC.xyz;
   if ( uFarOn < 0.5 || c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0 ) return 1.0;
@@ -1422,9 +1449,10 @@ float aDirShadow( float live, vec4 sc ) {
   vec2 e = min( c.xy, 1.0 - c.xy );
   float wL = smoothstep( 0.0, 0.05, min( e.x, e.y ) ) * step( c.z, 1.0 );
   float s = wL > 0.999 ? live : mix( aFarShadow(), live, wL );
-  return s * smoothstep( 0.05, 0.4, vFarC.w );
+  return s * smoothstep( 0.05, 0.4, ${lm ? 'aLmX.g' : 'vFarC.w'} );
 }`)
-    .replace('#include <aomap_fragment>', `reflectedLight.indirectDiffuse += vBounceA * BRDF_Lambert( material.diffuseColor );
+    .replace('#include <aomap_fragment>', `${lm ? 'reflectedLight.indirectDiffuse = aLmIrr() * BRDF_Lambert( material.diffuseColor ) * aSSAO();'
+      : 'reflectedLight.indirectDiffuse += vBounceA * BRDF_Lambert( material.diffuseColor );\n  reflectedLight.indirectDiffuse *= aSSAO();'}
 #include <aomap_fragment>`)
     .replace('#include <fog_fragment>', `#ifdef USE_FOG
   #ifdef FOG_EXP2
@@ -1436,6 +1464,401 @@ float aDirShadow( float live, vec4 sc ) {
   gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor * ( 1.0 + uHaze * pow( max( dot( aVd, uSunW ), 0.0 ), 6.0 ) ), fogFactor );
 #endif`);
   if (A_LIGHTS_BEGIN) sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_begin>', A_LIGHTS_BEGIN);
+  if (lm) {   // vAO -> the lightmap's openness from here on (after B's `varying float vAO;`, before any use in main)
+    if (!sh.fragmentShader.includes('void main() {')) console.warn('[A1] fragment main() not found: lightmap openness not applied');
+    sh.fragmentShader = sh.fragmentShader.replace('void main() {', `#define vAO aLmAO
+void main() {
+  aLmX = texture2D( uLMAux, vLmUv ); aLmAO = aLmX.r;`);
+  }
+}
+
+// ---------------------------------------------------------------- [A1] lightmap UV2: deterministic charts + skyline packer
+// Every lightmapped mesh (the merged structures, the yard terrain, the path ribbons) gets a `uv2` attribute into one
+// atlas. Charts: triangles that share a welded edge, a continuous `uv` (the metric planar / cylinder unwrap every Site
+// part already carries) and normals within 60 deg are one chart, unwrapped by that uv. A chart whose uv is degenerate,
+// flipped or stretched (> 2.2x) is re-charted into near-planar patches (25 deg from a seed) projected on their plane.
+// A chart maps its texel centres onto its edges (neighbouring charts sample the same seam points) inside a 1-texel
+// gutter. Terrain = one top-down chart, packed first; then the rest, tallest first, bottom-left on a skyline. The
+// structure texel starts at LMUV.texel and coarsens 8 % per try until the atlas fits W x maxH. Pure function of the
+// geometry, append-only: vertices shared by two charts are duplicated at the END of a geometry (the bake's
+// collider->render vertex map stays valid). tools/bakelm.mjs gets the chart detail via { detail: true }.
+export const LMUV = { ver: 1, W: 2048, maxH: 2048, texel: 0.2, terrTexel: 0.25 };
+function lmWeld(p, NV) {
+  const wid = new Int32Array(NV), head = new Map(), nxt = new Int32Array(NV), wq = []; let nw = 0;
+  for (let v = 0; v < NV; v++) {
+    const x = Math.round(p[v * 3] * 1000), y = Math.round(p[v * 3 + 1] * 1000), z = Math.round(p[v * 3 + 2] * 1000);
+    const h = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) | 0;
+    let w = head.has(h) ? head.get(h) : -1;
+    while (w >= 0 && !(wq[w * 3] === x && wq[w * 3 + 1] === y && wq[w * 3 + 2] === z)) w = nxt[w];
+    if (w < 0) { w = nw++; wq.push(x, y, z); nxt[w] = head.has(h) ? head.get(h) : -1; head.set(h, w); }
+    wid[v] = w;
+  }
+  return { wid, nw };
+}
+function lmCharts(g) {
+  const idx = g.index.array, p = g.attributes.position.array, uv = g.attributes.uv.array, NT = idx.length / 3, NV = p.length / 3;
+  const { wid, nw } = lmWeld(p, NV);
+  const tn = new Float64Array(NT * 3), ta = new Float64Array(NT), tuv = new Float64Array(NT);
+  for (let t = 0; t < NT; t++) {
+    const a = idx[t * 3], b = idx[t * 3 + 1], c = idx[t * 3 + 2];
+    const ux = p[b * 3] - p[a * 3], uy = p[b * 3 + 1] - p[a * 3 + 1], uz = p[b * 3 + 2] - p[a * 3 + 2];
+    const vx = p[c * 3] - p[a * 3], vy = p[c * 3 + 1] - p[a * 3 + 1], vz = p[c * 3 + 2] - p[a * 3 + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = Math.hypot(nx, ny, nz);
+    ta[t] = l / 2; if (l > 0) { tn[t * 3] = nx / l; tn[t * 3 + 1] = ny / l; tn[t * 3 + 2] = nz / l; }
+    tuv[t] = ((uv[b * 2] - uv[a * 2]) * (uv[c * 2 + 1] - uv[a * 2 + 1]) - (uv[c * 2] - uv[a * 2]) * (uv[b * 2 + 1] - uv[a * 2 + 1])) / 2;
+  }
+  const dotN = (s, t) => tn[s * 3] * tn[t * 3] + tn[s * 3 + 1] * tn[t * 3 + 1] + tn[s * 3 + 2] * tn[t * 3 + 2];
+  // welded edges -> the triangles on them
+  const edges = new Map(), eKey = (a, b) => (a < b ? a * nw + b : b * nw + a);
+  for (let t = 0; t < NT; t++) for (let e = 0; e < 3; e++) {
+    const k = eKey(wid[idx[t * 3 + e]], wid[idx[t * 3 + (e + 1) % 3]]), l = edges.get(k);
+    if (l === undefined) edges.set(k, t * 3 + e); else if (typeof l === 'number') edges.set(k, [l, t * 3 + e]); else l.push(t * 3 + e);
+  }
+  const par = new Int32Array(NT); for (let t = 0; t < NT; t++) par[t] = t;
+  const find = (x) => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+  const uvEq = (i, j) => Math.abs(uv[i * 2] - uv[j * 2]) < 1e-3 && Math.abs(uv[i * 2 + 1] - uv[j * 2 + 1]) < 1e-3;
+  const e1 = (te) => idx[te - (te % 3) + ((te % 3) + 1) % 3];   // second endpoint of edge te (= tri * 3 + e)
+  const sameUV = (te, se) => {   // the uv agrees at both welded endpoints of the shared edge
+    const a0 = idx[te], a1 = e1(te), b0 = idx[se], b1 = e1(se);
+    return wid[a0] === wid[b0] ? uvEq(a0, b0) && uvEq(a1, b1) : uvEq(a0, b1) && uvEq(a1, b0);
+  };
+  for (const l of edges.values()) {
+    if (typeof l === 'number') continue;
+    for (let i = 1; i < l.length; i++) for (let j = 0; j < i; j++) {
+      const s = (l[i] / 3) | 0, t = (l[j] / 3) | 0;
+      if (ta[s] > 0 && ta[t] > 0 && dotN(s, t) > 0.5 && sameUV(l[i], l[j])) { const rs = find(s), rt = find(t); if (rs !== rt) par[Math.max(rs, rt)] = Math.min(rs, rt); }
+    }
+  }
+  // validate each uv chart: one orientation, linear stretch within 1/2.2 .. 2.2, no overlap by area
+  const groups = new Map(); for (let t = 0; t < NT; t++) { const r = find(t); let a = groups.get(r); if (!a) groups.set(r, (a = [])); a.push(t); }
+  const charts = [], triChart = new Int32Array(NT).fill(-1), bad = [];
+  for (const tris of groups.values()) {
+    let pos = 0, neg = 0, ok = true, sA = 0, u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
+    for (const t of tris) {
+      if (!(ta[t] > 1e-7)) continue;
+      const r = Math.abs(tuv[t]) / ta[t]; if (r < 0.2 || r > 4.84) { ok = false; break; }
+      if (tuv[t] > 0) pos += ta[t]; else neg += ta[t];
+      sA += Math.abs(tuv[t]);
+      for (let k = 0; k < 3; k++) { const v = idx[t * 3 + k], u = uv[v * 2], w = uv[v * 2 + 1]; if (u < u0) u0 = u; if (u > u1) u1 = u; if (w < v0) v0 = w; if (w > v1) v1 = w; }
+    }
+    if (ok && pos > 0 && neg > 0) ok = false;
+    if (ok && sA > (u1 - u0) * (v1 - v0) * 1.001 + 1e-6) ok = false;
+    if (!ok) { bad.push(...tris); continue; }
+    const c = charts.length; charts.push({ tris, kind: 0 }); for (const t of tris) triChart[t] = c;
+  }
+  // re-chart the rest: near-planar patches grown from the lowest triangle index, projected on the seed plane
+  if (bad.length) {
+    bad.sort((a, b) => a - b);
+    const isBad = new Uint8Array(NT); for (const t of bad) isBad[t] = 1;
+    for (const seed of bad) {
+      if (triChart[seed] >= 0) continue;
+      const c = charts.length, tris = [seed], nx = tn[seed * 3], ny = tn[seed * 3 + 1], nz = tn[seed * 3 + 2]; triChart[seed] = c;
+      for (let q = 0; q < tris.length; q++) {
+        const t = tris[q];
+        for (let e = 0; e < 3; e++) {
+          const l = edges.get(eKey(wid[idx[t * 3 + e]], wid[idx[t * 3 + (e + 1) % 3]])); if (typeof l !== 'object') continue;
+          for (const se of l) { const s = (se / 3) | 0; if (isBad[s] && triChart[s] < 0 && ta[s] > 0 && tn[s * 3] * nx + tn[s * 3 + 1] * ny + tn[s * 3 + 2] * nz > 0.906) { triChart[s] = c; tris.push(s); } }
+        }
+      }
+      // basis: horizontal tangent for walls, x/z for floors (tight boxes on the axis-aligned world)
+      let ax, ay, az; if (Math.abs(ny) > 0.9 || !(ta[seed] > 0)) { ax = 1; ay = 0; az = 0; } else { const l = Math.hypot(nz, nx); ax = nz / l; ay = 0; az = -nx / l; }
+      if (Math.abs(ny) > 0.9 || !(ta[seed] > 0)) { const d = ax * nx; ax -= d * nx; ay -= d * ny; az -= d * nz; const l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l; }
+      const bx = ny * az - nz * ay, by = nz * ax - nx * az, bz = nx * ay - ny * ax;
+      tris.sort((a, b) => a - b);
+      charts.push({ tris, kind: 1, basis: [ax, ay, az, bx, by, bz] });
+    }
+  }
+  return { charts, triChart, NT, NV };
+}
+// skyline bottom-left packer (deterministic): rects [{w, h}] -> sets r.x, r.y; returns the used height or -1
+function lmPack(rects, W, maxH) {
+  let sky = [[0, 0, W]];   // [x, y, width] segments, left to right
+  let top = 0;
+  for (const r of rects) {
+    let best = -1, bx = 0, by = Infinity;
+    for (let i = 0; i < sky.length; i++) {
+      const x = sky[i][0]; if (x + r.w > W) break;
+      let y = 0, wl = r.w, j = i;
+      while (wl > 0) { y = Math.max(y, sky[j][1]); wl -= sky[j][2]; j++; if (wl > 0 && j >= sky.length) { y = Infinity; break; } }
+      if (y < by || (y === by && x < bx)) { by = y; bx = x; best = i; }
+    }
+    if (best < 0 || by + r.h > maxH) return -1;
+    r.x = bx; r.y = by; top = Math.max(top, by + r.h);
+    // replace the covered span [bx, bx + w) with one segment at by + h (segments stay sorted and contiguous)
+    const ns = [], x1 = bx + r.w, nh = by + r.h; let put = false;
+    for (const s of sky) {
+      const s0 = s[0], s1 = s[0] + s[2];
+      if (s1 <= bx) { ns.push(s); continue; }
+      if (s0 >= x1) { if (!put) { ns.push([bx, nh, r.w]); put = true; } ns.push(s); continue; }
+      if (s0 < bx) ns.push([s0, s[1], bx - s0]);
+      if (!put) { ns.push([bx, nh, r.w]); put = true; }
+      if (s1 > x1) ns.push([x1, s[1], s1 - x1]);
+    }
+    if (!put) ns.push([bx, nh, r.w]);
+    sky = [];   // merge equal-height neighbours
+    for (const s of ns) { const l = sky[sky.length - 1]; if (l && l[1] === s[1] && l[0] + l[2] === s[0]) l[2] += s[2]; else sky.push(s.slice()); }
+  }
+  return top;
+}
+export function lightmapUV2(merged, terr, pathG, opt = {}) {
+  const W = LMUV.W, entries = Object.entries(merged), out = { ver: LMUV.ver, W, H: 0, texel: 0, terrTexel: LMUV.terrTexel, geos: [] };
+  // charts per merged geometry; per (vertex, chart) one uv2 vertex (duplicates appended at the end)
+  const all = [];
+  for (const [key, g] of entries) {
+    const C = lmCharts(g), idx = g.index.array, NV0 = g.attributes.position.count;
+    const vChart = new Int32Array(NV0).fill(-1), dup = new Map(), extra = [];
+    for (let t = 0; t < C.NT; t++) for (let k = 0; k < 3; k++) {
+      const v = idx[t * 3 + k], c = C.triChart[t];
+      if (vChart[v] < 0 || vChart[v] === c) { vChart[v] = c; continue; }
+      const dk = v * 65536 + c; let nv = dup.get(dk);   // (c < 65536 charts per geometry)
+      if (nv === undefined) { nv = NV0 + extra.length; extra.push(v); dup.set(dk, nv); }
+      idx[t * 3 + k] = nv;
+    }
+    if (extra.length) {   // append the duplicated vertices (every attribute copied)
+      for (const [name, a] of Object.entries(g.attributes)) {
+        const n = a.itemSize, arr = new a.array.constructor((NV0 + extra.length) * n); arr.set(a.array.subarray(0, NV0 * n));
+        extra.forEach((v, i) => { for (let c = 0; c < n; c++) arr[(NV0 + i) * n + c] = a.array[v * n + c]; });
+        g.setAttribute(name, new THREE.BufferAttribute(arr, n, a.normalized));
+      }
+      g.index.needsUpdate = true;
+    }
+    const NV = g.attributes.position.count, vc = new Int32Array(NV).fill(-1);
+    for (let t = 0; t < C.NT; t++) for (let k = 0; k < 3; k++) vc[idx[t * 3 + k]] = C.triChart[t];
+    // chart parameter (metres) per vertex: its uv, or the seed-plane projection
+    const p = g.attributes.position.array, uv = g.attributes.uv.array, par = new Float64Array(NV * 2);
+    for (let v = 0; v < NV; v++) {
+      const ch = C.charts[vc[v]]; if (!ch) continue;
+      if (ch.kind === 0) { par[v * 2] = uv[v * 2]; par[v * 2 + 1] = uv[v * 2 + 1]; }
+      else { const b = ch.basis; par[v * 2] = p[v * 3] * b[0] + p[v * 3 + 1] * b[1] + p[v * 3 + 2] * b[2]; par[v * 2 + 1] = p[v * 3] * b[3] + p[v * 3 + 1] * b[4] + p[v * 3 + 2] * b[5]; }
+    }
+    for (const ch of C.charts) {
+      let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
+      for (const t of ch.tris) for (let k = 0; k < 3; k++) { const v = idx[t * 3 + k], a = par[v * 2], b = par[v * 2 + 1]; if (a < u0) u0 = a; if (a > u1) u1 = a; if (b < v0) v0 = b; if (b > v1) v1 = b; }
+      ch.u0 = u0; ch.v0 = v0; ch.du = Math.round((u1 - u0) * 1e4) / 1e4; ch.dv = Math.round((v1 - v0) * 1e4) / 1e4;
+      all.push(ch);
+    }
+    out.geos.push({ key, g, C, vc, par });
+  }
+  // terrain: one top-down chart over its x/z extent
+  const tp = terr.attributes.position.array; let tx0 = Infinity, tz0 = Infinity, tx1 = -Infinity, tz1 = -Infinity;
+  for (let i = 0; i < tp.length; i += 3) { tx0 = Math.min(tx0, tp[i]); tx1 = Math.max(tx1, tp[i]); tz0 = Math.min(tz0, tp[i + 2]); tz1 = Math.max(tz1, tp[i + 2]); }
+  const tn = Math.round(Math.max(tx1 - tx0, tz1 - tz0) / LMUV.terrTexel) + 1, tRect = { w: tn + 2, h: tn + 2, terr: true };
+  // texel size: coarsen until it packs
+  let texel = LMUV.texel, H = -1, rects;
+  for (let tries = 0; ; tries++) {
+    const s = 1 / texel;
+    rects = all.map((ch, i) => {
+      const nx = Math.round(ch.du * s) + 1, ny = Math.round(ch.dv * s) + 1, rot = ny > nx;
+      return { ch, i, nx, ny, rot, w: (rot ? ny : nx) + 2, h: (rot ? nx : ny) + 2 };
+    });
+    rects.sort((a, b) => b.h - a.h || b.w - a.w || a.i - b.i);
+    H = lmPack([tRect, ...rects], W, LMUV.maxH);
+    if (H >= 0) break;
+    if (tries > 24) throw new Error('[A1] lightmap atlas overflow');
+    texel = Math.round(texel * 1.08 * 1e5) / 1e5;
+  }
+  H = Math.ceil(H / 8) * 8; out.H = H; out.texel = texel;
+  out.terr = { x0: tx0, z0: tz0, n: tn, ox: tRect.x, oy: tRect.y, s: (tn - 1) / Math.max(tx1 - tx0, tz1 - tz0) };
+  for (const r of rects) { const ch = r.ch; ch.ox = r.x; ch.oy = r.y; ch.rot = r.rot; ch.nx = r.nx; ch.ny = r.ny; ch.sx = r.nx > 1 ? (r.nx - 1) / ch.du : 0; ch.sy = r.ny > 1 ? (r.ny - 1) / ch.dv : 0; }
+  // write uv2 (texel centres: chart edges land on the first/last texel centre)
+  for (const G of out.geos) {
+    const { g, C, vc, par } = G, NV = g.attributes.position.count, a = new Float32Array(NV * 2);
+    for (let v = 0; v < NV; v++) {
+      const ch = C.charts[vc[v]]; if (!ch) continue;
+      const cu = 1.5 + (par[v * 2] - ch.u0) * ch.sx, cv = 1.5 + (par[v * 2 + 1] - ch.v0) * ch.sy;
+      a[v * 2] = (ch.ox + (ch.rot ? cv : cu)) / W; a[v * 2 + 1] = (ch.oy + (ch.rot ? cu : cv)) / H;
+    }
+    g.setAttribute('uv2', new THREE.BufferAttribute(a, 2));
+  }
+  const T = out.terr, terrUV2 = (geo) => {
+    const q = geo.attributes.position.array, n = q.length / 3, a = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      const cu = Math.min(T.n + 0.5, Math.max(1.5, 1.5 + (q[i * 3] - T.x0) * T.s)), cv = Math.min(T.n + 0.5, Math.max(1.5, 1.5 + (q[i * 3 + 2] - T.z0) * T.s));
+      a[i * 2] = (T.ox + cu) / W; a[i * 2 + 1] = (T.oy + cv) / H;
+    }
+    geo.setAttribute('uv2', new THREE.BufferAttribute(a, 2));
+  };
+  terrUV2(terr); if (pathG) terrUV2(pathG);
+  out.charts = all.length;
+  if (!opt.detail) delete out.geos;
+  return out;
+}
+// geometry hash of what the lightmaps depend on: per lightmapped mesh (merged materials in order, then the terrain)
+// its name (= material assignment), vertex count, position, normal, uv2 and index, plus the atlas layout. Cosmetic
+// attributes (uv, aY) are left out, so surface retunes don't stale the bake. Algorithm "mm3x2/1" = tools/geohash.mjs
+// (stream G), inlined so the runtime doesn't load anything from tools/: same words, same value (bakelm.mjs checks).
+// G's export-world.mjs records it as world.json hash.worldBando; lm.json stores it as `hash`. ~5 ms.
+const _C1 = 0xcc9e2d51, _C2 = 0x1b873593, _rotl = (x, r) => (x << r) | (x >>> (32 - r));
+const _fmix = (h) => { h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16; return h >>> 0; };
+class GeoHash {
+  constructor() { this.a = 0x9747b28c | 0; this.b = 0x2f0f5d1b | 0; this.n = 0; }
+  word(w) { this._w(w); return this; }
+  str(s) { s = String(s); this.word(s.length); for (let i = 0; i < s.length; i++) this.word(s.charCodeAt(i)); return this; }
+  array(arr) {   // typed arrays only: count, then Float32 bit patterns / integer values
+    const n = arr.length; this._w(n);
+    const w = arr instanceof Float32Array ? new Uint32Array(arr.buffer, arr.byteOffset, n) : arr;
+    for (let i = 0; i < n; i++) this._w(w[i]);
+    return this;
+  }
+  _w(x) {
+    let k = Math.imul(x | 0, _C1); k = _rotl(k, 15); k = Math.imul(k, _C2);
+    let a = this.a ^ k; a = _rotl(a, 13); this.a = (Math.imul(a, 5) + 0xe6546b64) | 0;
+    let b = this.b ^ k; b = _rotl(b, 13); this.b = (Math.imul(b, 5) + 0xe6546b64) | 0;
+    this.n++;
+  }
+  hex() { const a = _fmix((this.a ^ this.n) >>> 0), b = _fmix((this.b ^ this.n) >>> 0); return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0'); }
+}
+// what tools/bakelm.mjs needs from module scope: the bake's albedo rules (same as bakeLight's) and constants
+export function lmBakeInputs(geo) {
+  const fps = geo.site.footprints || [], ap = MATS.apron?.albedo, rad = MATS.apron?.radius ?? 9, gA = groundAlbedo(), pA = albedoOf('path');
+  return {
+    albedo: Object.fromEntries(Object.keys(geo.merged).map((k) => [k, albedoOf(k)])), ground: gA, leaf: MATS.leaf?.albedo ?? [0.1, 0.12, 0.04],
+    terrainAlbedo: (x, z) => (ap && fps.some((f) => Math.max(f.x0 - x, 0, x - f.x1) ** 2 + Math.max(f.z0 - z, 0, z - f.z1) ** 2 < rad * rad) ? ap : distToPaths(x, z) < 2.6 ? pA : gA),
+    envI: 0.85, aoExp: 1.15, PH,
+  };
+}
+export function geometryHash(geo) {
+  const lay = geo.terr.userData.lm, h = new GeoHash().str('lightmap').str(`${lay.ver}:${lay.W}x${lay.H}:${lay.texel}:${lay.terrTexel}`);
+  const list = [...Object.entries(geo.merged), ['terr', geo.terr]];
+  h.word(list.length);
+  for (const [name, g] of list) {
+    h.str(name).word(g.attributes.position.count);
+    for (const k of ['position', 'normal', 'uv2']) h.str(k).word(g.attributes[k].itemSize).array(g.attributes[k].array);
+    h.str('index').array(g.index.array);
+  }
+  return h.hex();
+}
+
+// ---------------------------------------------------------------- [A1] runtime: the committed lightmaps
+// lm.json (tools/bakelm.mjs) is fetched while the geometry builds. If its hash equals geometryHash() and its sun
+// direction equals this sky's, buildBando loads lm_<sky>.png + lm_aux.png and skips bakeLight (the 2-4 s per-vertex
+// bake); otherwise (other streams changed the geometry, no files, a load error) it bakes per vertex exactly as before.
+// Decals and foliage still probe the light at load (lightProbe); the lightmap probe below answers those queries:
+// openness = the same rays as bakeLight's probe (so foliage placement is identical on both paths), bounce = albedo x
+// (lightmap + direct sun) at the ray hits.
+const lmURL = (f) => new URL(f, import.meta.url).href;
+async function lmFetchJSON() {
+  try { const r = await fetch(lmURL('lm.json'), { cache: 'no-cache' }); return r.ok ? await r.json() : null; } catch (e) { return null; }
+}
+export function lmMatch(j, geo, sky, sunDir) {
+  if (!j || j.version !== 1) return { ok: false, why: j ? `lm.json version ${j.version}` : 'no lm.json' };
+  const s = j.skies?.[sky]; if (!s) return { ok: false, why: `no ${sky} lightmap` };
+  const h = geometryHash(geo), lay = geo.terr.userData.lm;
+  if (h !== j.hash) return { ok: false, why: `geometry hash ${h} != lm.json ${j.hash}` };
+  if (j.W !== lay.W || j.H !== lay.H) return { ok: false, why: 'atlas size' };
+  const L = s.sunDir || [0, 1, 0], d = Math.hypot(L[0] - sunDir.x, L[1] - sunDir.y, L[2] - sunDir.z);
+  if (d > 2e-3) return { ok: false, why: `sun direction moved (${d.toFixed(4)}): re-run node tools/bakelm.mjs` };
+  return { ok: true, j, s, hash: h };
+}
+async function lmImage(file, cpu) {
+  const r = await fetch(lmURL(file)); if (!r.ok) throw new Error(`${file}: HTTP ${r.status}`);
+  const blob = await r.blob();
+  let img;
+  if (typeof createImageBitmap === 'function') img = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+  else { img = new Image(); img.src = URL.createObjectURL(blob); await img.decode(); }
+  const tex = new THREE.Texture(img);
+  tex.flipY = false; tex.colorSpace = THREE.NoColorSpace; tex.generateMipmaps = false; tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping; tex.premultiplyAlpha = false; tex.needsUpdate = true;
+  let pix = null;
+  if (cpu) {
+    const cv = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(img.width, img.height) : Object.assign(document.createElement('canvas'), { width: img.width, height: img.height });
+    const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(img, 0, 0); pix = cx.getImageData(0, 0, img.width, img.height).data;
+  }
+  return { tex, pix, w: img.width, h: img.height };
+}
+async function lmLoad(m) {
+  const [irr, aux] = await Promise.all([lmImage(m.s.file, true), lmImage(m.j.aux?.file || 'lm_aux.png', false)]);
+  if (irr.w !== m.j.W || irr.h !== m.j.H || aux.w !== m.j.W || aux.h !== m.j.H) throw new Error('lightmap size mismatch');
+  return { ...m, irr, aux };
+}
+// CPU side of the shader's lookup: bilinear on the encoded bytes, then decoded (exactly what the GPU does)
+function lmSampler(lm) {
+  const { pix } = lm.irr, W = lm.j.W, H = lm.j.H, [lo, hi] = lm.s.range, k = (hi - lo) / 255;
+  return (u, v, out) => {
+    const x = Math.min(W - 1.001, Math.max(0, u * W - 0.5)), y = Math.min(H - 1.001, Math.max(0, v * H - 0.5)), x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+    const i00 = (y0 * W + x0) * 4, i10 = i00 + 4, i01 = i00 + W * 4, i11 = i01 + 4;
+    for (let c = 0; c < 3; c++) {
+      const e = (pix[i00 + c] * (1 - fx) + pix[i10 + c] * fx) * (1 - fy) + (pix[i01 + c] * (1 - fx) + pix[i11 + c] * fx) * fy;
+      out[c] = Math.pow(2, lo + e * k);
+    }
+    return out;
+  };
+}
+// the lightmap as the build-time light probe (BAKE interface of bakeLight: probe, applyTo, stats)
+function lmProbeBake(geo, L, sun, lm) {
+  const t0 = performance.now(), { site, merged, terr, colGeo, bvh } = geo;
+  const list = [...Object.entries(merged), ['terr', terr]], base = []; let NV = 0;
+  for (const [, g] of list) { base.push(NV); NV += g.attributes.position.count; }
+  const { map: c2r } = colliderMap(site, terr, colGeo, list, base);
+  const uv2 = new Float32Array(NV * 2), pos = new Float32Array(NV * 3), alb = new Float32Array(NV * 3);
+  const fps = site.footprints || [], ap = MATS.apron?.albedo, rad = MATS.apron?.radius ?? 9, gA = groundAlbedo(), pA = albedoOf('path');
+  list.forEach(([k, g], gi) => {
+    uv2.set(g.attributes.uv2.array, base[gi] * 2); pos.set(g.attributes.position.array, base[gi] * 3);
+    const a = albedoOf(k), p = g.attributes.position.array;
+    for (let i = 0; i < g.attributes.position.count; i++) {
+      const v = base[gi] + i, x = p[i * 3], z = p[i * 3 + 2];
+      const q = k !== 'terr' ? a : ap && fps.some((f) => Math.max(f.x0 - x, 0, x - f.x1) ** 2 + Math.max(f.z0 - z, 0, z - f.z1) ** 2 < rad * rad) ? ap : distToPaths(x, z) < 2.6 ? pA : gA;
+      alb[v * 3] = q[0]; alb[v * 3 + 1] = q[1]; alb[v * 3 + 2] = q[2];
+    }
+  });
+  const smp = lmSampler(lm), W = lm.j.W, E = [0, 0, 0], pats = {}, D = new THREE.Vector3(), Q = new THREE.Vector3(), hn = new THREE.Vector3(), up = new THREE.Vector3();
+  const sunMax = Math.min(400, 70 / Math.max(0.1, L.y) + 10);
+  const sunVis = (o) => { _sr.origin.copy(o); _sr.direction.copy(L); return !bvh.raycastFirst(_sr, THREE.DoubleSide, 0, sunMax); };
+  // uv2 at a collider hit: the render vertices of its corners (null when they lie in different charts: a vertex
+  // that lightmapUV2 duplicated, rare)
+  const uvAt = (hit, out) => {
+    const a = c2r[hit.face.a], b = c2r[hit.face.b], c = c2r[hit.face.c]; if (a < 0 || b < 0 || c < 0) return -1;
+    const wb = hit.barycoord.y, wc = hit.barycoord.z, wa = 1 - wb - wc;
+    const span = Math.max(Math.abs(uv2[a * 2] - uv2[b * 2]), Math.abs(uv2[a * 2] - uv2[c * 2]), Math.abs(uv2[a * 2 + 1] - uv2[b * 2 + 1]), Math.abs(uv2[a * 2 + 1] - uv2[c * 2 + 1])) * W;
+    const ext = Math.max(Math.hypot(pos[a * 3] - pos[b * 3], pos[a * 3 + 1] - pos[b * 3 + 1], pos[a * 3 + 2] - pos[b * 3 + 2]), Math.hypot(pos[a * 3] - pos[c * 3], pos[a * 3 + 1] - pos[c * 3 + 1], pos[a * 3 + 2] - pos[c * 3 + 2]));
+    if (span > ext * 7 + 4) return -1;
+    out[0] = wa * uv2[a * 2] + wb * uv2[b * 2] + wc * uv2[c * 2]; out[1] = wa * uv2[a * 2 + 1] + wb * uv2[b * 2 + 1] + wc * uv2[c * 2 + 1];
+    return a;
+  };
+  const UV = [0, 0];
+  const probe = (P, N, n = 8, maxD = 26) => {
+    n = Math.min(64, n); const pat = (pats[n] ||= cosPattern(n));
+    // the frame, pattern, origin and range of bakeLight's trace(): identical openness on both paths
+    up.set(...(Math.abs(N.y) < 0.95 ? [0, 1, 0] : [1, 0, 0]));
+    _bx.crossVectors(up, N).normalize(); _by.crossVectors(N, _bx);
+    let nOpen = 0; const out = [0, 0, 0];
+    for (let k = 0; k < pat.length; k++) {
+      const [a, b, c] = pat[k];
+      D.set(0, 0, 0).addScaledVector(_bx, a).addScaledVector(N, b).addScaledVector(_by, c).normalize();
+      _ray.origin.copy(P).addScaledVector(N, 0.06); _ray.direction.copy(D);
+      const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, maxD);
+      if (!hit) { nOpen++; continue; }
+      hn.copy(hit.face.normal); if (hn.dot(D) > 0) hn.negate();
+      let es = 0; if (sun) { const cs = hn.dot(L); if (cs > 0 && sunVis(Q.copy(hit.point).addScaledVector(hn, 0.05))) es = cs; }
+      const v = uvAt(hit, UV);
+      if (v >= 0) { smp(UV[0], UV[1], E); for (let q = 0; q < 3; q++) out[q] += alb[v * 3 + q] * (E[q] + es * LP.sunRGB.getComponent(q)); }
+      else { const ga = hit.point.y < terrainHeight(hit.point.x, hit.point.z) + 0.35 ? gA : ALB_DEFAULT, sk = 0.5 + 0.5 * hn.y; for (let q = 0; q < 3; q++) out[q] += ga[q] * (es * LP.sunRGB.getComponent(q) + sk * LP.skyRGB.getComponent(q)); }
+    }
+    return { open: nOpen / pat.length, out: out.map((x) => x / pat.length) };
+  };
+  // decals: lightmap uv2 from the surface under each vertex (a short ray back along -n); null if too many miss
+  const decalUV2 = (g) => {
+    const p = g.attributes.position.array, nr = g.attributes.normal.array, cnt = g.attributes.position.count, a = new Float32Array(cnt * 2), ok = new Uint8Array(cnt);
+    const P = new THREE.Vector3(), N = new THREE.Vector3(); let miss = 0;
+    for (let i = 0; i < cnt; i++) {
+      P.fromArray(p, i * 3); N.fromArray(nr, i * 3).normalize();
+      _ray.origin.copy(P).addScaledVector(N, 0.05); _ray.direction.copy(N).negate();
+      const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, 0.2);
+      if (hit && uvAt(hit, UV) >= 0) { a[i * 2] = UV[0]; a[i * 2 + 1] = UV[1]; ok[i] = 1; } else miss++;
+    }
+    if (miss > cnt * 0.03) return null;
+    for (let i = 0; i < cnt; i++) if (!ok[i]) { const j = i > 0 && ok[i - 1] ? i - 1 : ok[i + 1] ? i + 1 : -1; if (j >= 0) { a[i * 2] = a[j * 2]; a[i * 2 + 1] = a[j * 2 + 1]; } }
+    g.setAttribute('uv2', new THREE.BufferAttribute(a, 2));
+    return { verts: cnt, missed: miss };
+  };
+  const stats = { lightmap: lm.s.file, hash: lm.hash, rays: lm.j.rays, bakedSec: lm.j.bakeSec, setupMs: Math.round(performance.now() - t0) };
+  return { probe, applyTo() {}, decalUV2, stats, sunDir: L, c2r };
+}
+// a material that reads the lightmap: own program key (three must not share it with an unlit twin, e.g. far vs terrain)
+function lmEnable(mat) {
+  if (!mat || mat.userData.aLM) return;
+  const k = mat.customProgramCacheKey; mat.userData.aLM = true;
+  mat.customProgramCacheKey = () => (k ? k.call(mat) : '') + '|lm';
 }
 
 // ---------------------------------------------------------------- [A] static far shadow map (rendered once at load)
@@ -1780,6 +2203,7 @@ export function buildGeometry(R = rng(7), seed = 7) {
   const bvh = new MeshBVH(colGeo, { maxLeafTris: 5 });
   // proximity / skim scoring: built structures and trunks only, so skimming the grass scores nothing
   const skimBvh = new MeshBVH(solidGeo, { maxLeafTris: 5 });
+  terr.userData.lm = lightmapUV2(merged, terr, pathG);   // [A1] lightmap uv2 on merged/terr/pathG (append-only; layout on terr.userData.lm)
 
   return { site, terr, far, pathG, treeSpots, treeline, merged, colGeo, bvh, skimBvh, lines: site.lines, takeStart: site.takeStart, startPoints: site.startPoints, funnels: site.funnels };
 }
@@ -1790,6 +2214,8 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const prog = (f, t) => onProgress?.(f, t);
   const scene = new THREE.Scene();
   const uniforms = { uTime: { value: 0 } };
+  uniforms.aAO = aoUniforms();          // [A1] contract C3 (world.aoUniforms): stream D fills it each frame
+  const lmJP = lmFetchJSON();           // [A1] lm.json, fetched while the geometry builds
 
   // textures (stream in parallel with the sky)
   const tl = new THREE.TextureLoader(); tl.setCrossOrigin('anonymous');
@@ -1817,8 +2243,16 @@ export async function buildBando(renderer, { sky = 'sunny', quality = 'auto', se
   const { site, terr, far, pathG, treeSpots, treeline, merged, colGeo, bvh, skimBvh } = geo;
   prog(0.1, 'Baking light');
   await yieldUI();
-  const bake = await bakeLight(geo, { sunDir, sun: hasSun, quality, onTick: (f) => (bakeFrac = f) });
-  bake.applyTo(pathG, 4, 18);
+  // [A1] the committed lightmap when it was baked for exactly this geometry + sun; else the per-vertex bake (2-4 s)
+  let lm = null;
+  {
+    const m = lmMatch(await lmJP, geo, SKIES[sky] ? sky : 'sunny', sunDir);
+    if (m.ok) { try { lm = await lmLoad(m); } catch (e) { console.warn('[A1] lightmap load failed, baking per vertex:', e.message); } }
+    else console.info('[A1] lightmap not used (per-vertex bake):', m.why);
+  }
+  const bake = lm ? (BAKE = lmProbeBake(geo, sunDir, hasSun, lm)) : await bakeLight(geo, { sunDir, sun: hasSun, quality, onTick: (f) => (bakeFrac = f) });
+  if (lm) { aLight.uLM.value = lm.irr.tex; aLight.uLMAux.value = lm.aux.tex; aLight.uLMRange.value.set(lm.s.range[0], lm.s.range[1]); }
+  else bake.applyTo(pathG, 4, 18);
   far.setAttribute('ao', new THREE.BufferAttribute(new Float32Array(far.attributes.position.count).fill(1), 1));
   bakeFrac = 1;
   console.info('light bake', bake.stats);
@@ -2218,6 +2652,19 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     foliageStats.treeline = treeline.length; foliageStats.band = NB; lap('treeline');
   }
 
+  // [A1] lightmapped materials: the merged structures, the yard terrain, the path ribbons and, when every vertex
+  // finds its wall, the graffiti (it then gets exactly the wall's indirect light). The far field keeps env x ao.
+  if (lm) {
+    for (const k of Object.keys(merged)) lmEnable(mats[k] || mats.wall);
+    lmEnable(mats.ground); lmEnable(mats.path);
+    const dm = scene.children.find((o) => o.isMesh && o.material?.customProgramCacheKey?.() === 'wp:decal');
+    const dr = dm && bake.decalUV2(dm.geometry); if (dr) lmEnable(dm.material);
+    if (lm.j.skies?.[SKIES[sky] ? sky : 'sunny']?.light) {   // the sky the map was baked with vs the one measured now
+      const b = lm.s.light, d = Math.abs(b.sunI - sunI) / Math.max(1, sunI) + Math.abs(b.skyB[1] - aLight.uSkyB.value.y) / Math.max(0.1, aLight.uSkyB.value.y);
+      if (d > 0.02) console.warn('[A1] lightmap baked with sunI', b.sunI, 'skyB', b.skyB, 'but the sky measures sunI', +sunI.toFixed(3), 'skyB', aLight.uSkyB.value.toArray().map((v) => +v.toFixed(3)), ': re-run node tools/bakelm.mjs');
+    }
+    bake.stats.decals = dr || 'probe';
+  }
   // [A] sun: a shadowed DirectionalLight carrying the energy clamped out of the HDR.
   // [A2] Live map: +-52 m (5.1 cm texels at 2048) centred on the camera (no lead), snapped to a texel-aligned 8 m
   // light-space grid and re-rendered only when that snapped centre moves (autoUpdate off): >= 48 m of cover all round.
@@ -2283,7 +2730,8 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
   const cm = new THREE.Mesh(colGeo, new THREE.MeshBasicMaterial()); cm.frustumCulled = false; colScene.add(cm);
   prog(0.98, 'Ready');
   BAKE = null;   // [A] the probe solution was only needed while building (decals); free it
-  scene.userData.aLight = aLight; scene.userData.lightBake = bake.stats;   // [A] live tuning hooks (uSunB, uSkyB, uFarOn, uHaze...)
+  if (lm) lm.irr.pix = null;   // [A1] the CPU copy of the lightmap (14 MB) served the build-time probes only
+  scene.userData.aLight = aLight; scene.userData.lightBake = bake.stats; scene.userData.aoUniforms = uniforms.aAO;   // [A] live tuning hooks (uSunB, uSkyB, uFarOn, uHaze...)
   // [A2] sky/shadow hooks: ring map uniforms, live-map re-render count (for perf checks), the world sun
   scene.userData.aSky = { u: uniforms.aSky, shadowUpdates: () => shN, sunDir: sunDir.clone(), rotY: skyDef.rotY || 0, bgI };
   return {
@@ -2295,5 +2743,6 @@ float terrH(vec2 p){ float x = p.x, z = p.y; float d = max(max(abs(x + 5.0) - 95
     lines: site.lines,
     bounds: new THREE.Box3(new THREE.Vector3(-480, -5, -480), new THREE.Vector3(480, 260, 480)),
     envelope: { min: new THREE.Vector3(-440, -2, -440), max: new THREE.Vector3(440, 220, 440) },
+    aoUniforms: uniforms.aAO,   // [A1] contract C3
   };
 }
