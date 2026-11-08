@@ -1,0 +1,109 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Seoul Life View</title>
+<style>html,body{margin:0;background:#000;color:#ccc;font:12px system-ui;overflow:hidden}#hud{position:fixed;left:8px;top:6px;white-space:pre;pointer-events:none;text-shadow:0 0 2px #000}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}</script>
+</head><body><div id="hud"></div><button id="snd" style="position:fixed;right:8px;top:6px">sound</button>
+<script type="module">
+// S4 dev viewer: the life + sound modules on a stand-in block (boxes, lit frontages, ground lit from the life fill grid).
+// Not the level: S1 builds the site, S3 the lighting. ?layout=../seoul/layout.json&t=30&cam=x,y,z,yawDeg,pitchDeg&exp=18&rain=1
+import * as THREE from 'three';
+import * as seoulLife from '../seoul-life.js';
+const Q = new URLSearchParams(location.search);
+const layoutUrl = Q.get('layout') || '../tests/seoul-life-layout.json';
+const T0 = performance.now(); const layout = await (await fetch(layoutUrl)).json(); console.log('stage layout', (performance.now() - T0) | 0);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio)); renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = +(Q.get('exp') || 60);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0.0006, 0.0008, 0.0016);
+scene.fog = new THREE.FogExp2(new THREE.Color(0.0015, 0.0012, 0.002), 0.006);
+const NIT = 1e-3;
+scene.add(new THREE.HemisphereLight(0x223355, 0x110a08, 0.004));
+const life = seoulLife.build(layout, { seed: +(Q.get('seed') || 7), nitScale: NIT, rain: Q.has('rain') });
+scene.add(life.group); console.log('stage life', (performance.now() - T0) | 0);
+// ---- stand-in buildings
+const USE = { conv: [0.85, 0.95, 1], cafe: [1, 0.72, 0.45], club: [0.75, 0.25, 1], bar: [1, 0.5, 0.22], pocha: [1, 0.42, 0.12], karaoke: [1, 0.3, 0.7], pc: [0.35, 0.65, 1], shop: [1, 0.95, 0.88], restaurant: [1, 0.75, 0.5], motel: [1, 0.3, 0.4], office: [0.9, 0.95, 1], hotel: [1, 0.85, 0.65] };
+const SIGN = [[1, 0.1, 0.4], [0.2, 0.8, 1], [1, 1, 1], [1, 0.2, 0.15], [0.6, 0.3, 1], [1, 0.6, 0.2], [0.3, 1, 0.5]];
+const facade = new THREE.MeshStandardMaterial({ color: 0x2a2826, roughness: 0.9 });
+let sr = 1; const rnd = () => ((sr = (sr * 16807) % 2147483647) / 2147483647);
+for (const l of layout.lots) {
+  const sh = new THREE.Shape(l.footprint.map((p) => new THREE.Vector2(p[0], -p[1])));
+  const H = l.floors * l.floorH, g = new THREE.ExtrudeGeometry(sh, { depth: H, bevelEnabled: false }); g.rotateX(-Math.PI / 2);
+  scene.add(new THREE.Mesh(g, facade));
+  const [a, b] = l.frontage, dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz);
+  let cx = 0, cz = 0; l.footprint.forEach((p) => { cx += p[0]; cz += p[1]; }); cx /= l.footprint.length; cz /= l.footprint.length;
+  let nx = -dz / L, nz = dx / L; if ((cx - a[0]) * nx + (cz - a[1]) * nz > 0) { nx = -nx; nz = -nz; }
+  const yaw = Math.atan2(nx, nz), mx = (a[0] + b[0]) / 2 + nx * 0.05, mz = (a[1] + b[1]) / 2 + nz * 0.05;
+  const col = USE[l.use] || USE.shop;
+  const shop = new THREE.Mesh(new THREE.PlaneGeometry(L * 0.9, 2.9), new THREE.MeshBasicMaterial({ color: new THREE.Color(col[0] * 160 * NIT, col[1] * 160 * NIT, col[2] * 160 * NIT) }));
+  shop.position.set(mx, 1.6, mz); shop.rotation.y = yaw; scene.add(shop);
+  for (let f = 1; f < l.floors; f++) for (let k = 0; k < 2; k++) {
+    if (rnd() < 0.35) continue;
+    const c = SIGN[Math.floor(rnd() * SIGN.length)], nits = 300 + rnd() * 900, w = 1 + rnd() * 2.5, vert = rnd() < 0.4;
+    const s = new THREE.Mesh(new THREE.PlaneGeometry(vert ? 0.8 : w, vert ? 2.6 : 0.9), new THREE.MeshBasicMaterial({ color: new THREE.Color(c[0] * nits * NIT, c[1] * nits * NIT, c[2] * nits * NIT) }));
+    const u = (k + 0.3 + rnd() * 0.4) / 2 - 0.5;
+    s.position.set(mx + dx * u + nx * 0.1, f * l.floorH + 1.6, mz + dz * u + nz * 0.1); s.rotation.y = yaw; scene.add(s);
+  }
+}
+console.log('stage blocks', (performance.now() - T0) | 0);
+// ---- ground lit by the fill grid (what S3's light grid will do for real)
+const F = life.fill, tex = new THREE.DataTexture(new Uint16Array(F.nx * F.nz * 4).map((_, i) => THREE.DataUtils.toHalfFloat(i % 4 === 3 ? 1 : Math.min(60000, F.rgb[Math.floor(i / 4) * 3 + (i % 4)]))), F.nx, F.nz, THREE.RGBAFormat, THREE.HalfFloatType);
+tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter; tex.needsUpdate = true;
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(1200, 1200).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x4a4a4c, roughness: 0.35 }));
+ground.material.onBeforeCompile = (sh) => {
+  sh.uniforms.uFill = { value: tex }; sh.uniforms.uF0 = { value: new THREE.Vector4(F.x0, F.z0, F.nx * F.cell, F.nz * F.cell) }; sh.uniforms.uNit = { value: NIT };
+  sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vW;').replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+  sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vW; uniform sampler2D uFill; uniform vec4 uF0; uniform float uNit;')
+    .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\nvec2 fu = (vW.xz - uF0.xy) / uF0.zw; totalEmissiveRadiance += diffuseColor.rgb * texture2D(uFill, fu).rgb * uNit / 3.14159 * 1.6;');
+};
+scene.add(ground);
+// pavements (main-street bands from the life network's street profile), slightly lighter and 15 cm up
+{
+  const pm = ground.material.clone(); pm.color.set(0x6a6866); pm.onBeforeCompile = ground.material.onBeforeCompile;
+  const o = {};
+  for (const st of life.sim.net.streets) {
+    if (st.kind !== 'main' || !st.walk) continue;
+    for (const [i, band] of st.walk.entries()) {
+      if (!band) continue; const sg = i ? 1 : -1, P = [], I = [];
+      for (let s = 0; s <= st.path.len; s += 2) { st.path.at(Math.min(s, st.path.len), o); for (const d of [band[0] - 0.5, band[1] + 0.5]) P.push(o.x + o.nx * sg * d, 0.15, o.z + o.nz * sg * d); }
+      for (let k = 0; k < P.length / 6 - 1; k++) { const q = k * 2; I.push(q, q + 1, q + 2, q + 1, q + 3, q + 2); }
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setIndex(I); g.computeVertexNormals();
+      const m = new THREE.Mesh(g, pm); m.material.side = THREE.DoubleSide; scene.add(m);
+    }
+  }
+}
+const cam = new THREE.PerspectiveCamera(+(Q.get('fov') || 80), innerWidth / innerHeight, 0.1, 800);
+function setCam(x, y, z, yaw, pitch) { cam.position.set(x, y, z); cam.rotation.set(0, 0, 0); cam.rotation.order = 'YXZ'; cam.rotation.y = THREE.MathUtils.degToRad(yaw); cam.rotation.x = THREE.MathUtils.degToRad(pitch); cam.updateMatrixWorld(); }
+const c0 = (Q.get('cam') || '0,6,-30,180,-10').split(',').map(Number); setCam(...c0);
+let t = +(Q.get('t') || 20);
+const hud = document.getElementById('hud');
+function frame(dt) {
+  t += dt; life.update(t, cam.position, cam.quaternion); renderer.render(scene, cam);
+  const s = life.stats; hud.textContent = `t ${t.toFixed(1)}  agents ${s.agents} (near ${s.near}, mid ${s.mid})  vehicles ${s.vehicles}  life cpu ${s.cpuMs.toFixed(2)} ms (sim ${s.simMs.toFixed(2)})`;
+}
+window.__view = {
+  life, THREE, renderer, scene, cam, setCam,
+  shot(x, y, z, yaw, pitch, tt) { setCam(x, y, z, yaw, pitch); t = tt; frame(0); return renderer.domElement.toDataURL('image/jpeg', 0.9); },
+  // camera on street `id` at fraction u of its length, h m up, lateral offset lat, looking along it (rev: backwards)
+  streetShot(id, u, h, lat, pitch, tt, rev) {
+    const st = life.sim.net.streets.find((q) => q.id === id), o = st.path.at(st.path.len * u, {}), d = rev ? -1 : 1;
+    const yaw = THREE.MathUtils.radToDeg(Math.atan2(-o.tx * d, -o.tz * d));
+    return this.shot(o.x + o.nx * lat, h, o.z + o.nz * lat, yaw, pitch, tt);
+  },
+  timing(n = 30) { const o = []; for (let i = 0; i < n; i++) { frame(1 / 60); o.push(life.stats.cpuMs); } o.sort((a, b) => a - b); return { median: o[n >> 1], p95: o[Math.floor(n * 0.95)], max: o[n - 1] }; },
+};
+if (!Q.has('manual')) { let last = performance.now(); const loop = (now) => { frame(Math.min(0.1, (now - last) / 1000)); last = now; requestAnimationFrame(loop); }; requestAnimationFrame(loop); }
+else { console.log('stage pre-frame', (performance.now() - T0) | 0); frame(0); console.log('stage frame', (performance.now() - T0) | 0); }
+// sound: tap to start (straight to the speakers here; in the game it goes through MotorAudio's camera-mic chain)
+document.getElementById('snd').onclick = () => {
+  const ac = new (window.AudioContext || window.webkitAudioContext)(); const g = ac.createGain(); g.gain.value = 4; g.connect(ac.destination);
+  life.audio.attach(ac, g); ac.resume();
+};
+// fly-through: WASD + arrows (look), Q/E down/up
+const keys = new Set(); addEventListener('keydown', (e) => keys.add(e.key)); addEventListener('keyup', (e) => keys.delete(e.key));
+setInterval(() => { const sp = 0.25 * (keys.has('Shift') ? 4 : 1); const f = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion), r = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+  if (keys.has('w')) cam.position.addScaledVector(f, sp); if (keys.has('s')) cam.position.addScaledVector(f, -sp); if (keys.has('d')) cam.position.addScaledVector(r, sp); if (keys.has('a')) cam.position.addScaledVector(r, -sp);
+  if (keys.has('e')) cam.position.y += sp; if (keys.has('q')) cam.position.y -= sp; if (keys.has('ArrowLeft')) cam.rotation.y += 0.03; if (keys.has('ArrowRight')) cam.rotation.y -= 0.03; if (keys.has('ArrowUp')) cam.rotation.x += 0.02; if (keys.has('ArrowDown')) cam.rotation.x -= 0.02; }, 16);
+window.__ready = true;
+</script></body></html>
