@@ -515,18 +515,6 @@ function trackSafe(dt, now) {
   if (world.lastDist > 1.2 && drone.vel.length() < 30) { safePts.push({ t: now, p: drone.pos.clone(), yaw: drone.heading }); if (safePts.length > 30) safePts.shift(); }
 }
 const findStart = (name) => { const k = String(name || '').toLowerCase(); return (k && world.startPoints?.find((s) => s.name.toLowerCase() === k)) || null; };
-// [F14] UX #3: until any line has ever been flown, a take retry goes back to where that take started (the first take
-// starts on the ground at the spawn, so RETRY no longer drops a beginner 52 m up over the chimney mouth). The crash card
-// works out "next:" from here too. Free fly: null (it flies on from the last clear spot near you).
-let lastStart = null;
-const anyFlown = () => Object.keys(uiProg.lines).length > 0 || Object.values(cStore()).some((r) => +r?.n > 0);
-function retryPose() {
-  if (S.game === 'free') return null;
-  const named = findStart(startAt); if (named) return { pos: named.pos, yaw: named.yaw };
-  if (lastStart && !anyFlown()) return lastStart;
-  if (world.takeStart) return { pos: world.takeStart.pos, yaw: world.takeStart.yaw };
-  return { pos: world.spawn, yaw: world.yaw };
-}
 function respawn(toStart = false, startName = null) {
   drone.setCraft(craftFor(world.def));
   const now = performance.now() / 1000;
@@ -535,12 +523,10 @@ function respawn(toStart = false, startName = null) {
   if (toStart === true) startAt = null;
   const named = typeof startName === 'string' ? findStart(startName) : takeMode && !toStart ? findStart(startAt) : null;
   const sp = named || toStart || takeMode ? null : [...safePts].reverse().find((s) => now - s.t > 2.0);
-  let rp = null;
   if (named) { drone.reset(named.pos, named.yaw); flightT = 0; }
   else if (sp) drone.reset(sp.p, sp.yaw);
-  else if (takeMode && !toStart && (rp = retryPose())) { drone.reset(rp.pos, rp.yaw); flightT = 0; }
+  else if (takeMode && !toStart && world.takeStart) { drone.reset(world.takeStart.pos, world.takeStart.yaw); flightT = 0; }
   else { drone.reset(world.spawn, world.yaw); flightT = 0; }
-  lastStart = { pos: drone.pos.clone(), yaw: drone.heading };
   if (toStart || takeMode || named) safePts.length = 0;
   take.reset(); freeTake.reset();
   controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); thrRef = controls.thr;
@@ -1392,8 +1378,8 @@ function nextLine(from = null) {
   }
   return nearestGate(null, at);
 }
-// 3-star targets per take (design #3: 40k / 80k / 130k = C's TAKE_TUNING.stars)
-function starTargets() { const s = TT().stars; return Array.isArray(s) && s.length ? s : [40000, 80000, 130000]; }
+// 3-star targets per take (C's TAKE_TUNING.stars; round 4: 60k / 150k / 260k)
+function starTargets() { const s = TT().stars; return Array.isArray(s) && s.length ? s : [60000, 150000, 260000]; }
 const starCount = (total) => starTargets().filter((v) => total >= v).length;
 const starsHTML = (n, of) => Array.from({ length: of }, (_, i) => `<svg viewBox="0 0 16 16"${i < n ? ' class="on"' : ''} aria-hidden="true"><path d="${STAR}"/></svg>`).join('');
 const kfmt = (v) => (v >= 1000 ? Math.round(v / 1000) + 'K' : String(v));
@@ -1424,7 +1410,7 @@ function goStartAt(name) {
   toast(`START AT ${String(name).toUpperCase()}`);
 }
 // F1 test hooks (uishots), kept off window.__onetake so that shared object stays merge-clean
-window.__onetakeUI = { uiProg, lineList, nextLine, renderProgress, goStartAt, projectView, retryPose, readyHint, vertOf, get hint() { return nextNow; } };
+window.__onetakeUI = { uiProg, lineList, nextLine, renderProgress, goStartAt, projectView, retryFrom, readyHint, vertOf, get hint() { return nextNow; } };
 
 // ---------------- take events (contract #3), summary card, recovery
 // main.js dispatch (C): (typeof onTakeEvent === 'function' ? onTakeEvent : (e) => defaultTakeUI(e, pop))(e)
@@ -1462,6 +1448,13 @@ function onTakeEvent(e) {
     case 'crash': clipEndT = now + 1.2; pendingSum = e; break;   // card appears 0.8 s after the hit (uiFrame)
   }
 }
+// [F14] the crash card's "next:" is measured from where RETRY puts you (C4's retryPose() in main.js: {pos, yaw, name});
+// without it, from where you are. Free fly flies on from near here.
+function retryFrom() {
+  if (S.game === 'free') return null;
+  try { if (typeof retryPose === 'function') { const r = retryPose(); if (r && r.pos) return r; } } catch (e) {}
+  return null;
+}
 function showSummary(kind, e) {
   const v = scoreView(), st = (e && e.stats) || {};
   const isTake = !!(e && 'total' in e) || v.take;
@@ -1477,12 +1470,13 @@ function showSummary(kind, e) {
   const row = (k, val) => `<span>${k}</span><b>${val}</b>`;
   $('bStats').innerHTML = row('MAX SPEED', `${Math.round(maxSp * 3.6)} KM/H`) + row('FLY TIME', fmt(time)) +
     row('SCORE', fmtN(total)) + row('BEST', newBest ? `<em>NEW</em> ${fmtN(best)}` : fmtN(best)) +
-    row('MAX FLOW', `×${mf || 1}`) + (lines ? row('LINES', String(lines.length)) : '');
+    row('MAX FLOW', `×${mf || 1}`) + (lines ? row('LINES', String(lines.length)) : '') +
+    (kind === 'cut' && typeof e?.pace === 'number' && e.pace > 0 ? row('PACE', `×${(Math.round(e.pace * 100) / 100).toFixed(2)}`) : '');   // C4: PACE ×1.5 → ×1.0
   // stars for this take + the next target; this take's lines (NEW = first time ever); the checklist and what to fly next
   const tg = starTargets(), ns = typeof e?.stars === 'number' ? e.stars : starCount(total), nextT = tg.find((s) => total < s);
   $('bStars').innerHTML = isTake ? starsHTML(ns, tg.length) + (nextT ? `<small>NEXT ${kfmt(nextT)}</small>` : '') : '';
   $('bLines').innerHTML = lines && lines.length ? [...new Set(lines)].map((n) => esc(n) + (newLines.has(n) ? ' <em>NEW</em>' : '')).join(' · ') : '';
-  const LL = lineList(), nx = nextLine(kind === 'crash' && isTake ? retryPose() : null), nh = nx ? hintFor(nx.name) : '';
+  const LL = lineList(), nx = nextLine(kind === 'crash' && isTake ? retryFrom() : null), nh = nx ? hintFor(nx.name) : '';
   $('bNext').innerHTML = LL.length ? `LINES <b>${flownCount()}/${LL.length}</b>` + (nx ? ` · next: <b>${esc(nx.name)}</b>${nh ? ` – ${esc(nh)}` : ''}` : '') : '';
   $('cReset').textContent = isTake ? 'RETRY' : 'FLY ON';
   // a CUT is the take you want to keep: CLIP is the hot button there (UX #4), RETRY after a crash
