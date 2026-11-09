@@ -4632,6 +4632,31 @@
    "connector": true
   },
   {
+   "name": "TO THE ROOFLINE 1",
+   "caption": "TO THE *ROOFLINE*",
+   "pts": 500,
+   "c": [
+    -13.785,
+    18.1,
+    -56.697
+   ],
+   "n": [
+    -0.976,
+    0,
+    0.219
+   ],
+   "w": 3,
+   "h": 2,
+   "u": [
+    -0.219,
+    0,
+    -0.976
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
    "name": "STATION STAIRS",
    "caption": "DOWN THE *STAIRS*!",
    "pts": 2000,

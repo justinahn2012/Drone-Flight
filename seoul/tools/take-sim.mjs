@@ -103,7 +103,7 @@ const ROUTES = {
   roofline: [['from', 'ROOFLINE', 0, 14], ['street', 'ROOFLINE', 0], ['line', 'ROOF SLOT', 0]],
   hub: [['street', 'WALKING STREET', 0], ['street', 'RED ROAD', 1]],
   sig: [['street', 'WALKING STREET', 0], ['line', 'UNDER THE STAGE', 1], ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
-  long: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'SIGN STACK', 0], ['street', 'ROOFLINE', 1]],
+  long: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'SIGN STACK', 0], ['line', 'TO THE ROOFLINE 1', 0], ['street', 'ROOFLINE', 1]],
 };
 // a pilot: cruise m/s, thumb noise (stick OU sigma), line choice spread (share of the gate half-size), reaction lookahead m
 const PILOTS = {
