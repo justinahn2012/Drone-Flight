@@ -561,6 +561,17 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     ok(ce && ce.by === 'bus', 'a crash into a mover names it (by: bus)');
     const tk5 = new Take(), d5 = mk(); d5.crashed = false; tk5.update(DT, d5, W4, true); d5.crashed = true;
     ok(!('by' in tk5.update(DT, d5, W4, true).find((e) => e.type === 'crash')), 'a plain crash has no `by` (event shape unchanged)');
+    // [P3-F1 design #6] a `heads` line (pre-gate at z 10, gate at z 20): a HEADS! between them voids it; a plain line is kept
+    for (const heads of [true, false]) {
+      resetProgress();
+      const tk6 = new Take(), d6 = mk(); d6.moverN = 0; d6.moverKind = null; const e6 = [];
+      const W6 = { lines: [{ name: 'Q', caption: 'Q', pts: 750, micro: true, ...(heads ? { heads: true } : {}), ...gate(20), pre: [gate(10)], within: 6 }], skimBvh };
+      d6.pos = { x: 0, y: 2, z: 5 }; d6.vel = { x: 0, y: 0, z: 10 };
+      for (let z = 5; z < 24; z += 10 * DT) { d6.pos = { ...d6.pos, z }; if (Math.abs(z - 15) < 1e-3 + 10 * DT / 2) { d6.moverN = 1; d6.moverKind = 'pedestrian'; d6.moverImpact = 0.8; } e6.push(...tk6.update(DT, d6, W6, true)); }
+      const sc = e6.find((e) => e.type === 'scrape' && e.heads), fired = e6.some((e) => e.type === 'line' && e.name === 'Q');
+      if (heads) ok(sc && JSON.stringify(sc.voids) === '["Q"]' && !fired, `a HEADS! over the queue voids the move (voids ${JSON.stringify(sc?.voids)}, line ${fired ? 'fired' : 'void'})`);
+      else ok(sc && !sc.voids && fired, 'a HEADS! on a plain line: the line still fires (no voids)');
+    }
     resetProgress();
   }
 }

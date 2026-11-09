@@ -27,6 +27,8 @@
 // its countdown, for the OSD), microFlow (Seoul: micros keep the chain but add no FLOW), firstR, pace. Lines with `piece`
 // fly only while world.setPieces has that id. world.movers contacts come through the drone (flight.js moverN / moverKind /
 // crashBy): a pedestrian is SCRAPE + HEADS! (event heads: true), a crash into a vehicle carries by: <type>.
+// [P3-F1 design #6] heads with a stake: a line flagged `heads` (OVER THE QUEUE: a club queue's length at 1.95-2.6 m) is
+// void if a HEADS! comes while it is armed (its pre-gate crossed, the gate not yet): the scrape event lists it in `voids`.
 // No three.js import: plain vector maths, runs headless in node too.
 
 export const TAKE_TUNING = {
@@ -168,6 +170,12 @@ export class Take {
     const l = best.L.l;
     return { name: l.name, caption: l.caption || l.name, left: +best.left.toFixed(2), within: best.within, frac: +Math.min(1, 1 - best.left / best.within).toFixed(3), repeat: this._done.has(l.name), micro: !!l.micro };
   }
+  // [P3-F1] a HEADS! voids the armed moves of `heads` lines: their pre-gate records go; returns their names
+  _voidHeads() {
+    const out = [];
+    for (const [k, r] of this._pre) { const L = this._lines[(k / 8) | 0]; if (!L || !L.l.heads) continue; this._pre.delete(k); if (!out.includes(L.l.name)) out.push(L.l.name); }
+    return out;
+  }
   _armedAny() {
     for (const [k, r] of this._pre) { const L = this._lines[(k / 8) | 0]; if (L && (L.l.two || r.s === 1) && this._now - r.t < (L.l.within ?? 6)) return true; }
     return false;
@@ -259,7 +267,8 @@ export class Take {
     if (hit.mover === 'pedestrian' && this._now - this._scrapeT >= this._T.scrapeCool) {
       this._dirty = true; this._scrapeT = this._now; this._scrapes++;
       const lost = Math.min(this._flow - 1, this._T.headsCost); this._flow -= lost;
-      ev.push({ type: 'scrape', impact: +(+drone.moverImpact || 0).toFixed(2), flow: this._flow, lost, heads: true });
+      const voids = this._voidHeads();
+      ev.push({ type: 'scrape', impact: +(+drone.moverImpact || 0).toFixed(2), flow: this._flow, lost, heads: true, ...(voids.length ? { voids } : {}) });
     }
     if (hit.impact > this._T.scrapeV && !hit.floor && this._now - this._scrapeT >= this._T.scrapeCool) {
       this._scrapeT = this._now; this._scrapes++;

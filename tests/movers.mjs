@@ -8,6 +8,8 @@
 //     bit-identically (continuous and re-synced at every snapshot), twice, with its Take events; snapshot v4 restore
 //     continues bit-identically with the movers
 //  6. without movers nothing changes: the tick clock is the only new state (bando parity is tests/replay.mjs)
+//  7. [P3-F1 design #2] no gate in lines.json (pre-gates too) can be touched by a vehicle of the drawn traffic over
+//     0-600 s at the quad's radius (seoul/tools/gateprobe.mjs; lines.mjs keeps them out at 0.35 m)
 import fs from 'node:fs';
 import * as THREE from 'three';
 import { buildSeoulGeometry } from '../world-seoul.js';
@@ -17,6 +19,7 @@ import { InputLog, quantize, replayLog, worldHash } from '../inputlog.js';
 import { lifeMovers, PED_R } from '../seoul-movers.js';
 import { LifeSim } from '../seoul-life.js';
 import { Rng } from '../rng.js';
+import { vehicleTouches } from '../seoul/tools/gateprobe.mjs';
 
 const ROOT = new URL('../seoul/', import.meta.url);
 const J = (f) => JSON.parse(fs.readFileSync(new URL(f, ROOT), 'utf8'));
@@ -144,6 +147,13 @@ const vehAt = (t, pred) => sim.boxesAt(t, []).map((b) => ({ ...b, v: sim.traffic
   for (let i = 0; i < 240 * 20; i++) if (F.hit([46 - 20 + i * 0.01, 1.2, -313 + 12], 0.12, i / 240)) h++;
   const ms = performance.now() - t1;
   ok(ms < 1500, `20 s of per-tick queries on Yanghwa-ro: ${ms.toFixed(0)} ms (${(ms / 20).toFixed(1)} ms per second of flight, traffic stepping included)`);
+}
+// 7. vehicles stay out of the gates
+{
+  const gs = [], who = [];
+  for (const l of J('lines.json').lines) { if (l.carve) continue; gs.push(l); who.push(l.name); for (const p of l.pre || []) { gs.push(p); who.push(l.name + ' (pre)'); } }
+  const t1 = performance.now(), T = vehicleTouches(sim, gs, { T: 600, dt: 0.25, r: 0.12 });
+  ok(T.length === 0, `no gate a vehicle touches over 0-600 s (${gs.length} gates, ${((performance.now() - t1) / 1000).toFixed(1)} s)${T.length ? ': ' + [...new Set(T.map((x) => `${who[x.i]} by ${x.type} at ${x.t0} s`))].slice(0, 6).join(', ') : ''}`);
 }
 console.log(`movers tests: ${pass} passed, ${fail} failed (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
 process.exit(fail ? 1 : 0);
