@@ -43,6 +43,11 @@ export const SEOUL_MATS = {
   // phase 1's 32 cm white slab showed round S2's boxes as pale plates
   fascia: { color: [1, 1, 1], rough: 0.5, metal: 0.25, albedo: [0.12, 0.12, 0.125], grime: 1 },
   frame: { color: [0.07, 0.072, 0.078], rough: 0.38, metal: 0.6, albedo: [0.07, 0.072, 0.078] },   // anodised mullions, door frames
+  // [P3-C] facade kit (art #2, graphics #1), render only: downpipes, conduit, meter boxes (pipe); Korea's yellow gas risers
+  pipe: { color: [0.5, 0.5, 0.48], rough: 0.55, albedo: [0.5, 0.5, 0.48], grime: 1 },
+  shutterR: { grime: 1, id: 'blue_metal_plate', tile: 1.2, maps: ['diff', 'nor_gl'], color: [0.75, 0.75, 0.78], rough: 0.45, metal: 0.5, albedo: [0.24, 0.24, 0.25] },   // corner-face shutters (render only)
+  bed: { color: [1, 1, 1], rough: 0.5, metal: 0.25, albedo: [0.12, 0.12, 0.125], grime: 1 },   // a corner face's sign bed (render only: lines.json gates)
+  gaspipe: { color: [0.72, 0.52, 0.05], rough: 0.5, albedo: [0.72, 0.52, 0.05] },
   sill: { id: 'concrete_wall_008', tile: 3.0, maps: ['diff'], color: [0.8, 0.8, 0.78], rough: 0.85, albedo: [0.28, 0.27, 0.25] },    // window sills (render only)
   ao: { decal: 'multiply', color: [1, 1, 1], albedo: [1, 1, 1] },   // contact darkening + leak streaks: dst *= vertex colour (render only)
   dark: { color: [0.035, 0.035, 0.04], rough: 0.45, albedo: [0.035, 0.035, 0.04] },        // cables, pole hardware
@@ -212,8 +217,8 @@ export function buildSeoulGeometry(layout, opts = {}) {
   const t0 = Date.now();
   const acc = {}; const A = (k) => (acc[k] ||= new Acc(!!SEOUL_MATS[k]?.emissive));
   // flush decals and sub-10 cm trim: render only (their wall / ground is in the collider)
-  const noCol = new Set(['stripe', 'yellow', 'glass', 'shop', 'sill', 'ao', 'frame']);
-  const emitters = [], facts = { lots: layout.lots.length, windowsLit: 0, windows: 0, winNits: 0, shopsLit: 0, shutters: 0, ac: 0, tanks: 0, poles: 0, cableSpans: 0, streetLights: 0 };
+  const noCol = new Set(['stripe', 'yellow', 'glass', 'shop', 'sill', 'ao', 'frame', 'pipe', 'gaspipe', 'bed', 'shutterR']);
+  const emitters = [], facts = { lots: layout.lots.length, windowsLit: 0, windows: 0, winNits: 0, shopsLit: 0, sideShops: 0, shutters: 0, ac: 0, grilles: 0, pipes: 0, gas: 0, rails: 0, roofLamps: 0, roofSigns: 0, tanks: 0, poles: 0, cableSpans: 0, streetLights: 0 };
   const streets = layout.streets, lots = layout.lots, streetById = new Map(streets.map((s) => [s.id, s]));
   const grid = lotGrid(lots);
   const B = boxOf(layout);
@@ -270,7 +275,8 @@ export function buildSeoulGeometry(layout, opts = {}) {
   // multiply decals ('ao'). Lit share (PLAN-P2): 2F-4F on commercial streets 55 %, 5F and up 12-20 %; lit 5-25 nits.
   const facadeOf = (l) => { const r = hash(l.id + 'f'); if (l.floors >= 9) return r < 0.6 ? 'tile' : 'concrete'; return r < 0.38 ? 'brick' : r < 0.75 ? 'tile' : r < 0.9 ? 'plaster' : 'concrete'; };
   const lotInfo = new Map();
-  const streetDist = (x, z) => { let d = Infinity; for (const s of streets) for (let i = 0; i < s.points.length - 1; i++) d = Math.min(d, segD(x, z, s.points[i][0], s.points[i][1], s.points[i + 1][0], s.points[i + 1][1]) - s.width / 2); return d; };
+  let nearKind = 'alley';
+  const streetDist = (x, z) => { let d = Infinity; for (const s of streets) for (let i = 0; i < s.points.length - 1; i++) { const q = segD(x, z, s.points[i][0], s.points[i][1], s.points[i + 1][0], s.points[i + 1][1]) - s.width / 2; if (q < d) { d = q; nearKind = s.kind; } } return d; };
   const WIN0 = [0, 0, 0, 0];
   // a vertical pane centred on (c x, c z) along t, facing n, from y0 to y0 + h (uv 0..1 across it)
   const pane = (key, c, t, n, w, h, y0, em, win) => {
@@ -285,11 +291,51 @@ export function buildSeoulGeometry(layout, opts = {}) {
   };
   const emOf = (o, nits, cu, code) => { const c = colourOf(o, cu); return [c[0] * nits * NIT, c[1] * nits * NIT, c[2] * nits * NIT, code]; };
   const SPILL = { cct: 4000 };   // an unlit room: street spill and stand-by LEDs, neutral
+  // ---- [P3-C] facade kit (art #2, graphics #1): the clutter real Seoul walls carry. All render-only trim (keys pipe, gaspipe,
+  // frame), except the AC unit bodies, which collide as before. W(s, y, d): a wall point s along, d out.
+  const fan = (key, c, u, v, n, r, sides) => { for (let k = 0; k < sides; k++) { const a0 = (k / sides) * Math.PI * 2, a1 = ((k + 1) / sides) * Math.PI * 2;
+    const p = (q) => [c[0] + (u[0] * Math.cos(q) + v[0] * Math.sin(q)) * r, c[1] + (u[1] * Math.cos(q) + v[1] * Math.sin(q)) * r, c[2] + (u[2] * Math.cos(q) + v[2] * Math.sin(q)) * r];
+    const P0 = c, P1 = p(a0), P2 = p(a1), cr = [(P1[1] - P0[1]) * (P2[2] - P0[2]) - (P1[2] - P0[2]) * (P2[1] - P0[1]), (P1[2] - P0[2]) * (P2[0] - P0[0]) - (P1[0] - P0[0]) * (P2[2] - P0[2]), (P1[0] - P0[0]) * (P2[1] - P0[1]) - (P1[1] - P0[1]) * (P2[0] - P0[0])];
+    if (cr[0] * n[0] + cr[1] * n[1] + cr[2] * n[2] >= 0) A(key).tri(P0, P1, P2, [0, 0], [1, 0], [0, 1]); else A(key).tri(P0, P2, P1, [0, 0], [0, 1], [1, 0]); } };
+  // an outdoor AC unit's face: fan grille (dark disc + guard bars), side louvres, and a steel bracket under it
+  // flat quads only (~32 tris a unit with its body): the kit has to stay inside D's triangle budget
+  const acFront = (a, t, n, sa, ay, d) => {
+    const W3 = (s, y, o) => [a[0] + t[0] * s + n[0] * o, y, a[1] + t[1] * s + n[1] * o], N3 = [n[0], 0, n[1]];
+    const flat = (key, s0, s1, y0, y1, o) => A(key).quad(W3(s0, y0, o), W3(s1, y0, o), W3(s1, y1, o), W3(s0, y1, o), N3);
+    fan('frame', W3(sa + 0.07, ay, d + 0.004), [t[0], 0, t[1]], [0, 1, 0], N3, 0.24, 6);
+    for (const dy of [-0.09, 0.09]) flat('pipe', sa - 0.17, sa + 0.31, ay + dy - 0.01, ay + dy + 0.01, d + 0.01);
+    for (let k = 0; k < 3; k++) flat('frame', sa - 0.38, sa - 0.22, ay - 0.14 + k * 0.1, ay - 0.12 + k * 0.1, d + 0.003);
+    for (const e of [-0.3, 0.3]) A('frame').quad(W3(sa + e - 0.02, ay - 0.33, 0.02), W3(sa + e + 0.02, ay - 0.33, 0.02), W3(sa + e + 0.02, ay - 0.33, d), W3(sa + e - 0.02, ay - 0.33, d), [0, -1, 0]);
+  };
+  // downpipes, conduit, yellow gas risers with meters, and spandrel anchors for B's floor boxes
+  const facadeKit = (l, info, a, t, n, L, H, Ht, yaw, typ, rh, R, front, street) => {
+    const W3 = (s, y, o) => [a[0] + t[0] * s + n[0] * o, y, a[1] + t[1] * s + n[1] * o];
+    if (L > 3 && R() < 0.45) {   // a downpipe at one end, hopper head under the coping, a shoe at the foot
+      facts.pipes++; const s0 = R() < 0.5 ? 0.14 : L - 0.14;
+      A('pipe').tube([W3(s0, 0.08, 0.07), W3(s0, H - 0.15, 0.07)], 0.045, 5);
+      A('pipe').box(W3(s0, H - 0.08, 0.1), [0.1, 0.09, 0.08], yaw, true);
+      for (let y = 1.5; y < H - 0.5; y += 1.8) A('frame').quad(W3(s0 - 0.06, y - 0.015, 0.12), W3(s0 + 0.06, y - 0.015, 0.12), W3(s0 + 0.06, y + 0.015, 0.12), W3(s0 - 0.06, y + 0.015, 0.12), [n[0], 0, n[1]]);
+    }
+    if (front && L > 2 && R() < 0.5) {   // conduit along the top of the sign bed, a riser to the roof
+      A('frame').tube([W3(0.3, K.fascia[0] + K.fascia[1] + 0.05, 0.06), W3(L - 0.3, K.fascia[0] + K.fascia[1] + 0.05, 0.06)], 0.022, 4);
+      const sr = 0.3 + R() * (L - 0.6); A('frame').tube([W3(sr, K.fascia[0] + K.fascia[1] + 0.05, 0.06), W3(sr, Ht + 0.05, 0.06), W3(sr, Ht + 0.05, -0.3)], 0.02, 4);
+    }
+    if ((!front || typ === 'villa') && l.floors >= 3 && L > 4 && R() < 0.35) {   // gas: a run at 2.2-2.8 m, a riser, a meter per floor
+      facts.gas++; const y0 = 2.2 + R() * 0.6, s0 = 0.4 + R() * 0.3 * L, s1 = Math.min(L - 0.4, s0 + 2 + R() * 4), top = (l.floors - 1) * l.floorH + 1.2;
+      A('gaspipe').tube([W3(0.05, y0, 0.06), W3(s1, y0, 0.06), W3(s1, top, 0.06)], 0.026, 4);
+      for (let f = 1; f < l.floors; f++) { const y = f * l.floorH + 0.9; A('pipe').box(W3(s1 - 0.28, y, 0.09), [0.15, 0.2, 0.08], yaw, true); A('gaspipe').tube([W3(s1, y + 0.1, 0.06), W3(s1 - 0.14, y + 0.1, 0.06)], 0.018, 3); }
+    }
+    if (street) for (let f = 1; f < Math.min(l.floors - 1, 7); f++) {   // spandrels between floors f and f+1 (B: floor boxes)
+      const y0 = f * l.floorH + rh.sill + Math.min(rh.h, l.floorH - rh.sill - 0.3), y1 = (f + 1) * l.floorH + rh.sill;
+      if (y1 - y0 > 0.35) { const c = W3(L / 2, (y0 + y1) / 2, 0.02); info.bands.push({ f, c: c.map((v) => +v.toFixed(2)), normal: [n[0], 0, n[1]], t: [t[0], 0, t[1]], w: +(L * 0.9).toFixed(2), h: +(y1 - y0).toFixed(2), side: !front }); }
+    }
+  };
   for (const l of lots) {
-    const R = rng(l.id), P = l.footprint, H = l.floors * l.floorH, fmat = facadeOf(l);
+    // [P3-C] every phase-3 draw comes from R2, so phase 2's stream (R) and the collider it shapes stay as they were
+    let R = rng(l.id); const R1 = R, R2 = rng(l.id + ':p3'), P = l.footprint, H = l.floors * l.floorH, fmat = facadeOf(l);
     const [fa, fb] = l.frontage;
     const skind = streetById.get(l.street)?.kind || 'alley', comm = skind !== 'alley';
-    const info = { id: l.id, H, facade: fmat, shopLit: false, shutter: false, fascia: null, edges: [], floors: [], windows: [] };
+    const info = { id: l.id, H, facade: fmat, shopLit: false, shutter: false, fascia: null, fascias: [], bands: [], edges: [], floors: [], windows: [] };
     lotInfo.set(l.id, info);
     // per-lot tint and age (vertex colour multiplies the scan texture): +-10 % value, a warm/cool cast, grime with age
     const age = hash(l.id + 'age'), tv = 0.9 + hash(l.id + 'tv') * 0.2, cast = (hash(l.id + 'tc') - 0.5) * 0.1;
@@ -299,10 +345,12 @@ export function buildSeoulGeometry(layout, opts = {}) {
     const rh = { bay: typ === 'villa' ? 2.6 + R() * 1.0 : 2.4 + R() * 1.7, ratio: 0.42 + R() * 0.38, h: 1.15 + R() * 0.65, sill: 0.75 + R() * 0.25, paneW: 1.5 + R() * 1.1,
       ribbonTop: 1 + Math.floor(R() * 3), bands: R() < 0.55, depth: 3.5 + R() * 2.5 };
     // tenants: one per upper floor; lit floors are whole floors
-    const pLow = comm ? 0.61 : 0.46, pHigh = Math.max(0.06, (l.use === 'hotel' ? 0.22 : 0.13) + (hash(l.id + 'ph') - 0.5) * 0.08);   // x 0.9 per window below
+    const tower = l.floors >= 8 && (skind === 'main' || skind === 'walking');   // [P3-C] art #1: the station towers were black above 2F
+    const pLow = comm ? 0.61 : 0.46, pHigh = Math.max(0.06, (l.use === 'hotel' ? 0.22 : tower ? 0.15 : 0.13) + (hash(l.id + 'ph') - 0.5) * 0.08);   // x 0.9 per window below
     for (let f = 1; f < l.floors; f++) { let use = draw(UPPER[skind] || UPPER.alley, R()); if (l.use === 'hotel' || l.use === 'motel') use = l.use; info.floors[f] = { f, lit: R() < (f <= 3 ? pLow : pHigh), use }; }
     // walls + parapet
     for (let i = 0; i < P.length; i++) {
+      R = R1;
       const a = P[i], b = P[(i + 1) % P.length], dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz); if (L < 0.05) continue;
       const tx = dx / L, tz = dz / L, nx = tz, nz = -tx, mx = (a[0] + b[0]) / 2, mz = (a[1] + b[1]) / 2, t2 = [tx, tz], n2 = [nx, nz], yaw = Math.atan2(-tz, tx);
       const Ht = H + K.parapet, us = hash(l.id + i) * 7;
@@ -312,6 +360,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
       const slot = open && [0.25, 0.5, 0.75].filter((t) => grid.inside(a[0] + dx * t + nx * 3.2, a[1] + dz * t + nz * 3.2, l)).length >= 2;
       const front = (Math.hypot(a[0] - fa[0], a[1] - fa[1]) < 0.05 && Math.hypot(b[0] - fb[0], b[1] - fb[1]) < 0.05);
       const streetSide = !front && open && !slot && streetDist(mx + nx * 2, mz + nz * 2) < 1.0;   // a corner lot's second street face
+      const sideKind = streetSide ? nearKind : null;
       info.edges.push({ a, b, L, tx, tz, nx, nz, open, front, streetSide });
       Acc.tint = tint;
       if (open || front) {   // the bottom 1.1 m darkens toward the ground (splash, grime, contact)
@@ -374,7 +423,11 @@ export function buildSeoulGeometry(layout, opts = {}) {
         const em = emOf(lit ? o : SPILL, nits, R(), room + 32 * fr + Math.min(0.999, R()));
         facts.windows++; if (lit) facts.windowsLit++; facts.winNits += nits;
         const sillLocal = Math.max(0.05, Math.min(1.6, W.y0 - W.f * l.floorH - (W.stair ? l.floorH * 0.5 : 0)));
-        pane('glass', [cx, cz], t2, n2, W.w, W.h, W.y0, em, [W.w, W.h, sillLocal, W.stair ? 2.5 : rh.depth + u]);
+        // [P3-C] security grilles (방범창) on 2F-3F flats and service windows: drawn by the glass shader at the facade plane
+        const homeLike = W.small || o === TENANT.home || o === TENANT.study || typ === 'villa';
+        const grille = !W.stair && W.f <= 2 && homeLike && R2() < (front || streetSide ? 0.55 : 0.7);
+        if (grille) facts.grilles++;
+        pane('glass', [cx, cz], t2, n2, W.w, W.h, W.y0, em, [W.w, W.h, sillLocal, (W.stair ? 2.5 : rh.depth + u) + (grille ? 100 : 0)]);
         if (front || streetSide) info.windows.push({ f: W.f, c: [+cx.toFixed(2), +(W.y0 + W.h / 2).toFixed(2), +cz.toFixed(2)], n: [nx, 0, nz], t: [tx, 0, tz], w: +W.w.toFixed(2), h: +W.h.toFixed(2), lit, nits: +nits.toFixed(1) });
         // sill (render only) and, on older buildings, a leak streak from one end of it
         if (W.sill && !W.stair) {
@@ -386,26 +439,34 @@ export function buildSeoulGeometry(layout, opts = {}) {
             wallDecal(a, t2, n2, s - ww / 2, s + ww / 2, Math.max(0.2, W.y0 - 0.07 - len), W.y0 - 0.07, 0.72 - age * 0.12, 1.0); }
         }
         // AC units: side and back walls by a window, or high on older fronts (the real Seoul pattern), with a rust streak
-        if (W.f >= 1 && !slot && !W.stair && R() < (front || streetSide ? (age > 0.4 ? 0.1 : 0.03) : 0.3)) {
-          facts.ac++; const sa = W.s + (W.w / 2 + 0.55) * (R() < 0.5 ? -1 : 1); if (sa < 0.5 || sa > L - 0.5) continue;
-          const ax = a[0] + tx * sa + nx * 0.2, az = a[1] + tz * sa + nz * 0.2, ac = 0.8 + R() * 0.25;
-          Acc.tint = [ac, ac * 0.99, ac * (0.9 + R() * 0.1)];
-          A('white').box([ax, W.y0 - 0.25, az], [0.42, 0.32, 0.17], yaw, false);   // outdoor unit (its bracket is below the 1080p pixel)
+        // [P3-C] art #2: ~1 unit per 2 windows on side and rear walls (phase 2's 30 % from R, the rest from R2)
+        let Q = null;
+        if (W.f >= 1 && !slot && !W.stair) { if (R() < (front || streetSide ? (age > 0.4 ? 0.1 : 0.03) : 0.3)) Q = R; else if (!front && !streetSide && R2() < 0.18) Q = R2; }
+        if (Q) {
+          facts.ac++; const sd = Q() < 0.5 ? -1 : 1, sa = W.s + (W.w / 2 + 0.55) * sd; if (sa < 0.5 || sa > L - 0.5) continue;
+          const ax = a[0] + tx * sa + nx * 0.2, az = a[1] + tz * sa + nz * 0.2, ac = 0.8 + Q() * 0.25, ay = W.y0 - 0.25;
+          Acc.tint = [ac, ac * 0.99, ac * (0.9 + Q() * 0.1)];
+          A('white').box([ax, ay, az], [0.42, 0.32, 0.17], yaw, false);   // outdoor unit
           Acc.tint = tint;
+          acFront(a, t2, n2, sa, ay, 0.37);
           wallDecal(a, t2, n2, sa - 0.06, sa + 0.06, Math.max(0.2, W.y0 - 1.6), W.y0 - 0.6, 0.8, 1.0);
         }
       }
-      if (!front) { Acc.tint = WHITE; continue; }
+      // [P3-C] art #1 / art bug (club90's 20 m dead frontage): a corner lot's second face on a commercial street is a shopfront too
+      const sideShop = !front && streetSide && sideKind !== 'alley' && L > 3.2;
+      if (front || streetSide || (open && !slot)) facadeKit(l, info, a, t2, n2, L, H, Ht, yaw, typ, rh, R2, front, front || streetSide);
+      if (!front && !sideShop) { Acc.tint = WHITE; continue; }
       // ---- ground floor: shopfront bays (interior-mapped), a framed door, posters; or a shutter. Sign bed above.
+      if (sideShop) R = R2;
       const look = USE_LOOK[l.use] || USE_LOOK.shop;
-      const shut = R() < look.shut; info.shutter = shut; info.shopLit = !shut;
+      const shut = R() < look.shut * (sideShop ? 0.7 : 1); if (front) { info.shutter = shut; info.shopLit = !shut; } else facts.sideShops++;
       const w0 = 0.4, w1 = L - 0.4, gw = w1 - w0, Pt = (s, y, o = 0) => [a[0] + tx * s + nx * o, y, a[1] + tz * s + nz * o];
       if (gw > 0.8) {
         if (shut) {
           facts.shutters++;
           const p0 = Pt(w0, 0, 0.04), p1 = Pt(w1, 0, 0.04);
-          A('shutter').quad([p0[0], 0.02, p0[2]], [p1[0], 0.02, p1[2]], [p1[0], K.shopTop, p1[2]], [p0[0], K.shopTop, p0[2]], [nx, 0, nz], [[0, 0], [gw, 0], [gw, K.shopTop], [0, K.shopTop]]);
-          A('metal').box(Pt((w0 + w1) / 2, K.shopTop + 0.15, 0.19), [gw / 2, 0.15, 0.15], yaw, false);   // the shutter box above
+          A(front ? 'shutter' : 'shutterR').quad([p0[0], 0.02, p0[2]], [p1[0], 0.02, p1[2]], [p1[0], K.shopTop, p1[2]], [p0[0], K.shopTop, p0[2]], [nx, 0, nz], [[0, 0], [gw, 0], [gw, K.shopTop], [0, K.shopTop]]);
+          A(front ? 'metal' : 'pipe').box(Pt((w0 + w1) / 2, K.shopTop + 0.15, 0.19), [gw / 2, 0.15, 0.15], yaw, false);   // the shutter box above (corner faces: render only)
         } else {
           facts.shopsLit++;
           const nitsS = lerp(look.nits[0], look.nits[1], R()), cu = R(), room = look.room[Math.floor(R() * look.room.length)];
@@ -432,16 +493,17 @@ export function buildSeoulGeometry(layout, opts = {}) {
           A('frame').box(Pt((w0 + w1) / 2, 2.32, 0.08), [gw / 2, 0.03, 0.05], yaw, false);   // transom bar
           A('frame').box(Pt((w0 + w1) / 2, 0.1, 0.06), [gw / 2, 0.1, 0.025], yaw, false);   // kick plate
           const c = Pt((w0 + w1) / 2, K.shopTop / 2, 0.05), col = colourOf(look, cu), cY = lumOf(col);   // L3: rgb at luminance 1, nits = luminance
-          emitters.push({ id: 'store:' + l.id, pos: [+c[0].toFixed(2), +c[1].toFixed(2), +c[2].toFixed(2)], normal: [+nx.toFixed(3), 0, +nz.toFixed(3)], w: +gw.toFixed(2), h: K.shopTop,
+          emitters.push({ id: 'store:' + l.id + (front ? '' : ':' + i), pos: [+c[0].toFixed(2), +c[1].toFixed(2), +c[2].toFixed(2)], normal: [+nx.toFixed(3), 0, +nz.toFixed(3)], w: +gw.toFixed(2), h: K.shopTop,
             rgb: col.map((v) => +(v / cY).toFixed(3)), nits: Math.round(nitsS * cY), kind: 'store', animated: false, lot: l.id });
         }
         // sign bed (aluminium composite panel), 2.9-4.0 m, 8 cm proud: charcoal on most lots, grey or dull white on some
         const [fy, fh, fd] = K.fascia, fc = [(a[0] + b[0]) / 2 + nx * fd / 2, fy + fh / 2, (a[1] + b[1]) / 2 + nz * fd / 2], fr2 = hash(l.id + 'bed');
         const bed = fr2 < 0.6 ? 0.06 + hash(l.id + 'bv') * 0.05 : fr2 < 0.85 ? 0.16 + hash(l.id + 'bv') * 0.08 : 0.32;
         Acc.tint = [bed * (1 - age * 0.15), bed * (1 - age * 0.17), bed * (1 - age * 0.15) * 1.03];
-        A('fascia').box(fc, [L / 2, fh / 2, fd / 2], yaw, false);
+        A(front ? 'fascia' : 'bed').box(fc, [L / 2, fh / 2, fd / 2], yaw, false);
         Acc.tint = tint;
-        info.fascia = { c: [fc[0] + nx * fd / 2, fc[1], fc[2] + nz * fd / 2], normal: [nx, 0, nz], t: [tx, 0, tz], w: L, h: fh };
+        const fx = { c: [fc[0] + nx * fd / 2, fc[1], fc[2] + nz * fd / 2], normal: [nx, 0, nz], t: [tx, 0, tz], w: L, h: fh, side: !front, lit: !shut };
+        if (front) info.fascia = fx; info.fascias.push(fx);   // [P3-C] B: every sign bed, corner faces included
       }
       // piers
       for (const s of [0.2, L - 0.2]) A(fmat).box([a[0] + tx * s + nx * 0.06, K.shopTop / 2, a[1] + tz * s + nz * 0.06], [0.2, K.shopTop / 2, 0.06], yaw);
@@ -457,7 +519,40 @@ export function buildSeoulGeometry(layout, opts = {}) {
     const roofSpot = (m) => { for (let t = 0; t < 14; t++) { const x = lerp(x0, x1, R()), z = lerp(z0, z1, R()); if (pip(x, z, P) && polyD(x, z, P) > m) return [x, z]; } return null; };
     info.roof = [];
     if (area > 60 && R() < 0.7) { const s = roofSpot(2.2); if (s) { // stair house (penthouse) 2.6 m
-      const yaw = Math.atan2(-(fb[1] - fa[1]), fb[0] - fa[0]); A(fmat === 'brick' ? 'brick' : 'concrete').box([s[0], H + 1.3, s[1]], [1.5, 1.3, 1.6], yaw); A('roof').box([s[0], H + 2.65, s[1]], [1.7, 0.05, 1.8], yaw); info.roof.push({ kind: 'stair', x: s[0], z: s[1], top: H + 2.7 }); } }
+      const yaw = Math.atan2(-(fb[1] - fa[1]), fb[0] - fa[0]); A(fmat === 'brick' ? 'brick' : 'concrete').box([s[0], H + 1.3, s[1]], [1.5, 1.3, 1.6], yaw); A('roof').box([s[0], H + 2.65, s[1]], [1.7, 0.05, 1.8], yaw); info.roof.push({ kind: 'stair', x: s[0], z: s[1], top: H + 2.7 });
+      // [P3-C] art #6 (aerial read): the door glows and a wall pack lights the roof (and its tank)
+      if (R2() < 0.75) {
+        const cs = Math.cos(yaw), sn = Math.sin(yaw), n2 = [cs, -sn], t2 = [sn, cs], dc = [s[0] + cs * 1.53, s[1] - sn * 1.53];
+        pane('glass', dc, t2, n2, 0.9, 2.05, H + 0.02, emOf({ cct: 3500 }, 10 + R2() * 8, R2(), ROOM.stair + Math.min(0.999, R2())), [0.9, 2.05, 8, 2.5]);
+        const lm = 900, lw = 0.22, lh = 0.1, ln = Math.round(lm / (Math.PI * lw * lh)), lc = lightRGB(3500), lp = [s[0] + cs * 1.62, H + 2.32, s[1] - sn * 1.62];
+        A('pole').box([s[0] + cs * 1.58, H + 2.35, s[1] - sn * 1.58], [0.08, 0.06, 0.13], yaw, false);
+        Acc.win = [lw, lh, 16, 0]; A('lamp').quad([lp[0] - sn * lw / 2 - cs * lh / 2, lp[1] - 0.06, lp[2] - cs * lw / 2 + sn * lh / 2], [lp[0] + sn * lw / 2 - cs * lh / 2, lp[1] - 0.06, lp[2] + cs * lw / 2 + sn * lh / 2], [lp[0] + sn * lw / 2 + cs * lh / 2, lp[1] - 0.06, lp[2] + cs * lw / 2 - sn * lh / 2], [lp[0] - sn * lw / 2 + cs * lh / 2, lp[1] - 0.06, lp[2] - cs * lw / 2 - sn * lh / 2], [0, -1, 0], undefined, [lc[0] * ln * NIT, lc[1] * ln * NIT, lc[2] * ln * NIT, 0]); Acc.win = WIN0;
+        emitters.push({ id: 'roof:' + l.id, pos: [+lp[0].toFixed(2), +(lp[1] - 0.06).toFixed(2), +lp[2].toFixed(2)], normal: [+(cs * 0.45).toFixed(3), -0.893, +(-sn * 0.45).toFixed(3)], w: lw, h: lh, rgb: lc.map((v) => +v.toFixed(3)), nits: ln, kind: 'street', role: 'roof', animated: false, lumens: lm, cct: 3500, lot: l.id });
+        facts.roofLamps++;
+      } } }
+    // [P3-C] roof rails on a third of the low roofs (render only: 2 cm steel), stair-house-free edges included
+    if (l.floors <= 7 && R2() < 0.35) { facts.rails++;
+      for (let i = 0; i < P.length; i++) { const a = P[i], b = P[(i + 1) % P.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (L < 1) continue;
+        const tx = (b[0] - a[0]) / L, tz = (b[1] - a[1]) / L, nx = tz, nz = -tx, o = -0.1, yt = H + K.parapet + 0.5, yaw = Math.atan2(-tz, tx);
+        A('frame').tube([[a[0] + nx * o + tx * 0.1, yt, a[1] + nz * o + tz * 0.1], [b[0] + nx * o - tx * 0.1, yt, b[1] + nz * o - tz * 0.1]], 0.02, 4);
+        for (let q = 0.1; q < L - 0.05; q += Math.max(1.6, (L - 0.2) / Math.ceil((L - 0.2) / 2.2))) A('frame').tube([[a[0] + nx * o + tx * q, H + K.parapet, a[1] + nz * o + tz * q], [a[0] + nx * o + tx * q, yt, a[1] + nz * o + tz * q]], 0.018, 3); } }
+    // [P3-C] a rooftop sign frame facing the street on ~30 % of commercial roofs (B: lotInfo roofSign is the face to fill)
+    { const fl = Math.hypot(fb[0] - fa[0], fb[1] - fa[1]), comm2 = (streetById.get(l.street)?.kind || 'alley') !== 'alley';
+      if (comm2 && l.floors >= 4 && l.floors <= 9 && area > 60 && fl > 4 && R2() < 0.3) {
+        const tx = (fb[0] - fa[0]) / fl, tz = (fb[1] - fa[1]) / fl, nx = tz, nz = -tx, yaw = Math.atan2(-tz, tx), w = Math.min(8, fl * 0.7), h = 1.6 + R2() * 1.0, y0 = H + K.parapet + 0.3;
+        const c = [(fa[0] + fb[0]) / 2 - nx * 1.0, (fa[1] + fb[1]) / 2 - nz * 1.0];
+        if (pip(c[0] - nx * 0.6, c[1] - nz * 0.6, P)) {
+          facts.roofSigns++;
+          for (const e of [-0.5, 0, 0.5]) { A('frame').box([c[0] + tx * e * (w - 0.1) - nx * 0.25, (H + y0 + h) / 2, c[1] + tz * e * (w - 0.1) - nz * 0.25], [0.04, (y0 + h - H) / 2, 0.04], yaw, false);
+            A('frame').box([c[0] + tx * e * (w - 0.1) - nx * 0.55, (H + y0) / 2, c[1] + tz * e * (w - 0.1) - nz * 0.55], [0.03, (y0 - H) / 2, 0.03], yaw, false); }
+          for (const y of [y0, y0 + h]) A('frame').box([c[0] - nx * 0.25, y, c[1] - nz * 0.25], [w / 2, 0.035, 0.035], yaw, false);
+          A('frame').box([c[0] - nx * 0.15, y0 + h / 2, c[1] - nz * 0.15], [w / 2, h / 2, 0.03], yaw, false);   // the backing panel
+          info.roofSign = { c: [+(c[0] - nx * 0.11).toFixed(2), +(y0 + h / 2).toFixed(2), +(c[1] - nz * 0.11).toFixed(2)], normal: [+nx.toFixed(3), 0, +nz.toFixed(3)], t: [+tx.toFixed(3), 0, +tz.toFixed(3)], w: +w.toFixed(2), h: +h.toFixed(2) };
+        } } }
+    // [P3-C] main-road towers: an LED wash line under the coping on their street faces (architectural lighting, 600 nits)
+    if (tower) for (const e of info.edges) { if (!(e.front || e.streetSide) || e.L < 3) continue;
+      const c = [(e.a[0] + e.b[0]) / 2 + e.nx * 0.05, (e.a[1] + e.b[1]) / 2 + e.nz * 0.05], lc = lightRGB(4300);
+      pane('lamp', c, [e.tx, e.tz], [e.nx, e.nz], e.L - 0.3, 0.07, H + K.parapet - 0.2, [lc[0] * 600 * NIT, lc[1] * 600 * NIT, lc[2] * 600 * NIT, 0], [e.L - 0.3, 0.07, 16, 0]); }
     if (area > 40 && l.floors <= 8 && R() < 0.55) { const s = roofSpot(1.6); if (s) { // water tank on a steel stand (FRP / stainless)
       facts.tanks++; const r = 0.6 + R() * 0.5, h = 1.2 + R() * 0.6;
       A('metal').box([s[0], H + 0.25, s[1]], [r + 0.1, 0.25, r + 0.1], 0, false);
@@ -627,7 +722,7 @@ function conform(g0, like) {
 // keys (no texture, emission, transparency, alpha or decal; `fold: false` opts out) are appended per build.
 export const SEOUL_GROUPS = {
   ground: ['road', 'walk', 'plaza'],
-  city: ['tile', 'brick', 'plaster', 'concrete', 'roof', 'metal', 'shutter', 'white', 'fascia', 'frame', 'sill', 'dark', 'pole'],
+  city: ['tile', 'brick', 'plaster', 'concrete', 'roof', 'metal', 'shutter', 'white', 'fascia', 'frame', 'sill', 'dark', 'pole', 'pipe', 'gaspipe', 'bed', 'shutterR'],
   glass: ['glass', 'shop', 'lamp'],
   lanepaint: ['stripe', 'yellow'],
   ao: ['ao'],
@@ -734,7 +829,8 @@ vec3 sgEnv(vec3 P, vec3 rf, vec3 n) {
   return c;
 }
 void seoulGlass(inout vec4 dc) {
-  float w = max(sWin.x, 0.05), h = max(sWin.y, 0.05), kind = floor(sWin.z * 0.25 + 0.001), sill = sWin.z - kind * 4.0, D = max(sWin.w, 0.1);
+  float gr = step(50.0, sWin.w);   // [P3-C] aWin.w + 100: a security grille in front of the pane
+  float w = max(sWin.x, 0.05), h = max(sWin.y, 0.05), kind = floor(sWin.z * 0.25 + 0.001), sill = sWin.z - kind * 4.0, D = max(sWin.w - 100.0 * gr, 0.1);
   float code = floor(sEm.w + 0.0005), seed = sEm.w - code, room = mod(code, 32.0), front = floor(code / 32.0 + 0.001);
   vec3 L = sEm.rgb; float lit = step(0.2, dot(L, vec3(0.2126, 0.7152, 0.0722)));
   if (kind > 3.5) { dc.rgb = vec3(0.05); sgEmit = L; sgMask = 4.0; return; }   // [P3-C] street-light heads (was its own mesh)
@@ -747,6 +843,13 @@ void seoulGlass(inout vec4 dc) {
   vec3 n = normalize(sONrm), T = vec3(-n.z, 0.0, n.x), rd = normalize(sWPos - cameraPosition);
   vec3 r = vec3(dot(rd, T), rd.y, max(-dot(rd, n), 0.03));
   vec2 q = vec2((sUv.x - 0.5) * w, sill + sUv.y * h);
+  float gcov = 0.0;
+  if (gr > 0.5) {   // 16 mm bars at 11 cm, two rails; fades to its average once a bar is under a pixel
+    vec2 fq = fwidth(q);
+    float bx = abs(fract(q.x / 0.11) - 0.5) * 0.11, by = min(abs(q.y - sill - h * 0.33), abs(q.y - sill - h * 0.67));
+    gcov = max(1.0 - smoothstep(0.008 - fq.x, 0.008 + fq.x, bx), 1.0 - smoothstep(0.012 - fq.y, 0.012 + fq.y, by));
+    gcov = mix(gcov, 0.22, smoothstep(0.02, 0.05, max(fq.x, fq.y)));
+  }
   vec2 g = q + r.xy * ((kind > 0.5 ? 0.04 : 0.14) / r.z);
   if (abs(g.x) > w * 0.5 || g.y < sill || g.y > sill + h) { dc.rgb = vec3(0.17, 0.165, 0.16); sgMask = 2.0; sgEmit = L * (0.06 * lit); return; }
   vec2 e = vec2(g.x + w * 0.5, g.y - sill);
@@ -807,7 +910,7 @@ void seoulGlass(inout vec4 dc) {
   float grime = 0.55 * smoothstep(0.45, 0.85, sgVN(sWPos.xz * 1.7 + vec2(sWPos.y * 0.6, sWPos.y * 2.3))) + 0.45 * smoothstep(0.22, 0.0, gu.y);
   float F = min(0.6, (0.04 + 0.96 * pow(1.0 - ci, 5.0)) * (1.0 + 0.9 * grime));
   col = col * (1.0 - F) * (1.0 - 0.12 * grime) + F * sgEnv(sWPos, rf, n);
-  sgEmit = col;
+  sgEmit = col * (1.0 - gcov); dc.rgb = mix(dc.rgb, vec3(0.055, 0.055, 0.06), gcov); if (gcov > 0.5) sgMask = 1.0;
 }
 `;
 // procedural grime on the scan textures: vertical streaks and blots in metres of uv (walls: along x, height y)
