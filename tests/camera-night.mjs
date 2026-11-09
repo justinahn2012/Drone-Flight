@@ -2,7 +2,8 @@
 //  1. bando stays bit-identical: every non-night program's GLSL, preprocessed with NIGHT undefined, hashes to the phase-1
 //     value (fb6881a), and GRADES.hdr / GRADES.ldr / LENSES / SHUTTERS are unchanged;
 //  2. the night tone curve passes grey and the white point, is monotonic, and lands the Rec.709 codes it was fitted to;
-//  3. the night camera profile section exists only with the night preset on.
+//  3. the night camera profile section exists only with the night preset on;
+//  4. [P3-A] the phase-3 keys (true-source cores, point-source ghosts, retro shadow hue, AE area rule) and the mover kinds.
 //   node tests/camera-night.mjs
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -70,6 +71,24 @@ ok(!('night' in cam.profile({ w: 1920, h: 1080 })), 'bando profile has no night 
 cam._applyGrade(M.GRADES.night);
 const pn = cam.profile({ w: 1920, h: 1080 });
 ok(pn.night && Math.abs(pn.night.tone.bc[0] - b) < 1e-5, 'night profile carries the tone constants');
+
+// --- 4. [P3-A] phase-3 night camera: true-source cores, point-source ghosts, retro shadow hue, AE area rule, mover kinds
+ok(N.coreSrc && N.coreSrc[0] >= 35 && N.coreSrc[0] < N.coreSrc[1] && N.coreSrc[1] <= 60, 'coreSrc ramps between the faces (<= 350 nits) and the tubes (>= 600 nits)');
+ok(N.coreXtalkSrc >= N.coreXtalk && N.coreEvSrc[1] <= 0 && N.coreEvSrc[0] < N.coreEvSrc[1], 'true sources: more crosstalk, ramp under the white point');
+ok(N.ghosts.every((g) => g[1] <= 0.0015 && typeof g[2] === 'number' && Array.isArray(g[3])) && N.ghostEv[0] >= 7 && N.ghostChroma <= 0.3, 'ghosts: <= 0.0015, aperture radius, point sources over +7 EV, chroma <= 0.3');
+ok(N.retroShadow[0] === 205 && N.retroVibGate[0] >= 30 && N.retroVibGate[1] <= 110, 'retro: one shadow hue (205 deg), vibrance off amber');
+ok(N.aeArea.length === 4 && N.aeArea[2] < N.aeArea[1], 'AE: area sources weigh less once they fill the frame');
+ok(/const GHOST_FS/.test(src) && !/uGhostT/.test(C.FINAL_FS), 'ghosts come from GHOST_FS, not mirrored bloom copies');
+{
+  const cam2 = new M.FPVCamera(null), A = (o) => ({ geometry: { attributes: o } });
+  const inst = { isInstancedMesh: true, isMesh: true, ...A({ instanceVelocity: {} }) };
+  const pose = { isMesh: true, geometry: { isInstancedBufferGeometry: true, attributes: { instanceVelocity: {}, iPos: { itemSize: 4 }, iAnim: { itemSize: 4 } } } };
+  const ren = { isMesh: true, geometry: { isInstancedBufferGeometry: true, attributes: { iVel: {}, P: { itemSize: 4 } } }, userData: { motionPose: { pos: 'P' } } };
+  const obj = { isMesh: true, ...A({ position: {} }), userData: { velocity: [3, 0, 1] } };
+  const k = (o) => cam2._velKind(o);
+  ok(k(inst)?.k === 'inst' && k(pose)?.k === 'pose' && k(pose).sa === 'iAnim' && k(ren)?.k === 'pose' && k(ren).va === 'iVel' && k(ren).sa === null && k(obj)?.k === 'obj', 'movers: instanced, posed (iPos) and rigid kinds');
+  ok(k({ isMesh: true, ...A({ position: {} }) }) === null && k(null) === null, 'movers: untagged meshes are skipped');
+}
 
 console.log(`camera-night tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -901,7 +901,7 @@ export const GRADES = {
   //   grain removed]; sharpDark: exposed level where sharpening fades in. AE (colour #6, graphics #1): aeReject 1 %, aeArea [scene
   //   units above which a tap is an area source, its weight, its weight once area taps exceed the share in [3]], aeMatrix [centre v, falloff].
   // Phase 3 [P3-A] (panel 2 colour #1/#3/#5, FPV #1/#2/#4/#5/#6, graphics #3; fitted offline on HDR captures of walk0/walk180/club90/club270):
-  //   coreSrc [a, b]: true sources are pixels whose white-equivalent radiance (max channel, scene units: 400..700 nits, between faces
+  //   coreSrc [a, b]: true sources are pixels whose white-equivalent radiance (max channel, scene units: 400..600 nits, between faces
   //   <= 350 and tubes >= 600) passes a..b; they take coreXtalkSrc crosstalk and the earlier ramp coreEvSrc (colour #3: [-2.5, -0.5]
   //   EV under the white point), so letters and tubes white-core with coloured rims while faces, screens and windows keep their colour.
   //   ghosts [mirror scale, weight, radius (frame heights), tint]: only point sources whose 1/8 block luma is ghostEv EV over grey feed
@@ -912,7 +912,7 @@ export const GRADES = {
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
-    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [40, 70], coreXtalkSrc: 0.4, coreEvSrc: [-2.5, -0.5], retroShadow: [205, 0.06], retroVibGate: [40, 100],
+    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [40, 60], coreXtalkSrc: 0.4, coreEvSrc: [-2.5, -0.5], retroShadow: [205, 0.06], retroVibGate: [40, 100],
     mag: 0.035, magC: 0.04, grain: 0, grainEv: [0, 0], grainPx: 2,
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
     codec: [0.4, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
