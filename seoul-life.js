@@ -423,7 +423,9 @@ export class TrafficSim {
     // who holds / waits for which junction box, as of the end of the last step (order-free: grants made during this step
     // are added as they happen, in the step's fixed lane/position order)
     const box = this.box || (this.box = new Map()); box.clear();
+    const easing = this._easing || (this._easing = []); easing.length = 0;   // vehicles still easing out of a lane change
     for (const v of this.vehicles) {
+      if (v.lcN > N - 3 * LIFE.trafficHz && v.lcFrom >= 0) easing.push(v);
       if (v.hidden) { if (v.hold >= 0) { v.hold = -1; v.tk = -1; } continue; }
       // already in the box without a grant (placed there at reset, or pushed past the entry): it holds the box now
       if (v.hold < 0 && v.next && v.lane.end && (v.lane.internal || v.s + v.L / 2 > v.lane.entry + 0.3)) { v.hold = v.lane.end.bid; v.hin = v.lane.idx; v.hout = v.next.idx; }
@@ -441,7 +443,7 @@ export class TrafficSim {
         let gap = Infinity, dv = 0, ldr = null;
         // bumper to bumper (P3: s is the centre; P2's l.s - l.L - v.s let a bus run 3 m into a car ahead)
         for (let j = i - 1; j >= 0; j--) { const l = vs[j]; if (!l.hidden) { gap = l.s - v.s - (l.L + v.L) / 2; dv = v.v - l.v; ldr = l; break; } }
-        for (const m of ln.adj) for (const l of m.veh) if (l.lcFrom === ln.idx && l.s > v.s && !l.hidden && this.lcOffset(l)) { const g = l.s - v.s - (l.L + v.L) / 2; if (g < gap) { gap = g; dv = v.v - l.v; ldr = l; } }   // still easing out of this lane
+        for (const l of easing) if (l.lcFrom === ln.idx && l.lane !== ln && l.s > v.s && !l.hidden) { const g = l.s - v.s - (l.L + v.L) / 2; if (g < gap) { gap = g; dv = v.v - l.v; ldr = l; } }   // still easing out of this lane
         if (gap === Infinity && v.next) {
           let last = null; for (const o of v.next.veh) if (!o.hidden && (!last || o.s < last.s)) last = o;
           if (last) { gap = ln.len - v.s + last.s - (last.L + v.L) / 2; dv = v.v - last.v; ldr = last; }
@@ -545,7 +547,7 @@ export class TrafficSim {
     if (b) {
       for (const h of b.hold) if (h !== v && h.hold === node.bid && h.hin !== ln.idx && this.conflict(ln.idx, nx.idx, h.hin, h.hout, v.W, h.W)) return false;   // (a holder respawned this step has let go)
       // FIFO: an earlier conflicting ticket with room ahead that could go now (or has waited 15 s: the box drains for it) goes first
-      for (const w of b.wait) if (w !== v && w.tk < v.tk && w.lane !== ln && w.next && w.lane.end === node && this.conflict(ln.idx, nx.idx, w.lane.idx, w.next.idx, v.W, w.W) && this.roomOut(w, w.next)
+      for (const w of b.wait) if (w !== v && w.tk < v.tk && w.lane !== ln && w.next && w.lane.end && w.lane.end.bid === node.bid && this.conflict(ln.idx, nx.idx, w.lane.idx, w.next.idx, v.W, w.W) && this.roomOut(w, w.next)
         && (N - w.tk > 15 * LIFE.trafficHz || !b.hold.some((h) => h !== w && h.hold === node.bid && h.hin !== w.lane.idx && this.conflict(w.lane.idx, w.next.idx, h.hin, h.hout, w.W, h.W)))) return false;
     } else this.box.set(node.bid, { hold: [], wait: [] });
     // and its swept path must clear anyone queued at another entry line of this node (the hand-off ease reaches past the box)
@@ -613,7 +615,8 @@ export class TrafficSim {
   laneChanges(t, R) {
     // a vehicle still easing out of a lane (3 s) is in it too (P3: two taxis moved left a lane each in one pass and drove
     // side by side through each other for 3 s)
-    const occ = (ln, f) => { for (const o of ln.veh) f(o); for (const m of ln.adj) for (const o of m.veh) if (o.lcFrom === ln.idx && this.lcOffset(o)) f(o); };
+    const eas = this.vehicles.filter((o) => o.lcFrom >= 0 && this.lcOffset(o));
+    const occ = (ln, f) => { for (const o of ln.veh) f(o); for (const o of eas) if (o.lcFrom === ln.idx && o.lane !== ln) f(o); };
     const lead = (ln, s, skip) => { let b = null; occ(ln, (o) => { if (o !== skip && !o.hidden && o.s > s && (!b || o.s < b.s)) b = o; }); return b; };
     const foll = (ln, s, skip) => { let b = null; occ(ln, (o) => { if (o !== skip && !o.hidden && o.s <= s && (!b || o.s > b.s)) b = o; }); return b; };
     for (const ln of this.lanes) {
@@ -1889,6 +1892,22 @@ export function build(layout, ctx = {}) {
     const m = new THREE.Mesh(g, humanMat); m.frustumCulled = false; m.name = ['crowd-near', 'crowd-mid', 'crowd-far'][lod]; group.add(m);
     return { g, A, cap, mesh: m, tris: g.index.count / 3 };
   });
+  // ---- contact shadows (lighting #6, P3): a soft dark footprint under every near and mid person (multiplied into what is
+  // already on the ground; walkers' a little longer along their heading), so crowds stand on the street instead of floating
+  const capC = LIFE.maxNear + LIFE.maxMid;
+  const contactG = new THREE.InstancedBufferGeometry().copy(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2));
+  const contactA = new THREE.InstancedBufferAttribute(new Float32Array(capC * 4), 4); contactA.setUsage(THREE.DynamicDrawUsage);
+  const contactY = new THREE.InstancedBufferAttribute(new Float32Array(capC), 1); contactY.setUsage(THREE.DynamicDrawUsage);
+  contactG.setAttribute('iC', contactA); contactG.setAttribute('iCy', contactY); contactG.instanceCount = 0;
+  const contactMat = new THREE.ShaderMaterial({
+    vertexShader: `attribute vec4 iC; attribute float iCy; varying vec2 vQ; varying float vK; void main(){ vQ = position.xz * 2.0; vK = fract(iC.w); float ext = 1.0 + floor(iC.w) * 0.35;
+      vec3 p = vec3(position.x * 0.78, 0.0, position.z * 0.78 * ext); float c = cos(iC.z), s = sin(iC.z);
+      vec3 w = vec3(c * p.x + s * p.z, 0.0, -s * p.x + c * p.z) + vec3(iC.x, iCy + 0.025, iC.y); gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0); }`,
+    fragmentShader: `varying vec2 vQ; varying float vK; void main(){ float r = length(vQ); float o = vK * (1.0 - smoothstep(0.15, 1.0, r)) * (0.55 + 0.45 * (1.0 - smoothstep(0.0, 0.45, r))); gl_FragColor = vec4(vec3(1.0 - o), 1.0); }`,
+    transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.ZeroFactor, blendDst: THREE.SrcColorFactor,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  const contacts = new THREE.Mesh(contactG, contactMat); contacts.frustumCulled = false; contacts.name = 'crowd-contact'; contacts.renderOrder = 1; contacts.visible = ctx.contacts !== false; group.add(contacts);
   // static per-person appearance, linearised once
   const people = crowd.people, NP = people.length;
   const look = people.map((a) => ({ top: lin(a.look.top), bot: lin(a.look.bottom), hair: lin(a.look.hair), skin: lin(a.look.skin), wear: lin(a.look.wear) }));
@@ -1923,9 +1942,15 @@ export function build(layout, ctx = {}) {
     im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3); im.instanceColor.setUsage(THREE.DynamicDrawUsage);
     const st = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4); st.setUsage(THREE.DynamicDrawUsage); im.geometry.setAttribute('iState', st);
+    // contract P2-A1 (A's object blur): world m/s per instance, in setMatrixAt order
+    const vel = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3); vel.setUsage(THREE.DynamicDrawUsage); im.geometry.setAttribute('instanceVelocity', vel);
     im.count = 0; im.frustumCulled = false; im.name = 'traffic-' + ty; group.add(im);
-    vByType[ty] = { im, st, cap, n: list.length };
+    vByType[ty] = { im, st, vel, cap, n: list.length };
   }
+  // contract P2-A1: list the vehicle meshes for A's object blur (world.motionMeshes / scene.userData.motionMeshes)
+  const motionMeshes = Object.values(vByType).map((B) => B.im);
+  group.userData.motionMeshes = motionMeshes;
+  if (ctx.scene?.userData) ctx.scene.userData.motionMeshes = [...(ctx.scene.userData.motionMeshes || []), ...motionMeshes];
   const poolG = new THREE.InstancedBufferGeometry().copy(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2));
   // plane in xz: x across (width 3.2 m), z ahead (length 14 m), starting at the bumper
   { const p = poolG.attributes.position; for (let i = 0; i < p.count; i++) { p.setX(i, p.getX(i) * 3.4); p.setZ(i, (p.getZ(i) + 0.5) * 14); } }
@@ -1967,13 +1992,20 @@ export function build(layout, ctx = {}) {
     crowd.evaluate(clock + W, camE);
     const c2 = performance.now();
     const X = crowd.X, Z = crowd.Z, VIS = crowd.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
-    let nN = 0, nM = 0, nF = 0; const T0 = tiers[0].A, T1 = tiers[1].A, T2 = tiers[2].A, mr2 = LIFE.midR * LIFE.midR;
+    const cosFov = Math.cos(Math.min(1.55, ctx.fovHalf ?? 1.15)), visTest = typeof ctx.visible === 'function' ? ctx.visible : null;
+    let nN = 0, nM = 0, nF = 0, nC = 0; const T0 = tiers[0].A, T1 = tiers[1].A, T2 = tiers[2].A, mr2 = LIFE.midR * LIFE.midR;
     hist.fill(0); near.crowdN = 0; near.feet.length = 0;
     for (let i = 0; i < NP; i++) {
       if (!VIS[i]) { ab[i] = 99; continue; }
       const dx = X[i] - camP.x, dz = Z[i] - camP.z, h2 = dx * dx + dz * dz, d2 = h2 + camH * camH * 0.25;
       if (h2 < 900) { const d = Math.sqrt(h2); near.crowdN += 1 / (1 + d / 6); if (d < 5 && crowd.WALK[i] > 0.5 && near.feet.length < 16) near.feet.push(i); }
-      let b = d2 > 36 && (dx * fwd.x + dz * fwd.z) < -0.25 * Math.sqrt(d2) ? 99 : Math.floor(Math.sqrt(d2) / 10);
+      // (perf #2, P3) view cone: off the camera's half-angle plus the person's own angular size (ctx.fovHalf, default 66 deg;
+      // D's ctx.visible(x, y, z, r) occlusion test when given). P2 only dropped people behind the camera.
+      let b = Math.floor(Math.sqrt(d2) / 10);
+      if (d2 > 25 && fwd.lengthSq() > 0) {
+        const ry = gy + 1.0 - camP.y, l3 = Math.sqrt(h2 + ry * ry), c = (dx * fwd.x + ry * fwd.y + dz * fwd.z) / l3;
+        if (c < cosFov - 1.3 / l3 || (visTest && !visTest(X[i], gy + 1.0, Z[i], 1.1))) b = 99;
+      }
       if (b > 17) b = 99; else hist[b]++;
       ab[i] = b;
     }
@@ -1986,6 +2018,10 @@ export function build(layout, ctx = {}) {
       const dx = x - camP.x, dz = z - camP.z, h2 = dx * dx + dz * dz, d2 = h2 + camH * camH * 0.25;
       let T, k;
       if (d2 < nr2 && nN < tiers[0].cap) { T = T0; k = nN++; } else if (d2 < mr2 && nM < tiers[1].cap) { T = T1; k = nM++; } else if (nN + nM + nF < LIFE.maxDrawn) { T = T2; k = nF++; } else continue;
+      if (T !== T2 && nC < capC) {   // contact footprint: full strength standing, a touch lighter and longer walking; fades out by 50 m
+        const w = crowd.WALK[i] > 0.5 ? 1 : 0, fade = 1 - Math.min(1, Math.max(0, (Math.sqrt(h2) - 38) / 12));
+        contactA.setXYZW(nC, x, z, crowd.YAW[i], w + Math.min(0.999, (a.kind === K_SEAT ? 0.45 : 0.62) * fade * (w ? 0.85 : 1))); contactY.setX(nC, groundAt(x, z)); nC++;
+      }
       // look at the drone (life #4): standing people within 14 m turn their heads, filmers raise phones after ~1.2 s;
       // walkers within 8 m glance
       let pose = crowd.POSE[i], ty = 0, tp = 0;
@@ -2013,6 +2049,8 @@ export function build(layout, ctx = {}) {
       T.g.instanceCount = n;
       for (const k in T.A) { const at = T.A[k]; at.clearUpdateRanges?.(); at.addUpdateRange?.(0, n * 4); at.needsUpdate = true; }
     }
+    contactG.instanceCount = nC; contactA.clearUpdateRanges?.(); contactA.addUpdateRange?.(0, nC * 4); contactA.needsUpdate = true; contactY.clearUpdateRanges?.(); contactY.addUpdateRange?.(0, nC); contactY.needsUpdate = true;
+    stats.contacts = nC;
     stats.crowdMs = c2 - c1;
     // ---- vehicles
     const aT = sim.aT, cnt = {}; for (const ty of VTYPES) cnt[ty] = 0;
@@ -2025,20 +2063,21 @@ export function build(layout, ctx = {}) {
       Q.setFromAxisAngle(UP, yaw); M4.compose(V3.set(p.x, y, p.z), Q, S1); B.im.setMatrixAt(k, M4);
       const col = v._lin || (v._lin = lin(v.paint)); B.im.instanceColor.setXYZ(k, col[0], col[1], col[2]);
       B.st.setXYZW(k, v.brake, v.hazard ? 1 : 0, 1, (v.id * 0.37) % 1);
+      B.vel.setXYZ(k, p.hx * v.v, 0, p.hz * v.v);
       const hl = v.L / 2;
       ef.pos[0] = p.x + p.hx * hl; ef.pos[1] = y + (v.type === 'bus' ? 0.6 : 0.68); ef.pos[2] = p.z + p.hz * hl; ef.normal[0] = p.hx; ef.normal[2] = p.hz; ef.nits = 40000;
       er.pos[0] = p.x - p.hx * hl; er.pos[1] = y + 0.75; er.pos[2] = p.z - p.hz * hl; er.normal[0] = -p.hx; er.normal[2] = -p.hz; er.nits = 250 + 1250 * v.brake;
       const I = v.type === 'scooter' ? 0.35 : v.type === 'bus' ? 1.2 : 1;
       poolA.setXYZW(np++, p.x + p.hx * hl, p.z + p.hz * hl, yaw, I);
     }
-    for (const ty of VTYPES) { const B = vByType[ty]; B.im.count = cnt[ty]; B.im.instanceMatrix.needsUpdate = true; B.im.instanceColor.needsUpdate = true; B.st.needsUpdate = true; }
+    for (const ty of VTYPES) { const B = vByType[ty]; B.im.count = cnt[ty]; B.im.instanceMatrix.needsUpdate = true; B.im.instanceColor.needsUpdate = true; B.st.needsUpdate = true; B.vel.needsUpdate = true; }
     poolG.instanceCount = np; poolA.needsUpdate = true;
     stats.near = nN; stats.mid = nM; stats.far = nF; stats.drawn = nN + nM + nF; stats.tris = nN * tiers[0].tris + nM * tiers[1].tris + nF * tiers[2].tris;
     stats.simMs = c1 - c0; stats.cpuMs = performance.now() - c0;
     if (life.audio && life.audio.feed) life.audio.feed(camP, fwd, clock + W);
   }
   const life = {
-    group, emitters, sim, stats, fill,
+    group, emitters, sim, stats, fill, motionMeshes,
     // F1 (design #5): vehicles are hard (crash), pedestrians soft (scrape); both pure functions of the take clock
     colliders: { at: (t, out) => sim.boxesAt(t + W, out), hit: (p, r, t) => sim.hit(p, r, t + W), people: (p, r, t) => sim.hitPeople(p, r, t + W), keyed: 'take-clock', warm: W },
     near, crowd,

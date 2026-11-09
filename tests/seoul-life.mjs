@@ -103,8 +103,10 @@ ok(mv > 5 && st > 0, `traffic flows and queues (moving ${mv}, stopped ${st})`);
     while (T.n < t * 60) { T.step(); for (const e of T.events) ev[e.type] = (ev[e.type] || 0) + 1; }
     for (const v of T.vehicles) { if (v.hidden || v.lane.shared) { still.set(v.id, 0); continue; } still.set(v.id, v.v < 0.3 ? (still.get(v.id) || 0) + 1 : 0); }
   }
-  const road = T.vehicles.filter((v) => !v.hidden && !v.lane.shared), s45 = road.filter((v) => still.get(v.id) > 45).length;
-  ok(s45 < 0.1 * road.length, `liveness at 300 s: ${s45}/${road.length} road vehicles stopped > 45 s (< 10 %)`);
+  // (P3: junction boxes queue the Yanghwa-ro median crossings for up to a second cycle, so > 45 s may reach ~15 %; a jam
+  // shows as > 90 s, two full cycles)
+  const road = T.vehicles.filter((v) => !v.hidden && !v.lane.shared), s45 = road.filter((v) => still.get(v.id) > 45).length, s90 = road.filter((v) => still.get(v.id) > 90).length;
+  ok(s45 < 0.15 * road.length && s90 < 0.03 * road.length, `liveness at 300 s: ${s45}/${road.length} road vehicles stopped > 45 s (< 15 %), ${s90} > 90 s (< 3 %)`);
   ok((ev.kneel || 0) >= 5, `buses kneel at stops (${ev.kneel || 0} in 300 s: the hiss has something to play)`);
   ok((ev.unstick || 0) <= 12, `watchdog rarely needed (${ev.unstick || 0} unsticks in 300 s)`);
   const ty = {}; for (const v of T.vehicles) if (!v.hidden) ty[v.type] = (ty[v.type] || 0) + 1;
