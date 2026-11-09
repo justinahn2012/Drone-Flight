@@ -155,7 +155,7 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   const G = U.tCityLMG.value.image, g = U.uCityLMG.value, gAt = (x, z) => { const i = Math.floor((x - g.x) / 0.5), j = Math.floor((z - g.y) / 0.5); return (j * G.width + i) * 4; };
   const o1 = gAt(10.2, 26.2), p1 = C.probe(10.2, 0.02, 26.2), lm1 = lum(G.data, o1);
   ok(h(G.data[o1 + 3]) === 1 && Math.abs(lm1 - (p1.direct + p1.volume)) < 0.25 * (p1.direct + p1.volume) + 0.3, `ground under the sign: lightmap ${lm1.toFixed(1)} lux vs grid + volume ${(p1.direct + p1.volume).toFixed(1)}`);
-  ok(h(G.data[gAt(10.2, 10.2) + 3]) === 0, 'no ground texels inside a building');
+  ok(h(G.data[gAt(10.2, 10.2) + 3]) === 0 && h(G.data[gAt(10.2, 19.6) + 3]) === 1, 'no ground texels inside a building but its 2-texel rim (dilated)');
   // B's south wall at 4 m, across from the sign: the atlas texel of the edge facing -z
   const E = U.tCityLME.value.image.data, A = U.tCityLMA.value.image; let found = -1;
   for (let e = 0; e < U.tCityLME.value.image.width * U.tCityLME.value.image.height / 2; e++) { const o = ((e >> 8) * 512 + (e & 255) * 2) * 4; const ux = E[o + 2], uz = E[o + 3], sg = Math.sign(E[o + 6]); const nz = sg * -ux; if (Math.abs(E[o + 1] - 40) < 0.01 && Math.abs(E[o + 1] + uz * Math.abs(E[o + 6]) - 40) < 0.01 && nz < -0.9) found = e; }

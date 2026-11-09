@@ -154,6 +154,14 @@ export function bakeLM(job) {
     const r = texel(x, 0.02, z, 0, 1, 0, Math.floor((x - grid.x0) / grid.cell), Math.floor((z - grid.z0) / grid.cell)); if (!r[3]) continue;
     const o = (j * gw + i) * 4; G[o] = toHalf(r[0]); G[o + 1] = toHalf(r[1]); G[o + 2] = toHalf(r[2]); G[o + 3] = toHalf(1); nG++;
   }
+  // dilate 2 texels into the buildings, so a bilinear read at a wall's foot stays on the map (no seam to the volume)
+  for (let pass = 0; pass < 2; pass++) {
+    const src = G.slice();
+    for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) {
+      const o = (j * gw + i) * 4; if (src[o + 3]) continue;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const x = i + di, y = j + dj; if (x < 0 || y < 0 || x >= gw || y >= gh) continue; const q = (y * gw + x) * 4; if (src[q + 3]) { G[o] = src[q]; G[o + 1] = src[q + 1]; G[o + 2] = src[q + 2]; G[o + 3] = src[q + 3]; break; } }
+    }
+  }
   // facades
   const AW = plan.atlasW, AH = plan.atlasH, A = new Uint16Array(AW * AH * 4), E = plan.edges, f = plan.fres; let nA = 0;
   for (let e = 0; e < plan.nE; e++) {
