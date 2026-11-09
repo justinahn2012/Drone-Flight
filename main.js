@@ -504,7 +504,7 @@ async function loadProcWorld(def) {
   // [F1] movers hook: the drawn city runs on the drone's tick clock (flight.js drone.tick, the clock world.movers is
   // asked at, carried in snapshots), at the rendered pose's time (tick - 1 + physAlpha: the pose is lerped between the last
   // two ticks), so the bus you see is the bus you hit; the input log restarting (10 min) no longer rewinds the city
-  const scene0 = new THREE.Scene(), opts = { takeClock: () => Math.max(0, (drone.tick ?? (inputLog?.ticks ?? 0) + 1) - 1 + physAlpha) * PHYS,   // [integ6] deterministic: sim ticks
+  const scene0 = new THREE.Scene(), opts = { takeClock: () => hqClock ?? Math.max(0, (drone.tick ?? (inputLog?.ticks ?? 0) + 1) - 1 + physAlpha) * PHYS,   // [integ6] deterministic: sim ticks ([P3-G2] hqClock: an HQ sub-frame)
     sky: def.sky, quality: S.quality, level: level.id, layout: level.layout, onProgress: (f, t) => setLoad(null, f, t) };
   const args = (Array.isArray(level.args) ? level.args : ['renderer', 'scene', 'opts']).map((a) => (a === 'renderer' ? renderer : a === 'scene' ? scene0 : a === 'opts' ? opts : undefined));
   const w = await build(...args);
@@ -1118,6 +1118,7 @@ function prepComp(W, H, lay) {
 }
 const capLabel = (C) => C.caps.length ? ` · ${C.caps.length} caption${C.caps.length > 1 ? 's' : ''}` : '';
 // ---- HQ: offline, re-simulated, sub-frame accumulated, WebCodecs
+let hqClock = null;   // [P3-G2] the take clock of the HQ sub-frame being rendered (world.update's takeClock), else null
 async function makeHQ(C, b, kind) {
   const job = hqJob = { cancel: false, bg: false, needCtx: false }, lay = clipPrefs.lay;
   if (!clipOpen) pauseForClip();
@@ -1142,6 +1143,8 @@ async function makeHQ(C, b, kind) {
     const u = nb ? Math.max(0, Math.min(1, (s.T - C.ot[s.i]) / Math.max(1e-6, C.ot[s.i + 1] - C.ot[s.i]))) : 0;
     for (const k in a.mo) motion[k] = a.mo[k] + (((nb?.mo[k]) ?? a.mo[k]) - a.mo[k]) * u;
     camPose.pos.copy(s.p); camPose.quat.copy(s.q); motion.vel.copy(s.vel); motion.ang.copy(s.ang);
+    // [P3-G2] sound #5: the city (traffic, crowd, sound) runs on this sub-frame's take clock, not the paused drone.tick
+    const ka = (a.k || 0) + (a.a || 0); hqClock = (ka + (nb ? (nb.k || 0) + (nb.a || 0) - ka : 0) * u) * PHYS;
     if (s.reset) fpv.resetExposure = true;                     // start / hard cut: no AE drift across it
     world.update?.(camPose.pos, s.dt, camPose.quat);
     fpv.render(world, camPose, motion, s.dt);
@@ -1160,6 +1163,7 @@ async function makeHQ(C, b, kind) {
       onSub: (n) => { lk.shutter = keep.shutter / n; lk.grain = keep.grain * Math.sqrt(n); } });
   } catch (e) { err = e; console.warn('HQ clip failed', e); }
   finally {
+    hqClock = null;   // [P3-G2]
     Object.assign(lk, { shutter: keep.shutter, grain: keep.grain, letterbox: keep.letterbox }); fpv.scale = keep.scale;
     Object.assign(motion, mo0); layout(); fpv.resetExposure = true;
   }
@@ -1268,7 +1272,11 @@ async function offlineAudio(C) {
 }
 // the clip's sound, re-synthesised on an OfflineAudioContext along the output timeline (hits, crash, rooms, grass)
 function clipAudio(actx, C) {
-  const a = new MotorAudio(); a.setCraft(drone.key); a.startOffline(actx);
+  // [P3-G2] sound #5: the motors' noise is seeded from the clip's log (seed, world, first tick), so a clip renders the same
+  // sound every time; the city's clip feed takes the take clock (seoul-audio adds the sims' warm start itself)
+  const L0 = (C.raw || C.f).find((f) => f && f.L)?.L, key = `${L0?.header?.seed ?? 0}:${L0?.header?.world ?? ''}:${C.f[0]?.k ?? 0}:${C.f.length}`;
+  let seed = 2166136261; for (let i = 0; i < key.length; i++) seed = Math.imul(seed ^ key.charCodeAt(i), 16777619) >>> 0;
+  const a = new MotorAudio(); a.setCraft(drone.key); a.startOffline(actx, seed);
   let city = null; try { city = world.audio?.clip?.(actx, a) || null; } catch (e) { city = null; }   // [integ7] G: the level's city sound on HQ clips too
   const cfw = new THREE.Vector3();
   for (let i = 0; i < C.f.length; i++) {

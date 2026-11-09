@@ -25,7 +25,10 @@ const RIDE_REF = 0.040, RIDE_MAX = 2.0;
 // rideEst at a still hover (freestyle5, motors 0.392): where the world duck starts (measured: tests/seoul-audio.mjs)
 const RIDE_HOVER = 0.056;
 const clamp = (x, a = 0, b = 1) => (x < a ? a : x > b ? b : x);
-const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) * 2;   // ~N(0,1), cheap
+const gauss = (rnd = Math.random) => (rnd() + rnd() + rnd() - 1.5) * 2;   // ~N(0,1), cheap
+// P3 (sound #5, determinism): offline renders (HQ clips) draw their noise from a seeded generator instead of
+// Math.random, so a clip's sound is a pure function of its log (main.js passes a seed from the log); live play is unchanged
+export const seededRandom = (seed) => { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
 
 function rotorWave(ctx, B) {
   // harmonics of SHAFT rate: 1x imbalance, B*k blade-pass family, 7/14/21 = motor electrical (7 pole pairs)
@@ -51,23 +54,23 @@ function pulseWave(ctx, d = 0.22, N = 16) {
   for (let n = 1; n <= N; n++) re[n] = (2 / (n * Math.PI)) * Math.sin(n * Math.PI * d) * (1 - n / (N + 2));
   return ctx.createPeriodicWave(re, im);
 }
-function noiseBuf(ctx, secs, smoothHz = 0) {
+function noiseBuf(ctx, secs, smoothHz = 0, rnd = Math.random) {
   const sr = ctx.sampleRate, n = Math.floor(sr * secs), b = ctx.createBuffer(1, n, sr), d = b.getChannelData(0);
-  if (!smoothHz) { for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1; return b; }
+  if (!smoothHz) { for (let i = 0; i < n; i++) d[i] = rnd() * 2 - 1; return b; }
   // band-limited random signal for modulators: 2-pole smoothing, normalised to RMS 1
   const k = Math.exp(-2 * Math.PI * smoothHz / sr), m = Math.floor(sr * 0.2), tmp = new Float32Array(n + m); let a = 0, c = 0, e = 0;
-  for (let i = 0; i < n + m; i++) { a = a * k + (Math.random() * 2 - 1) * (1 - k); c = c * k + a * (1 - k); tmp[i] = c; }
+  for (let i = 0; i < n + m; i++) { a = a * k + (rnd() * 2 - 1) * (1 - k); c = c * k + a * (1 - k); tmp[i] = c; }
   for (let i = 0; i < n; i++) { const w = i < m ? i / m : 1; d[i] = tmp[i] * w + (i < m ? tmp[n + i] * (1 - w) : 0); e += d[i] * d[i]; }   // seamless loop
   const g = 1 / Math.sqrt(e / n); for (let i = 0; i < n; i++) d[i] *= g; return b;
 }
-function hallIR(ctx, secs = 2.0, rt60 = 1.8, pre = 0.012) {
+function hallIR(ctx, secs = 2.0, rt60 = 1.8, pre = 0.012, rnd = Math.random) {
   const sr = ctx.sampleRate, n = Math.floor(sr * secs), b = ctx.createBuffer(2, n, sr);
   const taps = [[0.009, 0.5], [0.017, -0.4], [0.023, 0.35], [0.031, -0.3], [0.044, 0.22]];
   for (let ch = 0; ch < 2; ch++) {
     const d = b.getChannelData(ch); let lp = 0;
     for (let i = Math.floor(pre * sr); i < n; i++) {
       const t = i / sr - pre, k = Math.min(0.93, 0.15 + 0.8 * t / rt60);   // tail darkens over time
-      lp = lp * k + (Math.random() * 2 - 1) * (1 - k);
+      lp = lp * k + (rnd() * 2 - 1) * (1 - k);
       d[i] = lp * Math.sqrt((1 + k) / (1 - k)) * Math.pow(10, -3 * t / rt60) * 0.5;
     }
     for (const [t, g] of taps) d[Math.floor((t + ch * 0.0013) * sr)] += g * (ch ? -1 : 1);
@@ -79,6 +82,7 @@ export class MotorAudio {
   constructor() {
     this.ctx = null; this.on = true; this.mode = 'on'; this.craft = CRAFT.freestyle5;
     this.drift = [0, 0, 0, 0]; this.lvlD = [0, 0, 0, 0]; this.spin = 1; this.ride = 1; this.rideEst = 0; this._snap = false;
+    this.rnd = Math.random;
   }
   setCraft(key) {
     const c = CRAFT[key] || CRAFT.freestyle5; if (c === this.craft && this.motors) return;   // no re-apply: a phase click
@@ -107,12 +111,13 @@ export class MotorAudio {
   }
   // HQ clip export: the same chain on an OfflineAudioContext, straight into its destination (no speaker, no stream).
   // Drive it with explicit times: update(..., at), hit(v, at), thud(v, at), then ctx.startRendering().
-  startOffline(ctx) { this.ctx = ctx; this.offline = true; this.on = true; this._build(ctx, false); return this; }
+  // seed (P3): the clip's noise seed (main.js: from the input log); offline renders are deterministic either way
+  startOffline(ctx, seed = 0x9e3779b9) { this.ctx = ctx; this.offline = true; this.on = true; this.rnd = seededRandom(seed); this._build(ctx, false); return this; }
   _build(ctx, live) {
     const G = (v = 1) => { const g = ctx.createGain(); g.gain.value = v; return g; };
     const F = (type, f, q, gain = 0) =>   // NB lowpass/highpass Q is in dB (-3 = Butterworth); bandpass/peaking Q is linear
       { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; b.gain.value = gain; return b; };
-    const src = (buf, rate = 1) => { const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true; s.playbackRate.value = rate; s.start(0, Math.random() * buf.duration); return s; };
+    const R = this.rnd, src = (buf, rate = 1) => { const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true; s.playbackRate.value = rate; s.start(0, R() * buf.duration); return s; };
     const P = (pan) => { const p = ctx.createStereoPanner(); p.pan.value = pan; return p; };
 
     // ---- "GoPro" camera chain: wind-cut HPF, housing presence peak, auto-gain ride, mic overload, AGC, limiter.
@@ -134,7 +139,7 @@ export class MotorAudio {
       this.streamDest = ctx.createMediaStreamDestination(); this.master.connect(this.streamDest);
     } else this.master.connect(ctx.destination);
 
-    const white = noiseBuf(ctx, 4), lfo = noiseBuf(ctx, 8, 14), lfoF = noiseBuf(ctx, 8, 30);
+    const white = noiseBuf(ctx, 4, 0, R), lfo = noiseBuf(ctx, 8, 14, R), lfoF = noiseBuf(ctx, 8, 30, R);
     // ---- motors: one PeriodicWave oscillator each (shaft rate), audio-rate turbulence FM
     this.motorBus = G(1); this.tone = F('lowpass', 5000, -1); this.am = G(1);
     this.motorBus.connect(this.tone); this.tone.connect(this.am);
@@ -178,7 +183,7 @@ export class MotorAudio {
     sn.connect(this.scr); this.scr.connect(this.scrAM); this.scrAM.connect(this.scrG); this.scrG.connect(this.bus);
 
     // ---- rooms: hall convolver + tube flutter (feedback comb sized from probe distance)
-    this.hallS = G(0); this.tubeS = G(0); const conv = ctx.createConvolver(); conv.buffer = hallIR(ctx);
+    this.hallS = G(0); this.tubeS = G(0); const conv = ctx.createConvolver(); conv.buffer = hallIR(ctx, 2.0, 1.8, 0.012, R);
     this.am.connect(this.hallS);                  // props reverberate; mic wind does not
     this.hallS.connect(conv); conv.connect(this.bus);
     this.tubeD = ctx.createDelay(0.06); this.tubeD.delayTime.value = 0.0175; const tfb = G(0.62), tlp = F('lowpass', 3500, -3);
@@ -197,7 +202,8 @@ export class MotorAudio {
     this.white = white;
     if (live) ctx.onstatechange = () => { this.state = ctx.state; };
   }
-  // the world path (sound #1). Idempotent. out -> master becomes out -> limiter -> master, with world -> duck -> limiter.
+  // the world path (sound #1). Idempotent. out -> master becomes out -> limiter -> brickwall -> master, with
+  // world -> duck -> limiter.
   openWorld() {
     if (this._wOpen) return this.world;
     const ctx = this.ctx; if (!ctx) return null;
@@ -206,8 +212,14 @@ export class MotorAudio {
     this.world = ctx.createGain(); this.worldDuck = ctx.createGain();
     this.world.connect(this.worldDuck); this.worldDuck.connect(trim);
     try { this._out.disconnect(this.master); } catch (e) { try { this._out.disconnect(); } catch (e2) {} }
-    this._out.connect(trim); trim.connect(lim); lim.connect(this.master);
-    this._wLim = lim; this._wOpen = true;
+    // P3 (sound bug: +0.9 dBFS overs on club-door kicks, +0.5-1.2 in the first second: a compressor has no lookahead
+    // here and its envelope starts at 0): a brickwall after it. A curve that is the identity up to -2 dBFS and bends
+    // into a -0.3 dBFS ceiling over a +6 dB input range (pre 1/2, post x2); untouched below -2 dBFS, so a hover is too.
+    const pre = ctx.createGain(), post = ctx.createGain(), bw = ctx.createWaveShaper(), N = 4097, cv = new Float32Array(N), T = 0.794, C = 0.966;
+    for (let i = 0; i < N; i++) { const x = 2 * (i / (N - 1) * 2 - 1), a = Math.abs(x); cv[i] = Math.sign(x) * (a <= T ? a : T + (C - T) * Math.tanh((a - T) / (C - T))) / 2; }
+    pre.gain.value = 0.5; post.gain.value = 2; bw.curve = cv; bw.oversample = 'none';
+    this._out.connect(trim); trim.connect(lim); lim.connect(pre); pre.connect(bw); bw.connect(post); post.connect(this.master);
+    this._wLim = lim; this._wClip = bw; this._wOpen = true;
     return this.world;
   }
   // resume after iOS 'interrupted'/'suspended' (call call/Siri/lock); must run inside a gesture.
@@ -234,8 +246,8 @@ export class MotorAudio {
     const aL = Math.exp(-dt / 0.3), aN = Math.sqrt(1 - aL * aL) * 0.1;          // per-motor level flutter: ~±1 dB, 0.3 s
     let bpf = 0, rs = 0, pm = 0;
     this.motors.forEach((m, i) => {
-      this.drift[i] += (-this.drift[i] * 0.02) + (Math.random() - 0.5) * 0.0006;  // slow OU trim drift ±0.3 %
-      this.lvlD[i] = this.lvlD[i] * aL + gauss() * aN;                             // prop/ESC asymmetry, turbulence ingestion
+      this.drift[i] += (-this.drift[i] * 0.02) + (this.rnd() - 0.5) * 0.0006;  // slow OU trim drift ±0.3 %
+      this.lvlD[i] = this.lvlD[i] * aL + gauss(this.rnd) * aN;                             // prop/ESC asymmetry, turbulence ingestion
       const rpm = (crashed ? C.idle : Math.max(C.idle, motors[i])) * this.spin;
       const hz = C.maxHz * rpm * m.det * (1 + this.drift[i]) * sag;
       S(m.o.frequency, hz, 0.012);                                                 // physics already has spool lag
@@ -289,7 +301,7 @@ export class MotorAudio {
     if (!this._ok()) return;
     const ctx = this.ctx, t = at ?? ctx.currentTime, a = clamp(v / 10, 0.05, 1);
     for (const [f, dec, g] of [[740, 0.09, 0.5], [1630, 0.06, 0.4], [2950, 0.04, 0.3]]) {
-      const o = ctx.createOscillator(), e = ctx.createGain(); o.frequency.value = f * (0.97 + Math.random() * 0.06);
+      const o = ctx.createOscillator(), e = ctx.createGain(); o.frequency.value = f * (0.97 + this.rnd() * 0.06);
       e.gain.setValueAtTime(g * a, t); e.gain.exponentialRampToValueAtTime(0.0005, t + dec);
       o.connect(e); e.connect(this.bus); o.start(t); o.stop(t + dec + 0.02);
     }
@@ -297,7 +309,7 @@ export class MotorAudio {
     const e = ctx.createGain(), chop = ctx.createOscillator(), cg = ctx.createGain(); const dur = 0.04 + 0.08 * a;
     chop.type = 'square'; chop.frequency.value = this.craft.maxHz * this.craft.hover * this.craft.blades; const cd = ctx.createGain(); cd.gain.value = 0.5; chop.connect(cd); cd.connect(cg.gain); cg.gain.value = 0.6;
     e.gain.setValueAtTime(0.9 * a, t); e.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    n.connect(bp); bp.connect(cg); cg.connect(e); e.connect(this.bus); n.start(t, Math.random() * 3); n.stop(t + dur + 0.02); chop.start(t); chop.stop(t + dur + 0.02);
+    n.connect(bp); bp.connect(cg); cg.connect(e); e.connect(this.bus); n.start(t, this.rnd() * 3); n.stop(t + dur + 0.02); chop.start(t); chop.stop(t + dur + 0.02);
   }
   // crash: hard hit + body crunch with speaker-audible harmonics + tumbling debris ticks; motors spool down in update()
   thud(v, at) {
@@ -312,9 +324,9 @@ export class MotorAudio {
     }
     const n = ctx.createBufferSource(); n.buffer = this.white; const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1100; bp.Q.value = 0.5;
     const e = ctx.createGain(); e.gain.setValueAtTime(0.7 * a, t); e.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-    n.connect(bp); bp.connect(e); e.connect(this.bus); n.start(t, Math.random() * 3); n.stop(t + 0.25);
+    n.connect(bp); bp.connect(e); e.connect(this.bus); n.start(t, this.rnd() * 3); n.stop(t + 0.25);
     for (let k = 1; k <= 4; k++) {                                         // tumble
-      const d = (90 * k + Math.random() * 80) / 1000;
+      const d = (90 * k + this.rnd() * 80) / 1000;
       if (at != null) this.hit(4 / k, t + d); else setTimeout(() => this.hit(4 / k), d * 1000);
     }
   }

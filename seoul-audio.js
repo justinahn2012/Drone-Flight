@@ -24,24 +24,45 @@ const C_SOUND = 343;
 // levels in dB SPL (beds at the street centre; sources at 1 m unless noted). 0 dBFS at the city out = 105 dB SPL.
 const dbA = (db) => Math.pow(10, (db - 105) / 20);
 // measured RMS of each synthetic bed / loop at unit gain, so SND levels mean what they say (tests/seoul-audio.mjs: cal)
-const NORM = { traffic: 13.5, crowd: 17.0, alley: 13.0, air: 12.5, rain: 9.0, music: 17, engine: 14, bus: 12, scooter: 8 };
+const NORM = { traffic: 13.5, crowd: -5.8, alley: 13.0, air: 12.5, rain: 9.0, music: 17, engine: 14, bus: 12, scooter: 8 };
 const nrm = (k) => Math.pow(10, NORM[k] / 20);
+// P3 (sound #1): every one-shot bank and every music / busk loop is RMS-calibrated when it is rendered (unit "active"
+// RMS: the RMS of the 50 ms frames within 20 dB of the loudest one, i.e. the level while the event sounds), so a shot's
+// or a loop's SND figure is its level at 1 m. P2 peak-normalised them, which put laughs 13-16 dB and busking 17 dB low.
+// Vehicles: 1 m figures (P2 used 7.5 m pass-by figures at 1 m, so Yanghwa-ro sat 40 LU under the props).
 export const SND = {
   level: 1,
-  world: 1.0,     // trim on the world path, set so the city sits ~9 LU under a hover on the walking street (sound #1)
-  beds: { traffic: 77, crowd: 71, alley: 58, air: 54, rain: 66 },
-  car: 72, taxi: 70, truck: 76, bus: 80, scooter: 80, tyre: 74,
-  music: 85, club: 90, neon: 44, sizzle: 64, hiss: 92, horn: 98, chime: 84, voice: 72, laugh: 76, heel: 66, busk: 101, applause: 88, guide: 80,
-  pools: { engine: 4, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1 },
-  poolsLow: { engine: 2, bus: 1, scooter: 1, music: 2, club: 1, busk: 1, neon: 0, sizzle: 1 },
+  world: 5.13,     // trim on the world path, set so the city sits ~9 LU under a hover on the walking street (sound #1)
+  beds: { traffic: 65, crowd: 65, alley: 58, air: 54, rain: 66 },
+  car: 90, taxi: 88, truck: 94, bus: 97, scooter: 92, tyre: 90,
+  // one-shots and loops, RMS at 1 m (calibrated buffers): shop doorway speaker, club door, busking PA, horn, ...
+  music: 81, club: 98, busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 82, shout: 88, talk: 74, yelp: 92, heel: 72, step: 60,
+  applause: 92, cheer: 88, guide: 84, tick: 72, queue: 80, staff: 90, exit: 80, draught: 72,
+  pools: { engine: 4, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1, queue: 2, exit: 1 },
+  poolsLow: { engine: 2, bus: 1, scooter: 1, music: 2, club: 1, busk: 1, neon: 0, sizzle: 1, queue: 1, exit: 1 },
+  // event pacing (sound #6): horns from the nearest 100 m of road, ~1 per 25 s where traffic is; guide within 60 m
+  hornEvery: 25, hornR: 100, guideR: 60,
 };
+// active RMS of a multichannel Float32 set (see above); unitRms scales it to 1 in place
+function activeRms(chs, sr) {
+  const w = Math.max(1, Math.floor(0.05 * sr)), n = chs[0].length, fr = [];
+  for (let i = 0; i < n; i += w) { let s = 0, c = 0; for (const ch of chs) for (let j = i, e = Math.min(n, i + w); j < e; j++) { s += ch[j] * ch[j]; c++; } fr.push(s / Math.max(1, c)); }
+  let mx = 0; for (const v of fr) mx = Math.max(mx, v); let s = 0, c = 0; for (const v of fr) if (v > mx * 0.01) { s += v; c++; }
+  return Math.sqrt(s / Math.max(1, c)) || 1e-6;
+}
+export function unitRms(chs, sr) { const k = 1 / activeRms(chs, sr); for (const c of chs) for (let i = 0; i < c.length; i++) c[i] *= k; return chs; }
 // recorded beds (sound #2, Justin decides): URLs per bed; null = synthesised. CC0 / public-domain / own recordings only.
 // Opt-in for an A/B with ?beds: seoul/audio/crowd-restaurant-pd.mp3 = "Restaurant ambience" by stephan, public domain,
 // Wikimedia Commons (File:Restaurant_ambience.ogg), first 70 s, 96 kbps. Indoor chatter: a stand-in until Justin's
 // own Hongdae recordings exist; the synthetic babble stays the default. (The CC0 "citystreet3" by sagetyrtle on
 // Commons/Freesound checked out too, but its download was refused from this box.)
+// P3 (sound #2, retried): Freesound (403) and the Commons API (rate limit) still refuse this box, but radio aporee's
+// archive.org mirror serves Korean field recordings under the Public Domain Mark. ?beds now A/Bs a Korean crowd:
+// seoul/audio/crowd-chicken-yangjae-pd.mp3 = "Yangjae Dakjip (chicken center), interior noise, people eating &
+// drinking" by pyha.bamseom, 2019-10-20 20:34, archive.org/details/aporee_46844_53190, PDM 1.0; 170-240 s, +6 dB,
+// 96 kbps; no music in it (no tonal line persists > 0.7 s). Still indoor, so still opt-in: Justin decides.
 export const BEDS = { crowd: null, traffic: null, alley: null, rain: null };
-export const BEDS_AB = { crowd: 'seoul/audio/crowd-restaurant-pd.mp3' };
+export const BEDS_AB = { crowd: 'seoul/audio/crowd-chicken-yangjae-pd.mp3' };
 const MUSIC_USES = { cafe: ['cafe', 'citypop'], shop: ['kpop', 'kpop', 'citypop'], conv: ['kpop'], karaoke: ['kpop', 'citypop'], bar: ['citypop', 'kpop'], pc: ['kpop'], restaurant: ['cafe'], pocha: ['kpop'] };
 
 // ---------------------------------------------------------------- buffers
@@ -65,6 +86,7 @@ function lfoBuf(ctx, secs, hz, seed) {
   for (let i = 0; i < n; i++) d[i] /= mx;
   return b;
 }
+function bufRms(b) { let s = 0, n = 0; for (let c = 0; c < b.numberOfChannels; c++) { const d = b.getChannelData(c); for (let i = 0; i < d.length; i++) s += d[i] * d[i]; n += d.length; } return Math.sqrt(s / Math.max(1, n)) || 1e-6; }
 // biquad (RBJ) as a per-sample filter for the offline synths
 function bq(type, f, q, sr) {
   const w = 2 * Math.PI * f / sr, cs = Math.cos(w), al = Math.sin(w) / (2 * q); let b0, b1, b2;
@@ -105,29 +127,43 @@ export function makeBabble(sr = 22050, secs = 12, seed = 5, talkers = 9) { const
 // a generator: one phrase per step (~10-25 ms on a desktop), so a live attach can render it across frames
 export function* babbleSteps(sr = 22050, secs = 12, seed = 5, talkers = 9) {
   const n = Math.floor(sr * secs), out = [new Float32Array(n), new Float32Array(n)], R = new Rng(seed);
+  // P3 (sound #3): a few near talkers in conversation (pairs taking turns, 8-14 dB over the rest) over a far wash, so
+  // the envelope moves like a real crowd's (P2: 9 equal-ish talkers, envelope CV 0.45 / 0.80 vs 0.81 / 1.10 recorded;
+  // now ~0.6 / 0.96 in the 300-1000 Hz / 2-5 kHz bands)
+  const nNear = Math.min(talkers, 3);
   for (let k = 0; k < talkers; k++) {
-    const female = R.next() < 0.5, f0 = female ? 185 + R.next() * 70 : 98 + R.next() * 40, pan = (R.next() * 2 - 1) * 0.85, far = R.next();
-    let t = R.next() * 1.5;
+    const near = k < nNear, female = R.next() < 0.5, f0 = female ? 185 + R.next() * 70 : 98 + R.next() * 40, pan = (R.next() * 2 - 1) * (near ? 0.85 : 0.6), far = R.next();
+    let t = near ? (k % 2) * 1.2 + R.next() * 0.8 : R.next() * 1.5;
     while (t < secs) {
-      const len = 0.8 + R.next() * 2.6; voice(out, sr, t, Math.min(len, secs - t), { f0, female, rate: 4.4 + R.next() * 1.8, pitch: (R.next() - 0.3) * 0.25, gain: 0.25 + 0.75 * (1 - far), pan, seed: Math.floor(R.next() * 1e9) });
-      t += len + 0.25 + R.next() * 1.4;
+      const len = near ? 0.9 + R.next() * 2.2 : 0.8 + R.next() * 2.6;
+      voice(out, sr, t, Math.min(len, secs - t), { f0, female, rate: 4.4 + R.next() * 1.8, pitch: (R.next() - 0.3) * (near ? 0.4 : 0.25), gain: near ? 0.8 + 0.4 * R.next() : 0.07 + 0.12 * (1 - far), pan, seed: Math.floor(R.next() * 1e9) });
+      t += len + (near ? 0.6 + R.next() * 2.8 : 0.25 + R.next() * 1.4);   // a near pair: one talks while the other listens
       yield k;   // one phrase per step (~10-25 ms)
     }
   }
-  const m = Math.floor(sr * 0.08); let pk = 1e-6;
-  for (const c of out) { for (let i = 0; i < m; i++) { const u = i / m; c[i] = c[i] * u + c[n - m + i] * (1 - u); } for (let i = 0; i < n; i++) pk = Math.max(pk, Math.abs(c[i])); }
-  for (const c of out) for (let i = 0; i < n; i++) c[i] *= 0.9 / pk;
+  const m = Math.floor(sr * 0.08);
+  for (const c of out) for (let i = 0; i < m; i++) { const u = i / m; c[i] = c[i] * u + c[n - m + i] * (1 - u); }
+  unitRms(out, sr);   // P3: unit RMS (the crowd bed's NORM, the queue and exit 9 sources are calibrated against it)
   return { out, sr, secs };
 }
 // one-shot banks (laughs, shouts, cheers, clapping, voice guide, bus announcement, chimes, horns, heels): pre-rendered
 function makeOneShots(sr = 22050, seed = 9) {
-  const R = new Rng(seed), bank = { laugh: [], shout: [], horn: [], heel: [], step: [] };
+  const R = new Rng(seed), bank = { laugh: [], shout: [], horn: [], heel: [], step: [], yelp: [], talk: [] };
   const mk = (secs) => [new Float32Array(Math.floor(secs * sr)), new Float32Array(Math.floor(secs * sr))];
-  const norm = (o) => { let pk = 1e-6; for (const c of o) for (const v of c) pk = Math.max(pk, Math.abs(v)); for (const c of o) for (let i = 0; i < c.length; i++) c[i] *= 0.9 / pk; return o; };
+  const norm = (o) => unitRms(o, sr);   // P3 (sound #1): RMS-calibrated, not peak-normalised (see SND)
   const speaker = (o, lo, hi, drive) => { const hp = [bq('hp', lo, 0.7, sr), bq('hp', lo, 0.7, sr)], lp = [bq('lp', hi, 0.7, sr), bq('lp', hi, 0.7, sr)]; for (let c = 0; c < 2; c++) for (let i = 0; i < o[c].length; i++) o[c][i] = Math.tanh(lp[c](hp[c](o[c][i])) * drive); };
   const tone = (o, f, t0, secs, dec, partial = 0) => { for (let i = 0; i < secs * sr; i++) { const t = i / sr, j = Math.floor(t0 * sr) + i; if (j >= o[0].length) break; const v = (Math.sin(2 * Math.PI * f * t) + partial * Math.sin(2 * Math.PI * f * 2.76 * t) * Math.exp(-t * 9)) * Math.exp(-t * dec) * 0.5; o[0][j] += v; o[1][j] += v; } };
   for (let k = 0; k < 6; k++) { const female = k % 2 === 0, o = mk(1.3); voice(o, sr, 0.02, 0.9 + R.next() * 0.35, { f0: female ? 260 : 150, female, laugh: true, seed: 100 + k }); bank.laugh.push(norm(o)); }
   for (let k = 0; k < 6; k++) { const female = k % 2 === 1, o = mk(0.8); voice(o, sr, 0.02, 0.35 + R.next() * 0.35, { f0: female ? 300 : 170, female, rate: 3, glide: k % 3 === 0 ? 0.4 : -0.3, seed: 200 + k }); bank.shout.push(norm(o)); }
+  // passers-by talking (sound #1: the near voices that give a real crowd its peaks): one talker, or two taking turns
+  for (let k = 0; k < 8; k++) {
+    const o = mk(3.2), f1 = k % 2 === 0, len = 1.2 + 0.25 * (k % 4), pan = (k % 3 - 1) * 0.2;
+    voice(o, sr, 0.02, len, { f0: f1 ? 215 + 8 * k : 118 + 5 * k, female: f1, rate: 4.6 + 0.3 * (k % 4), pitch: 0.35, gain: 1, pan, seed: 700 + k });
+    if (k >= 4) voice(o, sr, len + 0.15, Math.min(1.6, 3.1 - len), { f0: f1 ? 125 : 225, female: !f1, rate: 5.2, pitch: 0.3, gain: 0.8, pan: -pan, seed: 750 + k });
+    bank.talk.push(norm(o));
+  }
+  // startled yelps (ux #1: movers speak): a sharp onset, a high rising-falling glide, 0.25-0.45 s ("아!", "야!", "어머!")
+  for (let k = 0; k < 4; k++) { const female = k % 2 === 0, o = mk(0.6); voice(o, sr, 0.005, 0.25 + 0.06 * k, { f0: female ? 340 : 205, female, rate: k < 2 ? 4 : 7, pitch: 0.5, glide: k % 3 ? -0.35 : 0.3, seed: 600 + k }); bank.yelp.push(norm(o)); }
   { const o = mk(2.4); for (let k = 0; k < 12; k++) voice(o, sr, R.next() * 0.3, 1.6 + R.next() * 0.4, { f0: (k % 2 ? 230 : 140) * (1 + 0.1 * R.next()), female: k % 2 === 1, rate: 1.2, glide: 0.3, gain: 0.6, pan: R.next() * 2 - 1, seed: 300 + k }); bank.cheer = norm(o); }
   { const o = mk(4);
     for (let c = 0; c < 40; c++) {
@@ -169,7 +205,7 @@ function makeAcousticLoop(sr = 22050, seed = 3) {
     voice(out, sr, t, len * 0.95, { f0: 440 * Math.pow(2, (m - 69) / 12), female: R.next() < 0.5, rate: 1 / len, gain: 0.5, pan: 0.1, seed: Math.floor(R.next() * 1e9) });
     t += len + (R.next() < 0.15 ? beat : 0);
   }
-  let pk = 1e-6; for (const c of out) for (const v of c) pk = Math.max(pk, Math.abs(v)); for (const c of out) for (let i = 0; i < n; i++) c[i] *= 0.9 / pk;
+  unitRms(out, sr);   // P3 (sound #1): calibrated, so SND.busk is the PA's level at 1 m (P2: peak-normalised, 17 dB low)
   return { L: out[0], R: out[1], sr, dur: secs };
 }
 function irBuf(ctx, rt60, secs, seed, sr = ctx.sampleRate) {   // a convolver needs the context rate
@@ -203,7 +239,7 @@ export function synthLoop(style, seed, sr = 22050) {
       const t = tb + b * beat;
       const kick = S.kick === 'four' || (S.kick === 'back' && (b === 0 || b === 2));
       // kick: body + a 1-3 kHz beater click (what a phone speaker and a closed door let through: sound #4)
-      if (kick) add(t, 0.32, 0, (x) => Math.sin(2 * Math.PI * (45 * x + 70 * (1 - Math.exp(-x * 30)) / 30)) * Math.exp(-x * 9) * 0.9 + (nz.next() * 2 - 1) * Math.exp(-x * 160) * 0.35 + Math.sin(2 * Math.PI * 1800 * x) * Math.exp(-x * 90) * 0.25);
+      if (kick) add(t, 0.32, 0, (x) => Math.sin(2 * Math.PI * (45 * x + 70 * (1 - Math.exp(-x * 30)) / 30)) * Math.exp(-x * 9) * (style === 'club' ? 0.6 : 0.9) + (nz.next() * 2 - 1) * Math.exp(-x * 160) * 0.35 + Math.sin(2 * Math.PI * 1800 * x) * Math.exp(-x * 90) * 0.25);
       if (S.kick !== 'none' && (b === 1 || b === 3)) add(t, 0.18, 0.05, (x) => ((nz.next() * 2 - 1) * 0.55 + Math.sin(2 * Math.PI * 190 * x) * 0.3) * Math.exp(-x * 22) * 0.6);
       if (S.kick !== 'none') for (let h = 0; h < 2; h++) add(t + h * beat / 2 + (S.kick === 'back' ? beat / 4 : 0) * h, 0.05, 0.3, (x) => (nz.next() * 2 - 1) * 0.22 * Math.exp(-x * 60));
       if (S.kick === 'back' && b === 3) add(t + beat / 2, 0.25, 0, (x) => Math.sin(2 * Math.PI * (48 * x)) * Math.exp(-x * 10) * 0.6);
@@ -211,7 +247,9 @@ export function synthLoop(style, seed, sr = 22050) {
     const bf = mtof(bass), bassNotes = S.bass === 'eighth' ? [0, .5, 1, 1.5, 2, 2.5, 3, 3.5] : S.bass === 'sync' ? [0, .75, 1.5, 2, 2.75, 3.5] : S.bass === 'offbeat' ? [.5, 1.5, 2.5, 3.5] : [0, 2];
     for (const bt of bassNotes) {
       const oct = S.bass === 'sync' && bt === 0.75 ? 2 : 1, len = S.bass === 'half' ? 1.8 * beat : 0.42 * beat;
-      let lp = 0; add(tb + bt * beat, len, 0, (x) => { const ph = (bf * oct * x) % 1, s = 2 * ph - 1; lp += (s - lp) * 0.12; return lp * Math.min(1, x * 200) * Math.exp(-x * (S.bass === 'half' ? 1.5 : 5)) * 0.55; });
+      // club (sound #4): the bass soft-clipped, so its 2nd-5th harmonics (110-400 Hz) carry on a phone and through a door
+      const clip = style === 'club' ? 3.2 : 0;
+      let lp = 0; add(tb + bt * beat, len, 0, (x) => { const ph = (bf * oct * x) % 1, s = 2 * ph - 1; lp += (s - lp) * 0.12; const y = lp * Math.min(1, x * 200) * Math.exp(-x * (S.bass === 'half' ? 1.5 : 5)); return (clip ? Math.tanh(clip * y) / Math.tanh(clip) * 0.75 : y) * 0.55; });
     }
     if (S.keys === 'ep') {
       const hits = style === 'cafe' ? [0, 2] : [0, 1.5, 2.5];
@@ -219,19 +257,23 @@ export function synthLoop(style, seed, sr = 22050) {
     } else if (S.keys === 'saw') {
       chord.forEach((m, k) => { const f = mtof(m); let lp = 0; add(tb, 4 * beat, (k - 1) * 0.4, (x) => { const s = ((f * x) % 1 + (f * 1.006 * x) % 1) - 1; lp += (s - lp) * 0.08; return lp * Math.min(1, x * 8) * 0.09; }); });
     } else if (S.keys === 'stab') {
-      for (const st of [0.5, 2.5]) chord.forEach((m, k) => { const f = mtof(m); add(tb + st * beat, 0.25, 0, (x) => (((f * x) % 1) * 2 - 1) * Math.exp(-x * 14) * 0.12); });
+      for (const st of [0.5, 2.5]) chord.forEach((m, k) => { const f = mtof(m); add(tb + st * beat, 0.25, 0, (x) => (((f * x) % 1) * 2 - 1) * Math.exp(-x * 14) * 0.24); });
     }
-    // a wordless vocal hook (la-la on chord tones) in pop styles: the mids a shop speaker actually carries
-    if ((style === 'kpop' || style === 'citypop') && bar % 2 === 0) { const vr = new Rng(seed * 31 + bar); let tv = tb + beat * 0.5; const out2 = [L, Rr];
+    // a wordless vocal hook (la-la on chord tones) in pop styles: the mids a shop speaker actually carries; club (sound
+    // #4): a chopped vocal every bar, the mids an open door lets out
+    if ((style === 'kpop' || style === 'citypop' || style === 'club') && (bar % 2 === 0 || style === 'club')) { const vr = new Rng(seed * 31 + bar); let tv = tb + beat * 0.5; const out2 = [L, Rr];
       while (tv < tb + 3.5 * beat) { const len = beat * (0.5 + 0.5 * Math.floor(vr.next() * 3)), m = chord[Math.floor(vr.next() * chord.length)] + 12;
-        voice(out2, sr, tv, Math.min(len * 0.92, n / sr - tv), { f0: mtof(m), female: true, rate: 1 / len, gain: 0.55, pan: 0.05, seed: Math.floor(vr.next() * 1e9) }); tv += len; } }
+        voice(out2, sr, tv, Math.min((style === 'club' ? 0.6 : 0.92) * len, n / sr - tv), { f0: mtof(m), female: true, rate: 1 / len, gain: style === 'club' ? 1.1 : 0.55, pan: 0.05, seed: Math.floor(vr.next() * 1e9) }); tv += len; } }
     if (S.arp) for (let k = 0; k < 16; k++) {
       const m = chord[(k * (R.next() < 0.8 ? 1 : 2)) % chord.length] + 12, f = mtof(m);
       add(tb + k * beat / 4, beat / 4, ((k % 4) - 1.5) * 0.3, (x) => (((f * x) % 1) < 0.5 ? 1 : -1) * Math.exp(-x * 18) * 0.05);
     }
   }
-  let pk = 1e-6; for (let i = 0; i < n; i++) pk = Math.max(pk, Math.abs(L[i]), Math.abs(Rr[i]));
-  for (let i = 0; i < n; i++) { L[i] *= 0.9 / pk; Rr[i] *= 0.9 / pk; }
+  if (style === 'club') {   // sound #4: the club mix driven into a soft clip, as a club rig is: kick and bass grow harmonics
+    let pk = 1e-6; for (let i = 0; i < n; i++) pk = Math.max(pk, Math.abs(L[i]), Math.abs(Rr[i]));
+    for (let i = 0; i < n; i++) { L[i] = Math.tanh(2.5 * L[i] / pk); Rr[i] = Math.tanh(2.5 * Rr[i] / pk); }
+  }
+  unitRms([L, Rr], sr);   // P3 (sound #1): calibrated (unit RMS), so SND.music / club / busk are levels at 1 m
   return { L, R: Rr, sr, dur, bpm };
 }
 
@@ -275,20 +317,21 @@ export function createSeoulAudio(layout, life, opts = {}) {
     return { x: (a[0] + b[0]) / 2 + nx * out, y, z: (a[1] + b[1]) / 2 + nz * out, nx, nz };
   };
   const hero = new Set((layout.streets || []).filter((s) => s.kind === 'walking' || s.kind === 'club').map((s) => s.id));
-  const sites = { music: [], club: [], neon: [], sizzle: [] };
+  const sites = { music: [], club: [], neon: [], sizzle: [], queue: [], exit: [] };
+  const ex9 = (layout.hero || []).find((h) => h.id === 'exit9'); if (ex9) sites.exit.push({ x: ex9.pos[0], y: 1.6, z: ex9.pos[2], id: 'exit9', minD: 4 });
   lots.forEach((l, i) => {
     const h = ((i * 2654435761) >>> 0) / 4294967296;
-    if (l.use === 'club') sites.club.push({ ...front(l, 0.6, 1.2), id: l.id, phase: h * 97, style: 'club', seed: i, minD: 2 });
+    if (l.use === 'club') { sites.club.push({ ...front(l, 0.6, 1.2), id: l.id, phase: h * 97, style: 'club', seed: i, minD: 2, cyc: 20 + 6 * ((h * 37) % 1) }); sites.queue.push({ ...front(l, 3.0, 1.5), id: 'q' + l.id, minD: 2 }); }
     else if (MUSIC_USES[l.use] && h < (l.use === 'restaurant' ? 0.3 : 0.75)) {
       const st = MUSIC_USES[l.use], style = hero.has(l.street) && h * 3 % 1 < 0.34 ? 'citypop' : st[Math.floor(h * 7) % st.length];
-      // ~45 % play from a doorway speaker (open: full band, 82-88 dB at 2 m); the rest leak through glass
+      // ~45 % play from a doorway speaker (open: full band, ~75 dB at 2 m); the rest leak through glass (-9 dB)
       sites.music.push({ ...front(l, 1.0, 2.4), id: l.id, phase: h * 53, style, seed: i, open: h * 11 % 1 < 0.45, minD: 2 });
     }
     if (l.use === 'pocha') sites.sizzle.push({ ...front(l, 1.6, 0.9), id: l.id });
     if (['bar', 'club', 'karaoke', 'motel', 'pc'].includes(l.use) && h * 5 % 1 < 0.5) sites.neon.push({ ...front(l, 0.3, 3.2), id: l.id, hz: 0 });
   });
   const crossings = life?.sim ? life.sim.net.crossings : [];
-  const S = { music: 0, club: 0, busk: 0, engine: 0, scooter: 0, bus: 0, hiss: 0, horns: 0, laughs: 0, applause: 0, steps: 0, chimes: 0, guides: 0, occluded: 0, voices: 0, crowdNear: 0, trafficNear: 0, canyon: 0 };
+  const S = { music: 0, club: 0, busk: 0, engine: 0, scooter: 0, bus: 0, hiss: 0, horns: 0, laughs: 0, applause: 0, steps: 0, chimes: 0, guides: 0, occluded: 0, voices: 0, talks: 0, yelps: 0, reacts: 0, calls: 0, queue: 0, exit: 0, crowdNear: 0, trafficNear: 0, canyon: 0 };
   const api = { stats: S, sites, attached: false };
   const occl = makeOccluder(layout);
   let A = null;   // the live graph
@@ -315,15 +358,18 @@ export function createSeoulAudio(layout, life, opts = {}) {
     const live = !offline && typeof setTimeout === 'function';
     if (!live) { if (!bank) bank = makeOneShots(); if (!babble) babble = makeBabble(); if (!acoustic) acoustic = makeAcousticLoop(); }
     const target = raw ? dest : (dest && dest.world) || dest, viaWorld = target !== dest;
-    const out = G(SND.level * (viaWorld ? SND.world : 1)); out.connect(target);
+    const out = G(SND.level * (viaWorld ? SND.world : 1));
+    // P3: on the world path the city skips the camera chain, and with it the mic's wind-cut high-pass; the same 2nd-order
+    // cut at 90 Hz here (P2: 33-56 % of the club / Yanghwa-ro energy sat under 120 Hz, which a phone can't play)
+    if (viaWorld) { const wc = F('highpass', 90, 0); out.connect(wc); wc.connect(target); } else out.connect(target);
     // canyon reverbs (sends from the mix)
     const sendA = G(0), sendR = G(0), cvA = ctx.createConvolver(), cvR = ctx.createConvolver();
     cvA.buffer = irBuf(ctx, 0.5, 0.45, 71); cvR.buffer = irBuf(ctx, 1.2, 0.9, 72);
     const mix = G(1); mix.connect(out); mix.connect(sendA); mix.connect(sendR); sendA.connect(cvA); sendR.connect(cvR); cvA.connect(out); cvR.connect(out);
-    const g = { ctx, out, mix, sendA, sendR, offline, viaWorld, pv: {}, lastT: null, camV: [0, 0, 0], camPrev: null, rain: !!opts.rain, shots: [], feetPh: new Map(), guideC: null, guideWalk: false, nextTick: 0, buskState: [], occT: -1 };
+    const g = { ctx, out, mix, sendA, sendR, offline, viaWorld, pv: {}, react: new Map(), staffSlot: new Map(), lastT: null, camV: [0, 0, 0], camPrev: null, rain: !!opts.rain, shots: [], feetPh: new Map(), guideC: null, guideWalk: false, nextTick: 0, buskState: [], occT: -1 };
     const B = (o) => toBuf(ctx, o[0], o[1], 22050);
-    const setBank = () => { g.buf = { laugh: bank.laugh.map(B), shout: bank.shout.map(B), cheer: B(bank.cheer), clap: B(bank.clap), guide: B(bank.guide), bus: B(bank.bus), conv: B(bank.conv), tick: B(bank.tick), horn: bank.horn.map(B), heel: bank.heel.map(B), step: bank.step.map(B) }; };
-    g.buf = { laugh: [], shout: [], horn: [], heel: [], step: [] }; if (bank) setBank();
+    const setBank = () => { g.buf = { laugh: bank.laugh.map(B), shout: bank.shout.map(B), cheer: B(bank.cheer), clap: B(bank.clap), guide: B(bank.guide), bus: B(bank.bus), conv: B(bank.conv), tick: B(bank.tick), horn: bank.horn.map(B), heel: bank.heel.map(B), step: bank.step.map(B), yelp: bank.yelp.map(B), talk: bank.talk.map(B) }; };
+    g.buf = { laugh: [], shout: [], horn: [], heel: [], step: [], yelp: [], talk: [] }; if (bank) setBank();
     const white = noise(ctx, 3, 'white', 11), bed = () => { const gg = G(0); gg.connect(mix); return gg; };
     g.white = white;
     // ---- beds (voiced for a phone speaker: sound #4; long seeded noise + rate wander: sound #6)
@@ -338,9 +384,14 @@ export function createSeoulAudio(layout, life, opts = {}) {
     g.bCrowd = bed();
     {
       const pa = ctx.createStereoPanner(), pb = ctx.createStereoPanner(); pa.pan.value = -0.35; pb.pan.value = 0.4;
-      const hp = F('highpass', 260, 0.7), eq = F('highshelf', 1500); eq.gain.value = 10;   // consonants 2-5 kHz carry on a phone speaker
-      pa.connect(hp); pb.connect(hp); hp.connect(eq); eq.connect(g.bCrowd); g.crowdSrc = [pa, pb]; g.crowdIn = hp;
-      g.startBabble = () => { const bb = toBuf(ctx, babble.out[0], babble.out[1], babble.sr); loop(bb, 1, 0, 0.02, 41).connect(pa); loop(bb, 0.94, babble.secs * 0.53, 0.02, 42).connect(pb); };
+      // P3 (sound #3) voicing: no +10 dB shelf (it made a 4 kHz hiss hump and a 1 kHz hole); chest +4, the F1/F2 band
+      // (1-2 kHz, the phone speaker's best) +8/+6 dB, the consonant hump at 4 kHz -8, air above 6 kHz back (the voice
+      // synth's 5.2 kHz low-pass and the 22 kHz buffer's linear resampling took it): each octave 125 Hz-8 kHz within 3 dB of a recorded crowd (tests/seoul-audio)
+      const pk = (f, q, gn) => { const b = F('peaking', f, q); b.gain.value = gn; return b; }, hs = F('highshelf', 6000); hs.gain.value = 16;
+      const eq = [F('highpass', 60, 0.7), pk(140, 1, 4), pk(1100, 0.7, 8), pk(2000, 1.2, 6), pk(4000, 1.4, -8), hs], hp = eq[0], pbG = G(0.5);
+      for (let i = 1; i < eq.length; i++) eq[i - 1].connect(eq[i]);
+      pa.connect(hp); pb.connect(pbG); pbG.connect(hp); hs.connect(g.bCrowd); g.crowdSrc = [pa, pb]; g.crowdIn = hp;
+      g.startBabble = () => { const bb = toBuf(ctx, babble.out[0], babble.out[1], babble.sr); g.babbleBuf = bb; loop(bb, 1, 0, 0.02, 41).connect(pa); loop(bb, 0.94, babble.secs * 0.53, 0.02, 42).connect(pb); for (const f of g.onBabble || []) f(bb); };
       if (babble) g.startBabble();
     }
     g.bAlley = bed();
@@ -379,7 +430,8 @@ export function createSeoulAudio(layout, life, opts = {}) {
     }));
     // shop music: a small doorway speaker (no real bass: 180 Hz high-pass) or the same through glass (2.5 kHz low-pass)
     g.pv.music = Array.from({ length: P.music }, () => pvoice((v, dst) => ({ src: null, glass: (() => { const hp = F('highpass', 380, 0.7), sh = F('highshelf', 2000), f = F('lowpass', 2500, 0.4); sh.gain.value = 9; hp.connect(sh); sh.connect(f); f.connect(dst); f.inp = hp; return f; })() })));
-    g.pv.club = Array.from({ length: P.club }, () => pvoice((v, dst) => ({ src: null, glass: (() => { const f = F('lowpass', 400, 0.6); f.connect(dst); return f; })() })));
+    // club doors (sound #4): the loop through the door (a low-pass: 550 Hz shut, 9 kHz open) and a door gain (-10 dB shut)
+    g.pv.club = Array.from({ length: P.club }, () => pvoice((v, dst) => { const hp = F('highpass', 100, 0), f = F('lowpass', 550, 0.5), dg = G(0.32); hp.connect(f); f.connect(dg); dg.connect(dst); f.inp = hp; return { src: null, glass: f, door: dg }; }));
     // busking PA: band-limited, a little driven, presence peak (a battery PA on a stand)
     g.pv.busk = Array.from({ length: P.busk }, () => pvoice((v, dst) => {
       const hp = F('highpass', 110, 0.7), pk = F('peaking', 2800, 1.0), sh = ctx.createWaveShaper(), cv = new Float32Array(512); for (let i = 0; i < 512; i++) { const x = i / 255.5 - 1; cv[i] = Math.tanh(1.6 * x) / Math.tanh(1.6); } sh.curve = cv; pk.gain.value = 3;
@@ -393,6 +445,20 @@ export function createSeoulAudio(layout, life, opts = {}) {
     g.pv.sizzle = Array.from({ length: P.sizzle }, () => pvoice((v, dst) => {
       const s = loop(white, 0.9, 0.4), hp = F('highpass', 2500), gg = G(0.4), cr = loop(lfoBuf(ctx, 5, 40, 91), 1), cd = G(0.4); cr.connect(cd); cd.connect(gg.gain);
       s.connect(hp); hp.connect(gg); gg.connect(dst); return {};
+    }));
+    // queue chatter at the club doors (sound #4) and the exit 9 crowd + stair draught (sound #6): the babble, re-voiced
+    // closer (fewer far talkers: a 2 kHz presence lift), from a point; the draught is low pink noise breathing at ~0.06 Hz
+    const babbleIn = (fn) => { if (g.babbleBuf) fn(g.babbleBuf); else (g.onBabble || (g.onBabble = [])).push(fn); };
+    g.pv.queue = Array.from({ length: P.queue }, (_, k) => pvoice((v, dst) => {
+      const pk = F('peaking', 2000, 0.9); pk.gain.value = 4; const hp = F('highpass', 180, 0.7); hp.connect(pk); pk.connect(dst);
+      babbleIn((bb) => loop(bb, 1.03 + 0.02 * k, bb.duration * (0.27 + 0.31 * k), 0.02, 43 + k).connect(hp)); return {};
+    }));
+    const pink = noise(ctx, 21.7, 'pink', 23, 16000), pinkK = 1 / bufRms(pink);
+    g.pv.exit = Array.from({ length: P.exit }, () => pvoice((v, dst) => {
+      const hp = F('highpass', 150, 0.7), pk = F('peaking', 1800, 0.9); pk.gain.value = 3; hp.connect(pk); pk.connect(dst);
+      babbleIn((bb) => loop(bb, 0.97, bb.duration * 0.71, 0.02, 47).connect(hp));
+      const dr = loop(pink, 0.7, 3.3, 0.02, 48), lp = F('lowpass', 320, 0.5), dg = G(pinkK * dbA(SND.draught) / dbA(SND.exit) * 0.7), sw = loop(lfoBuf(ctx, 31, 0.06, 49), 1), sd = G(pinkK * dbA(SND.draught) / dbA(SND.exit) * 0.3);
+      dr.connect(lp); lp.connect(dg); sw.connect(sd); sd.connect(dg.gain); dg.connect(dst); return {};
     }));
     g.music = { buf: new Map(), acoustic: acoustic ? toBuf(ctx, acoustic.L, acoustic.R, acoustic.sr) : null };
     if (live) {   // idle slices: ~one task per 30 ms until everything is rendered
@@ -418,11 +484,14 @@ export function createSeoulAudio(layout, life, opts = {}) {
   api.setLevel = (x) => { SND.level = x; if (A) A.out.gain.value = x * (A.viaWorld ? SND.world : 1); };
   api.setRain = (on) => { if (A) A.rain = !!on; };
   // HQ clips (sound bug: clipAudio built only MotorAudio): the same city on the clip's OfflineAudioContext, driven per
-  // output frame with that frame's camera pose and take clock (main.js clipAudio: see the G report for the 4 lines)
+  // output frame with that frame's camera pose and TAKE clock, the clock life.update(t) takes (P3 sound #5: the sims run
+  // at take clock + warm, so the warm is added here; P2 fed the bare take clock and the clip heard another bus). The
+  // clip computes its own crowd facts (density, feet, doors) around its camera instead of reading the live game's.
   api.clip = (actx, motor, o = {}) => {
     const g = build(actx, motor ? motor.bus : actx.destination, { offline: true, raw: !!o.raw });
     g.isClip = true; if (!motor) g.out.connect(actx.destination);
-    return { graph: g, feed: (cam, fwd, t, at) => { if (life?.sim) { life.sim.advanceTo(t); if (life.crowd) { life.crowd.evaluate(t, cam); refreshFeet(cam); } } feedGraph(g, cam, fwd, t, at); } };
+    const W = life?.colliders?.warm ?? 0;
+    return { graph: g, warm: W, feed: (cam, fwd, tk, at) => { const t = tk + W; if (life?.sim) { life.sim.advanceTo(t); if (life.crowd) { life.crowd.events.length = 0; life.crowd.evaluate(t, cam); refreshClipNear(cam); } } feedGraph(g, cam, fwd, t, at); } };
   };
   // recorded beds (sound #2): fetch + decode; played as overlapping 6-9 s grains from seeded offsets (no audible loop)
   api.loadBeds = async (urls = BEDS) => {
@@ -459,15 +528,18 @@ export function createSeoulAudio(layout, life, opts = {}) {
     if (!b && !cachedOnly) { const m = synthLoop(site.style, site.seed % 6); b = toBuf(g.ctx, m.L, m.R, m.sr); g.music.buf.set(key, b); }
     return b || null;
   };
-  const nearList = [], clipFeet = [];
-  function refreshNear(cam) {   // people within 3-25 m (for laughs / shouts), from the crowd arrays
+  const nearList = [], clipNear = { crowdN: 0, feet: [], doors: [] };
+  function refreshNear(cam) {   // people within 1.5-25 m (for laughs / shouts), from the crowd arrays
     nearList.length = 0; const C = life?.crowd; if (!C) return;
     const n = C.people.length, start = Math.floor((cam.x * 7.1 + cam.z * 3.3) % n + n) % n;
-    for (let q = 0; q < n && nearList.length < 48; q++) { const i = (start + q) % n; if (!C.VIS[i]) continue; const dx = C.X[i] - cam.x, dz = C.Z[i] - cam.z, d2 = dx * dx + dz * dz; if (d2 < 625 && d2 > 9) nearList.push(i); }
+    for (let q = 0; q < n && nearList.length < 48; q++) { const i = (start + q) % n; if (!C.VIS[i]) continue; const dx = C.X[i] - cam.x, dz = C.Z[i] - cam.z, d2 = dx * dx + dz * dz; if (d2 < 625 && d2 > 2.25) nearList.push(i); }
   }
-  function refreshFeet(cam) {   // clip path: what life.update's near.feet gives the live path
-    clipFeet.length = 0; const C = life.crowd;
-    for (let i = 0; i < C.people.length && clipFeet.length < 16; i++) if (C.VIS[i] && C.WALK[i] > 0.5 && (C.X[i] - cam.x) ** 2 + (C.Z[i] - cam.z) ** 2 < 25) clipFeet.push(i);
+  function refreshClipNear(cam) {   // clip path: what life.update's `near` gives the live path (same formulas)
+    const C = life.crowd; clipNear.crowdN = 0; clipNear.feet.length = 0; clipNear.doors = C.events;
+    for (let i = 0; i < C.people.length; i++) {
+      if (!C.VIS[i]) continue; const dx = C.X[i] - cam.x, dz = C.Z[i] - cam.z, h2 = dx * dx + dz * dz; if (h2 >= 900) continue;
+      const d = Math.sqrt(h2); clipNear.crowdN += 1 / (1 + d / 6); if (d < 5 && C.WALK[i] > 0.5 && clipNear.feet.length < 16) clipNear.feet.push(i);
+    }
   }
   const PO = {};
   function feedGraph(g, cam, fwd, t, atIn) {
@@ -495,21 +567,22 @@ export function createSeoulAudio(layout, life, opts = {}) {
       return Math.max(0.6, Math.min(1.6, (C_SOUND - vl) / (C_SOUND - vs)));
     };
     // one-shot: buffer at a world point, gain at 1 m, rate, delay; occluded like the voices
-    const shot = (buf, x, y, z, gain, rate = 1, delay = 0) => {
+    const shot = (buf, x, y, z, gain, rate = 1, delay = 0, step = false, minD = 1) => {
       if (!buf) return null;
-      if (g.shots.length > 6) { const o = g.shots.shift(); try { o.stop(at); } catch (e) {} }
-      const dx = x - cam.x, dz = z - cam.z, d = Math.max(1, Math.hypot(dx, y - cam.y, dz)), pan = Math.max(-0.85, Math.min(0.85, (dx * rx + dz * rz) / d)), oc = d > 3 && occl(cam.x, cam.y, cam.z, x, y, z);
+      const pool = step ? (g.stepShots || (g.stepShots = [])) : g.shots;
+      if (pool.length > (step ? 3 : 6)) { const o = pool.shift(); try { o.stop(at); } catch (e) {} }
+      const dx = x - cam.x, dz = z - cam.z, d = Math.max(minD, Math.hypot(dx, y - cam.y, dz)), pan = Math.max(-0.85, Math.min(0.85, (dx * rx + dz * rz) / d)), oc = d > 3 && occl(cam.x, cam.y, cam.z, x, y, z);
       const s = ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
       const gg = ctx.createGain(); gg.gain.value = gain / d * (oc ? 0.178 : 1); const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = oc ? 600 : Math.min(16000, 22000 / (1 + d / 35)); const pn = ctx.createStereoPanner(); pn.pan.value = pan;
       s.connect(lp); lp.connect(gg); gg.connect(pn); pn.connect(g.mix); s.start(at + delay); s.stop(at + delay + buf.duration / rate + 0.05);
-      g.shots.push(s); s.onended = () => { const i = g.shots.indexOf(s); if (i >= 0) g.shots.splice(i, 1); };
+      pool.push(s); s.onended = () => { const i = pool.indexOf(s); if (i >= 0) pool.splice(i, 1); };
       return s;
     };
     const sim = life?.sim, alt = Math.max(0, cam.y - 1.5);
     // ---- context (10 Hz): crowd, traffic, canyon, vehicle candidates
     if (g.scanT == null || Math.abs(t - g.scanT) > 0.1 || Math.hypot(cam.x - g.scanP[0], cam.z - g.scanP[1]) > 4) {
       g.scanT = t; g.scanP = [cam.x, cam.z];
-      const crowdN = life?.near ? life.near.crowdN : 0; let trafN = 0; const cand = { engine: [], bus: [], scooter: [] };
+      const NR = g.isClip ? clipNear : life?.near, crowdN = NR ? NR.crowdN : 0; let trafN = 0; const cand = { engine: [], bus: [], scooter: [] };
       if (sim) for (const v of sim.traffic.vehicles) {
         if (v.hidden) continue; const p = sim.traffic.pose(v, 1, PO), d = Math.hypot(p.x - cam.x, p.z - cam.z, cam.y - 0.6);
         if (d < 150) trafN += (0.3 + v.v / 12) / (1 + (d / 15) * (d / 15));
@@ -520,9 +593,10 @@ export function createSeoulAudio(layout, life, opts = {}) {
       g.ctxv = { crowdN, trafN, canyon: ac.canyon, cand };
       S.crowdNear = crowdN; S.trafficNear = trafN; S.canyon = ac.canyon;
       const lift = 1 / (1 + alt / 25);
-      T(g.bTraffic.gain, nrm('traffic') * dbA(SND.beds.traffic) * Math.min(1.4, 0.12 + Math.sqrt(trafN / 4)) * (0.5 + 0.5 * lift), 0.3);
+      T(g.bTraffic.gain, nrm('traffic') * dbA(SND.beds.traffic) * Math.min(1.4, 0.05 + Math.sqrt(trafN / 5)) * (0.5 + 0.5 * lift), 0.3);   // P3: a car-free street's floor -8 dB
       T(g.hissG.gain, g.rain ? 0.5 : 0.12, 0.5);
-      T(g.bCrowd.gain, nrm('crowd') * dbA(SND.beds.crowd) * Math.min(1.6, Math.pow(crowdN / 30, 0.8)) * lift, 0.3);   // crowdN ~30-110 on hero streets now (P2 density)
+      // crowdN ~30-110 on hero streets (P2 density); P3: capped at 0 dB (P2 +4) so near voices and events stand out
+      T(g.bCrowd.gain, nrm('crowd') * dbA(SND.beds.crowd) * Math.min(1.0, Math.pow(crowdN / 30, 0.8)) * lift, 0.3);
       T(g.bAlley.gain, nrm('alley') * dbA(SND.beds.alley) * ac.canyon * lift, 0.4);
       T(g.bAir.gain, nrm('air') * dbA(SND.beds.air) * (1 + Math.min(1, alt / 60)), 0.5);
       T(g.bRain.gain, g.rain ? nrm('rain') * dbA(SND.beds.rain) : 0, 0.5);
@@ -547,7 +621,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
           S[pool]++;
           c.p = sim.traffic.pose(c.v, sim.aT ?? 1, c.p || {});
           const v = c.v, p = c.p, vx = p.hx * v.v, vz = p.hz * v.v, dop = doppler(p.x, p.z, vx, vz), load = Math.max(0, v.acc) / 2;
-          place(vo, p.x, 0.6, p.z, nrm(pool) * dbA(SND[v.type]) * 2);
+          place(vo, p.x, 0.6, p.z, nrm(pool) * dbA(SND[v.type]));   // P3: 1 m figures, so no x2 (P2 used x2 on 7.5 m figures)
           const k = vo.ctl;
           if (pool === 'engine') {
             const rpmHz = (v.type === 'truck' ? 22 : 26) + v.v * 2.2 + load * 10;
@@ -575,8 +649,24 @@ export function createSeoulAudio(layout, life, opts = {}) {
           gg.gain.setValueAtTime(0, at); gg.gain.linearRampToValueAtTime(A0, at + 0.03); gg.gain.setTargetAtTime(0, at + 0.12, dur / 4);
           s.connect(hp); hp.connect(gg); gg.connect(pn); pn.connect(g.mix); s.start(at, (e.id * 0.37) % 2); s.stop(at + dur + 0.6);
           S.hiss++;
-          if (e.type === 'kneel' && d < 50) { shot(g.buf.bus, p.x, 2.2, p.z, dbA(SND.voice + 8) * 2, 1, 0.6); S.chimes++; }
+          if (e.type === 'kneel' && d < 50) { shot(g.buf.bus, p.x, 2.2, p.z, dbA(SND.voice), 1, 0.6); S.chimes++; }
         } else if (e.type === 'horn') { shot(g.buf.horn[e.id % 3], p.x, 0.9, p.z, dbA(SND.horn) * (e.k ? 1 : 0.8), 1); S.horns++; }
+      }
+      // horns from the nearest 100 m of road (sound #6): one 1 s slot in SND.hornEvery fires where >= 5 vehicles are in
+      // reach (fewer: rarer), on a vehicle picked nearer-first; a pure function of the clock (live = clip)
+      const sl = Math.floor(t);
+      if (dtF > 0 && sl !== Math.floor(t - dtF)) {
+        const nb = []; for (const pool of ['engine', 'scooter', 'bus']) for (const c of cand[pool]) if (c.d < SND.hornR && !c.v.hidden) nb.push(c);
+        const h = ((Math.imul(sl, 2246822519) ^ 0x27d4eb2f) >>> 0) / 4294967296;
+        if (nb.length && h < Math.min(1, nb.length / 5) / SND.hornEvery) {
+          nb.sort((a, b) => a.d - b.d); const c = nb[Math.floor((((h * 7919) % 1) ** 2) * nb.length)], p = sim.traffic.pose(c.v, 1, {});
+          shot(g.buf.horn[sl % 3], p.x, 0.9, p.z, dbA(SND.horn) * (c.v.type === 'taxi' ? 1 : 0.8)); S.horns++;
+        }
+      }
+      // ux #1 (movers speak): a vehicle the drone touches or skims (< 2.6 m, low) leans on its horn, once per 6 s
+      if (cam.y < 2.8) for (const pool of ['engine', 'scooter', 'bus']) for (const c of cand[pool]) {
+        if (c.d > 2.2 || c.v.hidden || t - (g.react.get('v' + c.v.id) ?? -99) < 6) continue;
+        g.react.set('v' + c.v.id, t); const p = sim.traffic.pose(c.v, 1, {}); shot(g.buf.horn[1], p.x, 0.9, p.z, dbA(SND.horn), 0.97, 0, false, 3); S.horns++; S.reacts++;
       }
     }
     // ---- static sites: shop music, club doors, busking PAs, neon, sizzle
@@ -599,20 +689,32 @@ export function createSeoulAudio(layout, life, opts = {}) {
       const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true; src.connect(dst);
       src.start(at, ((t + s.phase) % buf.duration + buf.duration) % buf.duration); vo.ctl.src = src;
     };
-    // doorway speakers (82-88 dB at 2 m, full band when open) vs music behind glass
+    // doorway speakers (~75 dB at 2 m, full band when open) vs music behind glass (P3: -10 / -14 dB: P2 made a wall of it)
     for (const V of [g.pv.music, g.pv.club, g.pv.busk]) for (const vo of V) if (vo.pending && vo.who) { const [s0, dst] = vo.pending; const b = s0.style === 'acoustic' ? g.music.acoustic : musicBuf(g, s0, true); if (b) startLoop(vo, s0, dst, b); }
-    S.music = assignSites(g.pv.music, sites.music, 50, (s) => nrm('music') * dbA(SND.music) * 2 * (s.open ? 1 : 0.5), (vo, s) => { startLoop(vo, s); T(vo.ctl.glass.frequency, s.open ? 7000 : 2500, 0.01); });
-    S.club = assignSites(g.pv.club, sites.club, 70, (s) => nrm('music') * dbA(SND.club) * 2, (vo, s) => startLoop(vo, s));
-    // club doors open on their own rhythm: the kick's beater click (1-3 kHz) leaks shut, full band open
-    for (const vo of g.pv.club) if (vo.who) { const s = sites.club.find((q) => q.id === vo.who); const ph = ((t + s.phase) % 23) / 23; T(vo.ctl.glass.frequency, ph < 0.18 ? 6000 : 400, 0.08); }
+    S.music = assignSites(g.pv.music, sites.music, 50, (s) => dbA(SND.music) * (s.open ? 1 : 0.35), (vo, s) => { startLoop(vo, s); T(vo.ctl.glass.frequency, s.open ? 7000 : 2500, 0.01); });
+    S.club = assignSites(g.pv.club, sites.club, 70, () => dbA(SND.club), (vo, s) => startLoop(vo, s));
+    // club doors (sound #4): open 30 % of a 20-26 s cycle (6-8 s bursts: full band, vocals, bass harmonics); shut, the
+    // door passes 550 Hz down at -10 dB (the soft-clipped bass's 110-400 Hz harmonics still reach a phone speaker)
+    for (const vo of g.pv.club) if (vo.who) { const s = sites.club.find((q) => q.id === vo.who), open = ((t + s.phase) % s.cyc) / s.cyc < 0.3; T(vo.ctl.glass.frequency, open ? 9000 : 550, open ? 0.05 : 0.12); T(vo.ctl.door.gain, open ? 1 : 0.32, open ? 0.05 : 0.15); }
+    // queue chatter outside each club door, and the door staff calling the line (every 9-16 s, within 45 m)
+    S.queue = assignSites(g.pv.queue, sites.queue, 45, () => dbA(SND.queue));
+    for (const s of sites.club) {
+      if (Math.abs(s.x - cam.x) > 45 || Math.abs(s.z - cam.z) > 45) continue;
+      const per = 9 + 7 * ((s.phase * 0.13) % 1), sl = Math.floor((t + s.phase * 1.7) / per), prev = g.staffSlot.get(s.id); g.staffSlot.set(s.id, sl);
+      if (prev == null || prev === sl || Math.hypot(s.x - cam.x, s.z - cam.z) > 45) continue;
+      const h = ((Math.imul(sl + s.seed * 977, 2654435761) >>> 0) / 4294967296);
+      if (h < 0.75) { shot(g.buf.shout[(Math.floor(h * 8) * 2) % 6], s.x, 1.7, s.z, dbA(SND.staff), 0.92 + 0.1 * ((h * 13) % 1)); S.calls++; }
+    }
+    // exit 9: the meeting-point crowd and the stair draught, from the stair mouth
+    S.exit = assignSites(g.pv.exit, sites.exit, 140, () => dbA(SND.exit));
     // busking: the PA plays while the song runs, then applause and a cheer from the ring at the end of each song
     const busk = life?.near?.busk || life?.crowd?.busk || [];
     const bsites = busk.map((b) => ({ x: b.x, y: 1.4, z: b.z, id: 'busk' + b.id, phase: b.off, style: b.kind === 'dance' ? 'kpop' : 'acoustic', seed: 40 + b.id, minD: 3, b }));
-    S.busk = assignSites(g.pv.busk, bsites, 130, (s) => { const sp = ((t + s.b.off) / s.b.song) % 1; return dbA(SND.busk) * 2 * (sp < 0.94 ? 1 : 0); },
+    S.busk = assignSites(g.pv.busk, bsites, 130, (s) => { const sp = ((t + s.b.off) / s.b.song) % 1; return dbA(SND.busk) * (sp < 0.94 ? 1 : 0); },
       (vo, s) => startLoop(vo, s, vo.ctl.inp, s.style === 'acoustic' ? g.music.acoustic : musicBuf(g, s, !g.offline)));
     busk.forEach((b, i) => {
       const sp = ((t + b.off) / b.song) % 1, end = sp > 0.94, d = Math.hypot(b.x - cam.x, b.z - cam.z);
-      if (end && g.buskState[i] === false && d < 120) { const n = b.aud.length / 40; shot(g.buf.clap, b.x, 1.4, b.z, dbA(SND.applause) * 2 * n); shot(g.buf.cheer, b.x, 1.6, b.z, dbA(SND.applause - 4) * 2 * n, 1, 0.3); S.applause++; }
+      if (end && g.buskState[i] === false && d < 120) { const n = b.aud.length / 40; shot(g.buf.clap, b.x, 1.4, b.z, dbA(SND.applause) * n); shot(g.buf.cheer, b.x, 1.6, b.z, dbA(SND.cheer) * n, 1, 0.3); S.applause++; }
       g.buskState[i] = end;
     });
     assignSites(g.pv.neon, sites.neon, 9, (s) => dbA(SND.neon) * 2 * (s.hz ? (0.6 + 0.4 * Math.sin(t * 6.283 * s.hz)) : 1));
@@ -620,32 +722,47 @@ export function createSeoulAudio(layout, life, opts = {}) {
     // ---- the crowd up close: laughs and shouts paced by crowdN, footsteps within 5 m, shop door chimes
     if (life?.crowd && g.ctxv && dtF > 0) {
       refreshNear(cam);
-      const rate = Math.min(1.2, 0.03 * g.ctxv.crowdN), slot = Math.floor(t * 10), prevSlot = Math.floor((t - dtF) * 10);
+      const rate = Math.min(0.3, 0.006 * g.ctxv.crowdN), slot = Math.floor(t * 10), prevSlot = Math.floor((t - dtF) * 10);
       for (let sl = prevSlot + 1; sl <= slot; sl++) {
         const h = ((Math.imul(sl, 2654435761) ^ 0x5bd1e995) >>> 0) / 4294967296;
         if (h < rate * 0.1 && nearList.length) {
-          const C = life.crowd, i = nearList[Math.floor(((h * 7919) % 1) * nearList.length)], laugh = (h * 104729) % 1 < 0.6;
+          // the nearest of four picks: laughs and shouts come from the people around the camera, not from 20 m off
+          const C = life.crowd, pick = (u) => nearList[Math.floor(u * nearList.length)], dd = (i) => (C.X[i] - cam.x) ** 2 + (C.Z[i] - cam.z) ** 2;
+          let i = pick((h * 7919) % 1); for (const u of [(h * 6271) % 1, (h * 3571) % 1, (h * 1931) % 1]) { const j = pick(u); if (dd(j) < dd(i)) i = j; }
+          const laugh = (h * 104729) % 1 < 0.6;
           const arr = laugh ? g.buf.laugh : g.buf.shout, k = Math.floor(((h * 31337) % 1) * arr.length);
-          shot(arr[k], C.X[i], 1.55, C.Z[i], dbA(laugh ? SND.laugh : SND.laugh + 4) * 2, 0.94 + ((h * 997) % 1) * 0.12); S.laughs++;
+          shot(arr[k], C.X[i], 1.55, C.Z[i], dbA(laugh ? SND.laugh : SND.shout), 0.94 + ((h * 997) % 1) * 0.12); S.laughs++;
         }
       }
-      // footsteps: heel strikes (gait phase crossing 0 / 0.5) of walkers within 5 m, when the drone is low
-      const feet = g.isClip ? clipFeet : (life.near?.feet || []), C = life.crowd, low = cam.y < 4.5, seen = new Set();
+      // footsteps: heel strikes (gait phase crossing 0 / 0.5) of walkers within 5 m, when the drone is low; a walker who
+      // comes within 5 m is often mid-conversation (sound #1: a passer-by's voice, 1-3 s, the near peaks of a real crowd)
+      const NR = g.isClip ? clipNear : life.near, feet = NR?.feet || [], C = life.crowd, low = cam.y < 4.5, seen = new Set();
       for (const i of feet) {
         seen.add(i); const ph = C.PH[i], prev = g.feetPh.get(i); g.feetPh.set(i, ph);
-        if (prev == null || !low) continue;
-        if ((prev < 0.5 && ph >= 0.5) || ph < prev - 0.3) { const p = C.people[i], heel = !p.male && p.id % 3 === 0, arr = heel ? g.buf.heel : g.buf.step; shot(arr[p.id % arr.length], C.X[i], 0.05, C.Z[i], dbA(heel ? SND.heel : SND.heel - 8) * 2, 0.95 + (p.id % 7) * 0.015); S.steps++; }
+        if (prev == null && dtF > 0 && cam.y < 9 && t - (g.react.get('talk') ?? -99) > 3) {
+          const h = ((Math.imul(i + 1, 2654435761) ^ Math.imul(Math.floor(t / 6) + 1, 40503)) >>> 0) / 4294967296;
+          if (h < 0.55) { g.react.set('talk', t); shot(g.buf.talk[Math.floor(h * 17.7) % 8], C.X[i], 1.55, C.Z[i], dbA(SND.talk), 0.96 + 0.08 * ((h * 31) % 1)); S.talks++; }
+        }
+        if (prev == null || !low || (C.X[i] - cam.x) ** 2 + (C.Z[i] - cam.z) ** 2 > 9) continue;   // P3: within 3 m (P2 5 m: 25 steps/s, a patter that filled every gap)
+        if ((prev < 0.5 && ph >= 0.5) || ph < prev - 0.3) { const p = C.people[i], heel = !p.male && p.id % 3 === 0, arr = heel ? g.buf.heel : g.buf.step; shot(arr[p.id % arr.length], C.X[i], 0.05, C.Z[i], dbA(heel ? SND.heel : SND.step), 0.95 + (p.id % 7) * 0.015, 0, true); S.steps++; }
       }
       for (const k of g.feetPh.keys()) if (!seen.has(k)) g.feetPh.delete(k);
-      for (const e of life.near?.doors || []) if (e.use === 'conv' || (e.use === 'cafe' && e.type === 'in')) { shot(g.buf.conv, e.x, 2.3, e.z, dbA(SND.chime) * 2 * (e.use === 'conv' ? 1 : 0.5)); S.chimes++; }
+      for (const e of NR?.doors || []) if ((e.use === 'conv' || (e.use === 'cafe' && e.type === 'in')) && (e.x - cam.x) ** 2 + (e.z - cam.z) ** 2 < 144) { shot(g.buf.conv, e.x, 2.3, e.z, dbA(SND.chime) * (e.use === 'conv' ? 1 : 0.5)); S.chimes++; }
+      // ux #1 (movers speak): a person the drone bumps or skims (< 0.6 m) yelps; often a bystander laughs after
+      if (cam.y < 2.4) for (let i = 0; i < C.people.length; i++) {
+        if (!C.VIS[i]) continue; const dx = C.X[i] - cam.x, dz = C.Z[i] - cam.z; if (dx * dx + dz * dz > 0.36) continue;
+        const id = 'p' + i; if (t - (g.react.get(id) ?? -99) < 3 || t - (g.react.get('p') ?? -99) < 0.6) continue; g.react.set(id, t); g.react.set('p', t);
+        const p = C.people[i], k = (p.male ? 1 : 0) + 2 * (i % 2); shot(g.buf.yelp[k], C.X[i], 1.5, C.Z[i], dbA(SND.yelp), 0.96 + (p.id % 5) * 0.02); S.yelps++; S.reacts++;
+        if (nearList.length && (i * 7) % 10 < 6) { const j = nearList[(i * 13) % nearList.length]; shot(g.buf.laugh[i % g.buf.laugh.length], C.X[j], 1.55, C.Z[j], dbA(SND.laugh), 1, 0.45); S.laughs++; }
+      }
     }
     // ---- the crossing's voice guide when the walk phase starts, then a soft tick (twice as fast in the last 8 s)
     if (life?.crossPhase && crossings.length) {
-      let best = null, bd = 30; for (const c of crossings) { const d = Math.hypot(c.x - cam.x, c.z - cam.z); if (d < bd) { bd = d; best = c; } }
+      let best = null, bd = SND.guideR; for (const c of crossings) { const d = Math.hypot(c.x - cam.x, c.z - cam.z); if (d < bd) { bd = d; best = c; } }
       if (best) {
         const ph = life.crossPhase(best, t);
-        if (ph.walk && g.guideC === best && !g.guideWalk) { shot(g.buf.guide, best.x, 2.6, best.z, dbA(SND.guide) * 2); g.nextTick = t + 2.4; S.guides++; }
-        if (ph.walk && g.guideC === best && t >= g.nextTick) { const left = ph.wlen - (ph.tc - ph.w0); shot(g.buf.tick, best.x, 2.6, best.z, dbA(SND.guide - 12) * 2); g.nextTick = t + (left < 8 ? 0.5 : 1.0); }
+        if (ph.walk && g.guideC === best && !g.guideWalk) { shot(g.buf.guide, best.x, 2.6, best.z, dbA(SND.guide)); g.nextTick = t + 2.4; S.guides++; }
+        if (ph.walk && g.guideC === best && t >= g.nextTick) { const left = ph.wlen - (ph.tc - ph.w0); shot(g.buf.tick, best.x, 2.6, best.z, dbA(SND.tick)); g.nextTick = t + (left < 8 ? 0.5 : 1.0); }
         g.guideC = best; g.guideWalk = ph.walk;
       }
     }
