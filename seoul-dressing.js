@@ -443,7 +443,10 @@ export function geometry(layout, opts = {}) {
           for (const x of [1.2, 2.5, 3.8]) for (const z of [-1, 1]) boxMM(F, e * (isl.L / 2 - x) - 0.03, isl.h, z * (isl.w / 2 - 0.15) - 0.03, e * (isl.L / 2 - x) + 0.03, isl.h + 1.0, z * (isl.w / 2 - 0.15) + 0.03); }
         // canopy: centre columns, a cantilevered roof (dark steel deck, glass skylight strip), LED edge lights
         set('dr_galv'); for (let x = -can.L / 2 + 1; x <= can.L / 2 - 1 + 1e-6; x += (can.L - 2) / 4) boxMM(F, x - 0.09, isl.h, -0.09, x + 0.09, can.y, 0.09);
-        set('dr_steel'); boxMM(F, -can.L / 2, can.y, -can.w / 2, can.L / 2, can.y + 0.16, can.w / 2); boxMM(F, -can.L / 2, can.y + 0.16, -0.25, can.L / 2, can.y + 0.42, 0.25);
+        set('dr_steel'); for (const sd of [-1, 1]) boxMM(F, -can.L / 2, can.y, sd * (can.w / 2 - 0.18), can.L / 2, can.y + 0.16, sd * can.w / 2);   // edge beams
+        boxMM(F, -can.L / 2, can.y + 0.16, -0.25, can.L / 2, can.y + 0.42, 0.25);                                         // spine beam
+        for (let x = -can.L / 2; x <= can.L / 2 + 1e-6; x += can.L / 8) boxMM(F, x - 0.05, can.y, -can.w / 2, x + 0.05, can.y + 0.16, can.w / 2);   // ribs
+        set('dr_glass'); for (const sd of [-1, 1]) boxMM(F, -can.L / 2, can.y + 0.07, sd > 0 ? 0.25 : -can.w / 2 + 0.18, can.L / 2, can.y + 0.09, sd > 0 ? can.w / 2 - 0.18 : -0.25);
         set('dr_glow', { em: NI([1.0, 0.96, 0.9], 650), col: false }); for (const sd of [-1, 1]) boxMM(F, -can.L / 2 + 0.3, can.y - 0.03, sd * (can.w / 2 - 0.2) - 0.04, can.L / 2 - 0.3, can.y, sd * (can.w / 2 - 0.2) + 0.04, ['py']);
         // spine: two lightbox ad panels (double-sided), glass windbreaks, benches, the stop's name post
         for (const x of [-can.L / 4, can.L / 4]) {
@@ -511,7 +514,7 @@ export function geometry(layout, opts = {}) {
         // festoon bulbs along the street edge and the ridge (warm 2200 K point sources)
         set('dr_glow', { em: NI(srgb(0xffb46b), 1600), col: false });
         for (let x = -len / 2 + 0.3; x <= len / 2 - 0.2; x += 0.6) for (const [z, y] of [[zin * 0.95, 2.52 - 0.08 * Math.cos((x / len) * TAU * 1.5)], [0, 2.95 - 0.06 * Math.cos((x / len) * TAU * 1.5)]]) {
-          const p = W(F, x, y, z); boxMM(FW, p[0] - 0.035, p[1] - 0.05, p[2] - 0.035, p[0] + 0.035, p[1] + 0.03, p[2] + 0.035); }
+          const p = W(F, x, y, z); blob([p[0], p[1] - 0.06, p[2]], 0.05, 0.055, 0.05, R0, 0, 0.05); boxMM(FW, p[0] - 0.012, p[1] - 0.02, p[2] - 0.012, p[0] + 0.012, p[1] + 0.02, p[2] + 0.012); }
         set('dark'); for (const z of [zin * 0.95, 0]) { const pts = []; for (let x = -len / 2 + 0.3; x <= len / 2 - 0.2; x += 0.3) pts.push(W(F, x, (z === 0 ? 3.0 : 2.57) - 0.06 * Math.cos((x / len) * TAU * 1.5), z)); tube(pts, 0.006, 3); }
         // PA: two speaker stacks, an amp, a mic stand; a portable LED panel on a stand lighting the busker
         set('dr_prop', { c: [0.02, 0.02, 0.022] });
@@ -848,7 +851,7 @@ export function geometry(layout, opts = {}) {
       if (item(() => {
         set('dr_galv'); boxMM(F, -0.8, 0.25, -0.45, 0.8, 0.95, 0.45); set('dr_prop', { c: [0.02, 0.02, 0.02] }); for (const xx of [-0.55, 0.55]) cyl(F, [xx, 0.2, 0], 'z', 0.2, 0.92, 6);
         set('dr_steel'); for (const xx of [-0.78, 0.78]) for (const zz of [-0.43, 0.43]) boxMM(F, xx - 0.02, 0.95, zz - 0.02, xx + 0.02, 2.05, zz + 0.02, ['ny']);
-        set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: NI([1.0, 0.62, 0.3], 40) }); boxMM(F, -0.95, 2.05, -0.6, 0.95, 2.12, 0.62);
+        set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: NI([1.0, 0.62, 0.3], 75) }); boxMM(F, -0.95, 2.05, -0.6, 0.95, 2.12, 0.62);
         boxMM(F, -0.95, 1.85, 0.6, 0.95, 2.12, 0.62);                           // valance over the counter
         set('dr_glow', { em: NI(srgb(0xffb46b), 1500), col: false }); for (const xx of [-0.45, 0.1, 0.55]) boxMM(F, xx - 0.03, 1.88, 0.15 - 0.03, xx + 0.03, 1.95, 0.15 + 0.03);
         set('dr_glow', { em: NI([1.0, 0.7, 0.4], 160), col: false }); boxMM(F, -0.7, 0.55, 0.451, 0.7, 0.85, 0.455);   // lit counter front (menu)
