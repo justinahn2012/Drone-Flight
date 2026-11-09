@@ -141,9 +141,9 @@ bind('push', num('push', -0.05), (v) => { Q.set('push', v < 0 ? '' : v); rebuild
 document.getElementById('hide').onclick = () => document.getElementById('ui').classList.add('hide');
 if (Q.get('ui') === '0') document.getElementById('ui').classList.add('hide');
 
+const t0 = performance.now(); const tFixed = Q.has('t') ? +Q.get('t') : null;
 await loadFonts('./seoul/fonts/');
 await rebuild();
-const t0 = performance.now(); const tFixed = Q.has('t') ? +Q.get('t') : null;
 function draw() {
   const t = tFixed ?? (performance.now() - t0) / 1000;
   signs.update(t, camera.position);
