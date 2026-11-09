@@ -60,7 +60,7 @@ const lin2srgb = (x) => (x <= 0.0031308 ? 12.92 * x : 1.055 * x ** (1 / 2.4) - 0
 const code = (ev) => { let t = Math.min(1, f(0.24 * 2 ** ev)); const to = N.toe; t = t * t / (t + to) * (1 + to); let o = lin2srgb(t); o += (o * o * (3 - 2 * o) - o) * 0.22; return (o * (1 - N.lift) + N.lift) * 255; };
 let prev = -1, mono = true; for (let ev = -8; ev <= 8; ev += 0.25) { const c0 = code(ev); if (c0 < prev - 1e-9) mono = false; prev = c0; }
 ok(mono, 'tone monotonic');
-const want = { '-2': [45, 65], '0': [112, 135], '2': [180, 200], '4': [222, 238], '6': [246, 254] };
+const want = { '-2': [45, 65], '0': [112, 135], '2': [180, 200], '4': [220, 235], '6': [240, 250], '7.5': [254, 255.1] };
 for (const [ev, [lo, hi]] of Object.entries(want)) { const c0 = code(+ev); ok(c0 >= lo && c0 <= hi, `code at ${ev} EV = ${c0.toFixed(1)} not in [${lo}, ${hi}]`); }
 ok(N.aeReject <= 0.01 && N.aeArea[1] === 0.5, 'AE: 1 % reject, area sources at 50 %');
 

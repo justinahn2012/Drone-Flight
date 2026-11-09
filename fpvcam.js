@@ -827,9 +827,9 @@ export const GRADES = {
   //   (base ISO ends at evMax - noiseSpan); ae: [tau darken s, tau brighten s, zeta, deadband EV]; aeReject: brightest tap share
   //   the meter ignores; evMin..evMax: 6 stops.
   // Phase 2 [P2-A] (panel 1 colour #1/#3/#4/#6, graphics #1, FPV #2/#3; offline-fitted on HDR captures of the hero streets):
-  //   clipEv 2.2 -> 6.5 is now the WHITE POINT of a filmic shoulder (Lottes 2016, `tone` [a, d, mid-out]) instead of a hard clip 2.2 EV
-  //   over grey: grey (0.24) -> code ~123, ground (-2 EV) ~55, +2 ~190, +4 ~230, +6 ~251 (a log camera graded to Rec.709: light boxes and
-  //   shop interiors hold, only true sources clip). tonePc: per-channel share of the shoulder (the rest preserves hue on max(rgb)).
+  //   clipEv 2.2 -> 7.5 is now the WHITE POINT of a filmic shoulder (Lottes 2016, `tone` [a, d, mid-out]) instead of a hard clip 2.2 EV
+  //   over grey: grey (0.24) -> code ~123, ground (-2 EV) ~55, +2 ~190, +4 ~227, +5 ~238, +6 ~246, +7 ~252 (a log camera graded to Rec.709: light boxes at
+  //   EV -1..0 hold under code 250, only true sources clip). tonePc: per-channel share of the shoulder (the rest preserves hue on max(rgb)).
   //   core keyed on the min channel (+ coreXtalk of the max: sensor crosstalk), ramping in coreEv EV over the white point.
   //   wb [1, 1, 0.96] (G5 2E: fixed ~4300 K; the old blue gain neutralised the warm interiors), toe 0.08 -> 0.045, lift 0.02 (colour #4).
   //   veil 0.03 -> 0.012 with veilCapEv 3 (the wide PSF lobe carries the local glare now). mag/magC: retro magenta amount and chroma gate.
@@ -839,8 +839,8 @@ export const GRADES = {
   //   chromaDark (chroma kept in the deepest shadows); codec [amount, exposed level where it fades from 1 .. to 0, share of the luma
   //   grain removed]; sharpDark: exposed level where sharpening fades in. AE (colour #6, graphics #1): aeReject 1 %, aeArea [scene
   //   units above which a tap is an area source, its weight], aeMatrix [centre v, falloff].
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.0, lift: 0.02, clipEv: 6.5, con: 1.2, toe: 0.045,
-    tone: [1.085, 0.91, 0.219], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.0, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.045,
+    tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     ghosts: [[-0.55, 0.004, [0.9, 1.0, 0.8]], [-1.25, 0.0025, [1.0, 0.85, 1.0]], [0.4, 0.002, [1.0, 0.95, 0.8]]],
     core: 1, coreXtalk: 0.15, coreEv: [0, 2], mag: 0.035, magC: 0.04, grain: 0, grainEv: [0, 0], grainPx: 2,
@@ -1605,7 +1605,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       nf.uHaloTint.value.set(ht[0] / hl, ht[1] / hl, ht[2] / hl);
       // AE target grey through the camera curve + toe -> Oklab L (the grade's shadow/highlight pivots)
       // [P2-A] the night curve is the filmic shoulder: grey maps to tone[2] by construction
-      const tn = lk.tone || [1.085, 0.91, 0.219], wp = 0.24 * Math.pow(2, ce ?? 6.5), bc = nightToneBC(tn[0], tn[1], tn[2], wp);
+      const tn = lk.tone || [1.0839, 0.928, 0.2194], wp = 0.24 * Math.pow(2, ce ?? 7.5), bc = nightToneBC(tn[0], tn[1], tn[2], wp);
       nf.uTone.value.set(tn[0], tn[1], bc[0], bc[1]); nf.uTonePc.value = lk.tonePc ?? 1;
       let tg = Math.min(1, tn[2]); const to = lk.toe || 0; if (to > 0) tg = tg * tg / (tg + to) * (1 + to);
       nf.uNightK.value.set(wp, lk.core ?? 1, Math.cbrt(tg));
@@ -1672,7 +1672,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       // [P2-A] night camera v2 (only when the night preset is on: bando's profile is unchanged)
       ...(lk.night ? { night: {
         tone: { curve: 'lottes2016 per channel: t = x^a / (x^(a d) b + c), x = exposed radiance; mix(hue-preserving on max(rgb), per-channel, tonePc); clamp 1',
-          a: (lk.tone || [])[0], d: (lk.tone || [])[1], midIn: 0.24, midOut: (lk.tone || [])[2], whitePoint: 0.24 * Math.pow(2, ce ?? 6.5), bc: lk.tone ? nightToneBC(lk.tone[0], lk.tone[1], lk.tone[2], 0.24 * Math.pow(2, ce ?? 6.5)) : null, tonePc: lk.tonePc },
+          a: (lk.tone || [])[0], d: (lk.tone || [])[1], midIn: 0.24, midOut: (lk.tone || [])[2], whitePoint: 0.24 * Math.pow(2, ce ?? 7.5), bc: lk.tone ? nightToneBC(lk.tone[0], lk.tone[1], lk.tone[2], 0.24 * Math.pow(2, ce ?? 7.5)) : null, tonePc: lk.tonePc },
         core: { key: 'mix(min(rgb), max(rgb), coreXtalk) of the pre-halo exposure, EV over the white point', xtalk: lk.coreXtalk, ev: lk.coreEv },
         meter: { grid: [16, 12], reject: lk.aeReject, areaSource: lk.aeArea, matrix: lk.aeMatrix, veilCapEv: lk.veilCapEv, resetSolvesCap: true },
         psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, ghosts: lk.ghosts, cap: lk.bloomCap },
