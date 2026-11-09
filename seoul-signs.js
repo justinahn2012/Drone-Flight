@@ -33,7 +33,9 @@ export const SIGNS_VERSION = 2;
 // ---------------------------------------------------------------------------------------------------------------
 export const COLOR_CATS = ['white', 'red', 'blue', 'ygo', 'pink', 'cyan', 'violet'];
 export const CENSUS =  [0.45, 0.20, 0.15, 0.12, 0.04, 0.03, 0.01];
-export const SHIPPED = [0.25, 0.14, 0.10, 0.08, 0.20, 0.14, 0.09];
+// Phase 3 (colour #1): the hero mix is the real Hongdae mix pushed toward warm (red, orange, amber, yellow) with pink, cyan
+// and violet as accents, not a magenta field. Reference stills: 78 % of bright saturated pixels are warm, 4 % violet/magenta.
+export const SHIPPED = [0.38, 0.12, 0.07, 0.24, 0.08, 0.07, 0.04];
 export const NEON_SHARE = [0.04, 0.15];        // neon-tube share of nightlife-able signs at push 0 / 1
 // default push by street kind; street.neonPush overrides. Phase 2 (colour #2): club/walking 1.0 -> 0.6, main 0.6 -> 0.4
 export const PUSH_BY_KIND = { club: 0.6, walking: 0.6, main: 0.4, alley: 0.4 };
@@ -43,25 +45,33 @@ const USE_PUSH = { club: 1.35, bar: 1.3, pocha: 1.2, karaoke: 1.3, motel: 1.25, 
 
 const srgb = (h) => { const c = new THREE.Color(h); return [c.r, c.g, c.b]; };     // THREE.Color hex -> linear
 const HEX = {
-  white: '#f2f6ff', warm: '#ffe0b0', red: '#ff2414', blue: '#1e56ff', yellow: '#ffc414', orange: '#ff7410', green: '#14d860',
+  white: '#f7f9ff', warm: '#ffe0b0', red: '#ff2414', blue: '#1e56ff', yellow: '#ffd21a', orange: '#ff7410', green: '#14d860',
   pink: '#ff3c9c', magenta: '#ff28d2', cyan: '#18e4ff', teal: '#10d8b0', violet: '#8a3cff', amber: '#ffa010',
   paleYellow: '#fff1b8', paleBlue: '#e2f2ff', bulb: '#ffc98a', roomWarm: '#ffd7a0', roomCool: '#e6efff', roomFluo: '#eaffef',
 };
 // category -> concrete light colours (weights)
 const CAT_HUES = {
-  white: [['white', 0.6], ['warm', 0.4]], red: [['red', 1]], blue: [['blue', 1]],
-  ygo: [['yellow', 0.4], ['orange', 0.35], ['green', 0.25]], pink: [['pink', 0.6], ['magenta', 0.4]],
+  white: [['white', 0.45], ['warm', 0.55]], red: [['red', 1]], blue: [['blue', 1]],
+  ygo: [['yellow', 0.35], ['orange', 0.25], ['amber', 0.15], ['green', 0.25]], pink: [['pink', 0.6], ['magenta', 0.4]],
   cyan: [['cyan', 0.65], ['teal', 0.35]], violet: [['violet', 1]],
 };
 export const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-const norm1 = (c) => { const y = Math.max(lum(c), 1e-4); return [c[0] / y, c[1] / y, c[2] / y]; };
+const norm1 = (c) => { const y = Math.max(lum(c), 1e-4); return [c[0] / y, c[1] / y, c[2] / y]; };   // L3 records only
+// Filter model (phase 3, lighting #1 / colour #1): a coloured sign is white light through a coloured filter (acrylic face,
+// tinted tube, LED die at matched drive), so its emission is rgb / max(rgb) x the WHITE-EQUIVALENT nits of its class. Blue
+// at 1000 white-equivalent has luminance 141 and B = 1000; the phase-2 luminance normalisation gave it B = 7070 (7.1x),
+// which made the sign light budget magenta. Every nits value in NITS below is white-equivalent (the brightest channel).
+// A dyed face or tinted tube passes ~85 % of its pass band (white diffusers ~100 %): peak transmission 1 - 0.15 x saturation.
+export const filt = (c) => { const m = Math.max(c[0], c[1], c[2], 1e-4), k = (1 - 0.15 * (1 - Math.min(c[0], c[1], c[2]) / m)) / m; return [c[0] * k, c[1] * k, c[2] * k]; };
 
 // Luminance, cd/m^2 (panel 1 binding table). Letters/cores are what clips; grounds and rooms sit well below them.
+// Phase 3: white-equivalent (brightest channel, filter model); the hue sets the luminance. Cores are the stroke centre /
+// tube axis / bulb point (the shader's profile peaks there; the mean over a letter is ~0.75 of the core).
 export const NITS = {
   boxLetters: [110, 220], boxLettersColour: [100, 200],   // light-box letters: the brightest part of a box face (100-220)
   ground: [0.25, 0.35],                                    // lit box ground behind the letters, as a share of the letters
-  channel: [600, 1200], channelColour: [600, 1500],        // LED channel letters / galva LED letters (cores 600-2000)
-  neon: [900, 2000], bulb: [800, 2000],                    // tube cores, bulb and exposed-LED dots (point sources)
+  channel: [700, 1400], channelColour: [500, 1100],        // LED channel letters / galva LED letters (cores; white modules drive hardest)
+  neon: [900, 2000], bulb: [1800, 2000], dots: [800, 2000], // tube cores; 2 cm bulb points; exposed-LED letter dots
   scroller: [300, 600],                                    // LED dot board: mean of an "on" cell (dots peak at 2.6x)
   room: [8, 25], vinyl: 0.3,                               // window film: the lit room behind; vinyl transmits x0.3
   screen: [180, 350], screenSmall: [180, 300], banner: [0, 0],
@@ -193,7 +203,7 @@ function chooseDesign(style, cat, use, u) {
 }
 function designNits(design, cat, u) {
   const R = design === 'neon' ? NITS.neon : design === 'channel' || design === 'galva' ? (cat === 'white' ? NITS.channel : NITS.channelColour)
-    : design === 'dots' ? NITS.bulb : design === 'vinylA' || design === 'vinylB' ? NITS.room : design === 'scroller' ? NITS.scroller
+    : design === 'dots' ? NITS.dots : design === 'vinylA' || design === 'vinylB' ? NITS.room : design === 'scroller' ? NITS.scroller
       : design === 'banner' ? NITS.banner : (cat === 'white' ? NITS.boxLetters : NITS.boxLettersColour);
   return R[0] + (R[1] - R[0]) * u;
 }
@@ -434,7 +444,7 @@ const fontFor = (spec, rr) => {
   if (u === 'office') return rr < 0.6 ? 'S2 Sans' : 'S2 Gothic';
   return rr < 0.45 ? 'S2 BlackHan' : rr < 0.7 ? 'S2 DoHyeon' : rr < 0.85 ? 'S2 Gothic' : 'S2 Sans';
 };
-const E = (lit, c, nits) => { if (!lit || !(nits > 0)) return [0, 0, 0]; const n = norm1(c); return [n[0] * nits, n[1] * nits, n[2] * nits]; };
+const E = (lit, c, nits) => { if (!lit || !(nits > 0)) return [0, 0, 0]; const n = filt(c); return [n[0] * nits, n[1] * nits, n[2] * nits]; };
 const scaleC = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
 
 // one face design -> { els, nits: emitter mean over w*h, rgb, letterNits, groundNits }
