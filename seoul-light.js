@@ -30,6 +30,11 @@
 // - P2 city culling (perf #3): world meshes ('seoul:*') are vertex-deduped, indexed and split into `cullCell` m cells per
 //   material (shared buffers + draw ranges, so one upload); the collider is split the same way for fpvcam's depth pass.
 // - Night sky dome, steam (P2: 96 px cap, fade inside 1.5 m).
+// P3 (stream D): radiometry stays luminance-true on the light side: L3 `nits` is the record's mean luminance and `rgb`
+// its chromaticity (B's records carry the filter model in their nits: white-equivalent x luma(rgb/max)); brown-grey sky,
+// haze by street kind, airlight halos <= 3 m, none within 4 m of the lens, channel-capped at 2x a street lamp; the
+// volume at 8 layers; night lightmaps (seoul-nightlm.js, a Worker); one BatchedMesh per material for the city and one
+// for the collider (draw calls); a visibility API for G1's crowd culling; world.qualityCap (scale 1.0, phone preset).
 //
 // Contract for C (world-seoul.js): call attach() after the world's materials exist and before warm-up; ctx.layout (lots
 // with floors/floorH, streets) feeds the heightfield. Materials opt out with material.userData.cityLight === false; ground
