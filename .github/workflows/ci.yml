@@ -10,6 +10,12 @@
 # (exports/seoul-hongdae: world/collider GLB, world.json, emitters/signs/screens/light/life/look JSON, signs.glb, the
 # vendored KTX2 textures) built --strict and then re-checked byte for byte in a second process (determinism + coverage
 # of the headless scene), and a third job that loads Seoul in headless Chromium (tests/browser.mjs --level).
+# P3 (stream H, native #1/#4, colour #6): every test step runs even after an earlier one failed (`!cancelled()`), so one run
+# shows every red suite. A suite with a failure already on main runs through ci/run.mjs, which tolerates only the FAIL lines
+# listed in ci/known-failures.json (each names its owner; a fix that lands prints a notice). Added: seoul-light,
+# seoul-dressing, camera-night, movers, test-facades, seoul-ui, and seoul-audio (own job: node-web-audio-api + libasound).
+# Goldens: tests/golden.json, tests/golden-seoul-hongdae.json (re-baseline from a CI artifact: tests/browser.mjs
+# --golden-from). The Seoul browser job ends with the camera gate (tools/camgate.py: exposure + colour rows, retro 0 + shipped).
 name: ci
 on:
   push:
@@ -37,38 +43,90 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/chk"
           for f in *.js; do cp "$f" "$RUNNER_TEMP/chk/$f.mjs"; node --check "$RUNNER_TEMP/chk/$f.mjs"; done
-          for f in tools/*.mjs tests/*.mjs seoul/tools/*.mjs; do node --check "$f"; done
+          for f in tools/*.mjs tests/*.mjs seoul/tools/*.mjs ci/*.mjs; do node --check "$f"; done
+          cp tests/coverage.js "$RUNNER_TEMP/chk/coverage.mjs"; node --check "$RUNNER_TEMP/chk/coverage.mjs"
       - name: Replay input logs (determinism + Take parity; a stale scripted log fails)
+        if: ${{ !cancelled() }}
         run: node tests/replay.mjs --strict
       - name: Lightmaps match the geometry (stale = fail)
+        if: ${{ !cancelled() }}
         run: node tools/test-lightmap.mjs
       - name: Take rules
+        if: ${{ !cancelled() }}
         run: if [ -f tests/take.mjs ]; then node tests/take.mjs && HZ=240 node tests/take.mjs; else echo "::notice::no tests/take.mjs on this branch"; fi
       - name: Collision stress (lite)
+        if: ${{ !cancelled() }}
         run: node tests/stress-lite.mjs
       - name: Export round trip
+        if: ${{ !cancelled() }}
         run: node tools/test-export.mjs
       - name: Seoul level (layout schema, determinism, gates clear, lines score, collision stress)
+        if: ${{ !cancelled() }}
         run: node seoul/tools/test-seoul.mjs
-      - name: Seoul life (traffic determinism, budgets, sanity)
-        run: node tests/seoul-life.mjs
+      - name: Seoul facades (C)
+        if: ${{ !cancelled() }}
+        run: node seoul/tools/test-facades.mjs
+      - name: Seoul life (traffic determinism, budgets, sanity; known failures in ci/known-failures.json)
+        if: ${{ !cancelled() }}
+        run: node ci/run.mjs tests/seoul-life.mjs
+      - name: Life worker (H; LifeSim off the main thread, bit-identical to the inline sim)
+        if: ${{ !cancelled() }}
+        run: node tests/life-worker.mjs
+      - name: Seoul movers (F1 / G1)
+        if: ${{ !cancelled() }}
+        run: node tests/movers.mjs
       - name: Seoul signs (generator determinism, push invariants, L3 emitters)
+        if: ${{ !cancelled() }}
         run: node tests/seoul-signs.mjs
+      - name: Seoul light (D)
+        if: ${{ !cancelled() }}
+        run: node tests/seoul-light.mjs
+      - name: Seoul dressing (E)
+        if: ${{ !cancelled() }}
+        run: node tests/seoul-dressing.mjs
+      - name: Night camera (A)
+        if: ${{ !cancelled() }}
+        run: node tests/camera-night.mjs
+      - name: Seoul UI (F2; known failures in ci/known-failures.json)
+        if: ${{ !cancelled() }}
+        run: node ci/run.mjs tests/seoul-ui.mjs
       - name: Seoul parity (flight log + Take events + traffic vectors; stale = fail, re-record with --record)
+        if: ${{ !cancelled() }}
         run: node tests/seoul-parity.mjs --strict
       - name: Build exports
+        if: ${{ !cancelled() }}
         run: |
           node tools/export-world.mjs --out exports
           node tools/camera-profile.mjs --out exports
       - name: Seoul export (--strict; then a second process must reproduce every byte)
+        if: ${{ !cancelled() }}
         run: |
           node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae --strict
           node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae --check --strict
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: exports
           path: exports/
           retention-days: 30
+
+  audio:   # [P3 H] G2's suite: offline Web Audio in node (node-web-audio-api, which links libasound), ~5 min
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ci/package-lock.json
+      - name: Install three + node-web-audio-api (+ libasound)
+        run: |
+          npm ci --prefix ci --ignore-scripts --no-audit --no-fund
+          ln -s ci/node_modules node_modules
+          ldconfig -p | grep -q 'libasound.so.2 ' || { sudo apt-get update -qq && { sudo apt-get install -y -qq --no-install-recommends libasound2t64 || sudo apt-get install -y -qq --no-install-recommends libasound2; }; }
+      - name: Seoul audio (G2 - calibration, determinism, the HQ clip path)
+        run: node tests/seoul-audio.mjs
 
   browser:
     runs-on: ubuntu-latest
@@ -102,9 +160,9 @@ jobs:
           path: browser-out/
           retention-days: 14
 
-  browser-seoul:   # SwiftShader renders Seoul slowly: ~35 min on a shared 2-core box (?perf ~9 min, 3 stills), so 60
+  browser-seoul:   # SwiftShader renders Seoul slowly: 50 min on main bfe39b1 (?perf 2 min, 3 stills ~45 min), so 90
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -127,6 +185,15 @@ jobs:
         run: node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae
       - name: Neon Seoul in headless Chromium (SwiftShader)
         run: node tests/browser.mjs --level seoul-hongdae --exports exports/seoul-hongdae --out browser-out-seoul
+      - uses: actions/setup-python@v5
+        if: ${{ !cancelled() }}
+        with:
+          python-version: '3.12'
+      - name: Camera gate (tools/camgate.py on the stills; [colour] rows tolerated until A lands, see ci/known-failures.json)
+        if: ${{ !cancelled() && hashFiles('browser-out-seoul/stills.json') != '' }}
+        run: |
+          python -m pip install --quiet --disable-pip-version-check numpy pillow scipy
+          node ci/run.mjs python tools/camgate.py --stills browser-out-seoul/camgate --evs browser-out-seoul/stills.json --hero walk0,club90,station --json browser-out-seoul/camgate.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

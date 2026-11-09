@@ -1,0 +1,35 @@
+{
+ "note": "tests/browser.mjs golden stills (SwiftShader, 320x180, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update, or --golden-from <CI artifact>/stills.json, after an intentional look change. From browser-out/stills.json @ bfe39b1 (CI run 42558204000, browser job log).",
+ "shots": {
+  "spawn": {
+   "p5": 42,
+   "p50": 83,
+   "p95": 135,
+   "clip": 0,
+   "tol": {
+    "p50": 8,
+    "p95": 10
+   }
+  },
+  "hall": {
+   "p5": 30,
+   "p50": 67,
+   "p95": 242,
+   "clip": 0.0097,
+   "tol": {
+    "p50": 8,
+    "p95": 10
+   }
+  },
+  "chimney": {
+   "p5": 8,
+   "p50": 14,
+   "p95": 20,
+   "clip": 0,
+   "tol": {
+    "p50": 8,
+    "p95": 10
+   }
+  }
+ }
+}

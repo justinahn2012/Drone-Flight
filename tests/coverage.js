@@ -5,14 +5,19 @@
 // (visible now or not: LOD buckets toggle) must match one of worldJson.coverage's rules, else it is `uncovered` and
 // the browser job fails: a new mesh in buildBando needs an export entry (or a declared runtime-only rule) first.
 // Rules (tools/export-world.mjs COVERAGE), first match wins:
-//   match.mesh 'world.glb'  a plain Mesh whose vertex count and bounds equal a world.json meshes[] row
+//   match.mesh 'world.glb'  a plain Mesh whose vertex count and bounds equal a world.json meshes[] row, or [P3 H] a
+//                            cell of one: userData.exportKey / seoulKey names the row and its box lies inside the row's
+//                            (D's splitCells: the row's deduped vertices, a draw range of a shared index); the
+//                            cells' triangles must add up to the row's, else the row is reported in partialExports
 //   match.program RE         material.customProgramCacheKey() matches
 //   match.name RE            object.name matches;  match.parent RE: the parent's name matches
 //   match.ancestor RE        [P2 H] some ancestor's name matches (a level's partner group: seoul-signs, seoul-life...)
 //   match.instanced          must be (true) / must not be (false) an InstancedMesh
 //   requires 'a.b.c'         a path in worldJson that must be truthy (e.g. instances.veg.count), else the match is
 //                            `pending` when the target says status 'pending', otherwise uncovered
-// Also reported: world.glb rows no scene mesh draws (`undrawnExports`, also a failure).
+// Also reported: world.glb rows no scene mesh draws (`undrawnExports`, also a failure) and [P3 H] rows whose cells draw
+// fewer triangles than the row holds (`partialExports`, a failure).
+// summarize(cov) groups `uncovered` by class (name with digits stripped, parent, rule, why) for a short log line.
 // [P2 H] worldJson.coverageObjects (e.g. ['Mesh', 'Points', 'Line']) widens what is checked beyond meshes, so a level's
 // Points (steam) or line renderers (cables) need an entry too. Absent (bando): meshes only, as before.
 // Runs in node as well (tools/export-world.mjs applies it to the headless Seoul scene).
@@ -20,16 +25,24 @@ export function coverage(scene, world) {
   const rules = world.coverage || [], rows = world.meshes || [];
   const get = (path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), world);
   const near = (a, b) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) <= 1e-4 * Math.max(1, Math.abs(b[i])));
+  const within = (mn, mx, b) => mn.every((v, i) => v >= b.min[i] - 1e-4 * Math.max(1, Math.abs(b.min[i]))) && mx.every((v, i) => v <= b.max[i] + 1e-4 * Math.max(1, Math.abs(b.max[i])));
+  const boxOf = (g) => { if (!g.boundingBox) g.computeBoundingBox(); const b = g.boundingBox; return [[b.min.x, b.min.y, b.min.z], [b.max.x, b.max.y, b.max.z]]; };
+  const trisOf = (g) => { const n = g.index ? g.index.count : g.attributes.position.count, s = Math.max(0, g.drawRange?.start || 0), c = g.drawRange?.count; return Math.floor(Math.max(0, Math.min(n - s, Number.isFinite(c) ? c : Infinity)) / 3); };
   const rowOf = (m) => {
     if (m.isInstancedMesh || !m.geometry?.attributes?.position) return null;
     const g = m.geometry, n = g.attributes.position.count;
+    const key = m.userData?.exportKey ?? m.userData?.seoulKey;
+    if (key != null) {   // [P3 H] a cell of a world.glb row (or the whole row under its own key)
+      const r = rows.find((x) => x.name === key); if (!r) return null;
+      const [mn, mx] = boxOf(g);   // a cell's own box (splitCells sets it for culling) lies inside its row's
+      return within(mn, mx, r.bounds) ? r : null;
+    }
     if (!rows.some((r) => r.vertices === n)) return null;
-    if (!g.boundingBox) g.computeBoundingBox();
-    const b = g.boundingBox, mn = [b.min.x, b.min.y, b.min.z], mx = [b.max.x, b.max.y, b.max.z];
+    const [mn, mx] = boxOf(g);
     return rows.find((r) => r.vertices === n && near(mn, r.bounds.min) && near(mx, r.bounds.max)) || null;
   };
   const progOf = (m) => { const mt = Array.isArray(m.material) ? m.material[0] : m.material; try { return mt?.customProgramCacheKey?.() || ''; } catch (e) { return ''; } };
-  const out = { meshes: 0, byRule: {}, uncovered: [], pending: [], drawnRows: new Set() };
+  const out = { meshes: 0, byRule: {}, uncovered: [], pending: [], drawnRows: new Set(), rowTris: {} };
   const objs = world.coverageObjects || ['Mesh'];
   const counts = (m) => (m.isMesh && objs.includes('Mesh')) || (m.isPoints && objs.includes('Points')) || (m.isLine && objs.includes('Line'));
   const ancestorIs = (m, re) => { for (let p = m.parent; p; p = p.parent) if (re.test(p.name || '')) return true; return false; };
@@ -44,7 +57,7 @@ export function coverage(scene, world) {
       if (M.parent && !new RegExp(M.parent).test(m.parent?.name || '')) continue;
       if (M.ancestor && !ancestorIs(m, new RegExp(M.ancestor))) continue;
       if (M.program && !new RegExp(M.program).test(progOf(m))) continue;
-      if (M.mesh === 'world.glb') { const row = rowOf(m); if (!row) continue; out.drawnRows.add(row.name); }
+      if (M.mesh === 'world.glb') { const row = rowOf(m); if (!row) continue; out.drawnRows.add(row.name); out.rowTris[row.name] = (out.rowTris[row.name] || 0) + trisOf(m.geometry); }
       if (r.requires && !get(r.requires)) {
         const tgt = get(r.requires.split('.').slice(0, -1).join('.'));
         why = tgt?.status === 'pending' ? 'pending' : `requires ${r.requires}`;
@@ -59,5 +72,15 @@ export function coverage(scene, world) {
     else out.byRule[hit.id] = (out.byRule[hit.id] || 0) + 1;
   });
   const undrawnExports = rows.map((r) => r.name).filter((n) => !out.drawnRows.has(n));
-  return { meshes: out.meshes, byRule: out.byRule, uncovered: out.uncovered, pending: [...new Set(out.pending.map((p) => p.rule))], pendingMeshes: out.pending.length, undrawnExports, ok: !out.uncovered.length && !undrawnExports.length };
+  // [P3 H] a row drawn as cells must draw all its triangles (rows without a triangle count: skipped)
+  const partialExports = rows.filter((r) => out.drawnRows.has(r.name) && Number.isFinite(r.triangles) && out.rowTris[r.name] < r.triangles).map((r) => ({ name: r.name, drawn: out.rowTris[r.name], triangles: r.triangles }));
+  return { meshes: out.meshes, byRule: out.byRule, uncovered: out.uncovered, pending: [...new Set(out.pending.map((p) => p.rule))], pendingMeshes: out.pending.length, undrawnExports, partialExports, ok: !out.uncovered.length && !undrawnExports.length && !partialExports.length };
+}
+
+/** [P3 H] One line per class of uncovered object (the browser job logged the raw list: 900 KB on one line). */
+export function summarize(cov, max = 12) {
+  const by = new Map();
+  for (const u of cov.uncovered || []) { const k = `${u.type} "${(u.name || '').replace(/-?\d+(,-?\d+)*$/, '*')}" parent "${u.parent}"${u.why ? ' (' + u.why + ')' : ''}`; by.set(k, (by.get(k) || 0) + 1); }
+  const rows = [...by].sort((a, b) => b[1] - a[1]);
+  return rows.slice(0, max).map(([k, n]) => `${n} x ${k}`).concat(rows.length > max ? [`... ${rows.length - max} more classes`] : []);
 }
