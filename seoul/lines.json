@@ -25,6 +25,745 @@
    "caption": "THE WALKING *STREET*!",
    "pts": 2500,
    "c": [
+    225.938,
+    3.7,
+    -334.32
+   ],
+   "n": [
+    0.992,
+    0,
+    -0.127
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.127,
+    0,
+    0.992
+   ],
+   "pre": [
+    {
+     "c": [
+      19.711,
+      3.7,
+      -137.97
+     ],
+     "n": [
+      0.866,
+      0,
+      -0.5
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.5,
+      0,
+      0.866
+     ]
+    }
+   ],
+   "within": 88,
+   "first": true,
+   "hint": "the walking street end to end, 310 m over the crowd",
+   "tuning": {
+    "stars": [
+     18000,
+     60000,
+     150000
+    ],
+    "bankT": 10,
+    "holdZone": 1.5,
+    "armHold": true,
+    "firstR": 60,
+    "pace": [
+     120,
+     300,
+     1.5
+    ],
+    "microFlow": 0
+   }
+  },
+  {
+   "name": "WALKING STREET",
+   "caption": "THE WALKING *STREET*!",
+   "pts": 2500,
+   "c": [
+    19.711,
+    3.7,
+    -137.97
+   ],
+   "n": [
+    -0.866,
+    0,
+    0.5
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.5,
+    0,
+    0.866
+   ],
+   "pre": [
+    {
+     "c": [
+      225.938,
+      3.7,
+      -334.32
+     ],
+     "n": [
+      -0.992,
+      0,
+      0.127
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.127,
+      0,
+      0.992
+     ]
+    }
+   ],
+   "within": 88,
+   "hint": "the walking street end to end, 310 m over the crowd"
+  },
+  {
+   "name": "WALKING STREET 1/6",
+   "caption": "WALKING STREET *1/6*",
+   "pts": 750,
+   "c": [
+    47.116,
+    3.7,
+    -175.586
+   ],
+   "n": [
+    0.515,
+    0,
+    -0.857
+   ],
+   "w": 12.072,
+   "h": 3,
+   "u": [
+    0.857,
+    0,
+    0.515
+   ],
+   "pre": [
+    {
+     "c": [
+      19.711,
+      3.7,
+      -137.97
+     ],
+     "n": [
+      0.866,
+      0,
+      -0.5
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.5,
+      0,
+      0.866
+     ]
+    }
+   ],
+   "within": 18,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 1/6",
+   "caption": "WALKING STREET *1/6*",
+   "pts": 750,
+   "c": [
+    19.711,
+    3.7,
+    -137.97
+   ],
+   "n": [
+    -0.866,
+    0,
+    0.5
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.5,
+    0,
+    0.866
+   ],
+   "pre": [
+    {
+     "c": [
+      47.116,
+      3.7,
+      -175.586
+     ],
+     "n": [
+      -0.515,
+      0,
+      0.857
+     ],
+     "w": 12.072,
+     "h": 3,
+     "u": [
+      0.857,
+      0,
+      0.515
+     ]
+    }
+   ],
+   "within": 18,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 2/6",
+   "caption": "WALKING STREET *2/6*",
+   "pts": 750,
+   "c": [
+    73.504,
+    3.7,
+    -215.014
+   ],
+   "n": [
+    0.667,
+    0,
+    -0.745
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.745,
+    0,
+    0.667
+   ],
+   "pre": [
+    {
+     "c": [
+      47.116,
+      3.7,
+      -175.586
+     ],
+     "n": [
+      0.515,
+      0,
+      -0.857
+     ],
+     "w": 12.072,
+     "h": 3,
+     "u": [
+      0.857,
+      0,
+      0.515
+     ]
+    }
+   ],
+   "within": 18,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 2/6",
+   "caption": "WALKING STREET *2/6*",
+   "pts": 750,
+   "c": [
+    47.116,
+    3.7,
+    -175.586
+   ],
+   "n": [
+    -0.515,
+    0,
+    0.857
+   ],
+   "w": 12.072,
+   "h": 3,
+   "u": [
+    0.857,
+    0,
+    0.515
+   ],
+   "pre": [
+    {
+     "c": [
+      73.504,
+      3.7,
+      -215.014
+     ],
+     "n": [
+      -0.667,
+      0,
+      0.745
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.745,
+      0,
+      0.667
+     ]
+    }
+   ],
+   "within": 18,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 3/6",
+   "caption": "WALKING STREET *3/6*",
+   "pts": 750,
+   "c": [
+    105.153,
+    3.7,
+    -245.734
+   ],
+   "n": [
+    0.668,
+    0,
+    -0.745
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.745,
+    0,
+    0.668
+   ],
+   "pre": [
+    {
+     "c": [
+      73.504,
+      3.7,
+      -215.014
+     ],
+     "n": [
+      0.667,
+      0,
+      -0.745
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.745,
+      0,
+      0.667
+     ]
+    }
+   ],
+   "within": 17,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 3/6",
+   "caption": "WALKING STREET *3/6*",
+   "pts": 750,
+   "c": [
+    73.504,
+    3.7,
+    -215.014
+   ],
+   "n": [
+    -0.667,
+    0,
+    0.745
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.745,
+    0,
+    0.667
+   ],
+   "pre": [
+    {
+     "c": [
+      105.153,
+      3.7,
+      -245.734
+     ],
+     "n": [
+      -0.668,
+      0,
+      0.745
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.745,
+      0,
+      0.668
+     ]
+    }
+   ],
+   "within": 17,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 4/6",
+   "caption": "WALKING STREET *4/6*",
+   "pts": 750,
+   "c": [
+    154.813,
+    3.7,
+    -282.829
+   ],
+   "n": [
+    0.803,
+    0,
+    -0.596
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.596,
+    0,
+    0.803
+   ],
+   "pre": [
+    {
+     "c": [
+      105.153,
+      3.7,
+      -245.734
+     ],
+     "n": [
+      0.668,
+      0,
+      -0.745
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.745,
+      0,
+      0.668
+     ]
+    }
+   ],
+   "within": 22,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 4/6",
+   "caption": "WALKING STREET *4/6*",
+   "pts": 750,
+   "c": [
+    105.153,
+    3.7,
+    -245.734
+   ],
+   "n": [
+    -0.668,
+    0,
+    0.745
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.745,
+    0,
+    0.668
+   ],
+   "pre": [
+    {
+     "c": [
+      154.813,
+      3.7,
+      -282.829
+     ],
+     "n": [
+      -0.803,
+      0,
+      0.596
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.596,
+      0,
+      0.803
+     ]
+    }
+   ],
+   "within": 22,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 5/6",
+   "caption": "WALKING STREET *5/6*",
+   "pts": 750,
+   "c": [
+    185.011,
+    3.7,
+    -314.328
+   ],
+   "n": [
+    0.793,
+    0,
+    -0.61
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.61,
+    0,
+    0.793
+   ],
+   "pre": [
+    {
+     "c": [
+      154.813,
+      3.7,
+      -282.829
+     ],
+     "n": [
+      0.803,
+      0,
+      -0.596
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.596,
+      0,
+      0.803
+     ]
+    }
+   ],
+   "within": 17,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 5/6",
+   "caption": "WALKING STREET *5/6*",
+   "pts": 750,
+   "c": [
+    154.813,
+    3.7,
+    -282.829
+   ],
+   "n": [
+    -0.803,
+    0,
+    0.596
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.596,
+    0,
+    0.803
+   ],
+   "pre": [
+    {
+     "c": [
+      185.011,
+      3.7,
+      -314.328
+     ],
+     "n": [
+      -0.793,
+      0,
+      0.61
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.61,
+      0,
+      0.793
+     ]
+    }
+   ],
+   "within": 17,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 6/6",
+   "caption": "WALKING STREET *6/6*",
+   "pts": 750,
+   "c": [
+    225.938,
+    3.7,
+    -334.32
+   ],
+   "n": [
+    0.992,
+    0,
+    -0.127
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.127,
+    0,
+    0.992
+   ],
+   "pre": [
+    {
+     "c": [
+      185.011,
+      3.7,
+      -314.328
+     ],
+     "n": [
+      0.793,
+      0,
+      -0.61
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.61,
+      0,
+      0.793
+     ]
+    }
+   ],
+   "within": 18,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 6/6",
+   "caption": "WALKING STREET *6/6*",
+   "pts": 750,
+   "c": [
+    185.011,
+    3.7,
+    -314.328
+   ],
+   "n": [
+    -0.793,
+    0,
+    0.61
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    0.61,
+    0,
+    0.793
+   ],
+   "pre": [
+    {
+     "c": [
+      225.938,
+      3.7,
+      -334.32
+     ],
+     "n": [
+      -0.992,
+      0,
+      0.127
+     ],
+     "w": 13.81,
+     "h": 3,
+     "u": [
+      0.127,
+      0,
+      0.992
+     ]
+    }
+   ],
+   "within": 18,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "OVER THE CROWD",
+   "caption": "OVER THE *CROWD*!",
+   "pts": 750,
+   "c": [
+    27.505,
+    2.275,
+    -142.469
+   ],
+   "n": [
+    0.866,
+    0,
+    -0.5
+   ],
+   "w": 8,
+   "h": 0.65,
+   "u": [
+    0.5,
+    0,
+    0.866
+   ],
+   "two": true,
+   "micro": true,
+   "feature": "the walking street crowd, 17 m from the spawn (head height)",
+   "on": "WALKING STREET",
+   "heads": true
+  },
+  {
+   "name": "THE BRANCHES",
+   "caption": "THE *BRANCHES*!",
+   "pts": 500,
+   "c": [
+    54.373,
+    3.7,
+    -184.058
+   ],
+   "n": [
+    0.511,
+    0,
+    -0.86
+   ],
+   "w": 12.97,
+   "h": 3,
+   "u": [
+    0.86,
+    0,
+    0.511
+   ],
+   "two": true,
+   "micro": true,
+   "feature": "two Eoulmadang-ro branches leave (68 and 80 m)",
+   "on": "WALKING STREET"
+  },
+  {
+   "name": "OVER THE TENT",
+   "caption": "OVER THE *TENT*!",
+   "pts": 500,
+   "c": [
+    122.318,
+    3.508,
+    -262.634
+   ],
+   "n": [
+    0.803,
+    0,
+    -0.596
+   ],
+   "w": 1.968,
+   "h": 1.197,
+   "u": [
+    0.596,
+    0,
+    0.803
+   ],
+   "two": true,
+   "micro": true,
+   "feature": "a pocha tent at 178 m",
+   "on": "WALKING STREET"
+  },
+  {
+   "name": "RED ROAD",
+   "caption": "THE RED *ROAD*!",
+   "pts": 2000,
+   "c": [
     12.575,
     3.7,
     -116.394
@@ -62,30 +801,13 @@
      ]
     }
    ],
-   "within": 48,
-   "first": true,
-   "tuning": {
-    "stars": [
-     18000,
-     60000,
-     150000
-    ],
-    "bankT": 10,
-    "holdZone": 1.5,
-    "armHold": true,
-    "firstR": 60,
-    "pace": [
-     120,
-     300,
-     1.5
-    ],
-    "microFlow": 0
-   }
+   "within": 63,
+   "hint": "the Red Road fork · under the blades, over the queue"
   },
   {
-   "name": "WALKING STREET",
-   "caption": "THE WALKING *STREET*!",
-   "pts": 2500,
+   "name": "RED ROAD",
+   "caption": "THE RED *ROAD*!",
+   "pts": 2000,
    "c": [
     -62.983,
     3.7,
@@ -124,7 +846,8 @@
      ]
     }
    ],
-   "within": 48
+   "within": 63,
+   "hint": "the Red Road fork · under the blades, over the queue"
   },
   {
    "name": "RED ROAD 1/4",
@@ -168,9 +891,9 @@
      ]
     }
    ],
-   "within": 12,
+   "within": 17,
    "micro": true,
-   "seg": "WALKING STREET"
+   "seg": "RED ROAD"
   },
   {
    "name": "RED ROAD 1/4",
@@ -214,9 +937,9 @@
      ]
     }
    ],
-   "within": 12,
+   "within": 17,
    "micro": true,
-   "seg": "WALKING STREET"
+   "seg": "RED ROAD"
   },
   {
    "name": "RED ROAD 2/4",
@@ -260,9 +983,9 @@
      ]
     }
    ],
-   "within": 12,
+   "within": 17,
    "micro": true,
-   "seg": "WALKING STREET"
+   "seg": "RED ROAD"
   },
   {
    "name": "RED ROAD 2/4",
@@ -306,26 +1029,26 @@
      ]
     }
    ],
-   "within": 12,
+   "within": 17,
    "micro": true,
-   "seg": "WALKING STREET"
+   "seg": "RED ROAD"
   },
   {
    "name": "RED ROAD 3/4",
    "caption": "RED ROAD *3/4*",
    "pts": 750,
    "c": [
-    -17.607,
+    -11.949,
     3.7,
-    -63.626
+    -74.208
    ],
    "n": [
     0.471,
     0,
     -0.882
    ],
-   "w": 2.26,
-   "h": 1.256,
+   "w": 8,
+   "h": 3,
    "u": [
     0.882,
     0,
@@ -352,9 +1075,9 @@
      ]
     }
    ],
-   "within": 16,
+   "within": 25,
    "micro": true,
-   "seg": "WALKING STREET"
+   "seg": "RED ROAD"
   },
   {
    "name": "RED ROAD 3/4",
@@ -380,17 +1103,17 @@
    "pre": [
     {
      "c": [
-      -17.607,
+      -11.949,
       3.7,
-      -63.626
+      -74.208
      ],
      "n": [
       -0.471,
       0,
       0.882
      ],
-     "w": 2.26,
-     "h": 1.256,
+     "w": 8,
+     "h": 3,
      "u": [
       0.882,
       0,
@@ -398,9 +1121,9 @@
      ]
     }
    ],
-   "within": 16,
+   "within": 25,
    "micro": true,
-   "seg": "WALKING STREET"
+   "seg": "RED ROAD"
   },
   {
    "name": "RED ROAD 4/4",
@@ -426,17 +1149,17 @@
    "pre": [
     {
      "c": [
-      -17.607,
+      -11.949,
       3.7,
-      -63.626
+      -74.208
      ],
      "n": [
       0.471,
       0,
       -0.882
      ],
-     "w": 2.26,
-     "h": 1.256,
+     "w": 8,
+     "h": 3,
      "u": [
       0.882,
       0,
@@ -444,26 +1167,26 @@
      ]
     }
    ],
-   "within": 16,
+   "within": 19,
    "micro": true,
-   "seg": "WALKING STREET"
+   "seg": "RED ROAD"
   },
   {
    "name": "RED ROAD 4/4",
    "caption": "RED ROAD *4/4*",
    "pts": 750,
    "c": [
-    -17.607,
+    -11.949,
     3.7,
-    -63.626
+    -74.208
    ],
    "n": [
     -0.471,
     0,
     0.882
    ],
-   "w": 2.26,
-   "h": 1.256,
+   "w": 8,
+   "h": 3,
    "u": [
     0.882,
     0,
@@ -490,18 +1213,18 @@
      ]
     }
    ],
-   "within": 16,
+   "within": 19,
    "micro": true,
-   "seg": "WALKING STREET"
+   "seg": "RED ROAD"
   },
   {
    "name": "UNDER THE BLADES",
    "caption": "UNDER THE *BLADES*!",
-   "pts": 500,
+   "pts": 750,
    "c": [
-    -60.102,
-    2.65,
-    67.071
+    -60.179,
+    2.275,
+    67.051
    ],
    "n": [
     0.251,
@@ -509,7 +1232,7 @@
     -0.968
    ],
    "w": 8,
-   "h": 1.5,
+   "h": 0.65,
    "u": [
     0.968,
     0,
@@ -517,17 +1240,18 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "first blade stack (2F blades at 3.55 m)",
-   "on": "WALKING STREET"
+   "feature": "first blade stack (2F blades at 3.55 m), head height",
+   "on": "RED ROAD",
+   "heads": true
   },
   {
    "name": "BLADE ALLEY",
    "caption": "BLADE *ALLEY*!",
-   "pts": 500,
+   "pts": 750,
    "c": [
-    -50.386,
-    2.65,
-    19.987
+    -50.309,
+    2.275,
+    20.008
    ],
    "n": [
     0.263,
@@ -535,7 +1259,7 @@
     -0.965
    ],
    "w": 8,
-   "h": 1.5,
+   "h": 0.65,
    "u": [
     0.965,
     0,
@@ -543,8 +1267,9 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "blade stacks both sides, 58-79 m",
-   "on": "WALKING STREET"
+   "feature": "blade stacks both sides, 58-79 m, head height",
+   "on": "RED ROAD",
+   "heads": true
   },
   {
    "name": "THE FORK",
@@ -570,33 +1295,103 @@
    "two": true,
    "micro": true,
    "feature": "the other Eoulmadang-ro branch joins",
-   "on": "WALKING STREET"
+   "on": "RED ROAD"
   },
   {
-   "name": "CLUB QUEUE",
+   "name": "OVER THE QUEUE",
    "caption": "OVER THE *QUEUE*!",
-   "pts": 500,
+   "pts": 750,
    "c": [
-    -22.116,
-    2.675,
-    -54.701
+    -15.674,
+    2.275,
+    -60.033
    ],
    "n": [
-    0.457,
+    0.464,
     0,
-    -0.889
+    -0.886
    ],
-   "w": 7.423,
-   "h": 1.45,
+   "w": 1.8,
+   "h": 0.65,
    "u": [
-    0.889,
+    -0.886,
     0,
-    0.457
+    -0.464
    ],
-   "two": true,
+   "pre": [
+    {
+     "c": [
+      -18.969,
+      2.275,
+      -53.744
+     ],
+     "n": [
+      0.464,
+      0,
+      -0.886
+     ],
+     "w": 1.8,
+     "h": 0.65,
+     "u": [
+      -0.886,
+      0,
+      -0.464
+     ]
+    }
+   ],
+   "within": 7,
    "micro": true,
-   "feature": "club door at 152 m: its queue",
-   "on": "WALKING STREET"
+   "heads": true,
+   "feature": "the club queue at 150 m",
+   "on": "RED ROAD"
+  },
+  {
+   "name": "OVER THE QUEUE",
+   "caption": "OVER THE *QUEUE*!",
+   "pts": 750,
+   "c": [
+    -18.969,
+    2.275,
+    -53.744
+   ],
+   "n": [
+    -0.464,
+    0,
+    0.886
+   ],
+   "w": 1.8,
+   "h": 0.65,
+   "u": [
+    -0.886,
+    0,
+    -0.464
+   ],
+   "pre": [
+    {
+     "c": [
+      -15.674,
+      2.275,
+      -60.033
+     ],
+     "n": [
+      -0.464,
+      0,
+      0.886
+     ],
+     "w": 1.8,
+     "h": 0.65,
+     "u": [
+      -0.886,
+      0,
+      -0.464
+     ]
+    }
+   ],
+   "within": 7,
+   "micro": true,
+   "heads": true,
+   "feature": "the club queue at 150 m",
+   "on": "RED ROAD"
   },
   {
    "name": "THE SPLIT",
@@ -622,7 +1417,7 @@
    "two": true,
    "micro": true,
    "feature": "the walking branch splits off",
-   "on": "WALKING STREET"
+   "on": "RED ROAD"
   },
   {
    "name": "BAR ALLEY",
@@ -666,7 +1461,8 @@
      ]
     }
    ],
-   "within": 44
+   "within": 58,
+   "hint": "Wausan-ro 21-gil · under the service drops"
   },
   {
    "name": "BAR ALLEY",
@@ -710,7 +1506,8 @@
      ]
     }
    ],
-   "within": 44
+   "within": 58,
+   "hint": "Wausan-ro 21-gil · under the service drops"
   },
   {
    "name": "BAR ALLEY 1/4",
@@ -754,7 +1551,7 @@
      ]
     }
    ],
-   "within": 13,
+   "within": 18,
    "micro": true,
    "seg": "BAR ALLEY"
   },
@@ -800,7 +1597,7 @@
      ]
     }
    ],
-   "within": 13,
+   "within": 18,
    "micro": true,
    "seg": "BAR ALLEY"
   },
@@ -846,7 +1643,7 @@
      ]
     }
    ],
-   "within": 11,
+   "within": 16,
    "micro": true,
    "seg": "BAR ALLEY"
   },
@@ -892,7 +1689,7 @@
      ]
     }
    ],
-   "within": 11,
+   "within": 16,
    "micro": true,
    "seg": "BAR ALLEY"
   },
@@ -938,7 +1735,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "BAR ALLEY"
   },
@@ -984,7 +1781,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "BAR ALLEY"
   },
@@ -1030,7 +1827,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 20,
    "micro": true,
    "seg": "BAR ALLEY"
   },
@@ -1076,52 +1873,122 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 20,
    "micro": true,
    "seg": "BAR ALLEY"
   },
   {
    "name": "DOOR QUEUE",
    "caption": "DOOR *QUEUE*!",
-   "pts": 500,
+   "pts": 750,
    "c": [
-    28.92,
-    2.675,
-    92.004
+    22.382,
+    2.275,
+    90.808
    ],
    "n": [
-    -0.997,
+    -0.999,
     0,
-    -0.079
+    -0.05
    ],
-   "w": 2.756,
-   "h": 1.45,
+   "w": 1.8,
+   "h": 0.65,
    "u": [
-    0.079,
+    -0.05,
     0,
-    -0.997
+    0.999
    ],
-   "two": true,
+   "pre": [
+    {
+     "c": [
+      30.222,
+      2.275,
+      91.201
+     ],
+     "n": [
+      -0.999,
+      0,
+      -0.05
+     ],
+     "w": 1.8,
+     "h": 0.65,
+     "u": [
+      -0.05,
+      0,
+      0.999
+     ]
+    }
+   ],
+   "within": 7,
    "micro": true,
-   "feature": "club 123 m + karaoke, blades both sides",
+   "heads": true,
+   "feature": "the club queue at 120 m (karaoke, blades both sides)",
+   "on": "BAR ALLEY"
+  },
+  {
+   "name": "DOOR QUEUE",
+   "caption": "DOOR *QUEUE*!",
+   "pts": 750,
+   "c": [
+    30.222,
+    2.275,
+    91.201
+   ],
+   "n": [
+    0.999,
+    0,
+    0.05
+   ],
+   "w": 1.8,
+   "h": 0.65,
+   "u": [
+    -0.05,
+    0,
+    0.999
+   ],
+   "pre": [
+    {
+     "c": [
+      22.382,
+      2.275,
+      90.808
+     ],
+     "n": [
+      0.999,
+      0,
+      0.05
+     ],
+     "w": 1.8,
+     "h": 0.65,
+     "u": [
+      -0.05,
+      0,
+      0.999
+     ]
+    }
+   ],
+   "within": 7,
+   "micro": true,
+   "heads": true,
+   "feature": "the club queue at 120 m (karaoke, blades both sides)",
    "on": "BAR ALLEY"
   },
   {
    "name": "CLUB DOORS",
    "caption": "CLUB *DOORS*!",
-   "pts": 500,
+   "pts": 750,
    "c": [
-    -26.05,
-    2.675,
-    90.113
+    -23.021,
+    2.275,
+    89.565
    ],
    "n": [
     -0.999,
     0,
     -0.046
    ],
-   "w": 2.896,
-   "h": 1.45,
+   "w": 4.123,
+   "h": 0.65,
    "u": [
     0.046,
     0,
@@ -1129,16 +1996,17 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "club door at 173 m",
-   "on": "BAR ALLEY"
+   "feature": "club door at 173 m, head height under the awnings",
+   "on": "BAR ALLEY",
+   "heads": true
   },
   {
    "name": "POCHA ROW",
    "caption": "POCHA *ROW*!",
-   "pts": 500,
+   "pts": 750,
    "c": [
     -40.981,
-    2.675,
+    2.275,
     89.029
    ],
    "n": [
@@ -1146,8 +2014,8 @@
     0,
     -0.001
    ],
-   "w": 4.667,
-   "h": 1.45,
+   "w": 4.827,
+   "h": 0.65,
    "u": [
     0.001,
     0,
@@ -1155,8 +2023,9 @@
    ],
    "two": true,
    "micro": true,
-   "feature": "pocha at 187 m",
-   "on": "BAR ALLEY"
+   "feature": "pocha at 187 m, head height",
+   "on": "BAR ALLEY",
+   "heads": true
   },
   {
    "name": "CLUB STREET",
@@ -1200,7 +2069,8 @@
      ]
     }
    ],
-   "within": 34
+   "within": 45,
+   "hint": "Wausan-ro 19-gil · past the club doors"
   },
   {
    "name": "CLUB STREET",
@@ -1244,7 +2114,8 @@
      ]
     }
    ],
-   "within": 34
+   "within": 45,
+   "hint": "Wausan-ro 19-gil · past the club doors"
   },
   {
    "name": "CLUB STREET 1/3",
@@ -1288,7 +2159,7 @@
      ]
     }
    ],
-   "within": 13,
+   "within": 18,
    "micro": true,
    "seg": "CLUB STREET"
   },
@@ -1334,7 +2205,7 @@
      ]
     }
    ],
-   "within": 13,
+   "within": 18,
    "micro": true,
    "seg": "CLUB STREET"
   },
@@ -1380,7 +2251,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "CLUB STREET"
   },
@@ -1426,7 +2297,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "CLUB STREET"
   },
@@ -1472,7 +2343,7 @@
      ]
     }
    ],
-   "within": 12,
+   "within": 17,
    "micro": true,
    "seg": "CLUB STREET"
   },
@@ -1518,7 +2389,7 @@
      ]
     }
    ],
-   "within": 12,
+   "within": 17,
    "micro": true,
    "seg": "CLUB STREET"
   },
@@ -1587,7 +2458,8 @@
      ]
     }
    ],
-   "within": 47
+   "within": 61,
+   "hint": "down the main road · over the buses"
   },
   {
    "name": "HONGIK-RO",
@@ -1631,7 +2503,8 @@
      ]
     }
    ],
-   "within": 47
+   "within": 61,
+   "hint": "down the main road · over the buses"
   },
   {
    "name": "HONGIK-RO 1/4",
@@ -1675,7 +2548,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "HONGIK-RO"
   },
@@ -1721,7 +2594,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "HONGIK-RO"
   },
@@ -1767,7 +2640,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "HONGIK-RO"
   },
@@ -1813,7 +2686,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "HONGIK-RO"
   },
@@ -1859,7 +2732,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 20,
    "micro": true,
    "seg": "HONGIK-RO"
   },
@@ -1905,7 +2778,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 20,
    "micro": true,
    "seg": "HONGIK-RO"
   },
@@ -1951,7 +2824,7 @@
      ]
     }
    ],
-   "within": 13,
+   "within": 18,
    "micro": true,
    "seg": "HONGIK-RO"
   },
@@ -1997,7 +2870,7 @@
      ]
     }
    ],
-   "within": 13,
+   "within": 18,
    "micro": true,
    "seg": "HONGIK-RO"
   },
@@ -2022,7 +2895,8 @@
     0,
     -0.684
    ],
-   "two": true
+   "two": true,
+   "hint": "across Yanghwa-ro at exit 9 · over the buses"
   },
   {
    "name": "SCREEN CANYON",
@@ -2066,7 +2940,8 @@
      ]
     }
    ],
-   "within": 26
+   "within": 34,
+   "hint": "Yanghwa-ro between the screens · 30 m gates"
   },
   {
    "name": "SCREEN CANYON",
@@ -2110,7 +2985,8 @@
      ]
     }
    ],
-   "within": 26
+   "within": 34,
+   "hint": "Yanghwa-ro between the screens · 30 m gates"
   },
   {
    "name": "SCREEN CANYON 1/2",
@@ -2154,7 +3030,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "SCREEN CANYON"
   },
@@ -2200,7 +3076,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 19,
    "micro": true,
    "seg": "SCREEN CANYON"
   },
@@ -2246,7 +3122,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 20,
    "micro": true,
    "seg": "SCREEN CANYON"
   },
@@ -2292,7 +3168,7 @@
      ]
     }
    ],
-   "within": 14,
+   "within": 20,
    "micro": true,
    "seg": "SCREEN CANYON"
   },
@@ -2343,7 +3219,8 @@
     0,
     -0.06
    ],
-   "two": true
+   "two": true,
+   "hint": "the 1.29 m slot between two buildings"
   },
   {
    "name": "TIGHT GAP",
@@ -2435,7 +3312,8 @@
      ]
     }
    ],
-   "within": 20
+   "within": 27,
+   "hint": "Hongik-ro 3-gil · under the cable lattice"
   },
   {
    "name": "CABLE LATTICE",
@@ -2479,7 +3357,8 @@
      ]
     }
    ],
-   "within": 20
+   "within": 27,
+   "hint": "Hongik-ro 3-gil · under the cable lattice"
   },
   {
    "name": "CABLE LATTICE 1/2",
@@ -2523,7 +3402,7 @@
      ]
     }
    ],
-   "within": 11,
+   "within": 16,
    "micro": true,
    "seg": "CABLE LATTICE"
   },
@@ -2569,7 +3448,7 @@
      ]
     }
    ],
-   "within": 11,
+   "within": 16,
    "micro": true,
    "seg": "CABLE LATTICE"
   },
@@ -2615,7 +3494,7 @@
      ]
     }
    ],
-   "within": 11,
+   "within": 16,
    "micro": true,
    "seg": "CABLE LATTICE"
   },
@@ -2661,7 +3540,7 @@
      ]
     }
    ],
-   "within": 11,
+   "within": 16,
    "micro": true,
    "seg": "CABLE LATTICE"
   },
@@ -2707,7 +3586,8 @@
      ]
     }
    ],
-   "within": 12
+   "within": 17,
+   "hint": "an alley 3.4 m wide · walls both sides"
   },
   {
    "name": "NARROW ALLEY",
@@ -2751,7 +3631,8 @@
      ]
     }
    ],
-   "within": 12
+   "within": 17,
+   "hint": "an alley 3.4 m wide · walls both sides"
   },
   {
    "name": "SCREEN PASS",
@@ -2774,7 +3655,8 @@
     0,
     0.74
    ],
-   "two": true
+   "two": true,
+   "hint": "along the face of the 14 x 16 m screen"
   },
   {
    "name": "SIGN STACK",
@@ -2819,7 +3701,8 @@
     }
    ],
    "within": 8,
-   "straight": true
+   "straight": true,
+   "hint": "climb the sign stack to the roof · 26 m"
   },
   {
    "name": "ROOF DROP",
@@ -2864,7 +3747,8 @@
     }
    ],
    "within": 6,
-   "straight": true
+   "straight": true,
+   "hint": "off the roofs into a 3.2 m alley"
   },
   {
    "name": "ROOFLINE",
@@ -2908,7 +3792,8 @@
      ]
     }
    ],
-   "within": 18
+   "within": 24,
+   "hint": "along the roofline · over the tanks"
   },
   {
    "name": "ROOFLINE",
@@ -2952,7 +3837,8 @@
      ]
     }
    ],
-   "within": 18
+   "within": 24,
+   "hint": "along the roofline · over the tanks"
   },
   {
    "name": "UNDER THE WIRES",
@@ -3043,188 +3929,9 @@
      ]
     }
    ],
-   "within": 5,
-   "piece": "station-stairs"
-  },
-  {
-   "name": "BUS SHELTER",
-   "caption": "THROUGH THE *SHELTER*!",
-   "pts": 1000,
-   "c": [
-    62.501,
-    2,
-    -352.936
-   ],
-   "n": [
-    0.73,
-    0,
-    -0.684
-   ],
-   "w": 2.2,
-   "h": 1.8,
-   "u": [
-    0.684,
-    0,
-    0.73
-   ],
-   "pre": [
-    {
-     "c": [
-      44.262,
-      2,
-      -335.838
-     ],
-     "n": [
-      0.73,
-      0,
-      -0.684
-     ],
-     "w": 2.2,
-     "h": 1.8,
-     "u": [
-      0.684,
-      0,
-      0.73
-     ]
-    }
-   ],
-   "within": 9,
-   "piece": "bus-shelter"
-  },
-  {
-   "name": "BUS SHELTER",
-   "caption": "THROUGH THE *SHELTER*!",
-   "pts": 1000,
-   "c": [
-    44.262,
-    2,
-    -335.838
-   ],
-   "n": [
-    -0.73,
-    0,
-    0.684
-   ],
-   "w": 2.2,
-   "h": 1.8,
-   "u": [
-    0.684,
-    0,
-    0.73
-   ],
-   "pre": [
-    {
-     "c": [
-      62.501,
-      2,
-      -352.936
-     ],
-     "n": [
-      -0.73,
-      0,
-      0.684
-     ],
-     "w": 2.2,
-     "h": 1.8,
-     "u": [
-      0.684,
-      0,
-      0.73
-     ]
-    }
-   ],
-   "within": 9,
-   "piece": "bus-shelter"
-  },
-  {
-   "name": "BUS SHELTER",
-   "caption": "THROUGH THE *SHELTER*!",
-   "pts": 1000,
-   "c": [
-    64.689,
-    2,
-    -350.602
-   ],
-   "n": [
-    0.73,
-    0,
-    -0.684
-   ],
-   "w": 2.2,
-   "h": 1.8,
-   "u": [
-    0.684,
-    0,
-    0.73
-   ],
-   "pre": [
-    {
-     "c": [
-      46.451,
-      2,
-      -333.503
-     ],
-     "n": [
-      0.73,
-      0,
-      -0.684
-     ],
-     "w": 2.2,
-     "h": 1.8,
-     "u": [
-      0.684,
-      0,
-      0.73
-     ]
-    }
-   ],
-   "within": 9,
-   "piece": "bus-shelter"
-  },
-  {
-   "name": "BUS SHELTER",
-   "caption": "THROUGH THE *SHELTER*!",
-   "pts": 1000,
-   "c": [
-    46.451,
-    2,
-    -333.503
-   ],
-   "n": [
-    -0.73,
-    0,
-    0.684
-   ],
-   "w": 2.2,
-   "h": 1.8,
-   "u": [
-    0.684,
-    0,
-    0.73
-   ],
-   "pre": [
-    {
-     "c": [
-      64.689,
-      2,
-      -350.602
-     ],
-     "n": [
-      -0.73,
-      0,
-      0.684
-     ],
-     "w": 2.2,
-     "h": 1.8,
-     "u": [
-      0.684,
-      0,
-      0.73
-     ]
-    }
-   ],
-   "within": 9,
-   "piece": "bus-shelter"
+   "within": 8,
+   "piece": "station-stairs",
+   "hint": "down exit 9's stairs to the landing"
   },
   {
    "name": "UNDER THE STAGE",
@@ -3268,8 +3975,9 @@
      ]
     }
    ],
-   "within": 6,
-   "piece": "under-the-stage"
+   "within": 9,
+   "piece": "under-the-stage",
+   "hint": "under the busking canopy · over the crowd"
   },
   {
    "name": "UNDER THE STAGE",
@@ -3313,8 +4021,9 @@
      ]
     }
    ],
-   "within": 6,
-   "piece": "under-the-stage"
+   "within": 9,
+   "piece": "under-the-stage",
+   "hint": "under the busking canopy · over the crowd"
   },
   {
    "name": "CABLE THREAD",
@@ -3358,8 +4067,9 @@
      ]
     }
    ],
-   "within": 11,
-   "piece": "cable-thread"
+   "within": 16,
+   "piece": "cable-thread",
+   "hint": "thread the low drops on Hongik-ro 3-gil"
   },
   {
    "name": "CABLE THREAD",
@@ -3403,8 +4113,9 @@
      ]
     }
    ],
-   "within": 11,
-   "piece": "cable-thread"
+   "within": 16,
+   "piece": "cable-thread",
+   "hint": "thread the low drops on Hongik-ro 3-gil"
   },
   {
    "name": "ROOF SLOT",
@@ -3448,8 +4159,9 @@
      ]
     }
    ],
-   "within": 5,
-   "piece": "roofline-slot"
+   "within": 8,
+   "piece": "roofline-slot",
+   "hint": "the 2.9 m slot between a stair house and a tank"
   },
   {
    "name": "ROOF SLOT",
@@ -3493,8 +4205,9 @@
      ]
     }
    ],
-   "within": 5,
-   "piece": "roofline-slot"
+   "within": 8,
+   "piece": "roofline-slot",
+   "hint": "the 2.9 m slot between a stair house and a tank"
   }
  ],
  "funnels": [
@@ -3527,13 +4240,13 @@
   {
    "name": "Walking street",
    "pos": [
-    -64.976,
+    13.648,
     3.2,
-    81.303
+    -134.47
    ],
-   "yaw": -0.253,
+   "yaw": -1.047,
    "hint": {
-    "text": "FLY THE WALKING STREET · UNDER THE BLADES",
+    "text": "FLY THE WALKING STREET · OVER THE HEADS",
     "line": "WALKING STREET",
     "until": 2,
     "next": "WALKING STREET"
@@ -3598,17 +4311,32 @@
     "until": 2,
     "next": "ROOFLINE"
    }
+  },
+  {
+   "name": "Red Road",
+   "pos": [
+    -64.976,
+    3.2,
+    81.303
+   ],
+   "yaw": -0.253,
+   "hint": {
+    "text": "FLY THE RED ROAD · UNDER THE BLADES",
+    "line": "RED ROAD",
+    "until": 2,
+    "next": "RED ROAD"
+   }
   }
  ],
  "takeStart": {
   "pos": [
-   -64.976,
+   13.648,
    3.2,
-   81.303
+   -134.47
   ],
-  "yaw": -0.253,
+  "yaw": -1.047,
   "hint": {
-   "text": "FLY THE WALKING STREET · UNDER THE BLADES",
+   "text": "FLY THE WALKING STREET · OVER THE HEADS",
    "line": "WALKING STREET",
    "until": 2,
    "next": "WALKING STREET"
