@@ -35,8 +35,13 @@ export const SND = {
   pools: { engine: 4, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1 },
   poolsLow: { engine: 2, bus: 1, scooter: 1, music: 2, club: 1, busk: 1, neon: 0, sizzle: 1 },
 };
-// recorded beds (sound #2, Justin decides): URLs per bed; null = synthesised. CC0 / own recordings only.
+// recorded beds (sound #2, Justin decides): URLs per bed; null = synthesised. CC0 / public-domain / own recordings only.
+// Opt-in for an A/B with ?beds: seoul/audio/crowd-restaurant-pd.mp3 = "Restaurant ambience" by stephan, public domain,
+// Wikimedia Commons (File:Restaurant_ambience.ogg), first 70 s, 96 kbps. Indoor chatter: a stand-in until Justin's
+// own Hongdae recordings exist; the synthetic babble stays the default. (The CC0 "citystreet3" by sagetyrtle on
+// Commons/Freesound checked out too, but its download was refused from this box.)
 export const BEDS = { crowd: null, traffic: null, alley: null, rain: null };
+export const BEDS_AB = { crowd: 'seoul/audio/crowd-restaurant-pd.mp3' };
 const MUSIC_USES = { cafe: ['cafe', 'citypop'], shop: ['kpop', 'kpop', 'citypop'], conv: ['kpop'], karaoke: ['kpop', 'citypop'], bar: ['citypop', 'kpop'], pc: ['kpop'], restaurant: ['cafe'], pocha: ['kpop'] };
 
 // ---------------------------------------------------------------- buffers
@@ -334,7 +339,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     {
       const pa = ctx.createStereoPanner(), pb = ctx.createStereoPanner(); pa.pan.value = -0.35; pb.pan.value = 0.4;
       const hp = F('highpass', 260, 0.7), eq = F('highshelf', 1500); eq.gain.value = 10;   // consonants 2-5 kHz carry on a phone speaker
-      pa.connect(hp); pb.connect(hp); hp.connect(eq); eq.connect(g.bCrowd); g.crowdSrc = [pa, pb];
+      pa.connect(hp); pb.connect(hp); hp.connect(eq); eq.connect(g.bCrowd); g.crowdSrc = [pa, pb]; g.crowdIn = hp;
       g.startBabble = () => { const bb = toBuf(ctx, babble.out[0], babble.out[1], babble.sr); loop(bb, 1, 0, 0.02, 41).connect(pa); loop(bb, 0.94, babble.secs * 0.53, 0.02, 42).connect(pb); };
       if (babble) g.startBabble();
     }
@@ -403,7 +408,12 @@ export function createSeoulAudio(layout, life, opts = {}) {
     return g;
   }
 
-  api.attach = (ctx, dest, o = {}) => { if (A) api.detach(); A = build(ctx, dest, o); api.__g = A; api.__beds = { bTraffic: A.bTraffic, bCrowd: A.bCrowd, bAlley: A.bAlley, bAir: A.bAir, bRain: A.bRain }; api.attached = true; applyRecorded(A); return api; };
+  api.attach = (ctx, dest, o = {}) => {
+    if (A) api.detach(); A = build(ctx, dest, o); api.__g = A; api.__beds = { bTraffic: A.bTraffic, bCrowd: A.bCrowd, bAlley: A.bAlley, bAir: A.bAir, bRain: A.bRain }; api.attached = true; applyRecorded(A);
+    const ab = !o.offline && typeof location !== 'undefined' && /[?&]beds\b/.test(location.search || '');
+    const want = ab ? BEDS_AB : BEDS; if (Object.values(want).some(Boolean)) api.loadBeds(Object.fromEntries(Object.entries(want).map(([k, u]) => [k, u && new URL(u, new URL('./', import.meta.url)).href]))).catch(() => {});
+    return api;
+  };
   api.detach = () => { if (!A) return; A.dead = true; try { A.out.disconnect(); } catch (e) {} A = null; api.attached = false; };
   api.setLevel = (x) => { SND.level = x; if (A) A.out.gain.value = x * (A.viaWorld ? SND.world : 1); };
   api.setRain = (on) => { if (A) A.rain = !!on; };
@@ -428,7 +438,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
   function applyRecorded(g) {
     for (const k of Object.keys(recorded)) {
       const bedG = g['b' + k[0].toUpperCase() + k.slice(1)]; if (!bedG || g['rec_' + k]) continue;
-      const rb = g.ctx.createGain(); rb.gain.value = 1; rb.connect(bedG); g['rec_' + k] = { bus: rb, buf: recorded[k], next: g.ctx.currentTime, seed: 1 };
+      const rb = g.ctx.createGain(); rb.gain.value = k === 'crowd' ? 0.6 : 1; rb.connect(k === 'crowd' && g.crowdIn ? g.crowdIn : bedG); g['rec_' + k] = { bus: rb, buf: recorded[k], next: g.ctx.currentTime, seed: 1 };
       if (k === 'crowd' && g.crowdSrc) g.crowdSrc.forEach((s) => { try { s.disconnect(); } catch (e) {} });
     }
   }
@@ -643,4 +653,4 @@ export function createSeoulAudio(layout, life, opts = {}) {
   api.feed = (cam, fwd, t, atIn) => { if (A) feedGraph(A, cam, fwd, t, atIn); };
   return api;
 }
-export default { createSeoulAudio, synthLoop, makeBabble, makeOccluder, SND, BEDS };
+export default { createSeoulAudio, synthLoop, makeBabble, makeOccluder, SND, BEDS, BEDS_AB };
