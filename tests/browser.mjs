@@ -15,6 +15,7 @@
 // for tools/camgate.py (CI runs it after this). No 50-minute SwiftShader run to re-baseline: take stills.json from a CI
 // artifact of the commit and
 //   node tests/browser.mjs [--level ID] --golden-from browser-out-<ID>/stills.json     (writes the golden, no browser)
+// Smoke runs (local, not CI): --skip perf,coverage  --shots walk0,club90  --camgate (camgate stills for any level)
 // [P2 H] --level seoul-hongdae (native #3): the same job on another level of levels.json, loaded with ?level=ID. Exports
 // default to exports/<ID> (node tools/export-world.mjs --level ID --out exports/<ID>); coverage applies that world.json
 // (Seoul: city meshes, signs, screens, crowd, traffic, sky, steam... a mesh class with no export entry fails); ?perf runs
@@ -30,7 +31,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const a = process.argv.slice(2), opt = (k, d) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : d; };
 const LEVEL = opt('--level', 'bando'), BANDO = LEVEL === 'bando';
 const EXPORTS = resolve(ROOT, opt('--exports', BANDO ? 'exports' : `exports/${LEVEL}`)), OUT = resolve(ROOT, opt('--out', BANDO ? 'browser-out' : `browser-out-${LEVEL}`));
-const GOLDEN_FROM = opt('--golden-from', null);
+const GOLDEN_FROM = opt('--golden-from', null), SKIP = new Set((opt('--skip', '') || '').split(',').filter(Boolean)), ONLY = opt('--shots', null)?.split(',');
 const UPDATE = a.includes('--update'), FRAMES = +opt('--frames', 1), [W, H] = opt('--size', '320x180').split('x').map(Number);
 const TIMEOUT = 1000 * +(process.env.ONETAKE_TIMEOUT || 900), PH_DIR = process.env.ONETAKE_PH_DIR;
 const GOLDEN = join(ROOT, 'tests', BANDO ? 'golden.json' : `golden-${LEVEL}.json`);
@@ -48,7 +49,7 @@ const LEVEL_SHOTS = {
     station: ['o.tp(31.8,8,-309,0,(0)-o.drone.c.camTilt)', [0, 0, -3]],
   },
 };
-const SHOT_SET = BANDO ? SHOTS : LEVEL_SHOTS[LEVEL] || {};
+const SHOT_SET = Object.fromEntries(Object.entries(BANDO ? SHOTS : LEVEL_SHOTS[LEVEL] || {}).filter(([k]) => !ONLY || ONLY.includes(k)));
 const ALLOW = [/favicon\.ico/];   // console errors that are not failures
 const CAMGATE = { 'seoul-hongdae': true };   // [P3 H] levels whose stills feed tools/camgate.py (lossless PNG, retro 0 and shipped)
 const TOL = { p50: 8, p95: 10 };
@@ -115,14 +116,16 @@ try {
   }
   ok(await page.evaluate(() => window.__onetake.state === 'fly' || window.__onetake.state === 'crash'), `world loaded, flying (${sec()})`);
   if (!BANDO) ok(await page.evaluate(() => window.__onetake.levels?.loaded) === LEVEL, `level ${LEVEL} is the loaded world`);
+  if (!SKIP.has('perf')) {
   const perf = await page.evaluate(() => window.__onetake.perfRun(0));
   const segOk = perf.scales.length === 2 && perf.scales.every((s) => perf.segments.every((n) => Number.isFinite(s.seg[n]?.p90) && Number.isFinite(s.seg[n]?.gpuP50)));
   ok(segOk && (BANDO ? perf.segments.length === 4 : perf.segments.length >= 3 && !perf.segments.includes('hover')), `?perf segments ${perf.segments.join(', ')} at ${perf.scales.map((s) => s.scale).join(' / ')} (${sec()}); ` +
     (BANDO ? `hover ${JSON.stringify(perf.hover)}` : `world.update ${perf.segments.map((n) => { const g = perf.scales[0].seg[n] || {}; return `${n} ${Number.isFinite(g.updP50) ? g.updP50.toFixed(1) + ' p50' : 'parts ' + JSON.stringify(g.parts || {})}`; }).join(', ')} ms`));
   writeFileSync(join(OUT, 'perf.json'), JSON.stringify(perf, null, 1));
+  }
 
   // ---- 3. coverage
-  if (ok(existsSync(join(EXPORTS, 'world.json')), `exports present (${EXPORTS})`)) {
+  if (!SKIP.has('coverage') && ok(existsSync(join(EXPORTS, 'world.json')), `exports present (${EXPORTS})`)) {
     const { summarize } = await import('./coverage.js');
     const cov = await page.evaluate(async () => {
       const { coverage } = await import('/tests/coverage.js');
@@ -138,11 +141,11 @@ try {
   }
 
   // ---- 4. graffiti from the worker (bando only)
-  if (BANDO) { const gu = await page.evaluate(async () => { const s = window.__onetake.world?.stats || window.__bandoStats || {}; for (let i = 0; i < 60 && !(s.graffitiUpload?.path && s.graffitiUpload.path !== 'pending'); i++) await new Promise((r) => setTimeout(r, 500)); return s.graffitiUpload || null; });
+  if (BANDO && !SKIP.has('coverage')) { const gu = await page.evaluate(async () => { const s = window.__onetake.world?.stats || window.__bandoStats || {}; for (let i = 0; i < 60 && !(s.graffitiUpload?.path && s.graffitiUpload.path !== 'pending'); i++) await new Promise((r) => setTimeout(r, 500)); return s.graffitiUpload || null; });
   ok(gu?.path === 'worker', `graffiti atlas drawn in the Worker, uploaded in strips: ${JSON.stringify(gu)}`); }
 
   // ---- 5. golden stills
-  const golden = existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, 'utf8')) : { shots: {} }, now = {}, gate = !!CAMGATE[LEVEL];
+  const golden = existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, 'utf8')) : { shots: {} }, now = {}, gate = !!CAMGATE[LEVEL] || a.includes('--camgate');
   if (gate) mkdirSync(join(OUT, 'camgate'), { recursive: true });
   for (const [name, [tp, vel]] of Object.entries(SHOT_SET)) {
     const ts = Date.now();
@@ -177,7 +180,7 @@ try {
     if (r.png0) writeFileSync(join(OUT, 'camgate', `${name}.r0.png`), Buffer.from(r.png0.split(',')[1], 'base64'));
     now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro } : {}), s: +((Date.now() - ts) / 1000).toFixed(0) };
     const g = golden.shots[name];
-    if (UPDATE || !g) console.log(`  still ${name}: p5 ${r.p5} p50 ${r.p50} p95 ${r.p95} clip ${r.clip}${gate ? ` EV ${r.ev?.toFixed?.(2)}` : ''} (${now[name].s} s)${g ? '' : ' (no golden yet)'}`);
+    if (UPDATE || !g || SKIP.has('golden')) console.log(`  still ${name}: p5 ${r.p5} p50 ${r.p50} p95 ${r.p95} clip ${r.clip}${gate ? ` EV ${r.ev?.toFixed?.(2)}` : ''} (${now[name].s} s)${g ? '' : ' (no golden yet)'}`);
     else ok(Math.abs(r.p50 - g.p50) <= g.tol.p50 && Math.abs(r.p95 - g.p95) <= g.tol.p95,
       `still ${name}: p50 ${r.p50} (golden ${g.p50} ± ${g.tol.p50}), p95 ${r.p95} (golden ${g.p95} ± ${g.tol.p95}) (${now[name].s} s)` +
       (Math.abs(r.p50 - g.p50) <= g.tol.p50 && Math.abs(r.p95 - g.p95) <= g.tol.p95 ? '' : `\n     an intended look change? re-baseline: node tests/browser.mjs${BANDO ? '' : ' --level ' + LEVEL} --golden-from <this job's artifact>/stills.json`));
