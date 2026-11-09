@@ -36,8 +36,17 @@ export const DRESS_MATS = {
   dr_tarp: { color: [1, 1, 1], rough: 0.75, vcol: true, emissive: true, double: true, albedo: [0.35, 0.14, 0.05] },   // lit from inside
   dr_glow: { color: [0.02, 0.02, 0.02], rough: 0.35, emissive: true, albedo: [0.02, 0.02, 0.02] },    // lit faces, tubes, doors
   dr_roadpaint: { color: [1, 1, 1], rough: 0.5, vcol: true, decal: true, noCol: true, albedo: [0.6, 0.6, 0.58] },   // wet via S3's name rule
-  dr_bark: { color: [0.11, 0.095, 0.08], rough: 0.92, albedo: [0.11, 0.095, 0.08] },
+  dr_bark: { color: [0.30, 0.27, 0.24], rough: 0.92, map: 'veg_bark_a.jpg', mapRepeat: [0.5, 1], albedo: [0.11, 0.095, 0.08] },   // [P3-E] bando's CC0 bark (left tile)
   dr_leaf: { color: [1, 1, 1], rough: 0.8, vcol: true, albedo: [0.42, 0.33, 0.06] },
+  // [P3-E art #4] ginkgo leaf cards: bando's V1 cluster tiles (CC0, tools/seoul-ginkgo-cards.py) as a luminance map, the
+  // vertex colour = albedo / 0.5 (gold to yellow-green per card), alpha-tested, crown-mass normals on both faces
+  dr_leafcard: { color: [1, 1, 1], rough: 0.78, vcol: true, map: 'seoul/dressing/ginkgo_cards.png', alphaTest: 0.42, double: true, cardNormals: true, noCol: true, albedo: [0.42, 0.31, 0.05] },
+  // [P3-E graphics #2] the AC unit's face (tools/seoul-ac-face.py: louvres, fan grille, plate, grime), tinted per unit
+  dr_ac: { color: [0.62, 0.62, 0.6], rough: 0.55, vcol: true, map: 'seoul/dressing/ac_face.png', noCol: true, albedo: [0.42, 0.42, 0.4] },
+  // [P3-E fpv #3] background massing (procedural facades: the ring's building shader; uv = metres, colour = floorH, seed, H)
+  dr_mass: { color: [1, 1, 1], rough: 0.9, vcol: true, mass: true, albedo: [0.2, 0.19, 0.18] },
+  // [P3-E] clear vinyl (pocha fronts)
+  dr_vinyl: { color: [0.32, 0.30, 0.28], rough: 0.12, transparent: true, opacity: 0.22, double: true, noCol: true, albedo: [0.05, 0.05, 0.05] },
 };
 // S1/C keys this module writes into (attribute layout: position, normal, uv)
 const C_KEYS = new Set(['concrete', 'tile', 'walk', 'metal', 'white', 'dark', 'pole', 'brick', 'plaster']);
@@ -46,10 +55,36 @@ const specOf = (k) => DRESS_MATS[k] || { emissive: false, vcol: false };
 // browser: a ready material for an E key (C uses its own for C keys)
 export function material(key, renderer) {
   const m = DRESS_MATS[key]; if (!m) return null;
+  if (m.mass) {   // [P3-E] procedural facades (not lit by the city grid: their light is in the shader, like the ring's)
+    const mat = new THREE.ShaderMaterial({ uniforms: { uNits: { value: NITS }, uHaze: { value: new THREE.Vector3(1.0, 0.64, 0.4).multiplyScalar(0.11 * NITS) }, uHazeD: { value: 1900 } },
+      vertexShader: 'attribute vec3 color; varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW; void main(){ vUV = uv; vB = vec4(color.x, color.z > 24.0 ? 2.0 : 0.0, color.y, color.z); vN = normal; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+      fragmentShader: BEYOND_HZ + BEYOND_BLD_FS });
+    mat.userData.cityLight = false; mat.name = 'seoul:' + key; return mat;
+  }
   const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(...m.color), roughness: m.rough ?? 0.8, metalness: m.metal || 0, vertexColors: !!m.vcol });
   if (m.transparent) { mat.transparent = true; mat.opacity = m.opacity ?? 0.5; mat.depthWrite = false; }
   if (m.double) mat.side = THREE.DoubleSide;
   if (m.decal) { mat.polygonOffset = true; mat.polygonOffsetFactor = -3; mat.polygonOffsetUnits = -3; }
+  if (m.map) {   // [P3-E] textured keys (ginkgo cards, bark): files next to this module's repo root
+    mat.map = texOf(m.map, renderer, m.mapRepeat); mat.color.setRGB(...m.color);
+    if (m.alphaTest) { mat.alphaTest = m.alphaTest; mat.side = THREE.DoubleSide; }
+  }
+  if (m.cardNormals) {
+    // leaf cards keep their crown-mass normal on both faces (three flips it on back faces), and alpha holds up in the mips
+    // (bando V1's alpha boost) so far crowns do not thin out to twigs
+    const prev = mat.onBeforeCompile;
+    mat.onBeforeCompile = (sh, r) => {
+      prev?.(sh, r);
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace(/normal \*= faceDirection;/g, '').replace(/bitangent \*= faceDirection;|tangent \*= faceDirection;/g, ''))
+        .replace('#include <alphatest_fragment>', `#ifdef USE_MAP
+  { vec2 tx = vMapUv * vec2(textureSize(map, 0)); diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
+#endif
+#include <alphatest_fragment>`);
+    };
+    mat.customProgramCacheKey = () => 'seoul:dr-card';
+    mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -1;   // fallen-leaf cards lie on the pavement
+  }
   if (m.emissive) {
     mat.emissive = new THREE.Color(0, 0, 0);
     mat.onBeforeCompile = (sh) => {
@@ -60,6 +95,15 @@ export function material(key, renderer) {
   }
   mat.name = 'seoul:' + key;
   return mat;
+}
+
+const TEX = new Map();
+function texOf(file, renderer, rep) {
+  if (TEX.has(file)) return TEX.get(file);
+  const t = new THREE.TextureLoader().load(new URL('./' + file, import.meta.url).href);
+  t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = renderer?.capabilities ? Math.min(8, renderer.capabilities.getMaxAnisotropy()) : 4;
+  if (rep) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rep[0], rep[1]); }
+  TEX.set(file, t); return t;
 }
 
 // ---------------------------------------------------------------------------------------------------------- helpers
@@ -93,9 +137,10 @@ class FBuf {
 }
 class Acc {
   constructor(spec) { this.p = new FBuf(); this.n = new FBuf(); this.uv = new FBuf(); this.e = spec.emissive ? new FBuf() : null; this.c = spec.vcol ? new FBuf() : null; }
-  tri(a, b, c, ua, ub, uc, ea, eb, ec, col) {
+  tri(a, b, c, ua, ub, uc, ea, eb, ec, col, nOv) {
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+    if (nOv) { nx = nOv[0]; ny = nOv[1]; nz = nOv[2]; }   // [P3-E] shading normal override (leaf cards: the crown-mass normal)
     const P = this.p, N = this.n, U = this.uv; P.need(9); N.need(9); U.need(6);
     P.p3(a[0], a[1], a[2]); P.p3(b[0], b[1], b[2]); P.p3(c[0], c[1], c[2]); N.p3(nx, ny, nz); N.p3(nx, ny, nz); N.p3(nx, ny, nz); U.p2(ua[0], ua[1]); U.p2(ub[0], ub[1]); U.p2(uc[0], uc[1]);
     if (this.e) { const A = ea || Z3, B = eb || A, C = ec || A, E = this.e; E.need(9); E.p3(A[0], A[1], A[2]); E.p3(B[0], B[1], B[2]); E.p3(C[0], C[1], C[2]); }
@@ -183,15 +228,15 @@ export function geometry(layout, opts = {}) {
   const emitters = [], setPieces = [], holes = [], cables = [], labels = [], lamps = [];
   const spPush = setPieces.push.bind(setPieces);
   setPieces.push = (...sps) => { for (const sp of sps) gates.push(...spGates(sp)); return spPush(...sps); };
-  const msParts = {}; let tLap = Date.now(); const lap = (k) => { const t = Date.now(); msParts[k] = t - tLap; tLap = t; };
+  const msParts = {}, triParts = {}; let tLap = Date.now(), nLap = 0; const lap = (k) => { const t = Date.now(); msParts[k] = t - tLap; tLap = t; let n = 0; for (const a of Object.values(acc)) n += a.p.length / 9; triParts[k] = Math.round(n - nLap); nLap = n; };
   const facts = { tris: 0, colTris: 0, items: 0, rejectedByGates: 0, scooters: 0, tents: 0, trees: 0, awnings: 0, cablesExtra: 0, drops: 0, signals: 0, crossings: 0, plates: 0, doors: 0, b1: 0, stairs2f: 0 };
 
   // ---------------- kit state: material key, colour (vcol keys), emission (emissive keys), collidable
-  const S = { key: 'concrete', c: [0.5, 0.5, 0.5], em: null, col: true };
-  const set = (key, o = {}) => { S.key = key; S.c = o.c || S.c; S.em = o.em ?? null; S.col = o.col ?? !specOf(key).noCol; return S; };
+  const S = { key: 'concrete', c: [0.5, 0.5, 0.5], em: null, col: true, n: null };
+  const set = (key, o = {}) => { S.key = key; S.c = o.c || S.c; S.em = o.em ?? null; S.col = o.col ?? !specOf(key).noCol; S.n = o.n || null; return S; };
   const uvDef = [[0, 0], [1, 0], [1, 1], [0, 1]];
   function tri(a, b, c, ua = [0, 0], ub = [1, 0], uc = [1, 1], e) {
-    A(S.key).tri(a, b, c, ua, ub, uc, e ? e[0] : S.em, e ? e[1] : S.em, e ? e[2] : S.em, S.c);
+    A(S.key).tri(a, b, c, ua, ub, uc, e ? e[0] : S.em, e ? e[1] : S.em, e ? e[2] : S.em, S.c, S.n);
     if (S.col) { col.need(9); col.p3(a[0], a[1], a[2]); col.p3(b[0], b[1], b[2]); col.p3(c[0], c[1], c[2]); }
   }
   // quad p0..p3 facing nrm (winding fixed), uv per corner, optional per-corner emission
@@ -478,66 +523,71 @@ export function geometry(layout, opts = {}) {
   }
 
   lap('shelter');
-  // ---- 3. UNDER THE STAGE: the Red Road busking canopy on the walking street
+  // ---- 3. UNDER THE STAGE: the busking canopy on 걷고싶은거리 (Eoulmadang-ro walking street, s069: design #1 puts the hero line
+  // on the real street). [P3-E] Canopy 3.2 m at the street edge (3.6 m at the back), 7 m deep; a low platform at the back,
+  // the busk spot in front of it (pos/yaw/busk: G's ring stands there, the audience arc 2.6-4.1 m out toward the street), the
+  // gates along the canopy over the audience's heads at 1.95-2.88 m (0.32 m under the edge beam). Off C's poles and lamps.
   {
-    const walks = M.streets.filter((s) => s.kind === 'walking');
+    const walks = M.streets.filter((s) => s.kind === 'walking'), hero = walks.filter((s) => s.id === 's069');
     let best = null;
     const offOthers = (st, x, z) => M.streets.every((o) => o === st || M.project(o, x, z).dist > o.width / 2 + 9);   // not at a junction
-    for (const st of walks) for (let s = 12; s < st.len - 12; s += 2) {
+    for (const st of hero.length ? hero : walks) for (let s = 12; s < st.len - 12; s += 2) {
       const q = M.at(st, s), nx = -q.tz, nz = q.tx;
-      if (!offOthers(st, q.x, q.z)) continue;
+      if (!offOthers(st, q.x, q.z) || !inCore(q.x, q.z)) continue;
       const fl = M.freeRay(q.x, q.z, nx, nz, 25), fr = M.freeRay(q.x, q.z, -nx, -nz, 25);
       const span = Math.min(fl, 20) + Math.min(fr, 20);
-      if (!isFinite(span)) continue;
-      const score = span + (st.id === 's065' ? 2 : 0) - Math.abs(s - st.len / 2) * 0.02;
-      if (!best || score > best.score) best = { st, s, q, fl, fr, score, nx, nz };
+      if (!isFinite(span) || span < 12) continue;
+      const sd = fl >= fr ? 1 : -1, free = Math.min(sd > 0 ? fl : fr, 12), dep = Math.min(7.0, span * 0.45), back = free - 0.5;
+      const F = frameH([q.x + nx * sd * (back - dep / 2), 0, q.z + nz * sd * (back - dep / 2)], q.tx, q.tz);
+      if (!rectFree(F, -5.1, 5.1, -dep / 2, dep / 2, (x, z) => occFree(x, z, 0.3) && !M.lotAt(x, z))) continue;
+      const score = span - Math.hypot(q.x - 15, q.z + 142) * 0.06;   // toward G's busk[0] ring (15, -142), the Hongik-ro end (design #1)
+      if (!best || score > best.score) best = { st, s, q, fl, fr, score, nx, nz, sd, back, dep };
     }
     if (best) {
-      const { q, fl, fr, nx, nz } = best, sd = fl >= fr ? 1 : -1, free = sd > 0 ? fl : fr;
-      const dep = 5.6, len = 9.0, back = Math.min(free, 12) - 0.5;          // canopy against the building line on the wider side
+      const { q, nx, nz, sd, back, dep } = best, len = 9.0, yE = 3.2, yB = 3.6;
       const cx = q.x + nx * sd * (back - dep / 2), cz = q.z + nz * sd * (back - dep / 2);
       const F = frameH([cx, 0, cz], q.tx, q.tz);                              // x along the street, z across (toward -sd = street centre)
       const zin = -sd * dep / 2, zback = sd * dep / 2;                        // street side, building side
+      const zSpot = zback - sd * 2.1, zAud = zSpot - sd * 3.3;                 // the busk spot (in front of the platform), the audience's centre
       item(() => {
-        // stage platform at the back, carpet-black deck with a front edge strip
-        set('dr_prop', { c: [0.03, 0.03, 0.035] }); boxMM(F, -3.2, 0, zback - sd * 2.6, 3.2, 0.32, zback - sd * 0.15);
-        set('dr_glow', { em: NI([1.0, 0.75, 0.45], 300), col: false }); boxMM(F, -3.2, 0.24, zback - sd * 2.61 - 0.01, 3.2, 0.27, zback - sd * 2.6 + 0.01);
-        // truss columns + roof (white membrane deck, mono-pitch: 2.6 m clear at the street edge, 3.1 m at the back)
-        set('dr_galv'); for (const z of [zin * 0.92, zback * 0.92]) for (const x of z === zin * 0.92 ? [-len / 2 + 0.2, len / 2 - 0.2] : [-len / 2 + 0.2, 0, len / 2 - 0.2]) { const yt = z === zin * 0.92 ? 2.6 : 3.1; boxMM(F, x - 0.1, 0, z - 0.1, x + 0.1, yt, z + 0.1); }   // the street edge is a 9 m truss: no middle post
-        set('dr_steel'); for (const z of [zin * 0.92, zback * 0.92]) { const yt = z === zin * 0.92 ? 2.6 : 3.1; boxMM(F, -len / 2, yt, z - 0.12, len / 2, yt + 0.25, z + 0.12); }
-        for (const x of [-len / 2 + 0.2, 0, len / 2 - 0.2]) { const a = W(F, x, 2.72, zin * 0.92), b = W(F, x, 3.22, zback * 0.92); tube([a, b], 0.06, 4); }
-        set('white');
-        { const a = W(F, -len / 2 - 0.2, 2.86, zin * 1.02), b = W(F, len / 2 + 0.2, 2.86, zin * 1.02), c = W(F, len / 2 + 0.2, 3.36, zback * 1.02), d = W(F, -len / 2 - 0.2, 3.36, zback * 1.02);
+        // low platform at the back (speakers, amp; the busker stands in front of it, on the street)
+        set('dr_prop', { c: [0.03, 0.03, 0.035] }); boxMM(F, -3.2, 0, zback - sd * 1.6, 3.2, 0.32, zback - sd * 0.15);
+        set('dr_glow', { em: NI([1.0, 0.75, 0.45], 300), col: false }); boxMM(F, -3.2, 0.24, zback - sd * 1.61 - 0.01, 3.2, 0.27, zback - sd * 1.6 + 0.01);
+        // truss columns (corners only at the street edge: a 9 m truss), the mono-pitch membrane roof
+        set('dr_galv'); for (const z of [zin * 0.94, zback * 0.94]) for (const x of z === zin * 0.94 ? [-len / 2 + 0.2, len / 2 - 0.2] : [-len / 2 + 0.2, 0, len / 2 - 0.2]) { const yt = z === zin * 0.94 ? yE : yB; boxMM(F, x - 0.1, 0, z - 0.1, x + 0.1, yt, z + 0.1); }
+        set('dr_steel'); for (const z of [zin * 0.94, zback * 0.94]) { const yt = z === zin * 0.94 ? yE : yB; boxMM(F, -len / 2, yt, z - 0.12, len / 2, yt + 0.28, z + 0.12); }
+        for (const x of [-len / 2 + 0.2, 0, len / 2 - 0.2]) tube([W(F, x, yE + 0.14, zin * 0.94), W(F, x, yB + 0.14, zback * 0.94)], 0.06, 4);
+        { const a = W(F, -len / 2 - 0.2, yE + 0.28, zin * 1.02), b = W(F, len / 2 + 0.2, yE + 0.28, zin * 1.02), c = W(F, len / 2 + 0.2, yB + 0.28, zback * 1.02), d = W(F, -len / 2 - 0.2, yB + 0.28, zback * 1.02);
           const up = v3.norm(v3.cross(v3.sub(b, a), v3.sub(d, a))), nU = up[1] > 0 ? up : v3.mul(up, -1);
-          quad(a, b, c, d, nU); quad(a, d, c, b, v3.mul(nU, -1));
-          // a 6 cm thick edge so it is a closed solid for the collider
-          set('white'); boxMM(F, -len / 2 - 0.2, 2.8, zin * 1.02 - 0.03, len / 2 + 0.2, 2.88, zin * 1.02 + 0.03); }
-        // festoon bulbs along the street edge and the ridge (warm 2200 K point sources)
+          set('white'); quad(a, b, c, d, nU); quad(a, d, c, b, v3.mul(nU, -1));
+          boxMM(F, -len / 2 - 0.2, yE + 0.22, zin * 1.02 - 0.03, len / 2 + 0.2, yE + 0.3, zin * 1.02 + 0.03); }
+        // festoon bulbs along the street edge (under the beam) and down the middle (warm 2200 K point sources)
         set('dr_glow', { em: NI(srgb(0xffb46b), 1600), col: false });
-        for (let x = -len / 2 + 0.3; x <= len / 2 - 0.2; x += 0.6) for (const [z, y] of [[zin * 0.95, 2.52 - 0.08 * Math.cos((x / len) * TAU * 1.5)], [0, 2.95 - 0.06 * Math.cos((x / len) * TAU * 1.5)]]) {
+        for (let x = -len / 2 + 0.3; x <= len / 2 - 0.2; x += 0.6) for (const [z, y] of [[zin * 0.97, yE - 0.12 - 0.07 * Math.cos((x / len) * TAU * 1.5)], [(zin + zback) * 0.5, (yE + yB) / 2 - 0.1 - 0.06 * Math.cos((x / len) * TAU * 1.5)]]) {
           const p = W(F, x, y, z); blob([p[0], p[1] - 0.06, p[2]], 0.05, 0.055, 0.05, R0, 0, 0.05); boxMM(FW, p[0] - 0.012, p[1] - 0.02, p[2] - 0.012, p[0] + 0.012, p[1] + 0.02, p[2] + 0.012); }
-        set('dark'); for (const z of [zin * 0.95, 0]) { const pts = []; for (let x = -len / 2 + 0.3; x <= len / 2 - 0.2; x += 0.3) pts.push(W(F, x, (z === 0 ? 3.0 : 2.57) - 0.06 * Math.cos((x / len) * TAU * 1.5), z)); tube(pts, 0.006, 3); }
-        // PA: two speaker stacks, an amp, a mic stand; a portable LED panel on a stand lighting the busker
+        set('dark'); for (const [z, y0] of [[zin * 0.97, yE - 0.07], [(zin + zback) * 0.5, (yE + yB) / 2 - 0.05]]) { const pts = []; for (let x = -len / 2 + 0.3; x <= len / 2 - 0.2; x += 0.3) pts.push(W(F, x, y0 - 0.07 * Math.cos((x / len) * TAU * 1.5), z)); tube(pts, 0.006, 3); }
+        // PA: two speaker stacks on the platform, an amp, a mic stand at the spot; a portable LED panel lighting the busker
         set('dr_prop', { c: [0.02, 0.02, 0.022] });
-        for (const x of [-2.7, 2.7]) { boxMM(F, x - 0.28, 0.32, zback - sd * 2.3 - 0.2, x + 0.28, 1.15, zback - sd * 2.3 + 0.2); cyl(F, [x, 1.5, zback - sd * 2.3], 'y', 0.025, 0.7, 6); boxMM(F, x - 0.22, 1.85, zback - sd * 2.3 - 0.16, x + 0.22, 2.4, zback - sd * 2.3 + 0.16); }
-        boxMM(F, 1.2, 0.32, zback - sd * 0.8 - 0.2, 1.8, 0.75, zback - sd * 0.8 + 0.2);
-        set('dr_galv'); cyl(F, [0, 1.05, zback - sd * 2.2], 'y', 0.012, 1.45, 5);
-        set('dr_steel'); cyl(F, [-1.9, 1.2, zback - sd * 0.6], 'y', 0.02, 1.7, 5);
-        set('dr_glow', { em: NI([1.0, 0.92, 0.82], 1500), col: false }); boxMM(F, -2.15, 1.95, zback - sd * 0.6 - 0.04, -1.65, 2.25, zback - sd * 0.6 + 0.04);
+        for (const x of [-2.7, 2.7]) { boxMM(F, x - 0.28, 0.32, zback - sd * 1.0 - 0.2, x + 0.28, 1.15, zback - sd * 1.0 + 0.2); cyl(F, [x, 1.5, zback - sd * 1.0], 'y', 0.025, 0.7, 6); boxMM(F, x - 0.22, 1.85, zback - sd * 1.0 - 0.16, x + 0.22, 2.4, zback - sd * 1.0 + 0.16); }
+        boxMM(F, 1.2, 0.32, zback - sd * 0.6 - 0.2, 1.8, 0.75, zback - sd * 0.6 + 0.2);
+        set('dr_galv'); cyl(F, [0.6, 0.72, zSpot], 'y', 0.012, 1.45, 5);
+        set('dr_steel'); cyl(F, [-1.9, 1.2, zback - sd * 0.5], 'y', 0.02, 1.7, 5);
+        set('dr_glow', { em: NI([1.0, 0.92, 0.82], 1500), col: false }); boxMM(F, -2.15, 1.95, zback - sd * 0.5 - 0.04, -1.65, 2.25, zback - sd * 0.5 + 0.04);
         // back wall: dark panel with the busking-zone sign
-        set('dr_steel'); boxMM(F, -3.4, 0, zback - 0.06, 3.4, 2.9, zback + 0.06);
+        set('dr_steel'); boxMM(F, -3.4, 0, zback - 0.06, 3.4, yB - 0.1, zback + 0.06);
         set('dr_glow', { em: NI([0.95, 0.35, 0.45], 140), col: false });
-        quad(W(F, -1.6, 2.2, zback - sd * 0.065), W(F, 1.6, 2.2, zback - sd * 0.065), W(F, 1.6, 2.75, zback - sd * 0.065), W(F, -1.6, 2.75, zback - sd * 0.065), D(F, 0, 0, -sd));
-        labels.push({ id: 'stage:sign', kind: 'stage', pos: r3(W(F, 0, 2.475, zback - sd * 0.07)), normal: r3(D(F, 0, 0, -sd)), right: r3(D(F, sd, 0, 0)), w: 3.2, h: 0.55, nits: 160, lines: ['걷고싶은거리 버스킹존', 'BUSKING ZONE · 홍대 레드로드'] });
-        emit({ id: 'dress:stage:festoon', kind: 'neon', pos: W(F, 0, 2.5, zin * 0.95), normal: D(F, 0, 0, -sd), w: len, h: 0.15, rgb: [1.0, 0.62, 0.32], nits: 600, omni: 0.8, range: 14 });
-        emit({ id: 'dress:stage:panel', kind: 'lightbox', pos: W(F, -1.9, 2.1, zback - sd * 0.65), normal: D(F, 0.4, -0.3, -sd), w: 0.5, h: 0.3, rgb: [1.0, 0.92, 0.82], nits: 1500, range: 10 });
-        emit({ id: 'dress:stage:sign', kind: 'lightbox', pos: W(F, 0, 2.47, zback - sd * 0.08), normal: D(F, 0, 0, -sd), w: 3.2, h: 0.55, rgb: [0.95, 0.35, 0.45], nits: 140 });
-        occRect(F, -len / 2, len / 2, -dep / 2, dep / 2);
-        const yG = 1.4, gz = zin * (1.2 / (dep / 2));   // 0.5-2.3 m over the audience, 0.3 m under the 2.6 m edge, inside the festoon line
-        setPieces.push({ id: 'under-the-stage', kind: 'stage', name: 'UNDER THE STAGE', street: best.st.id, pos: r3([cx, 0, cz]), dir: r3(D(F, 1, 0, 0)), roof: { low: 2.6, high: 3.1 },
-          crowdRing: { c: r3(W(F, 0, 0, zin * 0.9)), r: 3.2 },
-          gates: { pre: { c: r3(W(F, -len / 2 - 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.2, h: 1.8 }, gate: { c: r3(W(F, len / 2 + 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.2, h: 1.8 } },
-          note: 'over the busking crowd (heads to 1.8 m) and under the canopy edge (2.6 m); G: a crowd ring at crowdRing' });
+        quad(W(F, -1.6, 2.6, zback - sd * 0.065), W(F, 1.6, 2.6, zback - sd * 0.065), W(F, 1.6, 3.15, zback - sd * 0.065), W(F, -1.6, 3.15, zback - sd * 0.065), D(F, 0, 0, -sd));
+        labels.push({ id: 'stage:sign', kind: 'stage', pos: r3(W(F, 0, 2.875, zback - sd * 0.07)), normal: r3(D(F, 0, 0, -sd)), right: r3(D(F, sd, 0, 0)), w: 3.2, h: 0.55, nits: 160, lines: ['걷고싶은거리 버스킹존', 'BUSKING ZONE · 홍대 걷고싶은거리'] });
+        emit({ id: 'dress:stage:festoon', kind: 'neon', pos: W(F, 0, yE - 0.15, zin * 0.97), normal: D(F, 0, 0, -sd), w: len, h: 0.15, rgb: [1.0, 0.62, 0.32], nits: 600, omni: 0.8, range: 14 });
+        emit({ id: 'dress:stage:panel', kind: 'lightbox', pos: W(F, -1.9, 2.1, zback - sd * 0.55), normal: D(F, 0.4, -0.3, -sd), w: 0.5, h: 0.3, rgb: [1.0, 0.92, 0.82], nits: 1500, range: 10 });
+        emit({ id: 'dress:stage:sign', kind: 'lightbox', pos: W(F, 0, 2.87, zback - sd * 0.08), normal: D(F, 0, 0, -sd), w: 3.2, h: 0.55, rgb: [0.95, 0.35, 0.45], nits: 140 });
+        occRect(F, -len / 2, len / 2, Math.min(zSpot, zback), Math.max(zSpot, zback));   // the audience area stays free for G's ring
+        const y0 = 1.95, y1 = 2.88, yG = (y0 + y1) / 2, hG = y1 - y0, gz = -sd * Math.min(Math.abs(zAud), dep / 2 * 0.94 - 0.45 - 1.1);   // the gate's outer edge 0.45 m inside the posts
+        const spot = W(F, 0, 0, zSpot), fwd = D(F, 0, 0, -sd);
+        setPieces.push({ id: 'under-the-stage', kind: 'stage', name: 'UNDER THE STAGE', street: best.st.id, pos: r3(spot), yaw: +Math.atan2(fwd[0], fwd[2]).toFixed(4), roof: { low: yE, high: yB },
+          busk: { pos: r3(spot), yaw: +Math.atan2(fwd[0], fwd[2]).toFixed(4), arc: 1.95, r: [2.6, 4.1] }, crowdRing: { c: r3(W(F, 0, 0, zAud)), r: 3.2 }, canopy: { c: r3([cx, 0, cz]), len, dep },
+          gates: { pre: { c: r3(W(F, -len / 2 - 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.2, h: +hG.toFixed(2) }, gate: { c: r3(W(F, len / 2 + 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.2, h: +hG.toFixed(2) } },
+          note: 'over the busking crowd (heads 1.8 m, phones up to 2 m) and under the 3.2 m canopy edge; G: performers at busk.pos facing busk.yaw (sin, cos), the ring centred on crowdRing' });
       }, { noGate: true });
     }
   }
@@ -738,9 +788,73 @@ export function geometry(layout, opts = {}) {
   }
 
   lap('crossings');
-  // ---- trees: ginkgos on the main roads' pavements (Nov: half gold), tree pits with grates
+  // ---- trees: ginkgos on the main roads' pavements (Nov: half gold), tree pits with grates.
+  // [P3-E art #4 / graphics #2] a real street ginkgo instead of polyhedra: a straight leader, pruned clear to ~3 m, ascending
+  // limbs in a loose spiral (excurrent, columnar-conical, 8-12 m), leaf-card clusters (bando V1's CC0 tiles, two crossed
+  // cards each, crown-mass normals, inner cards darker), November colour per tree (gold to yellow-green, the outer and
+  // upper leaves first) and fallen leaves on the pavement. Leaves do not collide; the trunk and the limbs do.
+  // Placement keeps phase 2's stream (R) so every tree stands where it stood; the shape has its own stream per tree.
   {
     const R = rng('trees' + seed);
+    const GOLD = [1.04, 0.74, 0.07], YEL = [0.92, 0.82, 0.16], GRN = [0.36, 0.5, 0.1], BROWN = [0.55, 0.36, 0.08];
+    const mixc = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+    const card = (c, s, yaw, tilt, n, col, tile) => {   // two crossed cards, centre c, size s, crown normal n
+      const u0 = (tile % 4) / 4, u1 = u0 + 0.25, vt = 1 - Math.floor(tile / 4) * 0.5, vb = vt - 0.5;
+      const uv = [[u0, vb], [u1, vb], [u1, vt], [u0, vt]];
+      set('dr_leafcard', { c: col, n });
+      for (const k of [0, 1]) {
+        const a = yaw + k * Math.PI / 2, dx = Math.cos(a) * s / 2, dz = Math.sin(a) * s / 2, ty = Math.sin(tilt * (k ? -1 : 1)) * s / 2, hy = Math.cos(tilt) * s / 2;
+        const ox = -Math.sin(a) * ty, oz = Math.cos(a) * ty;
+        quad([c[0] - dx - ox, c[1] - hy, c[2] - dz - oz], [c[0] + dx - ox, c[1] - hy, c[2] + dz - oz], [c[0] + dx + ox, c[1] + hy, c[2] + dz + oz], [c[0] - dx + ox, c[1] + hy, c[2] - dz + oz], [-Math.sin(a), 0, Math.cos(a)], uv);
+      }
+    };
+    const ginkgo = (x, z, tx, tz, H, Rt) => {
+      const F = frameH([x, 0, z], tx, tz);
+      set('dr_steel'); boxMM(F, -0.62, 0, -0.62, 0.62, 0.02, 0.62, ['ny']);                 // cast grate
+      set('dr_steel'); for (const e of [-0.62, 0.62]) boxMM(F, e - 0.02, 0, -0.64, e + 0.02, 0.05, 0.64, ['ny']);
+      const turn = clamp(0.35 + Rt() * 0.75, 0, 1), bare = Rt() < 0.12, yB = 2.6 + Rt() * 0.7;   // crown base (pruned for buses)
+      const lean = [(Rt() - 0.5) * 0.18, (Rt() - 0.5) * 0.18], ax = (y) => [x + lean[0] * y / H, y, z + lean[1] * y / H];
+      const Rmax = (bare ? 1.4 : 1.7) + Rt() * 0.8, Rof = (y) => { const t = clamp((y - yB) / (H - yB), 0, 1); return Rmax * Math.max(0.12, Math.sin(Math.min(1, t * 1.6 + 0.15) * Math.PI * 0.5) * (1 - t ** 1.6)); };
+      // trunk (bark), straight leader to the top
+      set('dr_bark');
+      { const n = 4; for (let i = 0; i < n; i++) { const y0 = H * 0.92 * i / n, y1 = H * 0.92 * (i + 1) / n, r0 = lerp(0.17, 0.035, i / n), r1 = lerp(0.17, 0.035, (i + 1) / n), p0 = ax(y0), p1 = ax(y1);
+        for (let k = 0; k < 5; k++) { const a0 = k / 5 * TAU, a1 = (k + 1) / 5 * TAU, P = (p, r, a) => [p[0] + Math.cos(a) * r, p[1], p[2] + Math.sin(a) * r];
+          quad(P(p0, r0, a0), P(p0, r0, a1), P(p1, r1, a1), P(p1, r1, a0), [Math.cos((a0 + a1) / 2), 0, Math.sin((a0 + a1) / 2)], [[k / 5, y0 / 1.2], [(k + 1) / 5, y0 / 1.2], [(k + 1) / 5, y1 / 1.2], [k / 5, y1 / 1.2]]); } } }
+      // limbs: a loose spiral of ascending branches, shorter toward the top; leaf clusters along each
+      const nB = bare ? 9 : 11 + Math.floor(Rt() * 4), clusters = [];
+      let az = Rt() * TAU;
+      for (let i = 0; i < nB; i++) {
+        const t = (i + Rt() * 0.6) / nB, y = lerp(yB, H - 1.0, t), base = ax(y), L = Rof(y + 0.6) * (0.85 + Rt() * 0.3) + 0.3, up = lerp(0.85, 1.25, t) + (Rt() - 0.5) * 0.25;   // up: elevation (rad)
+        az += 2.4 + (Rt() - 0.5) * 0.5;
+        const dir = [Math.cos(az) * Math.cos(up), Math.sin(up), Math.sin(az) * Math.cos(up)], tip = [base[0] + dir[0] * L, base[1] + dir[1] * L, base[2] + dir[2] * L];
+        const mid = [base[0] + dir[0] * L * 0.5 + Math.cos(az) * 0.08, base[1] + dir[1] * L * 0.5 - 0.05, base[2] + dir[2] * L * 0.5 + Math.sin(az) * 0.08];
+        const r = lerp(0.055, 0.025, t);
+        set('dr_bark', { col: r > 0.03 }); tube([base, mid, tip], r, 3);
+        if (!bare) { const nc = 1 + Math.round(L * 1.1); for (let j = 0; j < nc; j++) { const f = 0.35 + 0.65 * (j + Rt() * 0.5) / nc; clusters.push([base[0] + dir[0] * L * f + (Rt() - 0.5) * 0.5, base[1] + dir[1] * L * f + (Rt() - 0.3) * 0.5, base[2] + dir[2] * L * f + (Rt() - 0.5) * 0.5]); } }
+        else if (Rt() < 0.5) clusters.push(tip);
+      }
+      // the leader's own clusters, up to the spire, and a fill of the crown envelope (no hollow cone)
+      const nFill = bare ? 4 : 18 + Math.floor(Rt() * 8);
+      for (let i = 0; i < nFill; i++) { const y = lerp(yB + 0.4, H - 0.2, Math.sqrt(Rt())), rr = Rof(y) * Math.sqrt(Rt()) * 0.9, a = Rt() * TAU, p = ax(y); clusters.push([p[0] + Math.cos(a) * rr, y, p[2] + Math.sin(a) * rr]); }
+      for (const c of clusters) {
+        const p = ax(c[1]), dx = c[0] - p[0], dz = c[2] - p[2], rr = Math.hypot(dx, dz), R1 = Math.max(0.3, Rof(c[1])), out = clamp(rr / R1, 0, 1.2);
+        const hT = clamp((c[1] - yB) / (H - yB), 0, 1), n = v3.norm([dx / R1, 0.45 + 0.4 * hT, dz / R1]);
+        const ao = 0.5 + 0.5 * Math.min(1, out) * (0.8 + 0.2 * hT);                       // inner cards sit in the crown's shade
+        const g = clamp(turn + (out - 0.6) * 0.35 + (hT - 0.5) * 0.25 + (Rt() - 0.5) * 0.35, 0, 1);
+        const col = (bare ? mixc(GOLD, BROWN, Rt() * 0.6) : g < 0.35 ? mixc(GRN, YEL, g / 0.35) : mixc(YEL, GOLD, (g - 0.35) / 0.65)).map((v) => v * ao * (0.85 + Rt() * 0.3));
+        card(c, (bare ? 0.75 : 1.05) + Rt() * 0.5, Rt() * Math.PI, (Rt() - 0.5) * 0.8, n, col, Math.floor(Rt() * 8));
+      }
+      // fallen leaves: flat cards on the pavement round the pit (more under a bare tree), off the carriageway
+      const nF = bare ? 12 : Math.round(3 + turn * 6);
+      for (let i = 0; i < nF; i++) {
+        const a = Rt() * TAU, d = 0.5 + Rt() * (bare ? 2.6 : 1.9), fx = x + Math.cos(a) * d, fz = z + Math.sin(a) * d;
+        if (M.ribbonD(fx, fz, true) < 0.2 || M.lotAt(fx, fz)) continue;
+        const s2 = 0.45 + Rt() * 0.4, yw = Rt() * TAU, cx = Math.cos(yw) * s2 / 2, cz = Math.sin(yw) * s2 / 2, y = 0.004 + i * 0.0004, tile = Math.floor(Rt() * 8);
+        const u0 = (tile % 4) / 4, vt = 1 - Math.floor(tile / 4) * 0.5;
+        set('dr_leafcard', { c: mixc(GOLD, BROWN, Rt() * 0.5).map((v) => v * 0.8), n: [0, 1, 0] });
+        quad([fx - cx + cz, y, fz - cz - cx], [fx + cx + cz, y, fz + cz - cx], [fx + cx - cz, y, fz + cz + cx], [fx - cx - cz, y, fz - cz + cx], [0, 1, 0], [[u0, vt - 0.5], [u0 + 0.25, vt - 0.5], [u0 + 0.25, vt], [u0, vt]]);
+      }
+    };
     for (const st of mainStreets) {
       if (st.width < 9) continue;
       for (const sd of [-1, 1]) {
@@ -751,21 +865,9 @@ export function geometry(layout, opts = {}) {
           if (!inCore(x, z) || M.ribbonD(x, z) < 0.8 || !M.lotClear(x, z, 1.7) || !occFree(x, z, 1.2)) continue;
           // pavement must be >= 3 m deep here (else no trees: Seoul plants only where the walk is wide enough)
           if (M.freeRay(x, z, nx, nz, 3.2) < 2.2) continue;
-          item(() => {
-            const H = 7.5 + R() * 3.5, F = frameH([x, 0, z], q.tx, q.tz), lean = (R() - 0.5) * 0.25;
-            set('dr_steel'); boxMM(F, -0.62, 0, -0.62, 0.62, 0.02, 0.62, ['ny']);                 // grate
-            set('dr_bark'); cyl(F, [0, H * 0.32, 0], 'y', 0.14, H * 0.64, 7, 0.08);
-            tube([[x, H * 0.4, z], [x + nx * 0.9 + lean, H * 0.62, z + nz * 0.9], [x + nx * 1.2, H * 0.78, z + nz * 1.2]], 0.05, 3);
-            tube([[x, H * 0.45, z], [x - nx * 0.8, H * 0.68, z - nz * 0.8 + lean]], 0.045, 3);
-            // conical-columnar crown of clumps; colour: gold to yellow-green, a few nearly bare
-            const bare = R() < 0.15, nC = bare ? 4 : 7;
-            for (let k = 0; k < nC; k++) {
-              const t = k / nC, y = lerp(3.2, H - 0.6, t + R() * 0.08), rr = lerp(1.7, 0.7, t) * (bare ? 0.6 : 1) * (0.8 + R() * 0.4), a = R() * TAU, off2 = rr * 0.45;
-              const g = R(); set('dr_leaf', { c: bare ? [0.12, 0.1, 0.06] : g < 0.55 ? [0.62, 0.46, 0.05] : g < 0.85 ? [0.5, 0.42, 0.07] : [0.28, 0.32, 0.08] });
-              blob([x + Math.cos(a) * off2, y, z + Math.sin(a) * off2], rr, rr * 0.8, rr, R, 0, 0.25);
-            }
-            occAdd(x, z, 1.1); facts.trees++;
-          }, { margin: 0.4 });
+          const H = 7.5 + R() * 3.5; R(); const bare2 = R() < 0.15; for (let k = 0; k < (bare2 ? 4 : 7) * 16; k++) R();   // phase 2's draws (H, lean, bare, 4 + 12 per blob): placement stays put
+          const Rt = rng('ginkgo' + seed + ':' + x.toFixed(2) + ':' + z.toFixed(2));
+          item(() => { ginkgo(x, z, q.tx, q.tz, H + 1.2, Rt); occAdd(x, z, 1.1); facts.trees++; }, { margin: 0.4 });
         }
       }
     }
@@ -871,26 +973,58 @@ export function geometry(layout, opts = {}) {
       }, { margin: 0.35 })) { occAdd(x, z, 1.2); n++; facts.carts = n; }
     }
   }
-  // tent: frame F (x along the kerb, +z away from it, toward the customers), tarp box with a ridge, the vinyl front (+z) lit
+  // tent: frame F (x along the kerb, +z away from it, toward the customers).
+  // [P3-E art #4 / graphics #2] a pocha that reads as a pocha, not a cream box: a #ff7a1a-family tarp glowing from one bare
+  // bulb inside (per-vertex: 90-110 nits luminance round the bulb, 40-60 on the walls, darker toward the ground), sewn
+  // panels (dark seams where the steel frame shows through), the roof sagging between the rafters, a clear vinyl front with
+  // its roll at the top, the lit inside seen through it (a steel table, green bottles, stools), stools and crates outside.
   function tent(F, xo, w, d, R, idx) {
-    const eave = 2.15, ridge = 2.7, hz = d / 2, hx = w / 2 - 0.05;
-    const tarp = [srgb(0xe8541c), srgb(0xd9401a), srgb(0xf06a1f), srgb(0xc93a2a)][idx % 4];
-    const glow = (k) => NI([1.0, 0.56, 0.24], k);
-    // walls: lit tarp (translucent: the lamp inside shows through), the front (road side) and the side facing the walk are clear vinyl
-    set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: glow(70) });
-    boxMM(F, xo - hx, 0.02, -hz, xo + hx, eave, -hz + 0.02);                      // back (kerb / facade side)
-    for (const s of [-1, 1]) boxMM(F, xo + s * hx - 0.01, 0.02, -hz, xo + s * hx + 0.01, eave, hz);
-    set('dr_tarp', { c: [0.2, 0.2, 0.2], em: glow(115) });
-    boxMM(F, xo - hx, 0.35, hz - 0.02, xo + hx, eave - 0.25, hz);                // vinyl front, lit interior behind it
-    set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: glow(60) });
-    boxMM(F, xo - hx, eave - 0.25, hz - 0.02, xo + hx, eave, hz);
-    // roof: two pitches to the ridge
-    for (const s of [-1, 1]) { const a = W(F, xo - hx - 0.08, eave + 0.02, s * (hz + 0.1)), b = W(F, xo + hx + 0.08, eave + 0.02, s * (hz + 0.1)), c = W(F, xo + hx + 0.08, ridge, 0), dd = W(F, xo - hx - 0.08, ridge, 0);
-      const nU = v3.norm(v3.cross(v3.sub(b, a), v3.sub(dd, a))), up = nU[1] > 0 ? nU : v3.mul(nU, -1);
-      set('dr_tarp', { c: tarp.map((v) => v * 0.7), em: glow(45) }); quad(a, b, c, dd, up); quad(a, dd, c, b, v3.mul(up, -1)); }
-    for (const s of [-1, 1]) { const p0 = W(F, xo + s * (hx + 0.08), eave + 0.02, -hz - 0.1), p1 = W(F, xo + s * (hx + 0.08), eave + 0.02, hz + 0.1), p2 = W(F, xo + s * (hx + 0.08), ridge, 0); set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: glow(55) }); tri(p0, p1, p2); tri(p0, p2, p1); }
+    const eave = 2.1, ridge = 2.62, hz = d / 2, hx = w / 2 - 0.05;
+    const tarp = [srgb(0xff7a1a), srgb(0xf0641a), srgb(0xe8541c), srgb(0xff8a24)][idx % 4];
+    const lumOf = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], Nb = 300 * (0.353 / lumOf(tarp)) ** 0.5;
+    const bulb = W(F, xo, 1.95, -0.1);
+    const emAt = (p) => { const dd = Math.hypot(p[0] - bulb[0], p[1] - bulb[1], p[2] - bulb[2]); const k = (0.32 + 0.78 / (1 + (dd / 0.8) ** 2)) * (0.62 + 0.38 * clamp(p[1] / eave, 0, 1)); return NI(tarp, Nb * k); };
+    // a bilinear patch, nu x nv cells, per-vertex glow, optional sag (m) toward -nrm
+    const patch = (P, nu, nv, nrm, sag = 0, kE = 1, col = tarp.map((v) => v * 0.55)) => {
+      const at = (u, v) => { const q = [0, 1, 2].map((i) => lerp(lerp(P[0][i], P[1][i], u), lerp(P[3][i], P[2][i], u), v)); if (sag) { const sg = sag * Math.sin(Math.PI * u) * Math.sin(Math.PI * v); q[0] -= nrm[0] * sg; q[1] -= nrm[1] * sg; q[2] -= nrm[2] * sg; } return q; };
+      set('dr_tarp', { c: col });
+      for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+        const q = [at(i / nu, j / nv), at((i + 1) / nu, j / nv), at((i + 1) / nu, (j + 1) / nv), at(i / nu, (j + 1) / nv)];
+        quad(q[0], q[1], q[2], q[3], nrm, uvDef, q.map((v) => emAt(v).map((e) => e * kE)));
+      }
+    };
+    const seam = (a, b, out) => { set('dr_tarp', { c: tarp.map((v) => v * 0.3), em: NI(tarp, Nb * 0.12) }); const t = v3.norm(v3.sub(b, a)), sd = v3.mul(v3.norm(v3.cross(t, out)), 0.025), o = v3.mul(out, 0.008);
+      quad(v3.add(v3.add(a, sd), o), v3.add(v3.sub(a, sd), o), v3.add(v3.sub(b, sd), o), v3.add(v3.add(b, sd), o), out); };
+    const L = (x, y, z) => W(F, xo + x, y, z), N = (x, y, z) => D(F, x, y, z);
+    // walls: the back (kerb side) and both ends, tarp; seams where the posts and a mid rail stand
+    patch([L(-hx, 0.02, -hz), L(hx, 0.02, -hz), L(hx, eave, -hz), L(-hx, eave, -hz)], 4, 3, N(0, 0, -1));
+    for (const sx of [-1, 1]) patch([L(sx * hx, 0.02, hz), L(sx * hx, 0.02, -hz), L(sx * hx, eave, -hz), L(sx * hx, eave, hz)].map((p, i, A) => (sx > 0 ? p : A[[1, 0, 3, 2][i]])), 3, 3, N(sx, 0, 0));
+    for (const sx of [-1, 0, 1]) seam(L(sx * hx * 0.999, 0.02, -hz - 0.002), L(sx * hx * 0.999, eave, -hz - 0.002), N(0, 0, -1));
+    seam(L(-hx, 1.05, -hz - 0.002), L(hx, 1.05, -hz - 0.002), N(0, 0, -1));
+    for (const sx of [-1, 1]) { seam(L(sx * (hx + 0.002), 0.02, 0), L(sx * (hx + 0.002), eave + 0.25, 0), N(sx, 0, 0)); seam(L(sx * (hx + 0.002), 1.05, -hz), L(sx * (hx + 0.002), 1.05, hz), N(sx, 0, 0)); }
+    // gables (tarp triangles over the ends) and the roof: two pitches sagging between three rafters
+    for (const sx of [-1, 1]) { set('dr_tarp', { c: tarp.map((v) => v * 0.55) }); const p0 = L(sx * (hx + 0.06), eave, -hz - 0.08), p1 = L(sx * (hx + 0.06), eave, hz + 0.08), p2 = L(sx * (hx + 0.06), ridge, 0);
+      tri(p0, p1, p2, [0, 0], [1, 0], [0.5, 1], [emAt(p0), emAt(p1), emAt(p2)]); tri(p0, p2, p1, [0, 0], [0.5, 1], [1, 0], [emAt(p0), emAt(p2), emAt(p1)]); }
+    for (const sz of [-1, 1]) {
+      const e0 = L(-hx - 0.08, eave, sz * (hz + 0.1)), e1 = L(hx + 0.08, eave, sz * (hz + 0.1)), r1 = L(hx + 0.08, ridge, 0), r0 = L(-hx - 0.08, ridge, 0);
+      const up = v3.norm(v3.cross(v3.sub(e1, e0), v3.sub(r0, e0))), nU = up[1] > 0 ? up : v3.mul(up, -1);
+      for (const half of [0, 1]) { const u0 = half * 0.5, u1 = u0 + 0.5, P = (u, v) => [0, 1, 2].map((i) => lerp(lerp(e0[i], e1[i], u), lerp(r0[i], r1[i], u), v));
+        patch([P(u0, 0), P(u1, 0), P(u1, 1), P(u0, 1)], 3, 3, nU, 0.07, 1.1, tarp.map((v) => v * 0.62)); }
+      for (const u of [0, 0.5, 1]) seam(v3.add([0, 1, 2].map((i) => lerp(e0[i], e1[i], u)), v3.mul(nU, 0.004)), v3.add([0, 1, 2].map((i) => lerp(r0[i], r1[i], u)), v3.mul(nU, 0.004)), nU);
+    }
+    // the front: a tarp valance (the lettering band), the clear vinyl, its roll; the inside lit behind it
+    patch([L(-hx, eave - 0.27, hz), L(hx, eave - 0.27, hz), L(hx, eave, hz), L(-hx, eave, hz)], 3, 1, N(0, 0, 1), 0, 1.05);
+    set('dr_vinyl', { col: true }); quad(L(-hx, 0.3, hz - 0.01), L(hx, 0.3, hz - 0.01), L(hx, eave - 0.36, hz - 0.01), L(-hx, eave - 0.36, hz - 0.01), N(0, 0, 1));
+    set('dr_prop', { c: [0.5, 0.48, 0.44], col: false }); cyl(F, [xo, eave - 0.32, hz - 0.03], 'x', 0.045, 2 * hx - 0.1, 8);
+    set('dr_steel'); for (const sx of [-1, 1]) for (const sz of [-1, 1]) boxMM(F, xo + sx * hx - 0.025, 0, sz * hz - 0.025, xo + sx * hx + 0.025, eave, sz * hz + 0.025, ['ny']);   // the frame's corner posts
+    // inside: a round steel table, green soju bottles, stools; the bare bulb on its cord
+    set('dr_galv'); cyl(F, [xo - 0.2, 0.7, 0.1], 'y', 0.42, 0.04, 12); cyl(F, [xo - 0.2, 0.35, 0.1], 'y', 0.04, 0.66, 6, 0.04, false);
+    set('dr_prop', { c: srgb(0x1f8a3a), col: false }); for (let k = 0; k < 3; k++) cyl(F, [xo - 0.35 + k * 0.13, 0.82, 0.05 + (k % 2) * 0.12], 'y', 0.032, 0.2, 6);
+    for (const [sx, sc] of [[-0.75, 0x2f6fd6], [0.35, 0xd23a2a], [-0.2, 0x2f6fd6]]) { set('dr_prop', { c: srgb(sc) }); boxMM(F, xo + sx - 0.15, 0, (sx > 0 ? -0.55 : 0.6) - 0.15, xo + sx + 0.15, 0.43, (sx > 0 ? -0.55 : 0.6) + 0.15); }
+    set('dark'); boxMM(F, xo - 0.006, 1.98, -0.106, xo + 0.006, ridge - 0.02, -0.094);
+    set('dr_glow', { em: NI(srgb(0xffc27a), 1500), col: false }); blob(bulb, 0.045, 0.055, 0.045, R, 0, 0.05);
     // tarp lettering band on the front (runtime label)
-    labels.push({ id: 'tent:' + idx + ':' + xo, kind: 'tent', pos: r3(W(F, xo, eave - 0.125, hz + 0.004)), normal: r3(D(F, 0, 0, 1)), right: r3(D(F, 1, 0, 0)), w: 2 * hx - 0.2, h: 0.23, nits: 60,
+    labels.push({ id: 'tent:' + idx + ':' + xo, kind: 'tent', pos: r3(W(F, xo, eave - 0.135, hz + 0.004)), normal: r3(D(F, 0, 0, 1)), right: r3(D(F, 1, 0, 0)), w: 2 * hx - 0.2, h: 0.23, nits: 60,
       lines: [['포장마차', '닭발 · 오뎅', '소주 · 맥주', '꼼장어', '실내포차'][idx % 5]] });
     // stools and a table just outside, a crate of empties
     set('dr_prop', { c: srgb(0x2f6fd6) }); boxMM(F, xo - 0.7, 0, hz + 0.3, xo - 0.4, 0.43, hz + 0.6);
@@ -961,15 +1095,33 @@ export function geometry(layout, opts = {}) {
       const F = frameH([f.fa[0] + f.tx * (s0 + w / 2), 0, f.fa[1] + f.tz * (s0 + w / 2)], f.tx, f.tz);
       const zs = v3.dot(D(F, 0, 0, 1), [f.nx, 0, f.nz]) > 0 ? 1 : -1;
       const yTop = Math.min(shopTop - 0.08, fasciaY - 0.12), yLow = yTop - 0.35 - depth * 0.15, c = cols[Math.floor(R() * cols.length)];
+      // [P3-E graphics #2] striped or solid fabric, a scalloped valance with the shop's name printed on it (not lit: ~6 nits
+      // of reflected shop light), the roller box and the folding arms. Its own stream per awning (placement stays put).
+      const Ra = rng('awn2' + f.l.id), striped = Ra() < 0.55, c2 = Ra() < 0.7 ? srgb(0xe9e2cf) : c.map((v) => v * 0.45);
+      const light = (cc) => 0.2126 * cc[0] + 0.7152 * cc[1] + 0.0722 * cc[2] > 0.3;
+      const USE_KO = { restaurant: ['식당', '분식', '김밥', '국밥', '치킨'], cafe: ['카페', '커피', '디저트'], bar: ['호프', '포차', '이자카야'], pocha: ['포장마차', '실내포차'], conv: ['편의점'], shop: ['옷가게', '잡화', '안경'], karaoke: ['노래방', '코인노래방'], club: ['라운지'] };
+      const pool = USE_KO[f.l.use] || ['상회', '마트'], name = /[가-힣]/.test(f.l.osmName || '') && (f.l.osmName || '').length <= 9 ? f.l.osmName : pool[Math.floor(Ra() * pool.length)];
       item(() => {
-        set('dr_prop', { c });
         const a = W(F, -w / 2, yTop, zs * 0.03), b = W(F, w / 2, yTop, zs * 0.03), cc = W(F, w / 2, yLow, zs * depth), d = W(F, -w / 2, yLow, zs * depth);
         const n = v3.norm(v3.cross(v3.sub(b, a), v3.sub(d, a))), up = n[1] > 0 ? n : v3.mul(n, -1);
-        quad(a, b, cc, d, up); quad(a, d, cc, b, v3.mul(up, -1));
-        // valance + the roller box at the wall, side arms
-        boxMM(F, -w / 2, yLow - 0.22, zs * depth - 0.015, w / 2, yLow, zs * depth + 0.015);
+        const nS = striped ? Math.max(4, Math.round(w / 0.32)) : 1;
+        for (let i = 0; i < nS; i++) {
+          const t0 = i / nS, t1 = (i + 1) / nS, P = (t, o) => v3.add(o ? d : a, v3.mul(v3.sub(o ? cc : b, o ? d : a), t));
+          set('dr_prop', { c: striped && i % 2 ? c2 : c }); quad(P(t0, 0), P(t1, 0), P(t1, 1), P(t0, 1), up); quad(P(t0, 0), P(t0, 1), P(t1, 1), P(t1, 0), v3.mul(up, -1));
+        }
+        // valance (both faces) with scallops below it
+        const zv = zs * depth, yv0 = yLow - 0.17, nV = Math.max(4, Math.round(w / 0.3)), sw = w / nV, out = D(F, 0, 0, zs);
+        for (let i = 0; i < nV; i++) {
+          const x0 = -w / 2 + i * sw, x1 = x0 + sw, cv = c;
+          set('dr_prop', { c: cv }); quad(W(F, x0, yv0, zv), W(F, x1, yv0, zv), W(F, x1, yLow, zv), W(F, x0, yLow, zv), out); quad(W(F, x0, yv0, zv), W(F, x0, yLow, zv), W(F, x1, yLow, zv), W(F, x1, yv0, zv), v3.mul(out, -1));
+          const m = (x0 + x1) / 2, pts = [0, 1, 2, 3, 4].map((k) => { const th = Math.PI * k / 4; return W(F, m - Math.cos(th) * sw / 2, yv0 - Math.sin(th) * 0.075, zv); });
+          for (let k = 0; k < 4; k++) { tri(W(F, m, yv0, zv), pts[k], pts[k + 1]); tri(W(F, m, yv0, zv), pts[k + 1], pts[k]); }
+        }
+        set('dr_prop', { c: c.map((v) => v * 0.6) }); boxMM(F, -w / 2 - 0.02, yv0 - 0.005, zv - 0.012, w / 2 + 0.02, yLow + 0.01, zv + 0.012, ['py', 'ny', 'pz', 'nz']);   // hemmed ends
         set('dr_galv'); boxMM(F, -w / 2, yTop - 0.06, zs * 0.03 - 0.07, w / 2, yTop + 0.08, zs * 0.03 + 0.07);
-        for (const sx of [-1, 1]) tube([W(F, sx * (w / 2 - 0.05), yTop - 0.7, zs * 0.04), W(F, sx * (w / 2 - 0.05), yLow - 0.02, zs * (depth - 0.05))], 0.02, 4);
+        boxMM(F, -w / 2 + 0.05, yLow - 0.03, zv - zs * 0.03 - 0.02, w / 2 - 0.05, yLow + 0.01, zv - zs * 0.03 + 0.02);   // the front bar
+        for (const sx of [-1, 1]) { const el = W(F, sx * (w / 2 - 0.35), yLow + 0.12, zs * depth * 0.5); tube([W(F, sx * (w / 2 - 0.05), yTop - 0.7, zs * 0.04), el, W(F, sx * (w / 2 - 0.08), yLow - 0.02, zs * (depth - 0.05))], 0.018, 4); }
+        labels.push({ id: 'awn:' + f.l.id, kind: 'awning', pos: r3(W(F, 0, (yv0 + yLow) / 2, zv + zs * 0.004)), normal: r3(out), w: Math.min(w - 0.3, 0.16 * 1.1 * [...name].length + 0.4), h: 0.15, nits: 6, ink: light(c) ? '#2a2420' : '#f4efe4', lines: [name] });
         facts.awnings++;
       }, { margin: 0.35 });
     }
@@ -1040,15 +1192,36 @@ export function geometry(layout, opts = {}) {
   }
   lap('stairs');
   // ---- kerbside kit: scooters (clusters at restaurants / bars, ~2 per 10 m of alley), stools + crates, trash bags, cones, cabinets
+  // [P3-E graphics #2] a delivery scooter (PCX / Super Cub class) instead of boxes on hexagons: tyres and hubs, a curved leg
+  // shield, floorboard, a rounded seat, a tapered rear cowl, bars with mirrors, lamps, and on most a 배달통 (delivery box).
+  // Local x = forward (the front wheel at +0.64), y up, z = right. Same R draws as phase 2 (placement stays put).
   const scooter = (F, R) => {
     const body = [srgb(0x111111), srgb(0xe8e8e4), srgb(0xb3241f), srgb(0x5c6066), srgb(0x1d3f7a), srgb(0x2b2b2b)][Math.floor(R() * 6)];
-    set('dr_prop', { c: [0.02, 0.02, 0.02] });
+    const hasBox = R() < 0.6, boxC = hasBox ? [srgb(0xe8e8e4), srgb(0xc8261e), srgb(0xf2b705), srgb(0x161616), srgb(0x2ac1bc)][Math.floor(R() * 5)] : null;
+    const Rs = rng('scoot' + F.o[0].toFixed(2) + F.o[2].toFixed(2)), lean = 0.06 + Rs() * 0.05;            // on the side stand
+    const G = { o: F.o, x: F.x, y: v3.norm(v3.add([0, 1, 0], v3.mul(F.z, -lean))), z: v3.norm(v3.add(F.z, v3.mul([0, 1, 0], lean))) };
     const nb = ['ny'];
-    for (const x of [-0.62, 0.64]) cyl(F, [x, 0.27, 0], 'z', 0.27, 0.11, 6);
+    for (const x of [-0.6, 0.62]) { set('dr_prop', { c: [0.018, 0.018, 0.018] }); cyl(G, [x, 0.25, 0], 'z', 0.25, 0.11, 8); }
     set('dr_prop', { c: body });
-    boxMM(F, -0.78, 0.28, -0.2, 0.3, 0.6, 0.2, nb); boxMM(F, 0.28, 0.32, -0.21, 0.46, 1.0, 0.21, nb);
-    set('dr_prop', { c: [0.03, 0.03, 0.03] }); boxMM(F, -0.68, 0.6, -0.17, -0.06, 0.78, 0.17, nb); boxMM(F, 0.42, 1.0, -0.34, 0.5, 1.05, 0.34); boxMM(F, 0.52, 0.3, -0.03, 0.6, 1.0, 0.03, ['ny', 'py']);
-    if (R() < 0.6) { set('dr_prop', { c: [srgb(0xe8e8e4), srgb(0xc8261e), srgb(0xf2b705), srgb(0x161616)][Math.floor(R() * 4)] }); boxMM(F, -1.0, 0.78, -0.24, -0.52, 1.24, 0.24); }
+    // leg shield: three facets curving from the steering head down to the floor; the front fender over the wheel
+    { const sh = [[0.42, 1.0], [0.47, 0.72], [0.44, 0.45], [0.3, 0.3]]; for (let i = 0; i < 3; i++) { const [x0, y0] = sh[i], [x1, y1] = sh[i + 1], w0 = 0.2 + i * 0.02, w1 = 0.22 + i * 0.02;
+      quad(W(G, x0, y0, -w0), W(G, x0, y0, w0), W(G, x1, y1, w1), W(G, x1, y1, -w1), D(G, 1, 0.3, 0)); } }
+    boxMM(G, 0.45, 0.47, -0.09, 0.82, 0.52, 0.09, ['ny']);
+    boxMM(G, -0.3, 0.28, -0.19, 0.32, 0.34, 0.19, nb);                                                 // floorboard
+    // rear cowl: tapered, elliptical (a scaled frame), and the seat on it
+    { const C = { o: W(G, -0.42, 0.56, 0), x: G.x, y: v3.mul(G.y, 0.75), z: G.z }; cyl(C, [0, 0, 0], 'x', 0.27, 0.62, 6, 0.2); }
+    set('dr_prop', { c: [0.025, 0.022, 0.02] }); { const C = { o: W(G, -0.36, 0.79, 0), x: G.x, y: v3.mul(G.y, 0.45), z: G.z }; cyl(C, [0, 0, 0], 'x', 0.17, 0.66, 6, 0.15); }
+    // steering column, bars, mirrors, headlight; tail lamp (a red reflector, off)
+    set('dr_steel', { col: false }); tube([W(G, 0.44, 0.95, 0), W(G, 0.52, 1.06, 0)], 0.035, 4); tube([W(G, 0.5, 1.06, -0.34), W(G, 0.53, 1.08, 0), W(G, 0.5, 1.06, 0.34)], 0.014, 3);
+    for (const sz of [-1, 1]) { tube([W(G, 0.5, 1.07, sz * 0.24), W(G, 0.47, 1.28, sz * 0.3)], 0.007, 3); quad(W(G, 0.465, 1.27, sz * 0.3 - 0.05), W(G, 0.465, 1.27, sz * 0.3 + 0.05), W(G, 0.465, 1.33, sz * 0.3 + 0.05), W(G, 0.465, 1.33, sz * 0.3 - 0.05), D(G, -1, 0, 0)); }
+    set('dr_prop', { c: body }); boxMM(G, 0.46, 0.98, -0.14, 0.58, 1.1, 0.14);
+    set('dr_galv', { col: false }); quad(W(G, 0.585, 0.99, -0.06), W(G, 0.585, 0.99, 0.06), W(G, 0.585, 1.07, 0.06), W(G, 0.585, 1.07, -0.06), D(G, 1, 0, 0));
+    set('dr_glow', { em: NI([1, 0.1, 0.05], 2), col: false }); quad(W(G, -0.735, 0.6, 0.08), W(G, -0.735, 0.6, -0.08), W(G, -0.735, 0.66, -0.08), W(G, -0.735, 0.66, 0.08), D(G, -1, 0, 0));
+    set('dr_steel', { col: false }); tube([W(G, -0.1, 0.32, -0.2), W(G, -0.1, 0.02, -0.38)], 0.012, 3);                 // the side stand
+    if (hasBox) {   // 배달통 on the rear rack, its lid seam a shade darker
+      set('dr_steel', { col: false }); boxMM(G, -0.95, 0.86, -0.18, -0.55, 0.88, 0.18, ['ny']);
+      set('dr_prop', { c: boxC }); boxMM(G, -1.0, 0.88, -0.24, -0.52, 1.24, 0.24, ['ny']);
+    }
     facts.scooters++;
   };
   {
@@ -1123,6 +1296,29 @@ export function geometry(layout, opts = {}) {
   }
 
   lap('kit');
+  // ---- [P3-E graphics #2] AC condensers: C places them (its facade rules), E draws them. Contract P3-E1: C records each unit
+  // as lotInfo.get(id).ac = [{ c: [x, y, z] centre, n: [nx, 0, nz] out of the wall, size: [w, h, d], tint, roof }] (or passes
+  // opts.acUnits) and stops drawing its box; absent, nothing is drawn here. Kit: enamel housing with a lid, the fan opening
+  // with a two-ring grille, spokes and hub, louvres, a steel bracket and strut, insulated pipes into the wall, a drain hose.
+  {
+    const units = opts.acUnits || (opts.lotInfo?.values ? [...opts.lotInfo.values()].flatMap((i) => i.ac || []) : []);
+    for (const u of units) {
+      if (!u?.c || !u?.n) continue;
+      const [w, h, d] = u.size || [0.84, 0.64, 0.34], hx = w / 2, hy = h / 2, hz = d / 2, t = u.tint || [1, 1, 1];
+      const F = frameH(u.c, u.n[2], -u.n[0]);           // local z = out of the wall
+      const enamel = [0.45 * t[0], 0.45 * t[1], 0.43 * t[2]], Ru = rng('ac' + u.c[0].toFixed(2) + u.c[2].toFixed(2));
+      set('dr_prop', { c: enamel }); box(F, 0, 0, 0, hx, hy, hz, ['pz', 'nz']);                         // housing (back to the wall)
+      set('dr_ac', { c: t.map((v) => v * 0.95), col: true }); quad(W(F, -hx, -hy, hz), W(F, hx, -hy, hz), W(F, hx, hy, hz), W(F, -hx, hy, hz), D(F, 0, 0, 1));
+      if (!u.roof) {   // wall bracket: two angles to the wall, their struts
+        set('dr_steel', { col: false }); for (const sx of [-1, 1]) { const x = sx * (hx - 0.08); tube([W(F, x, -hy - 0.45, -hz - 0.2), W(F, x, -hy - 0.02, hz - 0.03)], 0.014, 3); }
+      } else { set('dr_steel'); boxMM(F, -hx, -hy - 0.12, -hz, hx, -hy, hz, ['py', 'ny']); }
+      // the insulated pipes out of the side and into the wall (one bundle)
+      const side = Ru() < 0.5 ? 1 : -1;
+      set('dr_prop', { c: [0.5, 0.48, 0.42], col: false }); tube([W(F, side * hx, -0.06, -hz * 0.3), W(F, side * (hx + 0.07), -0.04, -hz - 0.21)], 0.024, 3);
+      facts.ac = (facts.ac || 0) + 1;
+    }
+  }
+  lap('ac');
   // ================================================================================================ CABLES (art #4)
   // C's spans carry 3-6 lines; real Hongdae spans carry 8-16 (power, telecom bundles, coax). Add 5-10 per span between
   // consecutive poles of a street, and a service drop to every facade on the alleys.
@@ -1165,15 +1361,176 @@ export function geometry(layout, opts = {}) {
   }
 
   lap('cables');
+  // ---- [P3-E fpv #3] background massing inside the block box where C built nothing (the strip's interior: 118 empty 24 m
+  // cells, the "orange dots in a black void" of the high shot). Collidable villas and a few mid-rises on the local grid,
+  // drawn by dr_mass: the same procedural facades as beyond()'s ring (uv = metres along the face / height, colour = floorH,
+  // seed, H). >= 14 m from C's lots, >= 7 m off the streets, clear of gates and E's dressing.
+  {
+    const Rm = rng('mass' + seed), Bx = layout.box || layout.core;
+    let th = 0, bl = 0; for (const st of mainStreets) for (const g of st.segs) if (st.ko === '양화로' && g.L > bl) { bl = g.L; th = Math.atan2(g.tz, g.tx); }
+    const ux = Math.cos(th), uz = Math.sin(th);
+    let nM = 0;
+    for (let x = Bx.x0 + 8; x < Bx.x1 - 8; x += 13) for (let z = Bx.z0 + 8; z < Bx.z1 - 8; z += 13) {
+      const px = x + (Rm() - 0.5) * 3, pz = z + (Rm() - 0.5) * 3, hw = 4.2 + Rm() * 2.2, hd = 4.2 + Rm() * 2.4, r = Math.hypot(hw, hd);
+      if (!M.lotClear(px, pz, r + 8) || M.ribbonD(px, pz) < r + 4 || !occFree(px, pz, r)) continue;
+      const nearMain = M.ribbonD(px, pz, true) < 40, floors = nearMain && Rm() < 0.35 ? 7 + Math.floor(Rm() * 8) : 3 + Math.floor(Rm() * 4), fh = 3.0 + Rm() * 0.3, H = floors * fh;
+      const F = { o: [px, 0, pz], x: [ux, 0, uz], y: [0, 1, 0], z: [-uz, 0, ux] }, sd = Rm();
+      item(() => {
+        set('dr_mass', { c: [fh, sd, H] });
+        const cn = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]].map(([a, b]) => W(F, a, 0, b));
+        let u0 = sd * 7;
+        for (let k = 0; k < 4; k++) { const a = cn[k], b = cn[(k + 1) % 4], L = Math.hypot(b[0] - a[0], b[2] - a[2]), out = v3.norm([b[2] - a[2], 0, -(b[0] - a[0])]);
+          const o2 = v3.dot(out, [a[0] - px, 0, a[2] - pz]) > 0 ? out : v3.mul(out, -1);
+          quad(a, b, [b[0], H, b[2]], [a[0], H, a[2]], o2, [[u0, 0], [u0 + L, 0], [u0 + L, H], [u0, H]]); u0 += L; }
+        quad(...cn.map((q) => [q[0], H, q[2]]), [0, 1, 0], [[0, 0], [0, 0], [0, 0], [0, 0]]);
+        occAdd(px, pz, r); nM++;
+      }, { margin: 0.5 });
+    }
+    facts.massing = nM;
+  }
+  lap('massing');
   // ================================================================================================ output
   const merged = {}; let tris = 0;
   for (const [k, a] of Object.entries(acc)) { const g = a.geometry(); if (g) { merged[k] = g; tris += g.getAttribute('position').count / 3; } }
   const colTris = new THREE.BufferGeometry(); colTris.setAttribute('position', new THREE.BufferAttribute(col.out(), 3)); colTris.computeBoundingBox();
-  facts.tris = tris; facts.colTris = col.length / 9; facts.emitters = emitters.length; facts.holes = holes.length; facts.cables = cables.length; facts.labels = labels.length; facts.lamps = lamps.length; facts.setPieces = setPieces.map((s) => s.id); facts.ms = Date.now() - t0; facts.msParts = msParts;
+  facts.tris = tris; facts.colTris = col.length / 9; facts.emitters = emitters.length; facts.holes = holes.length; facts.cables = cables.length; facts.labels = labels.length; facts.lamps = lamps.length; facts.setPieces = setPieces.map((s) => s.id); facts.ms = Date.now() - t0; facts.msParts = msParts; facts.triParts = triParts;
   // ground footprints of what E placed (discs x, z, r): for G's crowd to walk around
   const obstacles = []; for (const v of occ.values()) for (const d of v) if (d[2] > 0.2) obstacles.push([+d[0].toFixed(2), +d[1].toFixed(2), +d[2].toFixed(2)]);
   const out = { merged, colTris, emitters, setPieces, holes, cables, labels, lamps, obstacles, facts, materials: DRESS_MATS };
   CACHE.set(layout, out);
+  return out;
+}
+
+// ================================================================================================================
+// [P3-E fpv #3] beyond(layout, opts) — the city past the modelled block (pure CPU, deterministic, node-safe): a 2.5 km impostor
+// ring of Mapo-gu outside C's ground (box + 85 m). Roads on the local grid (Yanghwa-ro's bearing) and the modelled main roads
+// carried on to the horizon, lamp chains on all of them (LED 4000 K on the arterials, warm on the alleys), car light streams
+// on the arterials (white toward the camera, red away), low-rise villas with towers along the arterials, Hapjeong's towers,
+// Sinchon to the east, the Han to the south with the Gangbyeon expressway on its bank and two bridges, red church crosses,
+// tower beacons. Walls 0.5-2 nits with procedural windows (12-25 % lit, 5-25 nits) and ground-floor sign bands; all of it
+// non-colliding, past the flight bounds (box + 60). Returns typed arrays (also for H's export) and facts.
+// ================================================================================================================
+// [P3-E fpv #3] shared by the ring's buildings and the in-block massing (dr_mass)
+const BEYOND_HZ = `uniform vec3 uHaze; uniform float uHazeD; uniform float uNits;
+float h1(vec2 p){ p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
+vec3 haze(vec3 c, float d){ return mix(c, uHaze, 1.0 - exp(-d / uHazeD)); }`;
+const BEYOND_BLD_FS = `
+varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW;
+void main(){
+  float fh = vB.x, kind = vB.y, sd = vB.z, H = vB.w; vec3 c;
+  if (vN.y > 0.5) c = vec3(0.3, 0.29, 0.27) * (0.5 + 0.6 * h1(vec2(sd * 91.0, 3.0)));                        // roofs, ~0.3 nit
+  else {
+    float bay = 2.6 + 1.2 * h1(vec2(sd * 17.0, 1.0)) + (kind > 1.5 ? 0.0 : 0.5);
+    vec2 g = vec2(vUV.x / bay, vUV.y / fh), cell = floor(g), f = fract(g), fw = fwidth(g);
+    float wall = (0.5 + 1.5 * h1(vec2(sd * 13.0, 7.0))) * (1.0 + 1.3 * exp(-vUV.y / 7.0));                   // 0.5-2 nits, street spill low down
+    vec3 wallC = vec3(1.0, 0.92, 0.84) * wall;
+    float litF = kind > 1.5 ? 0.25 : 0.13, r = h1(cell + sd * vec2(31.7, 17.3));
+    vec3 lc = mix(vec3(1.0, 0.7, 0.42), vec3(0.86, 0.93, 1.0), step(0.62, h1(cell * 1.7 + sd))) * (5.0 + 20.0 * h1(cell * 2.3 + sd * 3.1));
+    vec3 uc = vec3(0.75, 0.8, 0.95) * 0.8;
+    float wx = smoothstep(0.17, 0.17 + fw.x * 1.5, f.x) * (1.0 - smoothstep(0.83 - fw.x * 1.5, 0.83, f.x));
+    float wy = smoothstep(0.3, 0.3 + fw.y * 1.5, f.y) * (1.0 - smoothstep(0.86 - fw.y * 1.5, 0.86, f.y));
+    float win = wx * wy; vec3 wc = r < litF ? lc : uc;
+    if (vUV.y > H - 0.9) win = 0.0;                                                                           // parapet
+    if (cell.y < 0.5) {                                                                                       // ground floor: shops and signs
+      float s = h1(cell + sd * 5.0);
+      wc = kind > 0.5 ? (s < 0.32 ? vec3(1.0, 0.36, 0.12) : s < 0.58 ? vec3(1.0, 0.78, 0.42) : s < 0.74 ? vec3(1.0, 0.95, 0.88) : s < 0.84 ? vec3(0.95, 0.2, 0.22) : s < 0.93 ? vec3(0.3, 0.75, 1.0) : vec3(1.0, 0.3, 0.75)) * (25.0 + 45.0 * h1(cell * 3.0 + sd))
+                      : vec3(1.0, 0.8, 0.6) * (r < 0.45 ? 6.0 : 0.6);
+      win = wx * smoothstep(0.08, 0.16, f.y) * (1.0 - smoothstep(0.9, 0.96, f.y));
+    } else if (kind > 0.5 && cell.y < 2.5 && h1(vec2(cell.x, sd)) < 0.3) {                                  // 2F-3F fascia signs
+      float s = h1(cell * 1.3 + sd); wc = (s < 0.5 ? vec3(1.0, 0.55, 0.2) : s < 0.78 ? vec3(1.0, 0.95, 0.85) : vec3(0.95, 0.25, 0.3)) * (25.0 + 35.0 * s); win = max(win, wx * 0.9);
+    }
+    vec3 det = mix(wallC, wc, win), avg = mix(wallC, litF * vec3(0.95, 0.85, 0.72) * 15.0 + (1.0 - litF) * uc, 0.37);
+    c = mix(det, avg, smoothstep(0.35, 0.9, max(fw.x, fw.y)));                                              // windows below a pixel: their mean
+  }
+  gl_FragColor = vec4(haze(c, length(vW - cameraPosition)) * uNits, 1.0);
+}`;
+const BEYOND_CACHE = new WeakMap();
+export function beyond(layout, opts = {}) {
+  const dens = clamp(opts.density ?? 1, 0.25, 2), key = layout;
+  if (BEYOND_CACHE.has(key) && (BEYOND_CACHE.get(key).dens === dens)) return BEYOND_CACHE.get(key).out;
+  const R = rng('beyond' + (opts.seed ?? 11)), B = layout.box || layout.core, PAD = 85, RMAX = opts.rmax ?? 2500;
+  const cx = (B.x0 + B.x1) / 2, cz = (B.z0 + B.z1) / 2;
+  const outside = (x, z, m = 0) => x < B.x0 - PAD - m || x > B.x1 + PAD + m || z < B.z0 - PAD - m || z > B.z1 + PAD + m;
+  const inR = (x, z) => Math.hypot(x - cx, z - cz) < RMAX;
+  // the Han's north bank (layout metres, from lat/lon: Mangwon park, Yanghwa / Seogang / Mapo bridge heads)
+  const BANK = [[-3200, -900], [-2600, -500], [-2460, -220], [-2100, 350], [-1700, 900], [-1570, 1117], [-1200, 1330], [-600, 1250], [0, 1150], [670, 1084], [1300, 1250], [2040, 1515], [3200, 1800]];
+  const bankZ = (x) => { for (let i = 0; i < BANK.length - 1; i++) { const [ax, az] = BANK[i], [bx, bz] = BANK[i + 1]; if (x >= ax && x <= bx) return az + (bz - az) * (x - ax) / (bx - ax); } return 1e9; };
+  const river = (x, z, m = 0) => z > bankZ(x) - m;
+  // grid bearing: Yanghwa-ro's longest piece
+  let th = -43 * Math.PI / 180, best = 0;
+  for (const st of layout.streets) if (st.kind === 'main' && st.ko === '양화로') for (let i = 0; i + 1 < st.points.length; i++) { const [ax, az] = st.points[i], [bx, bz] = st.points[i + 1], l = Math.hypot(bx - ax, bz - az); if (l > best) { best = l; th = Math.atan2(bz - az, bx - ax); } }
+  const ux = Math.cos(th), uz = Math.sin(th), vx = -uz, vz = ux;   // grid axes
+  // ---- roads: [ax, az, bx, bz, halfWidth, kind (0 arterial, 1 street, 2 expressway, 3 bridge)]
+  const roads = [];
+  const addClipped = (ax, az, bx, bz, hw, kind, keep = (x, z) => outside(x, z) && inR(x, z) && !river(x, z, hw + 4)) => {
+    const L = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.ceil(L / 20)); let run = null;
+    for (let i = 0; i <= n; i++) { const t = i / n, x = ax + (bx - ax) * t, z = az + (bz - az) * t, k = keep(x, z);
+      if (k && !run) run = [x, z]; if ((!k || i === n) && run) { const ex = k ? x : ax + (bx - ax) * (i - 1) / n, ez = k ? z : az + (bz - az) * (i - 1) / n; if (Math.hypot(ex - run[0], ez - run[1]) > 30) roads.push([run[0], run[1], ex, ez, hw, kind]); run = null; } }
+  };
+  // the modelled main roads, carried on straight from where they leave the block
+  for (const st of layout.streets) {
+    if (st.kind !== 'main') continue;
+    for (const end of [0, 1]) {
+      const P = st.points, a = end ? P[P.length - 2] : P[1], b = end ? P[P.length - 1] : P[0], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, dx = (b[0] - a[0]) / L, dz = (b[1] - a[1]) / L;
+      if (!(b[0] < B.x0 + 5 || b[0] > B.x1 - 5 || b[1] < B.z0 + 5 || b[1] > B.z1 - 5)) continue;   // ends inside the block
+      addClipped(b[0], b[1], b[0] + dx * RMAX * 1.2, b[1] + dz * RMAX * 1.2, Math.max(6, st.width * 0.6), 0);
+    }
+  }
+  // the local grid: arterials ~380 m, streets ~95 m (some broken: Mapo's grid is not a lattice)
+  const span = RMAX * 1.3;
+  for (const [ax, az, bxn, bzn] of [[ux, uz, vx, vz], [vx, vz, ux, uz]]) {
+    for (let o = -span; o <= span; o += 95 + (R() - 0.5) * 30) {
+      const art = Math.abs(((o / 380) % 1 + 1) % 1 - 0.5) > 0.38, ox = cx + bxn * o, oz = cz + bzn * o;
+      if (art) addClipped(ox - ax * span, oz - az * span, ox + ax * span, oz + az * span, 7 + R() * 4, 0);
+      else for (let s0 = -span; s0 < span; s0 += 180 + R() * 260) { if (R() < 0.22 / dens) continue; const s1 = s0 + 120 + R() * 240; addClipped(ox + ax * s0, oz + az * s0, ox + ax * s1, oz + az * s1, 3 + R() * 1.5, 1); }
+    }
+  }
+  // Gangbyeon-buk-ro on the bank, two bridges over the river
+  for (let i = 0; i + 1 < BANK.length; i++) { const [ax, az] = BANK[i], [bx, bz] = BANK[i + 1]; addClipped(ax, az - 25, bx, bz - 25, 12, 2, (x, z) => outside(x, z) && inR(x, z)); }
+  for (const [ax, az, bx, bz] of [[-1572, 1117, -1720, 2400], [671, 1084, 380, 2400]]) addClipped(ax, az, bx, bz, 13, 3, (x, z) => inR(x, z));
+  // road index (60 m cells)
+  const RC = 60, rg = new Map(), rk = (i, j) => i * 73856 + j;
+  roads.forEach((r, ri) => { const x0 = Math.min(r[0], r[2]) - 20, x1 = Math.max(r[0], r[2]) + 20, z0 = Math.min(r[1], r[3]) - 20, z1 = Math.max(r[1], r[3]) + 20;
+    for (let i = Math.floor(x0 / RC); i <= Math.floor(x1 / RC); i++) for (let j = Math.floor(z0 / RC); j <= Math.floor(z1 / RC); j++) { const k = rk(i, j); if (!rg.has(k)) rg.set(k, []); rg.get(k).push(ri); } });
+  const roadD = (x, z, kinds = null) => { let d = 1e9, w = 0, kk = -1; for (const ri of rg.get(rk(Math.floor(x / RC), Math.floor(z / RC))) || []) { const r = roads[ri]; if (kinds && !kinds.includes(r[5])) continue; const q = segD(x, z, r[0], r[1], r[2], r[3]) - r[4]; if (q < d) { d = q; w = r[4]; kk = r[5]; } } return { d, w, kind: kk }; };
+  // ---- buildings: [x, z, hw, hd, yaw, H, floorH, kind (0 villa, 1 commercial frontage, 2 tower/office), seed]
+  const bld = [], LAND = [[-773, 410, 3, 38, 'Mecenatpolis'], [-700, 470, 2, 30], [1280, -221, 4, 20], [1350, -150, 3, 24], [274, 320, 3, 12], [-1150, 760, 2, 25], [900, 700, 2, 22]];
+  const put = (x, z, hw, hd, yaw, floors, kind, fh = 3.2) => { bld.push(x, z, hw, hd, yaw, floors * fh, fh, kind, R()); };
+  for (const [lx, lz, n, fl] of LAND) for (let k = 0; k < n; k++) { const x = lx + (R() - 0.5) * 90, z = lz + (R() - 0.5) * 90; if (outside(x, z, 30) && !river(x, z, 40) && roadD(x, z).d > 14) put(x, z, 14 + R() * 8, 12 + R() * 8, th, Math.round(fl * (0.8 + R() * 0.3)), 2, 3.5); }
+  for (let gi = -RMAX; gi <= RMAX; gi += 26) for (let gj = -RMAX; gj <= RMAX; gj += 26) {
+    const far = Math.hypot(gi, gj); if (far > RMAX) continue;
+    const step = far > 1300 ? 2 : 1; if (step > 1 && ((Math.round(gi / 26) & 1) || (Math.round(gj / 26) & 1))) continue;   // past 1.3 km, blocks twice the size
+    if (R() > 0.86 * dens) continue;
+    const x = cx + ux * gi + vx * gj + (R() - 0.5) * 6, z = cz + uz * gi + vz * gj + (R() - 0.5) * 6;
+    if (!outside(x, z, 6) || river(x, z, 30)) continue;
+    const size = 26 * step, rd = roadD(x, z), hw = (size * (0.36 + R() * 0.12)), hd = (size * (0.34 + R() * 0.14));
+    if (rd.d < Math.max(hw, hd) * 0.75 + 2) continue;
+    const onArt = rd.kind === 0 && rd.d < size, east = Math.min(1, Math.max(0, (x - 700) / 900)), hap = Math.exp(-Math.hypot(x + 500, z - 500) / 500);
+    const tower = R() < (onArt ? 0.14 : 0.025) + 0.12 * east + 0.15 * hap;
+    const floors = tower ? 12 + Math.floor(R() * 18 + 10 * east) : onArt ? 4 + Math.floor(R() * 7) : 3 + Math.floor(R() * 3.2);
+    put(x, z, hw, hd, th + (R() - 0.5) * 0.06, floors, tower ? 2 : onArt ? 1 : 0, tower ? 3.4 : 3.0);
+  }
+  // ---- lamps [x, y, z, r, g, b, cd]  (cd toward the viewer; a 1-2 px sprite in the renderer)
+  const lamps = [], LED = [1.0, 0.9, 0.78], WARM = [1.0, 0.72, 0.42];
+  for (const r of roads) {
+    const L = Math.hypot(r[2] - r[0], r[3] - r[1]), dx = (r[2] - r[0]) / L, dz = (r[3] - r[1]) / L, art = r[5] !== 1, sp = art ? 32 : 26, y = art ? 9 : 6.5;
+    for (let s0 = R() * sp; s0 < L; s0 += sp) for (const sd of art ? [-1, 1] : [R() < 0.5 ? -1 : 1]) {
+      const x = r[0] + dx * s0 - dz * sd * (r[4] + 0.5), z = r[1] + dz * s0 + dx * sd * (r[4] + 0.5); if (art || R() < 0.75) lamps.push(x, y, z, ...(art ? LED : WARM), art ? 1400 : 500);
+      if (r[5] === 3) lamps.push(x, -2 * 6 - y, z, ...LED, 260);   // bridge lamps mirrored in the river
+    }
+  }
+  // ---- car streams on the arterials, expressway and bridges: [ax, y, az, dx, dz, L, phase, speed]
+  const cars = [];
+  for (const r of roads) { if (r[5] === 1) continue; const L = Math.hypot(r[2] - r[0], r[3] - r[1]), dx = (r[2] - r[0]) / L, dz = (r[3] - r[1]) / L, nPer = Math.max(1, Math.round(L / (r[5] === 2 ? 28 : 55) * dens));
+    for (const sd of [-1, 1]) for (let k = 0; k < nPer; k++) { const off = sd * r[4] * 0.45, ax = sd > 0 ? r[0] : r[2], az = sd > 0 ? r[1] : r[3]; cars.push(ax - dz * off, 0.75, az + dx * off, dx * sd, dz * sd, L, R() * L, (r[5] === 2 ? 17 : 9) + R() * 5); } }
+  // ---- red church crosses on low roofs, tower beacons: [x, y, z, kind (0 cross, 1 beacon), phase]
+  const marks = [];
+  for (let i = 0; i < bld.length; i += 9) { const k = bld[i + 7], H = bld[i + 5];
+    if (k === 0 && R() < 0.022) marks.push(bld[i], H + 3.2, bld[i + 1], 0, R());
+    if (k === 2 && H > 55) marks.push(bld[i], H + 1.5, bld[i + 1], 1, R()); }
+  const out = { version: 1, bearing: th, rmax: RMAX, pad: PAD, bank: BANK, roads: new Float32Array(roads.flat()), buildings: new Float32Array(bld), lamps: new Float32Array(lamps), cars: new Float32Array(cars), marks: new Float32Array(marks),
+    facts: { roads: roads.length, buildings: bld.length / 9, lamps: lamps.length / 7, cars: cars.length / 8, crosses: marks.filter((_, i) => i % 5 === 3).filter((v) => v === 0).length } };
+  BEYOND_CACHE.set(key, { dens, out });
   return out;
 }
 
@@ -1305,13 +1662,102 @@ varying float vCov; varying float vSide; varying float vHw;`)
   }
   updateLamps(0);
 
+  // ---- 4. [P3-E fpv #3] the city beyond the block: beyond() as three draws (ground + roads + river, buildings, light points)
+  let beyondU = null; const beyondStats = {};
+  if (ctx.beyond !== false) {
+    const BY = beyond(layout, { seed: ctx.seed ?? 11, density: ctx.quality === 'low' ? 0.6 : 1 });
+    const HAZE = new THREE.Vector3(1.0, 0.64, 0.4).multiplyScalar(0.11 * nit);   // lamp-lit air over Mapo, ~0.1 nit, brown-orange
+    beyondU = { uNits: { value: nit }, uHaze: { value: HAZE }, uHazeD: { value: 1900 }, uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1280, 720) } };
+    const HZ = BEYOND_HZ;
+    // ground tiles (80 m, off C's ground and off the river), roads, the river
+    { const P = [], C = [], B0 = layout.box || layout.core, x0 = B0.x0 - 78, x1 = B0.x1 + 78, z0 = B0.z0 - 78, z1 = B0.z1 + 78, cxx = (B0.x0 + B0.x1) / 2, czz = (B0.z0 + B0.z1) / 2, T = 80;
+      const bz = (x) => { const K = BY.bank; for (let i = 0; i < K.length - 1; i++) if (x >= K[i][0] && x <= K[i + 1][0]) return K[i][1] + (K[i + 1][1] - K[i][1]) * (x - K[i][0]) / (K[i + 1][0] - K[i][0]); return 1e9; };
+      const q = (a, b, c2, d, y, col) => { for (const v of [a, b, c2, a, c2, d]) { P.push(v[0], y, v[1]); C.push(...col); } };
+      const G0 = [0.13, 0.12, 0.11];
+      for (let x = cxx - BY.rmax - 200; x < cxx + BY.rmax + 200; x += T) for (let z = czz - BY.rmax - 200; z < czz + BY.rmax + 200; z += T) {
+        const ins = (px, pz) => px > x0 && px < x1 && pz > z0 && pz < z1; if (ins(x, z) && ins(x + T, z) && ins(x, z + T) && ins(x + T, z + T)) continue;
+        if ([[x, z], [x + T, z], [x, z + T], [x + T, z + T]].every(([px, pz]) => pz > bz(px) + 10)) continue;
+        if (Math.hypot(x + T / 2 - cxx, z + T / 2 - czz) > BY.rmax + 300) continue;
+        // clip the tile against C's ground (keep only the part outside it)
+        const xa = Math.max(x, x0), xb = Math.min(x + T, x1), za = Math.max(z, z0), zb = Math.min(z + T, z1);
+        if (xa < xb && za < zb) { for (const [p0, p1, p2, p3] of [[[x, z], [x + T, z], [x + T, za], [x, za]], [[x, zb], [x + T, zb], [x + T, z + T], [x, z + T]], [[x, za], [xa, za], [xa, zb], [x, zb]], [[xb, za], [x + T, za], [x + T, zb], [xb, zb]]]) if (Math.abs((p1[0] - p0[0]) * (p3[1] - p0[1])) > 1) q(p0, p3, p2, p1, -0.03, G0); }
+        else q([x, z], [x, z + T], [x + T, z + T], [x + T, z], -0.03, G0);
+      }
+      const RD = BY.roads; for (let i = 0; i < RD.length; i += 6) { const ax = RD[i], az = RD[i + 1], bx2 = RD[i + 2], bz2 = RD[i + 3], hw = RD[i + 4], k = RD[i + 5], L = Math.hypot(bx2 - ax, bz2 - az), nx = -(bz2 - az) / L * hw, nz = (bx2 - ax) / L * hw;
+        const col = [[1.0, 0.92, 0.82].map((v) => v * 1.4), [1.0, 0.82, 0.62].map((v) => v * 0.55), [1.0, 0.92, 0.82].map((v) => v * 1.7), [0.9, 0.9, 0.9].map((v) => v * 1.1)][k];
+        q([ax + nx, az + nz], [bx2 + nx, bz2 + nz], [bx2 - nx, bz2 - nz], [ax - nx, az - nz], k === 3 ? 0.4 : 0.0, col); }
+      { const K = BY.bank; for (let i = 0; i < K.length - 1; i++) q([K[i][0], K[i][1]], [K[i + 1][0], K[i + 1][1]], [K[i + 1][0], 4200], [K[i][0], 4200], -0.6, [0.02, 0.025, 0.03]); }
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(C, 3)); g.boundingSphere = new THREE.Sphere(new THREE.Vector3(cxx, 0, czz), BY.rmax + 600);
+      const m = new THREE.ShaderMaterial({ uniforms: beyondU, vertexShader: 'attribute vec3 color; varying vec3 vC; varying vec3 vW; void main(){ vC = color; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+        fragmentShader: HZ + '\nvarying vec3 vC; varying vec3 vW; void main(){ gl_FragColor = vec4(haze(vC, length(vW - cameraPosition)) * uNits, 1.0); }', side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+      m.userData.cityLight = false; const mesh = new THREE.Mesh(g, m); mesh.name = 'seoul:beyondGround'; mesh.matrixAutoUpdate = false; mesh.renderOrder = -2; group.add(mesh); disposables.push(g, m); beyondStats.groundTris = P.length / 9; }
+    // buildings: boxes (4 walls + roof), u along the face and height in metres, per-building (floorH, kind, seed, H)
+    { const Bd = BY.buildings, n = Bd.length / 9, P = new Float32Array(n * 30 * 3), N = new Float32Array(n * 30 * 3), U = new Float32Array(n * 30 * 2), A4 = new Float32Array(n * 30 * 4); let v = 0;
+      const push = (p, nn, u, b) => { P.set(p, v * 3); N.set(nn, v * 3); U.set(u, v * 2); A4.set(b, v * 4); v++; };
+      for (let i = 0; i < n; i++) { const [x, z, hw, hd, yaw, H, fh, kind, sd] = Bd.subarray(i * 9, i * 9 + 9), cs = Math.cos(yaw), sn = Math.sin(yaw), b = [fh, kind, sd, H];
+        const cn = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]].map(([a, c2]) => [x + cs * a - sn * c2, z + sn * a + cs * c2]);
+        let u0 = sd * 37 % 11;
+        for (let k = 0; k < 4; k++) { const a = cn[k], c2 = cn[(k + 1) % 4], L = Math.hypot(c2[0] - a[0], c2[1] - a[1]), nn = [(c2[1] - a[1]) / L, 0, -(c2[0] - a[0]) / L];
+          const out = (nn[0] * (a[0] - x) + nn[2] * (a[1] - z)) > 0 ? nn : [-nn[0], 0, -nn[2]];
+          const V = [[a[0], 0, a[1], u0, 0], [c2[0], 0, c2[1], u0 + L, 0], [c2[0], H, c2[1], u0 + L, H], [a[0], H, a[1], u0, H]];
+          for (const j of [0, 1, 2, 0, 2, 3]) push([V[j][0], V[j][1], V[j][2]], out, [V[j][3], V[j][4]], b); u0 += L; }
+        for (const j of [0, 2, 1, 0, 3, 2]) push([cn[j][0], H, cn[j][1]], [0, 1, 0], [0, 0], b); }
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setAttribute('normal', new THREE.BufferAttribute(N, 3)); g.setAttribute('aUV', new THREE.BufferAttribute(U, 2)); g.setAttribute('aB', new THREE.BufferAttribute(A4, 4));
+      g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
+      const m = new THREE.ShaderMaterial({ uniforms: beyondU, side: THREE.DoubleSide,
+        vertexShader: 'attribute vec2 aUV; attribute vec4 aB; varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW; void main(){ vUV = aUV; vB = aB; vN = normal; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+        fragmentShader: BEYOND_HZ + BEYOND_BLD_FS });
+      m.userData.cityLight = false; const mesh = new THREE.Mesh(g, m); mesh.name = 'seoul:beyondCity'; mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; group.add(mesh); disposables.push(g, m); beyondStats.buildingTris = v / 3; }
+    // light points: lamps, cars (moving, white toward the camera / red away), crosses (a cross-shaped sprite), beacons (blink)
+    { const Lm = BY.lamps, Cr = BY.cars, Mk = BY.marks, n = Lm.length / 7 + Cr.length / 8 + Mk.length / 5;
+      const P = new Float32Array(n * 3), Col = new Float32Array(n * 4), Mv = new Float32Array(n * 4), Ex = new Float32Array(n * 2); let v = 0;
+      for (let i = 0; i < Lm.length; i += 7) { P.set([Lm[i], Lm[i + 1], Lm[i + 2]], v * 3); Col.set([Lm[i + 3], Lm[i + 4], Lm[i + 5], Lm[i + 6]], v * 4); Ex.set([0, 0], v * 2); v++; }
+      for (let i = 0; i < Cr.length; i += 8) { P.set([Cr[i], Cr[i + 1], Cr[i + 2]], v * 3); Col.set([1, 1, 1, 2500], v * 4); Mv.set([Cr[i + 3], Cr[i + 4], Cr[i + 5], Cr[i + 7]], v * 4); Ex.set([1, Cr[i + 6]], v * 2); v++; }
+      for (let i = 0; i < Mk.length; i += 5) { P.set([Mk[i], Mk[i + 1], Mk[i + 2]], v * 3); Col.set(Mk[i + 3] ? [1, 0.08, 0.04, 900] : [1, 0.12, 0.08, 260], v * 4); Ex.set([Mk[i + 3] ? 3 : 2, Mk[i + 4]], v * 2); v++; }
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setAttribute('aCol', new THREE.BufferAttribute(Col, 4)); g.setAttribute('aMove', new THREE.BufferAttribute(Mv, 4)); g.setAttribute('aEx', new THREE.BufferAttribute(Ex, 2));
+      g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
+      const m = new THREE.ShaderMaterial({ uniforms: beyondU, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        vertexShader: `uniform float uTime; uniform vec2 uRes; uniform float uNits; uniform float uHazeD;
+attribute vec4 aCol; attribute vec4 aMove; attribute vec2 aEx; varying vec3 vC; varying float vK;
+void main(){
+  vec3 p = position; float I = aCol.w; vec3 col = aCol.rgb; vK = aEx.x;
+  if (aEx.x > 0.5 && aEx.x < 1.5) {                                   // a car on its lane: head lamps toward the camera, tail lamps away
+    float s = mod(aEx.y + uTime * aMove.w, aMove.z); p.xz += aMove.xy * s;
+    float f = dot(normalize(vec3(aMove.x, 0.0, aMove.y)), normalize(cameraPosition - p));
+    float head = smoothstep(-0.05, 0.6, f), tail = smoothstep(0.05, -0.6, f);
+    col = (vec3(1.0, 0.93, 0.82) * 2500.0 * head + vec3(1.0, 0.06, 0.03) * 90.0 * tail) / max(1.0, 2500.0 * head + 90.0 * tail); I = 2500.0 * head + 90.0 * tail;
+  }
+  if (aEx.x > 2.5) I *= step(0.82, fract(uTime / 1.6 + aEx.y));        // tower beacons blink
+  vec4 mv = modelViewMatrix * vec4(p, 1.0); gl_Position = projectionMatrix * mv;
+  float d = max(1.0, -mv.z), pa = 2.0 / (projectionMatrix[1][1] * uRes.y);                // radians per pixel
+  float s = aEx.x > 1.5 && aEx.x < 2.5 ? clamp(2.4 / (d * pa), 2.5, 28.0) : 3.0;             // crosses: their true size (2.4 m), at least a dot
+  gl_PointSize = s;
+  float foot = aEx.x > 1.5 && aEx.x < 2.5 ? 0.22 * s * s : 0.098 * s * s;
+  float L = I / (d * d * pa * pa * foot);                                                    // nits: the source's light spread over its sprite
+  if (aEx.x > 1.5 && aEx.x < 2.5) L = min(L, 260.0);                                        // a resolved neon cross is its own luminance
+  vC = col * min(L, 40000.0) * exp(-d / (uHazeD * 1.3)) * uNits;
+}`,
+        fragmentShader: `varying vec3 vC; varying float vK;
+void main(){
+  vec2 q = gl_PointCoord - 0.5; float a;
+  if (vK > 1.5 && vK < 2.5) { vec2 aq = abs(q); a = (aq.x < 0.07 && q.y > -0.48 && q.y < 0.48) || (aq.y < 0.07 && q.y > 0.0 && q.y < 0.14 && aq.x < 0.3) || (abs(q.y - 0.12) < 0.07 && aq.x < 0.3) ? 1.0 : 0.0; }
+  else a = exp(-32.0 * dot(q, q));
+  if (a < 0.003) discard;
+  gl_FragColor = vec4(vC * a, 1.0);
+}` });
+      m.userData.cityLight = false; const pts = new THREE.Points(g, m); pts.name = 'seoul:beyondLights'; pts.frustumCulled = false; pts.matrixAutoUpdate = false; pts.renderOrder = 1;
+      const _v2 = new THREE.Vector2(); pts.onBeforeRender = (r) => { const rt = r.getRenderTarget(); if (rt) beyondU.uRes.value.set(rt.width, rt.height); else { r.getDrawingBufferSize(_v2); beyondU.uRes.value.copy(_v2); } };
+      group.add(pts); disposables.push(g, m); beyondStats.points = v; }
+    Object.assign(beyondStats, BY.facts);
+  }
+
   // cable material: make sure S3's grid reaches it (if seoulLight.attach ran before us)
   let patched = false;
   const ensureLit = () => { if (patched || !lineMesh) return; const L = ctx.scene?.userData?.seoulLight; if (L?.patchMaterial) { L.patchMaterial(lineMesh.material); patched = true; } };
-  const update = (t = 0) => { ensureLit(); updateLamps(t); };
+  const update = (t = 0) => { ensureLit(); updateLamps(t); if (beyondU) beyondU.uTime.value = t; };
   return {
     group, update, emitters: [], setPieces: geo.setPieces,
-    stats: { cables: polys.length, cableSegs: lineMesh ? lineMesh.geometry.index.count / 6 : 0, labels: geo.labels.length, lamps: geo.lamps.length, ...geo.facts },
+    stats: { cables: polys.length, cableSegs: lineMesh ? lineMesh.geometry.index.count / 6 : 0, labels: geo.labels.length, lamps: geo.lamps.length, beyond: beyondStats, ...geo.facts },
     dispose() { for (const d of disposables) d.dispose?.(); group.removeFromParent(); },
   };
 }
@@ -1348,6 +1794,8 @@ function paintLabel(g, c, fam) {
     g.fillStyle = '#ffffff'; g.textAlign = 'center'; fit(L.lines[0], h * 0.5, w * 0.9, 800); g.fillText(L.lines[0], x + w / 2, y + h * 0.36); fit(L.lines[1], h * 0.24, w * 0.9, 600); g.fillText(L.lines[1], x + w / 2, y + h * 0.78);
   } else if (L.kind === 'stage') {
     g.fillStyle = '#fff4f0'; g.textAlign = 'center'; fit(L.lines[0], h * 0.48, w * 0.92, 800); g.fillText(L.lines[0], x + w / 2, y + h * 0.36); fit(L.lines[1], h * 0.22, w * 0.92, 600); g.fillText(L.lines[1], x + w / 2, y + h * 0.78);
+  } else if (L.kind === 'awning') {                // printed on the valance: paint over transparent (the fabric is geometry)
+    g.fillStyle = L.ink || '#f4efe4'; g.textAlign = 'center'; fit(L.lines[0], h * 0.78, w * 0.94, 700); g.fillText(L.lines[0], x + w / 2, y + h * 0.54);
   } else if (L.kind === 'tent') {
     g.fillStyle = 'rgba(255,248,235,0.95)'; g.textAlign = 'center'; fit(L.lines[0], h * 0.8, w * 0.9, 800); g.fillText(L.lines[0], x + w / 2, y + h * 0.54);
   }
@@ -1357,8 +1805,11 @@ function paintLabel(g, c, fam) {
 // native export (H): the runtime content as plain data (geometry itself goes out through buildGeometry / export-world)
 export function exportData(layout, opts = {}) {
   const g = CACHE.get(layout) || geometry(layout, opts);
-  return { version: 1, setPieces: g.setPieces, emitters: g.emitters, holes: g.holes, cables: g.cables, labels: g.labels, lamps: g.lamps, obstacles: g.obstacles, materials: DRESS_MATS, facts: g.facts };
+  const by = beyond(layout, opts);   // [P3-E fpv #3] the city ring as plain arrays (layouts in beyond()'s header)
+  return { version: 1, setPieces: g.setPieces, emitters: g.emitters, holes: g.holes, cables: g.cables, labels: g.labels, lamps: g.lamps, obstacles: g.obstacles, materials: DRESS_MATS, facts: g.facts,
+    beyond: { bearing: by.bearing, rmax: by.rmax, bank: by.bank, roads: [...by.roads], buildings: [...by.buildings], lamps: [...by.lamps], cars: [...by.cars], marks: [...by.marks], facts: by.facts } };
 }
 
-export const seoulDressing = { geometry, build, material, groundTris, exportData, DRESS_MATS, NITS };
+export const acKit = true;   // [P3-E1] C hands its AC placements to E (lotInfo .ac) when this is set
+export const seoulDressing = { geometry, build, material, groundTris, exportData, beyond, DRESS_MATS, NITS, acKit };
 export default seoulDressing;
