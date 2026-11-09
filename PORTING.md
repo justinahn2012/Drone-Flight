@@ -383,6 +383,18 @@ per glyph); `interiors.png` (C's 1024 x 1280 room/poster atlas, sRGB rgb + linea
 `interiors.json` (ATLAS, ROOM, FRONT, mean luminance per tile); `fonts/*.woff2` (screen / scroller text, painted at load) and
 `dressing/E-Sans.woff2` (E's labels: the cells are dressing.json `labels`). All OFL; licences copied alongside.
 
+**LifeSim off the main thread (native #5, perf #3).** `seoul-life-worker.js` (the shell) runs G1's `LifeSim` unchanged in a
+module worker; `seoul-life-client.js` (`LifeWorker`) is the main-thread side. Per frame: `request(t, cam)` (never blocks; a
+busy worker keeps only the newest request), `latest()` returns the finished frame (crowd X, Z, YAW, PH, WALK, POSE, VIS and
+8 floats per vehicle: x, z, hx, hz, hidden, brake, hazard, type), `release(f)` sends its buffers back with the next request:
+transferred both ways, one allocation in 60 frames. The worker's output equals the inline sim bit for bit
+(tests/life-worker.mjs, in CI) because the sim is a pure function of the take clock; the colliders stay on the main thread's
+own LifeSim, so take parity never waits on a worker. Browser workers have no import map: the client resolves 'three' with
+`import.meta.resolve` and the worker imports seoul-life.js with that URL patched in, until G1 splits the sim into a
+three-free module. Wiring (G1, seoul-life.js `build`): create it when `ctx.lifeWorker`, then in `update()` request
+`clock + W + dt` and fill the tiers from `latest()` instead of `crowd.evaluate`; the tier packing can follow into the
+worker once it is a pure function. On Metal: the same sim on its own thread.
+
 **Snapshot v4** (flight.js `SNAP_VERSION` 4, `Drone.snapshot()`): v3 plus
 - `tick`: step() calls since reset(); the movers' clock is t = tick / 240 s, so a re-sim from any snapshot asks
   `world.movers.hit(p, r, t)` the same questions. Restore it exactly (UInt64 in Swift).
