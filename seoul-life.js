@@ -30,8 +30,13 @@ export const LIFE = {
   // Yanghwa-ro sidewalks 0.08, alleys 0.06, exit 9 ~0.3 from its portal)
   density: { main: 0.08, walking: 0.35, club: 0.3, alley: 0.06 },
   // unit counts per home-way kind, fitted so the realised (visible, through-flow included) densities hit the targets
-  crowdK: { main: 1.55, walking: 1.6, club: 1.6, alley: 1.9 },
-  warm: 75, maxAgents: 9600, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 2500,
+  crowdK: { main: 1.25, walking: 1.75, club: 1.5, alley: 1.35 },
+  // per-street weights on top (life #4, P3): the hero club street (Wausan-ro 19-gil) read 0.07-0.11 p/m^2 against a 0.3
+  // target once C widened it, so its own walkers are weighted x1.7 (people also turn into it at junctions by this weight)
+  streetK: { '와우산로19길': 1.7 },
+  // exit 9 (life #4): trains every ~140 s (Line 2 / Gyeongui / AREX alternate); each one sends 20-40 up the stairs in ~45 s
+  train: { headway: 140, spread: 45, perTrain: 30 },
+  warm: 75, maxAgents: 15500, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 2500,
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
   phoneShare: 0.18,            // walkers looking at a phone
   sidewalk: (w) => Math.max(3, Math.min(6, w * 0.15)),
@@ -571,8 +576,9 @@ export class CrowdSim {
       }
     }
     const o = {};
+    const SK = LIFE.streetK || {};
     this.ways.forEach((w, i) => {
-      w.idx = i; w.len = w.s1 - w.s0; w.area = w.len * (w.dmax - w.dmin);
+      w.idx = i; w.len = w.s1 - w.s0; w.area = w.len * (w.dmax - w.dmin); w.sk = SK[w.street.ko] ?? SK[w.street.name] ?? SK[w.street.id] ?? 1;
       let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
       for (let s = w.s0; s <= w.s1 + 1e-6; s += Math.max(2, w.len / 24)) { w.base.at(s, o); x0 = Math.min(x0, o.x); x1 = Math.max(x1, o.x); z0 = Math.min(z0, o.z); z1 = Math.max(z1, o.z); }
       const pad = Math.max(Math.abs(w.c) + w.dmax, 4); w.box = [x0 - pad, x1 + pad, z0 - pad, z1 + pad];
@@ -662,7 +668,7 @@ export class CrowdSim {
     this.people = []; this.units = []; this.statics = [];
     // ---- budgets
     const homes = this.ways.filter((w) => w.doorW > 0);
-    const want = (w) => w.area * (D[w.kind] ?? D.alley) * (K[w.kind] ?? 1) * this.density;
+    const want = (w) => w.area * (D[w.kind] ?? D.alley) * (K[w.kind] ?? 1) * w.sk * this.density;
     const walkTot = this.ways.reduce((a, w) => a + want(w), 0);
     const frontN = this.lots.map((l) => (l.use === 'club' ? 0 : l.use === 'pocha' ? 10 : ['conv', 'bar', 'karaoke', 'pc', 'cafe'].includes(l.use) ? 3 : 1.2) * this.density);
     const others = frontN.reduce((a, b) => a + b, 0) + this.lots.filter((l) => l.use === 'club').length * 21 + 150 + this.net.crossings.length * 22;
@@ -676,7 +682,9 @@ export class CrowdSim {
         const gs = R.next() < LIFE.groupShare ? 2 + Math.floor(R.next() * R.next() * 3.2) : 1;
         const u = { id: this.units.length, home: w, v: Math.max(0.75, 1.2 + R.gauss() * 0.17) * (gs > 1 ? 0.9 : 1), gsize: gs, members: [], P: 80 + R.next() * 120, phi: R.next(), fvis: 0.66 + R.next() * 0.14, trip: null, lk: null, lv: 0, dc: 0 };
         for (let g = 0; g < gs; g++) {
-          const p = this.newPerson(R, K_WALK); p.unit = u.id; p.slot = gs === 1 ? 0 : (g - (gs - 1) / 2) * 0.62; p.sOff = g ? (R.next() - 0.5) * 0.5 : 0;
+          // groups walk two abreast (P3: 3-4 abreast spanned 1.9 m and ploughed through the crowd): rows of 2, 0.85 m apart
+          const row = g >> 1, inRow = Math.min(2, gs - row * 2);
+          const p = this.newPerson(R, K_WALK); p.unit = u.id; p.slot = inRow === 1 ? (R.next() - 0.5) * 0.3 : ((g & 1) - 0.5) * 0.6; p.sOff = -row * 0.85 + (g ? (R.next() - 0.5) * 0.3 : 0);
           p.pose = R.next() < (gs > 1 ? 0.08 : LIFE.phoneShare) ? P_PHONE : P_WALK; p.ph0 = R.next(); u.members.push(p.id);
         }
         this.units.push(u); n -= gs;
@@ -686,10 +694,13 @@ export class CrowdSim {
     const ex = this.exitPortal ? this.ways[this.exitPortal.way].doors.find((d) => d.portal === 'exit') : null;
     if (ex) {
       const xw = this.ways[this.exitPortal.way];
-      let n = Math.round(150 * Math.min(1.5, this.density) * Math.min(1, k + 0.2));
+      // trains (life #4): a unit's trip k starts at (k - phi) P; with P a whole number of headways and phi on a train's
+      // arrival plus the stair spread, each train sends ~perTrain people up the stairs within `spread` s, then a lull
+      const TR = LIFE.train, H = TR.headway;
+      let n = Math.round(TR.perTrain * 2.5 / 0.85 * Math.min(1.5, this.density) * Math.min(1, k + 0.2));
       while (n > 0) {
-        const gs = R.next() < 0.45 ? 2 : 1;
-        const u = { id: this.units.length, home: xw, exit: ex, v: Math.max(0.8, 1.25 + R.gauss() * 0.15), gsize: gs, members: [], P: 70 + R.next() * 80, phi: R.next(), fvis: 0.8 + R.next() * 0.1, trip: null, lk: null, lv: 0, dc: 0 };
+        const gs = R.next() < 0.45 ? 2 : 1, m = 2 + (R.next() < 0.5 ? 1 : 0), P = m * H, j = Math.floor(R.next() * m), jit = TR.spread * R.next() * (0.4 + 0.6 * R.next());
+        const u = { id: this.units.length, home: xw, exit: ex, v: Math.max(0.8, 1.25 + R.gauss() * 0.15), gsize: gs, members: [], P, phi: ((((-(j * H + jit)) % P) + P) % P) / P, fvis: 0.55 + R.next() * 0.2, trip: null, lk: null, lv: 0, dc: 0 };
         for (let g = 0; g < gs; g++) { const p = this.newPerson(R, K_WALK); p.unit = u.id; p.slot = gs === 1 ? 0 : (g - 0.5) * 0.62; p.sOff = g ? (R.next() - 0.5) * 0.4 : 0; p.pose = R.next() < 0.22 ? P_PHONE : P_WALK; u.members.push(p.id); }
         this.units.push(u); n -= gs;
       }
@@ -824,7 +835,7 @@ export class CrowdSim {
         conn(this.wayPoint(w, s, dP, {}), this.wayPoint(w, s + nd * 0.8, ndP, {})); s += nd * 0.8; dir = nd; dP = ndP; continue;
       }
       const late = budget - used < 80;   // near the end of the budget: prefer streets with doors to end at
-      let tot = 0; const wts = e.map((j) => { const x = Math.pow((LIFE.density[j.way.kind] ?? 0.06) / 0.1, 0.8) * (j.way === prev ? 0.15 : 1) * (late && !j.way.shopW ? 0.05 : 1); tot += x; return x; });
+      let tot = 0; const wts = e.map((j) => { const x = Math.pow((LIFE.density[j.way.kind] ?? 0.06) / 0.1, 0.5) * j.way.sk * (j.way === prev ? 0.15 : 1) * (late && !j.way.shopW ? 0.05 : 1); tot += x; return x; });
       let r = R.next() * tot, j = e[e.length - 1]; for (let q = 0; q < e.length; q++) if ((r -= wts[q]) < 0) { j = e[q]; break; }
       const nw = j.way, nd = j.s - nw.s0 < 3 ? 1 : nw.s1 - j.s < 3 ? -1 : R.next() < 0.5 ? 1 : -1, ndP = this.prefD(nw, nd, R.next());
       const ns = Math.max(nw.s0, Math.min(nw.s1, j.s + nd * 0.5));
@@ -868,7 +879,8 @@ export class CrowdSim {
       const s = L.s0 + L.dir * into; L.w.base.at(s, o);
       tx = o.tx * L.dir; tz = o.tz * L.dir; nx = o.nx; nz = o.nz;
       x = o.x + o.nx * (L.w.c + L.d); z = o.z + o.nz * (L.w.c + L.d); yaw = Math.atan2(tx, tz);
-      for (const i of u.members) { A.WAY[i] = L.w.idx; A.WS[i] = s; A.WDIR[i] = L.dir; }
+      // (P3: each member's own s, its row offset included: the avoidance compared group mates by the leader's s)
+      for (const i of u.members) { A.WAY[i] = L.w.idx; A.WS[i] = s + L.dir * this.people[i].sOff; A.WDIR[i] = L.dir; }
     } else {
       const f = into / L.len; x = L.x0 + (L.x1 - L.x0) * f; z = L.z0 + (L.z1 - L.z0) * f;
       tx = (L.x1 - L.x0) / L.len; tz = (L.z1 - L.z0) / L.len; nx = -tz; nz = tx; yaw = L.y0;
@@ -885,19 +897,19 @@ export class CrowdSim {
     }
     return true;
   }
-  queueState(q, t) {   // admissions so far: { A, N, TN, mN }
+  queueState(q, t, o = {}) {   // admissions so far: { A, N, TN, mN }
     let A = 0, n = 0, TN = -1e9, mN = 0;
     for (;;) { const nn = n + 1, Tn = nn * q.G + (hu(q.seed, nn, 1) - 0.5) * 0.6 * q.G; if (Tn > t) break; n = nn; TN = Tn; mN = 1 + Math.floor(hu(q.seed, nn, 2) * 2.6); A += mN; }
-    return { A, N: n, TN, mN };
+    o.A = A; o.N = n; o.TN = TN; o.mN = mN; return o;
   }
   evalStatic(i, t, A, qs) {
     const p = this.people[i];
     A.WAY[i] = -1; A.VIS[i] = 1; A.WALK[i] = 0; A.POSE[i] = p.pose; A.PH[i] = (t * 0.11 + p.ph0) % 1;
     if (p.kind === K_STAND) {
-      const q = t / p.T + p.ph0 * 7, j = Math.floor(q), f = (q - j) * p.T;
-      const off = (jj) => [(hu(p.id, jj, 1) - 0.5) * 0.35, (hu(p.id, jj, 2) - 0.5) * 0.35, (hu(p.id, jj, 3) - 0.5) * 0.9];
-      const a = off(j), b = off(j - 1), g = smooth(f / 1.1);
-      A.X[i] = p.x + b[0] + (a[0] - b[0]) * g; A.Z[i] = p.z + b[1] + (a[1] - b[1]) * g; A.YAW[i] = p.yaw + b[2] + (a[2] - b[2]) * g;
+      const q = t / p.T + p.ph0 * 7, j = Math.floor(q), f = (q - j) * p.T, g = smooth(f / 1.1);   // (P3: no per-frame arrays)
+      const a0 = (hu(p.id, j, 1) - 0.5) * 0.35, a1 = (hu(p.id, j, 2) - 0.5) * 0.35, a2 = (hu(p.id, j, 3) - 0.5) * 0.9;
+      const b0 = (hu(p.id, j - 1, 1) - 0.5) * 0.35, b1 = (hu(p.id, j - 1, 2) - 0.5) * 0.35, b2 = (hu(p.id, j - 1, 3) - 0.5) * 0.9;
+      A.X[i] = p.x + b0 + (a0 - b0) * g; A.Z[i] = p.z + b1 + (a1 - b1) * g; A.YAW[i] = p.yaw + b2 + (a2 - b2) * g;
       if (f < 1.1) A.WALK[i] = 0.5 * Math.sin(Math.PI * f / 1.1);
       const r = hu(p.id, j, 4); A.POSE[i] = p.wait ? (r < 0.75 ? P_PHONE : P_IDLE) : p.smoker ? (r < 0.7 ? P_SMOKE : P_PHONE) : r < 0.5 ? P_TALK : r < 0.8 ? P_PHONE : r < 0.9 ? P_IDLE : P_SMOKE;
       return;
@@ -963,11 +975,18 @@ export class CrowdSim {
     const farR2 = farR * farR, live = A === this && cam, fr = live ? (this.frame = (this.frame || 0) + 1) : 0;
     for (const u of this.units) {
       // render path: units past 60 m are re-evaluated every 3rd frame (<= 10 cm of lag at 60+ m: sub-pixel)
-      if (live && u.dc > 60 && (fr + u.id) % 3 && u.trip && u.lk === u.trip.k) continue;
+      // (P3: past 110 m every 6th frame, <= 13 cm at 110+ m)
+      // and units behind the camera (cam.fx/fz: its horizontal forward) past 25 m every 6th: not drawn, and a turn shows
+      // them at most 0.1 s stale
+      if (live && u.trip && u.lk === u.trip.k && u.dc > 25) {
+        const k = u.dc > 110 || (u.db > 0 && u.dc > 25) ? 6 : u.dc > 60 ? 3 : 1;
+        if (k > 1 && (fr + u.id) % k) continue;
+      }
       const vis = this.evalUnit(u, t, A, cam, farR2);
       if (live) {   // door in/out events near the camera (shop chimes), and distance for the stagger
         const tr = u.trip, inNow = vis ? 1 : 0, i0 = u.members[0];
         u.dc = vis ? Math.hypot(A.X[i0] - cam.x, A.Z[i0] - cam.z) : 999;
+        u.db = vis && cam.fx != null && ((A.X[i0] - cam.x) * cam.fx + (A.Z[i0] - cam.z) * cam.fz) < -0.3 * u.dc ? 1 : 0;
         let door = null, type = null;
         if (u.lk != null && u.lk !== tr.k) { if (inNow) { door = tr.start; type = 'out'; } }
         else if (u.lk != null && u.lv !== inNow) { door = inNow ? tr.start : tr.end; type = inNow ? 'out' : 'in'; }
@@ -975,7 +994,8 @@ export class CrowdSim {
         u.lk = tr.k; u.lv = inNow;
       }
     }
-    const qs = this.queues.map((q) => this.queueState(q, t));
+    const qs = this._qs || (this._qs = []); qs.length = this.queues.length;
+    for (let k = 0; k < this.queues.length; k++) qs[k] = this.queueState(this.queues[k], t, qs[k]);
     for (const i of this.statics) this.evalStatic(i, t, A, qs);
     if (avoid && cam) this.avoid(cam, A);
     if (A === this) { this.t = t; this.n++; }
@@ -1005,15 +1025,21 @@ export class CrowdSim {
     for (const [wi, L] of by) {
       const w = this.ways[wi]; L.sort((a, b) => A.WS[a] - A.WS[b] || a - b);
       const d0 = Float32Array.from(L, (i) => A.WD[i]), d = d0.slice(), push = new Float32Array(L.length);
-      for (let it = 0; it < 3; it++) {   // a few relaxation passes so crowded spots settle instead of trading places
+      for (let it = 0; it < 12; it++) {   // a few relaxation passes so crowded spots settle instead of trading places
         push.fill(0);
         for (let a = 0; a < L.length; a++) {
           const i = L[a];
           for (let b = a + 1; b < L.length && A.WS[L[b]] - A.WS[i] < 2.2; b++) {
-            const j = L[b]; if (this.people[i].unit === this.people[j].unit) continue;
-            const ds = A.WS[j] - A.WS[i], dd = d[a] - d[b], gap = 0.62 - Math.abs(dd); if (gap <= 0) continue;
-            const kk = (1 - (ds / 2.2) ** 2) ** 2, sg = dd !== 0 ? Math.sign(dd) : (A.WDIR[i] > 0 ? 1 : -1);
-            push[a] += sg * gap * kk * 0.5; push[b] -= sg * gap * kk * 0.5;
+            // (P3: group mates too, at a closer 0.5 m, so a pushed member doesn't walk into its own friend)
+            // the lateral clearance a pair needs falls off with their along-way separation over a look-ahead Ls: short for
+            // walkers going the same way at about the same pace (P3: a fixed 2.2 m window over-constrained dense streets, so
+            // nothing converged: 6-8 % overlaps at 0.35-0.5 p/m^2), longer for overtakes, longest head-on
+            const j = L[b], mate = this.people[i].unit === this.people[j].unit, same = A.WDIR[i] === A.WDIR[j];
+            const Ls = mate ? 0.9 : same ? 0.8 + 1.4 * Math.min(1, Math.abs(this.units[this.people[i].unit].v - this.units[this.people[j].unit].v) * 2.5) : 2.2;
+            const ds = A.WS[j] - A.WS[i]; if (ds >= Ls) continue;
+            const dd = d[a] - d[b], kk = 1 - (ds / Ls) ** 2, gap = (mate ? 0.5 : 0.64) * Math.sqrt(kk) - Math.abs(dd); if (gap <= 0) continue;
+            const sg = dd !== 0 ? Math.sign(dd) : (A.WDIR[i] > 0 ? 1 : -1);
+            push[a] += sg * gap * 0.5; push[b] -= sg * gap * 0.5;
           }
           const ob = w.obst, s = A.WS[i]; let lo = 0, hi = ob.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ob[m][0] < s - 1.6) lo = m + 1; else hi = m; }
           for (let k = lo; k < ob.length && ob[k][0] < s + 1.6; k++) {
@@ -1035,11 +1061,13 @@ export class CrowdSim {
   // (no avoidance offsets). A 10 Hz index (4 m cells) of everyone, rebuilt only when a low query comes in.
   hit(p, r, t) {
     if (p[1] - r > 2.05) return null;
+    // (P3: the index covers 20 m round its centre and is rebuilt when the query strays 8 m from it, so a low pass costs a
+    // local evaluate, not the whole crowd's; any person within r + 0.8 of p is within 10 m of the centre: same answer)
     const b = Math.floor(t * 10);
-    if (this._hb !== b) {
-      this._hb = b; const N = this.people.length;
+    if (this._hb !== b || !this._hc || Math.hypot(p[0] - this._hc.x, p[2] - this._hc.z) > 8) {
+      this._hb = b; this._hc = { x: p[0], z: p[2] }; const N = this.people.length;
       const H = this._hA || (this._hA = { X: new Float32Array(N), Z: new Float32Array(N), YAW: new Float32Array(N), PH: new Float32Array(N), WALK: new Float32Array(N), POSE: new Uint8Array(N), VIS: new Uint8Array(N), WAY: new Int16Array(N), WS: new Float32Array(N), WD: new Float32Array(N), WDIR: new Int8Array(N) });
-      this.evaluate(b / 10, null, { avoid: false, A: H });
+      this.evaluate(b / 10, this._hc, { avoid: false, A: H, farR: 20 });
       const grid = this._hg = new Map();
       for (let i = 0; i < N; i++) { if (!H.VIS[i]) continue; const k = Math.floor(H.X[i] / 4) * 4096 + Math.floor(H.Z[i] / 4); let l = grid.get(k); if (!l) grid.set(k, (l = [])); l.push(i); }
     }
@@ -1721,7 +1749,7 @@ export function build(layout, ctx = {}) {
   const hist = new Int32Array(18), ab = new Uint8Array(NP);
   const stats = { agents: NP, walkers: crowd.units.reduce((n, u) => n + u.gsize, 0), vehicles: traffic.vehicles.length, near: 0, mid: 0, drawn: 0, cpuMs: 0, simMs: 0, crowdMs: 0, trisNear: tiers[0].tris, trisMid: tiers[1].tris, trisFar: tiers[2].tris, lanes: traffic.lanes.length, ways: crowd.ways.length, crossings: sim.net.crossings.length };
   let clock = 0, extClock = false, lastClock = null;
-  const camP = new THREE.Vector3(0, 2, 0);
+  const camP = new THREE.Vector3(0, 2, 0), camE = { x: 0, z: 0, fx: null, fz: null };
   // what the sound needs from the crowd each frame (sound #3): density around the camera, footsteps within 5 m,
   // door in/out events, busking sites
   const near = { crowdN: 0, feet: [], doors: [], busk: crowd.busk };
@@ -1737,7 +1765,8 @@ export function build(layout, ctx = {}) {
     if (camQuat) fwd.set(0, 0, -1).applyQuaternion(camQuat); else fwd.set(0, 0, 0);
     // ---- people: closed-form at the clock (avoidance near the camera), tier by distance, cull behind the camera
     crowd.events.length = 0;
-    crowd.evaluate(clock + W, camP);
+    camE.x = camP.x; camE.z = camP.z; const fl = Math.hypot(fwd.x, fwd.z); camE.fx = fl > 1e-3 ? fwd.x / fl : null; camE.fz = fl > 1e-3 ? fwd.z / fl : null;
+    crowd.evaluate(clock + W, camE);
     const c2 = performance.now();
     const X = crowd.X, Z = crowd.Z, VIS = crowd.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
     let nN = 0, nM = 0, nF = 0; const T0 = tiers[0].A, T1 = tiers[1].A, T2 = tiers[2].A, mr2 = LIFE.midR * LIFE.midR;
