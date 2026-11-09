@@ -1,0 +1,11 @@
+Seoul UI assets (F2). Built by tools/seoul-ui-assets.py; re-run it after adding hangul to levels.json or street names to
+seoul/layout.json, and with a fresh still from the build for backdrop.jpg / thumb.jpg.
+
+  OT-KR800.woff2   Noto Sans KR (variable, instanced at wght 800), subset to the UI's hangul (glyphs.txt): the level
+                   select subtitle, the loading kicker and the captions' street line. SIL Open Font License 1.1 (OFL.txt).
+                   A subset is a Modified Version under the OFL and Noto Sans KR carries the Reserved Font Name 'Source',
+                   so the family is renamed "OT KR". Same face as seoul/fonts/S2-NotoSansKR800 (B's signs), subset apart
+                   so the sign atlas can change without breaking the UI.
+                   Original copyright: Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+  backdrop.jpg     1600x900 menu / loading still (interim: phase-1 seoulsnap 'station', graded; the integrator re-shoots)
+  thumb.jpg        480x270 level card still (interim: phase-1 seoulsnap 'w21', cropped and graded)

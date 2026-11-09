@@ -35,6 +35,12 @@ const levelOf = (id) => LEVELS.find((l) => l.id === id) || null;
 const levelByName = (k) => { k = String(k || '').toLowerCase(); return LEVELS.find((l) => l.id === k || (l.alias || []).includes(k)) || null; };
 for (const l of LEVELS) if (l.id !== 'bando') WORLDS.push({ id: l.id, name: l.name || l.id, note: l.note || '', craft: l.craft || 'freestyle5', proc: true, sky: l.sky || 'night', level: l.id, tag: l.tag || '' });
 const levelIdOf = (worldId) => WORLDS.find((w) => w.id === worldId)?.level || null;
+// [F2] per-level UI copy and art (levels.json, all optional): subtitle, thumb, backdrop (+ backdropPos), kicker, ui {accent,
+// accentInk, ghost, hairline}, placeNames, guideUntil, firstTip, tips {take, free}, lineNames [name | {name, hint}], foot.
+// Bando's copy is the built-in default; another level without a key gets neutral copy, never bando's (ux #3).
+const selLevel = () => levelOf(levelIdOf(S.world) || 'bando') || LEVEL_BANDO;           // the level picked in the menu
+const isBando = (L) => !L || L.id === 'bando';
+const koHTML = (s) => esc(s).replace(/[가-힣][가-힣0-9 ]*[가-힣]|[가-힣]/g, (m) => `<span class="ko" lang="ko">${m}</span>`);   // hangul runs -> the KR face
 // [D] max: render scale ceiling (auto 1.2: the MSAA/shadow-split savings go into centre sharpness, 0.46 -> 0.59 px/px);
 // msaa: scene MSAA samples (0 = off); ao: contact SSAO (0 = off)
 const QUALITY = {
@@ -120,7 +126,7 @@ function layout() {
   canvas.style.width = W + 'px'; canvas.style.height = vh + 'px';
   fpv.resize(w, h);
   menuFrames = 0;
-  viewW = W; viewH = vh;   // CSS px of #view: the OSD chevron projects into it
+  viewW = W; viewH = vh;   // CSS px of #view: the OSD gate brackets and ghost project into it
 }
 let viewW = 1, viewH = 1;
 window.addEventListener('resize', layout);
@@ -183,13 +189,19 @@ function buildWorlds() {
   const box = $('worlds'); box.innerHTML = '';
   for (const w of WORLDS) {
     if (w.proc && w.level === 'bando') continue;
-    const b = document.createElement('button');
-    b.className = 'world' + (w.level ? ' level' : '') + (w.id === S.world ? ' on' : '');   // [S0] manifest levels: one card each
+    const b = document.createElement('button'), L = w.level ? levelOf(w.level) : null;
+    b.className = 'world' + (w.level ? ' level' : '') + (w.id === S.world ? ' on' : '') + (L?.thumb ? ' hasth' : '') + (L?.ui?.hairline ? ' hair' : '');   // [S0] manifest levels: one card each
     b.dataset.level = w.level || '';
-    b.innerHTML = `<b>${esc(w.name)}${w.tag ? `<em>${esc(w.tag)}</em>` : ''}</b><small>${esc(w.note)} · ${CRAFTS[w.craft]?.label || ''}</small>`;
+    if (L?.ui?.hairline) b.style.setProperty('--hairC', L.ui.hairline);
+    // [F2] ui #1: still, name + tag, hangul subtitle, note
+    b.innerHTML = (L?.thumb ? `<span class="th" style="background-image:url('${encodeURI(L.thumb)}')"></span>` : '') +
+      `<b>${esc(w.name)}${w.tag ? `<em>${esc(w.tag)}</em>` : ''}</b>${L?.subtitle ? `<i class="ko" lang="ko">${esc(L.subtitle)}</i>` : ''}<small>${esc(w.note)} · ${CRAFTS[w.craft]?.label || ''}</small>`;
     b.onclick = () => { S.world = w.id; buildWorlds(); $('custom').classList.remove('open'); save(); };
     box.appendChild(b);
   }
+  // [F2] the Silo Yard card's still (levels.json bando thumb; hero.jpg) as the first grid cell
+  const yc = $('yardCard'), yt = LEVELS.find((l) => l.id === 'bando')?.thumb ?? 'hero.jpg';
+  if (yt && !yc.querySelector('.th')) { const t = document.createElement('span'); t.className = 'th'; t.style.backgroundImage = `url('${encodeURI(yt)}')`; yc.prepend(t); yc.classList.add('hasth'); }
   if (DEV) {
     const c = document.createElement('button');
     c.className = 'world custom' + (S.world === 'file' ? ' on' : '');
@@ -201,6 +213,30 @@ function buildWorlds() {
   const L = levelOf(levelIdOf(S.world) || 'bando');
   if (L?.lede && $('lede')) $('lede').textContent = L.lede;
   if (state === 'menu' && !loadedId) { setProgressLevel(L?.id || 'bando'); renderProgress(); }
+  applyLevelUI();
+}
+// [F2] ui #1 / ux #3: body[data-level] + body.night, the level's OSD accent / ghost / hairline as CSS vars, the canvas caption
+// accent, the menu backdrop (cross-fade) and the credit line. The HUD follows the loaded level; before a load (and for
+// the menu's art) the selected one.
+let capAccent = '#E75211', mbgL = null, mbgK = 0, footDef = null;
+function applyLevelUI() {
+  const sel = selLevel(), hud = (loadedId && world.level && levelOf(world.level)) || (loadedId ? null : sel), B = document.body;
+  B.dataset.level = hud?.id || '';
+  B.classList.toggle('night', (hud?.look || 'day') === 'night');
+  const u = hud?.ui || {}, st = B.style;
+  const set = (k, v) => (v ? st.setProperty(k, v) : st.removeProperty(k));
+  set('--acc', u.accent); set('--accBadge', u.accent); set('--accInk', u.accent ? u.accentInk || '#000' : null); set('--ghost', u.ghost);
+  capAccent = u.accent || '#E75211';
+  // menu still: the selected level's backdrop (bando: hero.jpg; a level without one: its thumb, else none)
+  const bg = sel.backdrop || (isBando(sel) ? 'hero.jpg' : sel.thumb || null);
+  if (bg !== mbgL) {
+    mbgL = bg; const ls = $('mbg').children, nx = ls[mbgK ^= 1], pv = ls[mbgK ^ 1];
+    if (bg) { nx.style.backgroundImage = `url('${encodeURI(bg)}')`; nx.style.backgroundPosition = sel.backdropPos || ''; }
+    const show = () => { if (mbgL !== bg) return; nx.classList.toggle('on', !!bg); pv.classList.remove('on'); };
+    if (bg) { const im = new Image(); im.onload = im.onerror = show; im.src = bg; } else show();   // cross-fade once decoded
+  }
+  if (footDef === null) footDef = $('footT').textContent;
+  $('footT').textContent = sel.foot ?? (isBando(sel) ? footDef : '');
 }
 $('yardCard').addEventListener('click', (e) => {
   if (e.target.closest('.seg')) return;
@@ -300,6 +336,7 @@ async function startFlight(fresh) {
       const ok = await loadWorld(def);
       if (!ok) return;
       loadedId = wantKey;
+      applyLevelUI();                                   // [F2] the HUD's accent / halo follow the level now loaded
     }
     respawn(true);
   } else {
@@ -319,12 +356,15 @@ const STICK_COACH = {
   acro: [['LEFT THUMB', 'throttle · yaw'], ['RIGHT THUMB', 'pitch · roll rates'], ['NO SELF-LEVEL', 'expert · gamepad or radio']],
 };
 // shown in this order, one per load (the CUT rule comes second, not 1-in-5 at random)
+// [F2] ux #3: bando's lines and chimney only on bando; a level's own tips (levels.json tips.take / tips.free: <b> only,
+// {bankT} and {cut} filled from TAKE_TUNING) replace the game's list
 const LOAD_TIPS = {
-  take: () => [
-    '<b>Lines</b> are named gaps, holes and dives. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(TT().bankT, 5) + ' s without a line banks it.',
+  take: (L) => [
+    isBando(L) ? '<b>Lines</b> are named gaps, holes and dives. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(TT().bankT, 5) + ' s without a line banks it.'
+      : '<b>Lines</b> are named runs through the level. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(TT().bankT, 5) + ' s without a line banks it.',
     `<b>CUT</b>: ${cutRule()} to end the take and keep everything. The ring in the middle counts it down; touch a stick to cancel.`,
     'A crash loses the <b>unbanked</b> chain. The bar under FLOW shows when it banks. Bank it or push on: your call.',
-    '<b>RESET</b> restarts the take at the chimney, or where you chose to START AT on the pause menu; hold it to go back to the spawn.',
+    `<b>RESET</b> restarts the take ${isBando(L) ? 'at the chimney' : 'where it began'}, or where you chose to START AT on the pause menu; hold it to go back to the spawn.`,
   ],
   free: () => [
     '<b>Free fly</b>: no clock. Lines still caption. Crash and you fly on from where you last flew clear.',
@@ -332,7 +372,12 @@ const LOAD_TIPS = {
   ],
   any: () => ['<b>CLIP</b> saves the last 20 s, the full take, or a captioned 9:16 <b>SHORT</b> of your lines to your camera roll.'],
 };
-let loadN = 0;
+const tipHTML = (s) => esc(String(s).replace(/\{bankT\}/g, secs(TT().bankT, 5)).replace(/\{cut\}/g, cutRule())).replace(/&lt;(\/?)b&gt;/g, '<$1b>');
+function levelTips(L, game) {
+  const own = L?.tips?.[game];
+  return Array.isArray(own) && own.length ? own.map(tipHTML) : LOAD_TIPS[game]?.(L) || [];
+}
+let loadN = 0, ldLevel = null;   // ldLevel: the level being loaded (its tips, still, kicker); null = a splat world
 try { loadN = +localStorage.getItem('onetake.loads') || 0; } catch (e) {}
 function setLoad(title, frac, text) {
   const L = $('loading');
@@ -342,9 +387,15 @@ function setLoad(title, frac, text) {
     const portrait = document.body.classList.contains('portrait');
     $('ldSticks').innerHTML = (STICK_COACH[S.mode] || STICK_COACH.cine).map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('') +
       (portrait ? '<dt>PORTRAIT</dt><dd>use the radio gimbals below</dd>' : '');
-    const tips = [...(LOAD_TIPS[S.game]?.() || []), ...LOAD_TIPS.any()];
+    const tips = [...levelTips(ldLevel, S.game), ...LOAD_TIPS.any()];
     $('ldTip').innerHTML = tips[loadN % tips.length];
     loadN++; try { localStorage.setItem('onetake.loads', String(loadN)); } catch (e) {}
+    // [F2] ui #6: the level's still under the card, its kicker over the title, the bar in its hairline
+    const still = ldLevel && !isBando(ldLevel) ? ldLevel.backdrop || ldLevel.thumb : null;
+    L.classList.toggle('still', !!still);
+    if (still) { L.style.setProperty('--ldbg', `url('${encodeURI(still)}')`); L.style.setProperty('--ldpos', ldLevel.backdropPos || '50% 50%'); }
+    if (ldLevel?.ui?.hairline) L.style.setProperty('--ldhair', ldLevel.ui.hairline); else L.style.removeProperty('--ldhair');
+    $('ldKick').innerHTML = ldLevel?.kicker ? koHTML(ldLevel.kicker) : '';
   }
   if (title) $('ldTitle').textContent = title;
   if (frac !== null) $('ldBar').style.width = Math.round(frac * 100) + '%';
@@ -400,6 +451,7 @@ function clearWorld() {
   try { world.audio?.detach?.(); } catch (e) {}                                             // [integ6] S4 city sound off with its level
   world.depthScene = null; world.aoUniforms = null; world.dispose = null; world.level = null; world.audio = null;   // [S0]
   world.movers = null; world.tuning = null; world.setPieces = null;                          // [F1] movers hook
+  world.places = null;                                                                       // [F2]
 }
 
 // [S0] the camera look of a level (contract L5). 'day' = bando's HDR look line below (unchanged); 'night' = S3's
@@ -462,6 +514,7 @@ async function loadProcWorld(def) {
   Object.assign(world, { skimBvh: w.skimBvh || w.bvh || null, lines: w.lines || [], takeStart: w.takeStart || null, startPoints: w.startPoints || null, funnels: w.funnels || null });   // C: the take (C1)
   world.grassAt = typeof w.grassAt === 'function' ? w.grassAt : null;                     // [F24] C7 (V2, optional): grass height (m) at x, z
   world.level = level.id; world.dispose = typeof w.dispose === 'function' ? w.dispose : null; world.audio = w.audio || null;   // [S0]
+  world.places = level.placeNames && w.layout ? buildPlaces(w.layout) : null;              // [F2] ui #6: street names for captions
   // [integ6] S4: the level's city sound goes through the same camera-mic chain as the motors
   if (world.audio?.attach && audio.ctx) { try { world.audio.attach(audio.ctx, audio.bus); } catch (e) { console.warn('level audio', e); } }
   // [F1] movers hook (design #5, contract P2-F1): kinematic movers checked inside Drone.step on its tick clock (buses and
@@ -492,8 +545,9 @@ async function loadProcWorld(def) {
 
 async function loadWorld(def) {
   state = 'loading';
+  ldLevel = def.proc ? levelOf(def.level || 'bando') || LEVEL_BANDO : null;   // [F2] the loading card's tips and art
   try {
-    setLoad(def.name, 0, def.proc ? 'Building site…' : 'Fetching world…');
+    setLoad(def.name, 0, def.proc ? (isBando(ldLevel) ? 'Building site…' : `Building ${ldLevel.name || 'the level'}…`) : 'Fetching world…');
     if (def.proc) {
       setProgressLevel(def.level || 'bando');   // [S0] this level's PROG / BEST / stars
       await loadProcWorld(def);
@@ -830,8 +884,8 @@ function lineLag(e) {
   return 0;
 }
 // recorded into the replay buffer -> burned into the clip at the line's t0 (when the move began, as in the reference)
-function caption(text, flow = 1) {
-  const c = { text, flow }, lag = lineLag(capEv), dup = capEv?.clip; capEv = null;
+function caption(text, flow = 1, place = '') {
+  const c = { text, flow, place }, lag = lineLag(capEv), dup = capEv?.clip; capEv = null;
   if (dup === 'skip') return;                                  // C: shares its t0 with a bigger line's caption
   const F = cur.frames, n = F.length;
   if (lag < 0.02 || n < 2) { capNow = c; markNow = { t0: null }; return; }
@@ -970,7 +1024,7 @@ function buildClip(b, kind) {
       if (first || fr.t - prevT > 0.25) { if (f.length) T += 1 / CLIP_FPS; sg++; first = false; }   // hard cut (or a pause in the take)
       else T += Math.min(0.1, fr.t - prevT);                       // hitches collapse like the sim's dt clamp
       prevT = fr.t; f.push(fr); raw.push(src[j]); ot.push(T); seg.push(sg);
-      if (fr.cap && S.caps !== 'off') caps.push({ t: T, seg: sg, text: fr.cap.text, flow: fr.cap.flow || 1 });
+      if (fr.cap && S.caps !== 'off') caps.push({ t: T, seg: sg, text: fr.cap.text, flow: fr.cap.flow || 1, place: fr.cap.place || '' });
     }
   }
   if (f.length < 15) return null;
@@ -1387,7 +1441,7 @@ function drawComp(C, T, i, st) {
   let ci = -1;
   for (let k = 0; k < C.caps.length; k++) { if (C.caps[k].t <= T + 1e-6) ci = k; else break; }
   const cap = C.caps[ci];
-  if (cap && cap.seg === C.seg[i] && T - cap.t <= CAP_DUR) { drawCaption(g, L.cap, cap.text, cap.flow, T - cap.t); return ci; }
+  if (cap && cap.seg === C.seg[i] && T - cap.t <= CAP_DUR) { drawCaption(g, L.cap, cap.text, cap.flow, T - cap.t, cap); return ci; }
   return -1;
 }
 function compFrame() {
@@ -1403,7 +1457,7 @@ function fitComp(on) {
   s.width = Math.round(comp.width * k) + 'px'; s.height = Math.round(comp.height * k) + 'px';
   s.left = Math.round((vw - comp.width * k) / 2) + 'px'; s.top = Math.round((vh - comp.height * k) / 2) + 'px'; s.boxShadow = '0 0 0 100vmax #000';
 }
-const ACC = '#E75211', CAP_DUR = 1.6;
+const CAP_DUR = 1.6;   // [F2] the caption accent is capAccent (the level's, else #E75211)
 // split "THE SMALL GAP!" into [white, accent, white]. *WORD* in a caption picks the accent explicitly.
 function splitAccent(text) {
   text = String(text || '').toUpperCase();
@@ -1420,25 +1474,54 @@ function splitAccent(text) {
   const post = tail + (k < words.length - 1 ? ' ' + words.slice(k + 1).join(' ') : '');
   return [pre, acc, post];
 }
-// reference Shorts caption on the FPV picture's bottom edge: cap height ~5.5 % of the picture width, baseline 4 % up
-function drawCaption(g, box, text, flow, age) {
+// reference Shorts caption on the FPV picture's bottom edge: cap height ~5.5 % of the picture width, baseline 4 % up.
+// [F2] ui #6: the street in hangul as a second line (the caption rises by it); ui #2: the level's accent, and the
+// luma-gated plate (rgba(0,0,0,.35), radius ~10 px at the live size), metered once per caption on its first frame.
+const CAP_KO = '"OT KR", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif';
+// metered through a small CPU canvas: getImageData on the composite itself would count as readbacks against it (Chrome
+// then moves a 2D canvas off the GPU, and every later frame's drawImage of the WebGL picture would read back)
+let capMC = null;
+function compLuma(g, x, y, w, h) {
+  x = Math.max(0, Math.floor(x)); y = Math.max(0, Math.floor(y));
+  w = Math.min(g.canvas.width - x, Math.ceil(w)); h = Math.min(g.canvas.height - y, Math.ceil(h));
+  if (w < 4 || h < 4) return 0;
+  try {
+    if (!capMC) { const c = document.createElement('canvas'); c.width = 128; c.height = 32; capMC = c.getContext('2d', { willReadFrequently: true }); }
+    capMC.clearRect(0, 0, 128, 32); capMC.drawImage(g.canvas, x, y, w, h, 0, 0, 128, 32);
+    return lumaP80(capMC.getImageData(0, 0, 128, 32).data, 128 * 32, 4);
+  } catch (e) { return 0; }
+}
+function drawCaption(g, box, text, flow, age, cap = null) {
   if (age < 0 || age > CAP_DUR) return;
-  const fs = Math.round(box.w * 0.08);
-  const parts = splitAccent(text).map((s, i) => [s, i === 1 ? ACC : '#fff']).filter((p) => p[0]);
+  const fs = Math.round(box.w * 0.08), place = cap?.place || '', pfs = Math.round(fs * 0.42);
+  const parts = splitAccent(text).map((s, i) => [s, i === 1 ? capAccent : '#fff']).filter((p) => p[0]);
   g.save();
   g.font = `900 ${fs}px Montserrat, "Barlow Condensed", system-ui, sans-serif`;
   g.textBaseline = 'alphabetic'; g.textAlign = 'left'; g.lineJoin = 'round'; g.miterLimit = 2;
   const ws = parts.map((p) => g.measureText(p[0]).width), tw = ws.reduce((a, b) => a + b, 0);
-  const fit = Math.min(1, (box.w * 0.9) / Math.max(1, tw));
+  let pw = 0; if (place) { g.font = `800 ${pfs}px ${CAP_KO}`; pw = g.measureText(place).width; g.font = `900 ${fs}px Montserrat, "Barlow Condensed", system-ui, sans-serif`; }
+  const fit = Math.min(1, (box.w * 0.9) / Math.max(1, tw, pw));
+  const lift = place ? pfs * 1.3 : 0, cx = box.x + box.w / 2, by = box.y + box.h * 0.96;
+  // plate box in caption units (baseline of the place line, or of the caption, at 0)
+  const px = Math.max(tw, pw) / 2 + fs * 0.3, py0 = -lift - fs * 0.86, py1 = (place ? pfs * 0.34 : fs * 0.2);
+  if (cap && cap.plate === undefined) cap.plate = compLuma(g, cx - px * fit, by + py0 * fit, 2 * px * fit, (py1 - py0) * fit) > CAP_GATE;
   const k = Math.min(1, age / 0.16), popS = 1 + 0.25 * (1 - k) * (1 - k);
   g.globalAlpha = Math.max(0, Math.min(1, age / 0.05, (CAP_DUR - age) / 0.25));
-  g.translate(box.x + box.w / 2, box.y + box.h * 0.96); g.scale(fit * popS, fit * popS);
+  g.translate(cx, by); g.scale(fit * popS, fit * popS);
+  if (cap?.plate) {
+    g.fillStyle = 'rgba(0,0,0,.35)'; g.beginPath();
+    if (g.roundRect) g.roundRect(-px, py0, 2 * px, py1 - py0, fs * 0.22); else g.rect(-px, py0, 2 * px, py1 - py0);
+    g.fill();
+  }
   g.lineWidth = fs * 0.18; g.strokeStyle = '#000';
   g.shadowColor = 'rgba(0,0,0,.45)'; g.shadowBlur = fs * 0.12; g.shadowOffsetY = fs * 0.05;
-  let x = -tw / 2; parts.forEach((p, i) => { g.strokeText(p[0], x, 0); x += ws[i]; });
+  let x = -tw / 2; parts.forEach((p, i) => { g.strokeText(p[0], x, -lift); x += ws[i]; });
+  if (place) { g.font = `800 ${pfs}px ${CAP_KO}`; g.textAlign = 'center'; g.lineWidth = pfs * 0.26; g.strokeText(place, 0, 0); }
   g.shadowColor = 'transparent';
-  x = -tw / 2; parts.forEach((p, i) => { g.fillStyle = p[1]; g.fillText(p[0], x, 0); x += ws[i]; });
-  if (flow >= 6) { g.textAlign = 'center'; g.font = `${Math.round(fs * 1.3)}px system-ui, "Apple Color Emoji", sans-serif`; g.fillText('😮', 0, -fs * 1.12); }
+  g.font = `900 ${fs}px Montserrat, "Barlow Condensed", system-ui, sans-serif`; g.textAlign = 'left';
+  x = -tw / 2; parts.forEach((p, i) => { g.fillStyle = p[1]; g.fillText(p[0], x, -lift); x += ws[i]; });
+  if (place) { g.font = `800 ${pfs}px ${CAP_KO}`; g.textAlign = 'center'; g.fillStyle = '#fff'; g.fillText(place, 0, 0); }
+  if (flow >= 6) { g.textAlign = 'center'; g.font = `${Math.round(fs * 1.3)}px system-ui, "Apple Color Emoji", sans-serif`; g.fillText('😮', 0, -lift - fs * 1.12); }
   g.restore();
 }
 // ---- clip modal: pauses the game (frame() early-out, controls off, live audio muted); other cuts re-render from it
@@ -1500,6 +1583,70 @@ $('clipOpts').addEventListener('click', (e) => {
   saveClipPrefs(); syncCuts();
 });
 
+// ---------------- [F2] ui #6: place names. The street (OSM `ko`, e.g. 와우산로21길) or landmark (layout.hero, e.g. 홍대입구역
+// 9번 출구, within 20 m) under a point, from the level's layout. Captions carry it as their second line, live and in clips.
+function buildPlaces(layout) {
+  const segs = [], marks = [];
+  for (const s of layout.streets || []) {
+    const P = s.points || [], hw = (+s.width || 6) / 2; if (!s.ko || P.length < 2) continue;
+    for (let i = 0; i + 1 < P.length; i++) segs.push([P[i][0], P[i][1], P[i + 1][0], P[i + 1][1], hw, s.ko]);
+  }
+  for (const h of layout.hero || []) if (h.ko && Array.isArray(h.pos)) marks.push([h.pos[0], h.pos[2], h.ko]);
+  return { segs, marks };
+}
+function placeAt(p) {
+  const P = world.places; if (!P || !p) return '';
+  let best = '', bd = 20;
+  for (const [x, z, ko] of P.marks) { const d = Math.hypot(p.x - x, p.z - z); if (d < bd && !P.segs.some((s) => s[5] === ko)) { bd = d; best = ko; } }
+  if (best) return best;                                        // a landmark that isn't a street name wins (놀이터, 9번 출구)
+  bd = Infinity;
+  for (const [ax, az, bx, bz, hw, ko] of P.segs) {
+    const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz, t = L2 > 0 ? Math.max(0, Math.min(1, ((p.x - ax) * dx + (p.z - az) * dz) / L2)) : 0;
+    const d = Math.hypot(p.x - ax - t * dx, p.z - az - t * dz) - hw;   // from the street's edge
+    if (d < bd) { bd = d; best = ko; }
+  }
+  return bd <= 6 ? best : '';
+}
+
+// ---------------- [F2] ui #2: the luma-gated caption plate. One async readback of the picture under the caption per caption
+// (WebGL2 PBO + fence: no pipeline stall), read a frame or two later. Gate: the box's 80th-percentile luma > 0.6, i.e. a
+// fifth of it is lit sign / window (club90 had 39 % over 0.85, station2 23 %). Clips meter their own frame (drawCaption).
+const CAP_GATE = 0.6;
+const capM = { want: 0, pbo: null, cap: 0, sync: null, n: 0, buf: null, luma: -1, plate: false };
+function lumaP80(px, n, stride = 4 * 2) {
+  const h = new Uint32Array(64); let c = 0;
+  for (let i = 0; i < n * 4; i += stride) { h[Math.min(63, (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) >> 2)]++; c++; }
+  let k = 0, a = 0; for (; k < 64; k++) { a += h[k]; if (a >= 0.8 * c) break; }
+  return c ? (k * 4 + 2) / 255 : 0;
+}
+function capMeterFrame() {
+  const gl = renderer.getContext();
+  if (typeof gl.fenceSync !== 'function') return;                       // WebGL1: no plate (three r180 is WebGL2 anyway)
+  if (capM.sync) {
+    const r = gl.clientWaitSync(capM.sync, 0, 0);
+    if (r === gl.TIMEOUT_EXPIRED) return;
+    gl.deleteSync(capM.sync); capM.sync = null; if (r === gl.WAIT_FAILED) return;
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, capM.pbo); gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, capM.buf, 0, capM.n * 4); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    capM.luma = lumaP80(capM.buf, capM.n); capM.plate = capM.luma > CAP_GATE;
+    $('pop').classList.toggle('plate', capM.plate && !!popKind);
+    return;
+  }
+  if (!capM.want || --capM.want > 0 || state !== 'fly') return;          // a frame after setPop: the caption is laid out
+  const P = $('pop'), r = P.getBoundingClientRect(), v = canvas.getBoundingClientRect();
+  const sx = canvas.width / Math.max(1, v.width), sy = canvas.height / Math.max(1, v.height);
+  const x0 = Math.max(0, Math.floor((r.left - v.left) * sx)), x1 = Math.min(canvas.width, Math.ceil((r.right - v.left) * sx));
+  const y0 = Math.max(0, Math.floor((v.bottom - r.bottom) * sy)), y1 = Math.min(canvas.height, Math.ceil((v.bottom - r.top) * sy));
+  const w = x1 - x0, h = y1 - y0; if (w < 4 || h < 4) return;
+  const bytes = w * h * 4;
+  if (!capM.pbo) capM.pbo = gl.createBuffer();
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, capM.pbo);
+  if (bytes > capM.cap) { capM.cap = bytes; gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ); capM.buf = new Uint8Array(bytes); }
+  renderer.setRenderTarget(null);                                       // the canvas: the frame just shown (graded, lens-mapped)
+  gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  capM.n = w * h; capM.sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush();
+}
+
 // ---------------- HUD: HD-OSD, captions (pop), warnings, toasts
 let hudT = 0, flightT = 0, lastLimitToast = 0, lqS = 100, thrS = 0.39;
 const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -1511,6 +1658,7 @@ const fontsWarm = new Set();
 function warmFonts(px = 40) {       // canvas captions need the face loaded before the first draw
   const f = `900 ${px}px Montserrat`; if (fontsWarm.has(f)) return; fontsWarm.add(f);
   try { document.fonts?.load?.(f, 'THE SMALL GAP!')?.catch?.(() => {}); } catch (e) {}
+  try { document.fonts?.load?.(`800 ${Math.round(px * 0.42)}px "OT KR"`, '홍대 9')?.catch?.(() => {}); } catch (e) {}   // [F2] the place line's hangul face (7 KB)
 }
 // Take (C, take.js): name the instance `take` or call bindTake(instance). Falls back to the legacy skim score.
 let takeRef = null;
@@ -1537,18 +1685,21 @@ function pop(text, kind = 'score') {
   if (popKind === 'line' && p.classList.contains('show')) { p.querySelector('.sub').innerHTML = text; return; }   // don't stomp a caption
   setPop('score', '', text, 1.2);
 }
-function showLine(text, subHTML = '', flow = 1) {
+function showLine(text, subHTML = '', flow = 1, place = '') {
   if (/^\+0(?!\d)/.test(subHTML)) subHTML = '';   // free fly: lines caption with pts 0, so no "+0" sub-line
   else if (subHTML && lineTag) subHTML += lineTag;  // C: a line flown with no contact since the last one (×1.25)
   lineTag = '';
-  setPop('line', (flow >= 6 ? '<span class="emo">😮</span>' : '') + accentHTML(text), subHTML, CAP_DUR);
+  setPop('line', (flow >= 6 ? '<span class="emo">😮</span>' : '') + accentHTML(text), subHTML, CAP_DUR, place);
 }
-function setPop(kind, capHTML, subHTML, dur) {
+function setPop(kind, capHTML, subHTML, dur, place = '') {
   const p = $('pop'); popKind = kind;
   p.querySelector('.cap').innerHTML = capHTML; p.querySelector('.sub').innerHTML = subHTML || '';
-  p.className = kind; p.style.setProperty('--popDur', dur + 's');
+  p.querySelector('.place').textContent = place || '';               // [F2] ui #6
+  p.className = kind + (capM.plate && kind === 'line' && p.classList.contains('show') ? ' plate' : '');   // a caption over a caption keeps its plate until re-metered
+  p.style.setProperty('--popDur', dur + 's');
   void p.offsetWidth; p.classList.add('show');
-  clearTimeout(popTm); popTm = setTimeout(() => { p.classList.remove('show'); popKind = ''; }, dur * 1000);
+  capM.want = 2;                                                        // [F2] ui #2: meter the picture under it next frame
+  clearTimeout(popTm); popTm = setTimeout(() => { p.classList.remove('show', 'plate'); popKind = ''; }, dur * 1000);
   // the live chain + drain bar stay up under the caption (design #1): it sits below it now, so no hiding
 }
 let warnTm = 0, toastTm = 0;
@@ -1604,20 +1755,28 @@ function updateHud(dt) {
   liveFlow = v.flow;
   readyNow = readyHint();
   if (drone.limitHit > 0 && performance.now() - lastLimitToast > 2500) { lastLimitToast = performance.now(); warn(drone.pos.y >= (world.envelope?.max.y ?? 1e9) - 0.01 ? 'CEILING' : 'WORLD EDGE'); }
-  // --- next line: Betaflight-style home arrow (8 steps) + name + distance, until 3 lines have ever been flown.
-  // The chevron over the gate (< 25 m) is per frame in hudFast and shows for any unflown line.
-  // The ready hint at the retry start says the same thing (▼ · DROP IN), so the arrow steps aside while it shows.
-  nextNow = state === 'fly' && !summaryUp() && ts !== 'done' && !drone.crashed ? nextLine() : null;
-  const nx = nextNow, guide = !!nx && flownCount() < 3 && !(readyNow && ts === 'ready'), dir = nx ? octant(nx) : 0, vt = nx ? vertOf(nx) : null;
+  // --- next line: Betaflight-style home arrow (8 steps) + name + distance, until the level's guideUntil lines have ever
+  // been flown (bando 3; [F2] Seoul: all of them, the city is too big to find them by eye). Gate brackets are per frame in
+  // hudFast. The ready hint at the retry start says the same thing (▼ · DROP IN), so the arrow steps aside while it shows.
+  // [F2] ux #2: armed (a start gate crossed, the end gate not yet): the same slot reads "HONGIK-RO · 0:18", counting down.
+  const live = state === 'fly' && !summaryUp() && ts !== 'done' && !drone.crashed;
+  nextNow = live ? nextLine() : null;
+  armNow = live ? armedLine(curTake()) : null;
+  const gu = levelOf(world.level)?.guideUntil ?? 3, arm = armNow;
+  const nx = arm ? (nextNow?.name === arm.name ? nextNow : armTarget(arm)) : nextNow;
+  const guide = !!nx && (!!arm || (flownCount() < gu && !(readyNow && ts === 'ready'))), dir = nx ? octant(nx) : 0, vt = nx ? vertOf(nx) : null;
   guideNow = guide;
   if (guide) {
     $('oNext').classList.toggle('v', !!vt);
     if (vt) $('oNextV').style.transform = vt === 'up' ? 'rotate(180deg)' : '';
     else $('oNextA').style.transform = `rotate(${dir * 45}deg)`;
-    $('oNextN').textContent = nx.name;
-    $('oNextD').textContent = `${Math.round(nx.dist)}M${vt ? '' : elevTxt(nx)}`;
+    $('oNextN').textContent = arm ? arm.name : nx.name;
+    const D = $('oNextD');
+    D.textContent = arm ? (arm.left != null ? `· ${fmtS(Math.ceil(arm.left))}` : '') : `${Math.round(nx.dist)}M${vt ? '' : elevTxt(nx)}`;
+    D.classList.toggle('low', !!arm && arm.left != null && arm.left <= 5);
   }
-  $('oNext').classList.toggle('on', guide);
+  $('oNext').classList.toggle('on', guide); $('oNext').classList.toggle('armed', guide && !!arm);
+  brCands = live ? bracketCands(arm) : [];
   // --- radio OLED (portrait)
   $('oMd').textContent = { cine: 'CINE', angle: 'ANGLE', acro: 'ACRO' }[S.mode]; $('oT').textContent = fmt(time); $('oS').textContent = `${kmh} KM/H`;
   const bars = world.lastDist < 3 ? Math.max(0, Math.min(4, Math.round(4 - world.lastDist / 0.5))) : 0;
@@ -1627,15 +1786,16 @@ function updateHud(dt) {
   $('oSt').textContent = drone.crashed ? 'CRASHED' : cutLeft > 0 ? (cutLand ? 'LANDED · CUT…' : `CUT ${Math.ceil(cutLeft)}…`) : drone.limitHit > 0 ? 'LIMIT' :
     v.unbanked > 0 ? `${v.take ? 'FLOW' : 'SKIM'}${v.flow >= 2 ? ' ×' + v.flow : ''} +${fmtN(v.unbanked)}` :
     readyNow && ts === 'ready' ? readyNow :
+    guide && arm ? `${vt ? (vt === 'up' ? '▲' : '▼') : HOME_ARROWS[dir]} ${arm.name}${arm.left != null ? ' ' + fmtS(Math.ceil(arm.left)) : ''}` :
     guide ? `${vt ? (vt === 'up' ? '▲' : '▼') : HOME_ARROWS[dir]} ${nx.name} ${Math.round(nx.dist)}M` :
     ts === 'live' ? '● REC' : ts === 'ready' ? 'READY · FLY A LINE' : ts === 'done' ? (crashedTake() ? 'CRASHED' : 'CUT') :
     S.mode !== 'cine' ? `THR ${Math.round(controls.thr * 100)}%  BEST ${fmtN(v.best)}` : `BEST ${fmtN(v.best)}`;
 }
 
-// ---------------- per-frame HUD: take tag (REC / CUT countdown / CRASHED), bank drain bar, near-line chevron, LOW POWER
+// ---------------- per-frame HUD: take tag (REC / CUT countdown / CRASHED), bank drain bar, gate brackets, LOW POWER
 const CUT_RING = 2 * Math.PI * 28;                                // #cutArc circumference (r 28: the 64 px centre ring)
 const HOME_ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];     // OLED home arrow, clockwise from the nose
-let cutLeft = 0, cutLand = false, tagKey = '', nextNow = null, lowPow = false, batLvl = 0, drainK = -2, chevOn = false, chevD = -1;
+let cutLeft = 0, cutLand = false, tagKey = '', nextNow = null, lowPow = false, batLvl = 0, drainK = -2, armNow = null, brCands = [], brOn = 0;
 let liveFlow = 1, readyNow = '', guideNow = false, restT = 0, odOn = false, ghostOn = false, ghostFar = false;
 const crashedTake = () => drone.crashed || sum.kind === 'crash' || pendingSum?.type === 'crash';
 // C12 (D5): where the best take's ghost is now: take.ghostPose(t) / take.ghost.pose(t) / take.ghost.pos, as {pos|p} or
@@ -1655,6 +1815,7 @@ function ghostPos(t) {
   return p && isFinite(p.x) && isFinite(p.y) && isFinite(p.z) ? p : null;
 }
 function hudFast(dt = 0) {
+  capMeterFrame();                                                  // [F2] ui #2: right after the frame was drawn
   const t = curTake(), ts = t && S.game !== 'free' ? t.state : null;   // free fly: no take, no tag
   // CUT countdown, decision 10. C: take.cutIn = s until the CUT while the ring shows (after cutShow 1 s of hands-off
   // hover, or at once on a touchdown), else 0; take.cutFrac = ring fill 0..1; take.cutKind 'hover' | 'land'.
@@ -1716,34 +1877,126 @@ function hudFast(dt = 0) {
     }
   }
   if (gOn !== ghostOn) { ghostOn = gOn; $('oGhost').classList.toggle('on', gOn); }
-  // chevron over the next never-flown line's first gate (C: hint.fresh), projected through the lens, only while the arrow
-  // shows (UX #5). OSD only, never in clips.
-  const nx = nextNow;
-  let on = false;
-  if (nx && nx.pos && nx.fresh !== false && guideNow && state === 'fly' && nx.dist < 27) {
-    const p = projectView(nx.pos);
-    if (p && p.d < 25) {
-      on = true;
-      $('oChev').style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px) translate(-50%,calc(-100% - 4px))`;
-      const dm = Math.round(p.d); if (dm !== chevD) { chevD = dm; $('oChevD').textContent = `${dm}M`; }
-    }
-  }
-  if (on !== chevOn) { chevOn = on; $('oChev').classList.toggle('on', on); }
+  drawBrackets();
   // iOS Low Power Mode pins rAF at 30 Hz; fpvcam notices and sets autoMs 33.3 (UX #6)
   if (state === 'fly') { const lp = (fpv.autoMs || 0) > 30; if (lp && !lowPow) toast('LOW POWER · 30 FPS', 3); lowPow = lp; }
 }
-// world point -> CSS px in #view through the fpvcam lens (inverse of the output pass: th = atan(r k / F) / k), or null
+// world point -> CSS px in #view through the fpvcam lens (inverse of the output pass: th = atan(r k / F) / k), or null.
+// projectRaw: the same without the frame-edge test (a gate's corners may sit just outside the frame); u, v in 0..1.
 const _iq = new THREE.Quaternion(), _pv = new THREE.Vector3();
-function projectView(p) {
+function projectRaw(x, y, z, minLen = 0.3) {
   const L = fpv.lens; if (!L) return null;
-  _pv.set(p.x, p.y, p.z).sub(camPose.pos).applyQuaternion(_iq.copy(camPose.quat).invert());
-  const len = _pv.length(); if (len < 0.3 || _pv.z > -0.05) return null;
+  _pv.set(x, y, z).sub(camPose.pos).applyQuaternion(_iq.copy(camPose.quat).invert());
+  const len = _pv.length(); if (len < minLen || _pv.z > -0.05) return null;
   const th = Math.acos(Math.min(1, -_pv.z / len)); if (th > L.thc) return null;
   const r = L.k > 0.999 ? L.F * Math.tan(th) : L.F * Math.tan(L.k * th) / L.k;
   const h = Math.hypot(_pv.x, _pv.y), s = h > 1e-6 ? r / h : 0;
   const u = 0.5 + _pv.x * s / (2 * L.hw), v = 0.5 + _pv.y * s / (2 * L.hh);
-  if (u < 0.03 || u > 0.97 || v < 0.06 || v > 0.94) return null;
-  return { x: u * viewW, y: (1 - v) * viewH, d: len };
+  return { x: u * viewW, y: (1 - v) * viewH, u, v, d: len };
+}
+function projectView(p) {
+  const q = projectRaw(p.x, p.y, p.z);
+  return q && q.u >= 0.03 && q.u <= 0.97 && q.v >= 0.06 && q.v <= 0.94 ? q : null;
+}
+
+// ---------------- [F2] ux #2: the armed line. F1's take.armed ({name, left | in, within, gate?}, or a function returning it)
+// when take.js serves it; else read from the take's own pre-gate record (as nextHint's rule 1: crossed the right way,
+// within the line's `within`, its end gate not flown yet). left: s until the start gate's crossing expires.
+function armedLine(t) {
+  if (!t || S.game === 'free' || t.state === 'done') return null;
+  try {
+    if ('armed' in t) {
+      const a = typeof t.armed === 'function' ? t.armed() : t.armed; if (!a || !a.name) return null;
+      const left = +(a.left ?? a.in ?? a.timeLeft ?? NaN);
+      return { name: a.name, left: isFinite(left) ? Math.max(0, left) : null, gate: a.gate || a.line || null };
+    }
+    if (!(t._pre instanceof Map) || !Array.isArray(t._lines)) return null;
+    let best = null;
+    t._pre.forEach((r, k) => {
+      const L = t._lines[Math.floor(k / 8)]; if (!L || L.l.micro) return;
+      const left = (L.l.within ?? 6) - ((t._now || 0) - r.t);
+      if (left > 0 && (L.l.two || r.s === 1) && (!best || r.t > best.t)) best = { name: L.l.name, left, t: r.t, gate: L.l };
+    });
+    return best;
+  } catch (e) { return null; }
+}
+// the arrow's target while armed when nextHint points elsewhere: the armed line's end gate
+const armGate = (arm) => (arm.gate?.c ? arm.gate : (world.lines || []).filter((l) => l?.name === arm.name && l.c).sort((a, b) => dist3(a.c) - dist3(b.c))[0] || null);
+function armTarget(arm) {
+  const g = armGate(arm);
+  return g ? { name: arm.name, pos: new THREE.Vector3(g.c[0], g.c[1], g.c[2]), dist: dist3(g.c), fresh: false } : null;
+}
+const dist3 = (c) => Math.hypot(c[0] - camPose.pos.x, c[1] - camPose.pos.y, c[2] - camPose.pos.z);
+
+// ---------------- [F2] ui #3 / ux #1: gate brackets. Candidates at 10 Hz (updateHud): the start gates (a line without one:
+// its gate) of every never-flown named line within 34 m, and the armed line's end gate. Per frame: the nearest 3 whose
+// centre is in frame within 30 m and not behind a wall (a BVH ray, re-tested every 0.15 s per gate), drawn as corner ticks
+// on the gate's projected w x h, labelled "NAME 23M" ("23M" on the armed end gate).
+const BR_N = 3, BR_R = 30, _br = new THREE.Ray(), brOcc = new Map();
+function bracketCands(arm) {
+  const out = [], flown = new Set(lineList().filter((l) => l.flown).map((l) => l.name));
+  const armG = arm ? armGate(arm) : null;
+  if (armG?.c && dist3(armG.c) < BR_R + 4) out.push({ g: armG, name: arm.name, end: true });
+  for (const l of world.lines || []) {
+    if (!l?.name || isMicro(l) || l.carve || flown.has(l.name) || (arm && l.name === arm.name)) continue;
+    for (const g of l.pre?.length ? l.pre : [l]) if (g?.c && dist3(g.c) < BR_R + 4) out.push({ g, name: l.name, end: false });
+  }
+  return out;
+}
+function gateCorners(g) {
+  const c = g.c, n = g.n || [0, 0, 1];
+  let u = g.u || (Math.abs(n[1]) > 0.9 ? [1, 0, 0] : [-n[2], 0, n[0]]);
+  let ul = Math.hypot(u[0], u[1], u[2]) || 1; u = [u[0] / ul, u[1] / ul, u[2] / ul];
+  let v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]], vl = Math.hypot(v[0], v[1], v[2]) || 1; v = [v[0] / vl, v[1] / vl, v[2] / vl];
+  const hw = (+g.w || 2) / 2, hh = (+g.h || 2) / 2, P = [];
+  for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    const q = projectRaw(c[0] + u[0] * a * hw + v[0] * b * hh, c[1] + u[1] * a * hw + v[1] * b * hh, c[2] + u[2] * a * hw + v[2] * b * hh, 0.05);
+    if (!q) return null; P.push(q);
+  }
+  return P;
+}
+function gateOccluded(cd, d) {
+  const now = performance.now(), m = brOcc.get(cd.g);
+  if (m && now - m.t < 150) return m.occ;
+  let occ = false;
+  if (world.bvh) {
+    const c = cd.g.c; _br.origin.copy(camPose.pos); _br.direction.set(c[0] - camPose.pos.x, c[1] - camPose.pos.y, c[2] - camPose.pos.z).normalize();
+    try { const hit = world.bvh.raycastFirst(_br, THREE.DoubleSide, 0, Math.max(0, d - 0.6)); occ = !!hit; } catch (e) {}
+  }
+  brOcc.set(cd.g, { t: now, occ }); if (brOcc.size > 64) brOcc.clear();
+  return occ;
+}
+let brEls = null;
+function drawBrackets() {
+  brEls ||= { G: $('oBr').children, L: document.querySelectorAll('#osd .brl') };
+  const G = brEls.G, labels = brEls.L;
+  let n = 0;
+  if (state === 'fly' && brCands.length && !summaryUp()) {
+    const C = brCands.map((cd) => ({ cd, d: dist3(cd.g.c) })).filter((x) => x.d <= BR_R).sort((a, b) => a.d - b.d);
+    for (const { cd, d } of C) {
+      if (n >= BR_N) break;
+      const c = cd.g.c; if (!projectView({ x: c[0], y: c[1], z: c[2] }) || gateOccluded(cd, d)) continue;
+      const P = gateCorners(cd.g); if (!P) continue;
+      let path = '';
+      for (let i = 0; i < 4; i++) {
+        const a = P[i], pv = P[(i + 3) % 4], nx = P[(i + 1) % 4];
+        const tp = Math.max(6, Math.min(16, 0.28 * Math.hypot(pv.x - a.x, pv.y - a.y))) / Math.max(1, Math.hypot(pv.x - a.x, pv.y - a.y));
+        const tn = Math.max(6, Math.min(16, 0.28 * Math.hypot(nx.x - a.x, nx.y - a.y))) / Math.max(1, Math.hypot(nx.x - a.x, nx.y - a.y));
+        path += `M${(a.x + (pv.x - a.x) * tp).toFixed(1)} ${(a.y + (pv.y - a.y) * tp).toFixed(1)}L${a.x.toFixed(1)} ${a.y.toFixed(1)}L${(a.x + (nx.x - a.x) * tn).toFixed(1)} ${(a.y + (nx.y - a.y) * tn).toFixed(1)}`;
+      }
+      const g = G[n], near = d < 8;
+      g.children[0].setAttribute('d', path); g.children[1].setAttribute('d', path);
+      if (!g.classList.contains('on')) g.classList.add('on'); g.classList.toggle('near', near);
+      const lb = labels[n], top = Math.min(P[0].y, P[1].y, P[2].y, P[3].y), cx = (P[0].x + P[1].x + P[2].x + P[3].x) / 4;
+      const txt = cd.end ? `${Math.round(d)}M` : `${cd.name} ${Math.round(d)}M`;
+      if (lb.textContent !== txt) lb.textContent = txt;
+      lb.style.transform = `translate(${cx.toFixed(1)}px,${Math.max(14, top - 4).toFixed(1)}px) translate(-50%,-100%)`;
+      if (!lb.classList.contains('on')) lb.classList.add('on'); lb.classList.toggle('near', near);
+      n++;
+    }
+  }
+  for (let i = n; i < Math.max(brOn, n); i++) { G[i].classList.remove('on'); labels[i].classList.remove('on'); }
+  brOn = n;
 }
 // bearing of a world point relative to the view's heading, + = right. YXZ yaw ignores pitch, so it stays put while
 // you look up at the sky or straight down a shaft.
@@ -1847,7 +2100,9 @@ function baseLines() {                  // checklist names in world order (cache
   }
   if (!baseCache) {
     let names = null; try { names = JSON.parse(localStorage.getItem(lkey('onetake.ui.lineList')) || 'null'); } catch (e) {}
-    baseCache = Array.isArray(names) && names.length ? names : progLevel === 'bando' ? DEFAULT_LINES : [];
+    // [F2] ux #3: a level's lineNames (levels.json) before its first load; bando's built-in list only for bando
+    const own = (levelOf(progLevel)?.lineNames || []).map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean);
+    baseCache = Array.isArray(names) && names.length ? names : own.length ? own : progLevel === 'bando' ? DEFAULT_LINES : [];
   }
   return baseCache;
 }
@@ -1863,7 +2118,9 @@ function lineList() {
   });
 }
 const flownCount = () => lineList().filter((l) => l.flown).length;
-const hintFor = (name) => LINE_HINT[name] || (Array.isArray(world.lines) ? world.lines.find((l) => l?.name === name && l.hint)?.hint : '') || '';   // [S0] a level's lines may carry their own hint
+// [S0] a level's lines may carry their own hint; [F2] else its levels.json lineNames hint; bando's LINE_HINT only on bando
+const hintFor = (name) => (progLevel === 'bando' && LINE_HINT[name]) || (Array.isArray(world.lines) && world.level === progLevel ? world.lines.find((l) => l?.name === name && l.hint)?.hint : '') ||
+  levelOf(progLevel)?.lineNames?.find?.((x) => x?.name === name)?.hint || '';
 // the nearest never-flown line's first gate. C: take.nextHint(drone, world) -> {name, caption, pos:[x,y,z], dist, bearing
 // (rad from the nose, + right), elev, fresh} or null. The arrow uses pos against the view (so it follows the camera).
 function nearestGate(name, at = camPose.pos) {
@@ -1885,6 +2142,11 @@ function nextLine(from = null) {
     const who = from ? { pos: new THREE.Vector3(at.x, at.y, at.z), prev: new THREE.Vector3(at.x, at.y, at.z), vel: _zero, heading: +from.yaw || 0, crashed: false, lastImpact: 0 } : drone;
     let h = null; try { h = t.nextHint(who, world); } catch (e) {}
     if (!h || !h.name) return from ? nearestGate(null, at) : null;
+    // [F2] ux #1: a new profile is pointed at the level's `first` line; once 60 m from the spawn (START AT Exit 9, or just
+    // wandering), point at the nearest never-flown line instead (cap_station: WALKING STREET 393M, SCREEN CANYON 10 m away)
+    if (!from && !h.inProgress && camPose.pos.distanceTo(world.spawn) > 60 && (world.lines || []).some((l) => l?.first && l.name === h.name)) {
+      const g = nearestGate(null, at); if (g && g.name !== h.name && g.dist < (+h.dist || Infinity)) return g;
+    }
     const c = h.pos || h.c, fresh = h.fresh !== false, vert = h.vert ?? h.glyph;
     if (c) { const pos = Array.isArray(c) ? new THREE.Vector3(c[0], c[1], c[2]) : new THREE.Vector3(c.x, c.y, c.z); return { name: h.name, pos, dist: Math.hypot(pos.x - at.x, pos.y - at.y, pos.z - at.z), fresh, vert }; }
     const g = nearestGate(h.name, at); if (g) { g.fresh = fresh; g.vert = vert; return g; }
@@ -1925,7 +2187,17 @@ function goStartAt(name) {
   toast(`START AT ${String(name).toUpperCase()}`);
 }
 // F1 test hooks (uishots), kept off window.__onetake so that shared object stays merge-clean
-window.__onetakeUI = { uiProg, lineList, nextLine, renderProgress, goStartAt, projectView, retryFrom, readyHint, vertOf, get hint() { return nextNow; } };
+window.__onetakeUI = { uiProg, lineList, nextLine, renderProgress, goStartAt, projectView, retryFrom, readyHint, vertOf, get hint() { return nextNow; },
+  // [F2] test hooks: armed line, brackets on screen, the caption meter, place names, the level UI
+  armedLine, placeAt, applyLevelUI, get armed() { return armNow; }, get brackets() { return { n: brOn, cands: brCands.length, labels: [...document.querySelectorAll('#osd .brl.on')].map((e) => e.textContent) }; },
+  get capMeter() { return { luma: capM.luma, plate: capM.plate }; },
+  // the live frame composited as one 1080x1920 clip frame with a caption (no recording): the burned-in caption + plate
+  capTest(text, place = '', lay = 'radio') {
+    frame(performance.now()); prepComp(1080, 1920, lay);
+    const C = { caps: [{ t: 0, seg: 0, text, flow: 1, place }], seg: [0] };
+    drawComp(C, 0.5, 0, [0, 0, 0, 0]);
+    return { url: comp.toDataURL('image/jpeg', 0.9), plate: C.caps[0].plate };
+  } };
 
 // ---------------- take events (contract #3), summary card, recovery
 // main.js dispatch (C): (typeof onTakeEvent === 'function' ? onTakeEvent : (e) => defaultTakeUI(e, pop))(e)
@@ -1946,14 +2218,14 @@ function onTakeEvent(e) {
       bestAtStart = scoreView().best || 0; runStats.maxSpeed = 0; runStats.maxFlow = 1;
       break;
     case 'line': {
-      const text = e.caption || e.name || 'NICE!', flow = e.flow || 1;
-      showLine(text, `+${fmtN(e.pts)}`, flow);   // ×N lives on the FLOW line only (UI #2)
-      caption(text, flow); runStats.maxFlow = Math.max(runStats.maxFlow, flow);
+      const text = e.caption || e.name || 'NICE!', flow = e.flow || 1, pl = placeAt(drone.pos);   // [F2] ui #6: where it was flown
+      showLine(text, `+${fmtN(e.pts)}`, flow, pl);   // ×N lives on the FLOW line only (UI #2)
+      caption(text, flow, pl); runStats.maxFlow = Math.max(runStats.maxFlow, flow);
       break;
     }
     case 'repeat': {
-      const text = world.lines?.find?.((l) => l.name === e.name)?.caption || e.name || 'AGAIN';
-      showLine(text, `REPEAT +${fmtN(e.pts)}`, 1); caption(text, 1);
+      const text = world.lines?.find?.((l) => l.name === e.name)?.caption || e.name || 'AGAIN', pl = placeAt(drone.pos);
+      showLine(text, `REPEAT +${fmtN(e.pts)}`, 1, pl); caption(text, 1, pl);
       break;
     }
     case 'bank': pop(`BANKED <em>+${fmtN(e.pts)}</em>`, 'score'); break;
@@ -2042,16 +2314,19 @@ function flyOnTouch(e) { if (!e.target?.closest?.('button, .ui, input, select, a
 // ---------------- onboarding: ghost gates until each stick has been held 1 s; rotate tip in portrait
 const coach = { on: false, held: { L: 0, R: 0 } };
 try { coach.done = localStorage.getItem('onetake.coached') === '1'; } catch (e) { coach.done = false; }
-let rotateTipped = false, firstTipped = false;
+let rotateTipped = false;
+const firstTipped = new Set();   // [F2] once per level per session
 // body.coaching (not .coach: that's the loading card's stick-diagram box, whose rule made the page ~50 px too tall)
 function coachStart(fresh) {
   coach.on = !coach.done; document.body.classList.toggle('coaching', coach.on);
   const portrait = document.body.classList.contains('portrait');
   if (!rotateTipped && portrait) { rotateTipped = true; setTimeout(() => toast('ROTATE FOR FULL SCREEN', 2.5), 900); }
   // first flight ever, from the spawn: where the first line is (UX #2). The OSD arrow takes over from there.
-  if (fresh && !firstTipped && S.game !== 'free' && !flownCount()) {
-    firstTipped = true;
-    setTimeout(() => { if (state === 'fly') toast('FIRST LINE: FOLLOW THE TRACK INTO THE HALL\'S OPEN BAY · STAY LOW', 4.5); }, portrait ? 3600 : 1200);
+  // [F2] ux #3: the level's own firstTip (levels.json); bando's built-in one only on bando
+  const L = levelOf(world.level), tip = L?.firstTip ?? (world.level === 'bando' ? 'FIRST LINE: FOLLOW THE TRACK INTO THE HALL\'S OPEN BAY · STAY LOW' : '');
+  if (fresh && !firstTipped.has(world.level) && S.game !== 'free' && !flownCount() && tip) {
+    firstTipped.add(world.level);
+    setTimeout(() => { if (state === 'fly') toast(String(tip).toUpperCase(), 4.5); }, portrait ? 3600 : 1200);
   }
 }
 function coachFrame(dt) {

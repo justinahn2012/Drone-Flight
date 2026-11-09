@@ -29,8 +29,41 @@
     "grade": { "retro": 0.3 },
     "craft": "freestyle5",
     "tag": "NIGHT",
-    "thumb": null,
+    "thumb": "seoul/ui/thumb.jpg",
     "lm": null,
-    "audio": "seoul"
+    "audio": "seoul",
+    "subtitle": "홍대 · 새벽 1시",
+    "backdrop": "seoul/ui/backdrop.jpg",
+    "backdropPos": "50% 42%",
+    "kicker": "홍대 HONGDAE · 01:00",
+    "ui": {"accent": "#3de0ff", "accentInk": "#00171c", "ghost": "#3de0ff", "hairline": "linear-gradient(90deg,#ff3d9a,#3de0ff)"},
+    "placeNames": true,
+    "guideUntil": 99,
+    "firstTip": "FIRST LINE: THE WALKING STREET · THROUGH THE BRACKETS, OVER THE HEADS",
+    "tips": {
+      "take": [
+        "<b>Lines</b> are named streets, alleys and gaps. Corner <b>brackets</b> mark the start gate of one you haven't flown; the arrow at the top points to the nearest.",
+        "<b>CUT</b>: {cut} to end the take and keep everything. The ring in the middle counts it down; touch a stick to cancel.",
+        "Cross a line's start gate and the OSD counts it down, <b>HONGIK-RO · 0:18</b>: reach its end gate before 0:00. Each line adds FLOW; {bankT} s without one banks it.",
+        "A crash loses the <b>unbanked</b> chain. The bar under FLOW shows when it banks. Bank it or push on: your call.",
+        "<b>RESET</b> restarts the take on the walking street, or where you chose to START AT on the pause menu; hold it to go back to the spawn."
+      ]
+    },
+    "lineNames": [
+      {"name": "WALKING STREET", "hint": "Eoulmadang-ro, end to end over the crowd"},
+      {"name": "BAR ALLEY", "hint": "Wausan-ro 21-gil, the bar and club alley"},
+      {"name": "CLUB STREET", "hint": "Wausan-ro 19-gil, under the club signs"},
+      {"name": "HONGIK-RO", "hint": "down Hongik-ro, over the traffic"},
+      {"name": "CROSSING", "hint": "across Yanghwa-ro at Exit 9"},
+      {"name": "SCREEN CANYON", "hint": "between the LED screens on Yanghwa-ro"},
+      {"name": "THE GAP", "hint": "the 1.15 m slot off Wausan-ro 23-gil"},
+      {"name": "CABLE LATTICE", "hint": "Hongik-ro 3-gil, under the cable web"},
+      {"name": "NARROW ALLEY", "hint": "the 3.4 m alley off Eoulmadang-ro"},
+      {"name": "SCREEN PASS", "hint": "the slot by the screens on Yanghwa-ro"},
+      {"name": "SIGN STACK", "hint": "straight up the stack of signs"},
+      {"name": "ROOF DROP", "hint": "down the gap between two roofs"},
+      {"name": "ROOFLINE", "hint": "along the roofs over the walking street"}
+    ],
+    "foot": "Streets and building footprints © OpenStreetMap contributors (ODbL). Hangul faces: SIL Open Font License."
   }
 ]
