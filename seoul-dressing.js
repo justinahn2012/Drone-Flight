@@ -331,7 +331,7 @@ export function geometry(layout, opts = {}) {
     }
     // ceiling lights (fluorescent strips) under the slab, and the lit concourse doorway at the far end
     const tube_ = p.lightRGB || [0.92, 0.98, 1.0];
-    set('dr_glow', { em: NI(tube_, p.tubeNits ?? 900), col: false });
+    set('dr_glow', { em: NI(tube_, p.tubeNits ?? 650), col: false });
     for (let x = Lh + 0.8; x < xE - 0.4; x += 2.6) boxMM(F, x, -slab - 0.03, -0.06, x + 1.2, -slab, 0.06, ['py']);
     if (p.endGlow) { set('dr_glow', { em: NI(p.endGlow.rgb, p.endGlow.nits), col: false }); const gw = Math.min(w - 0.4, 2.2); quad(W(F, xE - 0.01, y2 + 0.02, -gw / 2), W(F, xE - 0.01, y2 + 0.02, gw / 2), W(F, xE - 0.01, y2 + Math.min(2.4, -y2 - slab - 0.1), gw / 2), W(F, xE - 0.01, y2 + Math.min(2.4, -y2 - slab - 0.1), -gw / 2), D(F, -1, 0, 0)); }
     holes.push([W(F, 0, 0, -hw - wallT), W(F, Lh, 0, -hw - wallT), W(F, Lh, 0, hw + wallT), W(F, 0, 0, hw + wallT)].map((q) => [+q[0].toFixed(3), +q[2].toFixed(3)]));
@@ -363,8 +363,8 @@ export function geometry(layout, opts = {}) {
     const road = yanghwa.map((s) => ({ s, p: M.project(s, target[0], target[1]) })).sort((a, b) => a.p.dist - b.p.dist)[0];
     if (!road || road.p.dist > 60) continue;
     const f = [road.p.tx * ex.flip, road.p.tz * ex.flip];
-    const P = ex.deep ? { W: 3.2, rise: 0.17, tread: 0.3, n1: 18, land: 3.0, n2: 10, land2: 2.2, hole: 5.1, endGlow: { rgb: [0.95, 0.97, 1.0], nits: 90 } }
-      : { W: 3.0, rise: 0.17, tread: 0.3, n1: 17, land: 2.4, n2: 4, land2: 1.6, hole: 4.8, endGlow: { rgb: [0.95, 0.97, 1.0], nits: 70 } };
+    const P = ex.deep ? { W: 3.2, rise: 0.17, tread: 0.3, n1: 18, land: 3.0, n2: 10, land2: 2.2, hole: 5.1, endGlow: { rgb: [0.95, 0.97, 1.0], nits: 40 } }
+      : { W: 3.0, rise: 0.17, tread: 0.3, n1: 17, land: 2.4, n2: 4, land2: 1.6, hole: 4.8, endGlow: { rgb: [0.95, 0.97, 1.0], nits: 35 } };
     const hwT = P.W / 2 + 0.25;
     // canopy footprint incl. the mouth apron (people need room to walk in): x -1.5..hole+0.4, z +-(hwT+0.5)
     const spot = findSpot(target, f, [-0.9, P.hole + 0.4, -hwT - 0.3, hwT + 0.3], sidewalkOK(0.45, 0.6, 0.3), { radius: 34, step: 0.5 });
@@ -384,8 +384,8 @@ export function geometry(layout, opts = {}) {
       for (const sd of [-1, 1]) boxMM(F, 0.05, 1.05, sd * (hwT - 0.13) - 0.01, Lh - 0.05, yR1, sd * (hwT - 0.13) + 0.01);       // side glass
       boxMM(F, Lh + 0.2, 0.0, -zE, Lh + 0.22, yR1, zE);                                                                    // back glass
       // LED strips under the eaves
-      set('dr_glow', { em: NI([1.0, 0.97, 0.92], 700), col: false });
-      for (const sd of [-1, 1]) boxMM(F, 0.0, yR0 - 0.05, sd * (hwT - 0.35) - 0.04, Lh, yR0 - 0.02, sd * (hwT - 0.35) + 0.04, ['py']);
+      set('dr_glow', { em: NI([1.0, 0.97, 0.92], 450), col: false });
+      for (const sd of [-1, 1]) boxMM(F, 0.0, yR0 - 0.05, sd * (hwT - 0.35) - 0.025, Lh, yR0 - 0.02, sd * (hwT - 0.35) + 0.025, ['py']);
       // the sign: station name band + yellow exit number tile on the front fascia (faces -x, toward people walking in)
       const sn = D(F, -1, 0, 0);
       set('dr_glow', { em: NI([0.92, 0.96, 1.0], 160), col: false });
@@ -478,8 +478,10 @@ export function geometry(layout, opts = {}) {
     const walks = M.streets.filter((s) => s.kind === 'walking');
     let best = null;
     const nearGate = (x, z, r) => gates.some((g) => Math.hypot(g.c[0] - x, g.c[2] - z) < r);
-    for (const st of walks) for (let s = 8; s < st.len - 8; s += 2) {
+    const offOthers = (st, x, z) => M.streets.every((o) => o === st || M.project(o, x, z).dist > o.width / 2 + 9);   // not at a junction
+    for (const st of walks) for (let s = 12; s < st.len - 12; s += 2) {
       const q = M.at(st, s), nx = -q.tz, nz = q.tx;
+      if (!offOthers(st, q.x, q.z)) continue;
       const fl = M.freeRay(q.x, q.z, nx, nz, 25), fr = M.freeRay(q.x, q.z, -nx, -nz, 25);
       const span = Math.min(fl, 20) + Math.min(fr, 20);
       if (!isFinite(span) || nearGate(q.x, q.z, 14)) continue;
