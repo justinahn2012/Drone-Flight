@@ -61,7 +61,10 @@ export const NIGHT_SKY = { zenith: [0.018, 0.020, 0.030], horizon: [0.22, 0.13, 
 export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6 };
 export const AIRLIGHT = { count: 16, maxR: 10, minL: 0.004, gain: 1.0 };
 // Irradiance volume (lighting #1): probe heights, albedos for the one bounce.
-export const VOLUME = { heights: [0.5, 4, 12, 30], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2 };
+// windowNits: the mean emission of the facades a probe faces at each probe height (lit windows are not L3 emitters: binding
+// table 55 % lit on floors 2-4, 12-20 % above, 5-25 nits, ~25 % of a wall is glass); multi: 1 / (1 - mean albedo) for the
+// bounces past the first.
+export const VOLUME = { heights: [0.5, 4, 12, 30], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2, windowNits: [0.3, 1.6, 1.2, 0.5], windowRGB: [1.0, 0.86, 0.7], multi: 1.25 };
 // Headlights (lighting #4): low-beam flux per vehicle at the reference 20,000 nits; pool peak luminance (cd/m2 x I).
 export const HEADLIGHT = { lumens: 1400, refNits: 20000, poolNits: 1.5, poolLen: 25 };
 
@@ -618,10 +621,13 @@ export function attach(world, emitters = [], ctx = {}) {
       let bx = rB[q], by = rB[q + 1], bz = rB[q + 2];
       // ground bounce: a lower hemisphere at pi L = rho Eg
       const G = EgL[k], g0 = rho * G[c * 3], g1 = rho * G[c * 3 + 1], g2 = rho * G[c * 3 + 2], gl = LUMA[0] * g0 + LUMA[1] * g1 + LUMA[2] * g2;
-      a0 += g0 / 2; a1 += g1 / 2; a2 += g2 / 2; by -= gl / 2;
+      const mb = VOLUME.multi; a0 += mb * g0 / 2; a1 += mb * g1 / 2; a2 += mb * g2 / 2; by -= mb * gl / 2;
       // wall bounce: the canyon walls at pi L = rho_w x their irradiance (the probe's, toward its brighter side)
-      const bh = Math.hypot(tBv[q], tBv[q + 2]), ew = tal > 0 ? 1 + bh / tal : 0, wk = 0.5 * cc[k] * VOLUME.rhoWall * ew;
+      const bh = Math.hypot(tBv[q], tBv[q + 2]), ew = tal > 0 ? 1 + bh / tal : 0, wk = 0.5 * cc[k] * VOLUME.rhoWall * ew * mb;
       a0 += wk * ta0; a1 += wk * ta1; a2 += wk * ta2;
+      // the lit windows of the walls around (pi L x the walls' share of the view, half of it facing any one side)
+      const wn = 0.5 * cc[k] * Math.PI * VOLUME.windowNits[k] * NS / lumaOf(VOLUME.windowRGB);
+      a0 += wn * VOLUME.windowRGB[0]; a1 += wn * VOLUME.windowRGB[1]; a2 += wn * VOLUME.windowRGB[2];
       // sky: an upper hemisphere through the horizon
       a0 += oo[k] * skyL[0] / 2; a1 += oo[k] * skyL[1] / 2; a2 += oo[k] * skyL[2] / 2; by += oo[k] * skyLum / 2;
       const al = Math.max(1e-7, LUMA[0] * a0 + LUMA[1] * a1 + LUMA[2] * a2);
