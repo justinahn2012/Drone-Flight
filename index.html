@@ -448,7 +448,8 @@ body.dev .dev{display:revert!important}
   .lines{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
   .ln{min-height:40px;padding:6px 8px 6px 30px}
   .ln svg{top:8px}
-  .ln:not(.on):not(.next) small{display:none}   /* unflown: the name only (the hint is on the portrait menu and the crash card) */
+  .ln:not(.on) small{display:none}   /* unflown: the name only (the hint is on the portrait menu and the crash card; NEXT: border + badge) */
+  .ln b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}   /* one line per name: rows stay 46 px, 3 rows clear the bar */
   #startSec .hint{display:none}
   body.paused .brand h1{font-size:clamp(36px,10vh,44px)}
   body.paused .sec{margin:10px 0 6px}
