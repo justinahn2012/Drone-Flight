@@ -52,7 +52,7 @@ async function cityAt(cam, secs = 12, bedsOnly = false) {
   const ctx = new WA.OfflineAudioContext(2, secs * SR, SR), bus = ctx.createGain(); bus.gain.value = SND.world * Math.pow(10, -0.57 / 20); bus.connect(ctx.destination);
   const L2 = build(layout, { seed: 7 }); L2.audio.attach(ctx, bus, { offline: true });
   if (bedsOnly) for (const V of Object.values(L2.audio.__g.pv)) for (const v of V) v.pn.disconnect();   // beds only (music is periodic by nature)
-  for (let f = 0; f < secs * FPS; f++) { const at = f / FPS, c = { ...cam, copy() {} }; L2.update(30 + at, c); L2.audio.feed(c, { x: 0, y: 0, z: -1 }, 30 + at, at); }
+  for (let f = 0; f < secs * FPS; f++) { const at = f / FPS, c = { ...cam, copy() {} }; L2.update(30 + at, c); L2.audio.feed(c, { x: 0, y: 0, z: -1 }, 30 + at + L2.colliders.warm, at); }
   const b = await ctx.startRendering(); return { L: b.getChannelData(0), R: b.getChannelData(1) };
 }
 {
@@ -81,7 +81,7 @@ const DUR = +(process.env.DUR || 24);
   const log = [], t0 = Date.now();
   for (let f = 0; f < DUR * FPS; f++) {
     const at = f / FPS, c = camAt(at / DUR), cam = { x: c.x, y: c.y, z: c.z, copy() {} };
-    life.update(30 + at, cam); life.audio.feed(cam, { x: c.fx, y: 0, z: c.fz }, 30 + at, at);
+    life.update(30 + at, cam); life.audio.feed(cam, { x: c.fx, y: 0, z: c.fz }, 30 + at + life.colliders.warm, at);
     if (f % FPS === 0) log.push({ t: at, ...Object.fromEntries(Object.entries(life.audio.stats).map(([k, v]) => [k, +(+v).toFixed(1)])) });
   }
   const tFeed = Date.now() - t0, t1 = Date.now(), buf = await ctx.startRendering(), tRender = Date.now() - t1;

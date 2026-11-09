@@ -31,7 +31,7 @@ export const LIFE = {
   density: { main: 0.08, walking: 0.35, club: 0.3, alley: 0.06 },
   // unit counts per home-way kind, fitted so the realised (visible, through-flow included) densities hit the targets
   crowdK: { main: 1.55, walking: 1.6, club: 1.6, alley: 1.9 },
-  maxAgents: 9600, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 2500,
+  warm: 75, maxAgents: 9600, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 2500,
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
   phoneShare: 0.18,            // walkers looking at a phone
   sidewalk: (w) => Math.max(3, Math.min(6, w * 0.15)),
@@ -1636,6 +1636,9 @@ export function build(layout, ctx = {}) {
   const fillK = { value: 1 };
   const uTime = { value: 0 };
   const groundAt = ctx.groundAt || (() => 0);
+  // warm start: the sims run at take clock + 75 s, so a take opens on queues at the lights, buses at stops and taxis
+  // pulling over instead of the evenly spread t = 0 set-up (life bug; ~170 ms of traffic steps at load)
+  const W = ctx.warm ?? LIFE.warm;
   const rain = ctx.rain ?? (typeof location !== 'undefined' && /[?&]rain/.test(location.search || ''));
 
   // ---- people
@@ -1727,14 +1730,14 @@ export function build(layout, ctx = {}) {
     const c0 = performance.now();
     if (typeof t === 'number') { clock = t; extClock = true; }
     if (camPos) camP.copy(camPos);
-    sim.advanceTo(clock);
+    sim.advanceTo(clock + W);
     const c1 = performance.now();
-    uTime.value = clock;
-    const dt = lastClock == null ? 0 : Math.max(0, Math.min(0.1, clock - lastClock)); lastClock = clock;
+    uTime.value = clock + W;
+    const dt = lastClock == null ? 0 : Math.max(0, Math.min(0.1, clock - lastClock)); lastClock = clock;   // (W: see warm below)
     if (camQuat) fwd.set(0, 0, -1).applyQuaternion(camQuat); else fwd.set(0, 0, 0);
     // ---- people: closed-form at the clock (avoidance near the camera), tier by distance, cull behind the camera
     crowd.events.length = 0;
-    crowd.evaluate(clock, camP);
+    crowd.evaluate(clock + W, camP);
     const c2 = performance.now();
     const X = crowd.X, Z = crowd.Z, VIS = crowd.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
     let nN = 0, nM = 0, nF = 0; const T0 = tiers[0].A, T1 = tiers[1].A, T2 = tiers[2].A, mr2 = LIFE.midR * LIFE.midR;
@@ -1805,12 +1808,12 @@ export function build(layout, ctx = {}) {
     poolG.instanceCount = np; poolA.needsUpdate = true;
     stats.near = nN; stats.mid = nM; stats.far = nF; stats.drawn = nN + nM + nF; stats.tris = nN * tiers[0].tris + nM * tiers[1].tris + nF * tiers[2].tris;
     stats.simMs = c1 - c0; stats.cpuMs = performance.now() - c0;
-    if (life.audio && life.audio.feed) life.audio.feed(camP, fwd, clock);
+    if (life.audio && life.audio.feed) life.audio.feed(camP, fwd, clock + W);
   }
   const life = {
     group, emitters, sim, stats, fill,
     // F1 (design #5): vehicles are hard (crash), pedestrians soft (scrape); both pure functions of the take clock
-    colliders: { at: (t, out) => sim.boxesAt(t, out), hit: (p, r, t) => sim.hit(p, r, t), people: (p, r, t) => sim.hitPeople(p, r, t), keyed: 'take-clock' },
+    colliders: { at: (t, out) => sim.boxesAt(t + W, out), hit: (p, r, t) => sim.hit(p, r, t + W), people: (p, r, t) => sim.hitPeople(p, r, t + W), keyed: 'take-clock', warm: W },
     near, crowd,
     update,
     // free-running clock for previews without a take clock (dev page, menu background)
