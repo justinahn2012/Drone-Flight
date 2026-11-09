@@ -204,7 +204,7 @@ function overTent(P, s) {
 }
 const tentG = overTent(WP, WL - 178);
 run({ path: WP, name: 'WALKING STREET', caption: 'THE WALKING *STREET*!', value: 2500, s0: 12, s1: -6, y0: 2.2, y1: 5.2, w: walk.width - 1, first: true,
-  cuts: [52, 102, 152, 202, 252].map((v) => v + WL - 312), label: 'WALKING STREET', feats: [
+  cuts: [54, 96, 138, 180, 222, 264].map((v) => v + WL - 312), label: 'WALKING STREET', feats: [
     { name: 'OVER THE CROWD', caption: 'OVER THE *CROWD*!', s: 24, ...HEADS, w: 8, pts: 750, what: 'the walking street crowd, 17 m from the spawn (head height)' },
     ...(tentG ? [{ name: 'OVER THE TENT', caption: 'OVER THE *TENT*!', s: WL - 178, gate: tentG, what: 'a pocha tent' }] : []),
     { name: 'THE BRANCHES', caption: 'THE *BRANCHES*!', s: WL - 74, what: 'two Eoulmadang-ro branches leave (68 and 80 m before the junction)' },
@@ -449,6 +449,42 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
 { const p = at(red.points, -2);
   lines.push({ name: 'THE CORNER', caption: 'THE *CORNER*!', pts: 500, micro: true, c: [r3(p.x), 3, r3(p.z)], carve: { kind: 'turn', box: [r3(p.x - 14), r3(p.x + 14), 1.5, 9, r3(p.z - 14), r3(p.z + 14)], sweep: 1.3 } });
   report.push(`THE CORNER           500  carve 28 x 28 m box at [${p.x.toFixed(1)}, ${p.z.toFixed(1)}] (micro)`); }
+
+// ---- [P3-F1 design #4, with E] transit holes: the street path between one line's end and the next line's start
+// (Dijkstra over the layout's street centrelines, vertices shared or within 2 m are a junction) gets a connector micro
+// every ~35 m (500 pts, either way, across the street at 2.5-5.0 m; main roads 5-8 m over the buses), so the bank timer
+// (10 s) never runs out between streets: the long sim route had 20.5-27.8 s gaps there and one bank cut a take from 166k to
+// 62k. Connectors: Hongik-ro -> Wausan-ro 21-gil (BAR ALLEY), Yanghwa-ro at exit 9 (SCREEN CANYON's end) -> HONGIK-RO.
+{ const V = [], adj = [];
+  for (const st of layout.streets) st.points.forEach((p, i) => { V.push({ x: p[0], z: p[1], st }); adj.push([]); if (i) { const a = V.length - 2, b = V.length - 1, l = Math.hypot(p[0] - V[a].x, p[1] - V[a].z); adj[a].push([b, l]); adj[b].push([a, l]); } });
+  const cell = new Map(), ck = (x, z) => Math.floor(x / 4) + ',' + Math.floor(z / 4);
+  V.forEach((v, i) => { const k = ck(v.x, v.z); if (!cell.has(k)) cell.set(k, []); cell.get(k).push(i); });
+  V.forEach((v, i) => { for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) for (const j of cell.get((Math.floor(v.x / 4) + dx) + ',' + (Math.floor(v.z / 4) + dz)) || []) if (j !== i && V[j].st !== v.st && Math.hypot(V[j].x - v.x, V[j].z - v.z) < 2) adj[i].push([j, Math.hypot(V[j].x - v.x, V[j].z - v.z)]); });
+  const nearestV = (c) => { let b = -1, bd = Infinity; V.forEach((v, i) => { const d = Math.hypot(v.x - c[0], v.z - c[2]); if (d < bd) { bd = d; b = i; } }); return b; };
+  const route = (a, b) => { const D = new Float64Array(V.length).fill(Infinity), P = new Int32Array(V.length).fill(-1), done = new Uint8Array(V.length); D[a] = 0;
+    for (;;) { let u = -1, du = Infinity; for (let i = 0; i < V.length; i++) if (!done[i] && D[i] < du) { du = D[i]; u = i; } if (u < 0 || u === b) break; done[u] = 1;
+      for (const [w, l] of adj[u]) if (D[u] + l < D[w]) { D[w] = D[u] + l; P[w] = u; } }
+    if (!isFinite(D[b])) return null; const out = []; for (let u = b; u >= 0; u = P[u]) out.push(V[u]); return out.reverse(); };
+  const connect = (label, from, to) => {
+    if (!from || !to) { report.push(`  (${label}: no line to connect)`); return; }
+    const R = route(nearestV(from.c), nearestV(to.c)); if (!R) { report.push(`  (${label}: no street path)`); return; }
+    const pts = [[from.c[0], from.c[2]], ...R.map((v) => [v.x, v.z]), [to.c[0], to.c[2]]], L = len(pts), n = Math.floor((L - 20) / 35);
+    if (n < 1) { report.push(`  (${label}: ${L.toFixed(0)} m, no connector needed)`); return; }
+    let k = 0;
+    for (let i = 1; i <= n; i++) {
+      const sv = L * i / (n + 1), q = at(pts, sv), st = R.reduce((b, v) => (Math.hypot(v.x - q.x, v.z - q.z) < Math.hypot(b.x - q.x, b.z - q.z) ? v : b), R[0]).st;
+      const [y0, y1] = st.kind === 'main' ? [5.0, 8.0] : [2.5, 5.0];
+      const G = bestAcross(pts, [0, 3, -3, 6, -6].map((d) => sv + d), Math.max(2.5, st.width - 1), y0, y1);
+      if (!clearOf({ ...G, w: Math.min(G.w, 2), h: G.h * 0.8 }).ok) continue;
+      k++; add(`${label} ${k}`, `${label.replace(/ (\S+)$/, ' *$1*')}`, 500, G, { two: true, micro: true, connector: true });
+    }
+    report.push(`  (${label}: ${L.toFixed(0)} m by the streets (${[...new Set(R.map((v) => v.st.ko || v.st.id))].join(' > ')}), ${k} connector micros)`);
+  };
+  const first = (nm) => { const l = lines.find((x) => x.name === nm && x.pre); return l && l.pre[0]; };
+  const last = (nm) => lines.find((x) => x.name === nm && x.pre);
+  connect('TO THE BAR ALLEY', last('HONGIK-RO'), first('BAR ALLEY'));
+  connect('TO HONGIK-RO', last('SCREEN CANYON'), first('HONGIK-RO'));
+}
 
 // ---- [P2-F1 design #2] set pieces (stream E's seoul-dressing.js, contract P2-1): lines coded against E's setPieces ids.
 // E gives each piece's openings as `gates`: {pre, gate} (a pre-gate -> gate move), {left: {pre, gate}, right: {...}}

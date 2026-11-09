@@ -129,25 +129,25 @@
    "hint": "the walking street end to end, 310 m over the crowd"
   },
   {
-   "name": "WALKING STREET 1/6",
-   "caption": "WALKING STREET *1/6*",
+   "name": "WALKING STREET 1/7",
+   "caption": "WALKING STREET *1/7*",
    "pts": 750,
    "c": [
-    185.011,
+    183.575,
     3.7,
-    -314.328
+    -312.944
    ],
    "n": [
-    -0.793,
+    -0.68,
     0,
-    0.61
+    0.733
    ],
    "w": 13.81,
    "h": 3,
    "u": [
-    -0.61,
+    -0.733,
     0,
-    -0.793
+    -0.68
    ],
    "pre": [
     {
@@ -170,13 +170,13 @@
      ]
     }
    ],
-   "within": 15,
+   "within": 16,
    "micro": true,
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 1/6",
-   "caption": "WALKING STREET *1/6*",
+   "name": "WALKING STREET 1/7",
+   "caption": "WALKING STREET *1/7*",
    "pts": 750,
    "c": [
     217.182,
@@ -198,31 +198,31 @@
    "pre": [
     {
      "c": [
-      185.011,
+      183.575,
       3.7,
-      -314.328
+      -312.944
      ],
      "n": [
-      0.793,
+      0.68,
       0,
-      -0.61
+      -0.733
      ],
      "w": 13.81,
      "h": 3,
      "u": [
-      -0.61,
+      -0.733,
       0,
-      -0.793
+      -0.68
      ]
     }
    ],
-   "within": 15,
+   "within": 16,
    "micro": true,
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 2/6",
-   "caption": "WALKING STREET *2/6*",
+   "name": "WALKING STREET 2/7",
+   "caption": "WALKING STREET *2/7*",
    "pts": 750,
    "c": [
     154.813,
@@ -244,48 +244,48 @@
    "pre": [
     {
      "c": [
-      185.011,
+      183.575,
       3.7,
-      -314.328
+      -312.944
      ],
      "n": [
-      -0.793,
+      -0.68,
       0,
-      0.61
+      0.733
      ],
      "w": 13.81,
      "h": 3,
      "u": [
-      -0.61,
+      -0.733,
       0,
-      -0.793
+      -0.68
      ]
     }
    ],
-   "within": 17,
+   "within": 16,
    "micro": true,
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 2/6",
-   "caption": "WALKING STREET *2/6*",
+   "name": "WALKING STREET 2/7",
+   "caption": "WALKING STREET *2/7*",
    "pts": 750,
    "c": [
-    185.011,
+    183.575,
     3.7,
-    -314.328
+    -312.944
    ],
    "n": [
-    0.793,
+    0.68,
     0,
-    -0.61
+    -0.733
    ],
    "w": 13.81,
    "h": 3,
    "u": [
-    -0.61,
+    -0.733,
     0,
-    -0.793
+    -0.68
    ],
    "pre": [
     {
@@ -308,30 +308,30 @@
      ]
     }
    ],
-   "within": 17,
+   "within": 16,
    "micro": true,
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 3/6",
-   "caption": "WALKING STREET *3/6*",
+   "name": "WALKING STREET 3/7",
+   "caption": "WALKING STREET *3/7*",
    "pts": 750,
    "c": [
-    105.153,
+    122.461,
     3.7,
-    -245.734
+    -255.948
    ],
    "n": [
-    -0.668,
+    -0.803,
     0,
-    0.745
+    0.596
    ],
    "w": 13.81,
    "h": 3,
    "u": [
-    -0.745,
+    -0.596,
     0,
-    -0.668
+    -0.803
    ],
    "pre": [
     {
@@ -354,13 +354,13 @@
      ]
     }
    ],
-   "within": 22,
+   "within": 17,
    "micro": true,
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 3/6",
-   "caption": "WALKING STREET *3/6*",
+   "name": "WALKING STREET 3/7",
+   "caption": "WALKING STREET *3/7*",
    "pts": 750,
    "c": [
     154.813,
@@ -382,67 +382,21 @@
    "pre": [
     {
      "c": [
-      105.153,
+      122.461,
       3.7,
-      -245.734
+      -255.948
      ],
      "n": [
-      0.668,
+      0.803,
       0,
-      -0.745
+      -0.596
      ],
      "w": 13.81,
      "h": 3,
      "u": [
-      -0.745,
+      -0.596,
       0,
-      -0.668
-     ]
-    }
-   ],
-   "within": 22,
-   "micro": true,
-   "seg": "WALKING STREET"
-  },
-  {
-   "name": "WALKING STREET 4/6",
-   "caption": "WALKING STREET *4/6*",
-   "pts": 750,
-   "c": [
-    73.504,
-    3.7,
-    -215.014
-   ],
-   "n": [
-    -0.667,
-    0,
-    0.745
-   ],
-   "w": 13.81,
-   "h": 3,
-   "u": [
-    -0.745,
-    0,
-    -0.667
-   ],
-   "pre": [
-    {
-     "c": [
-      105.153,
-      3.7,
-      -245.734
-     ],
-     "n": [
-      -0.668,
-      0,
-      0.745
-     ],
-     "w": 13.81,
-     "h": 3,
-     "u": [
-      -0.745,
-      0,
-      -0.668
+      -0.803
      ]
     }
    ],
@@ -451,20 +405,20 @@
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 4/6",
-   "caption": "WALKING STREET *4/6*",
+   "name": "WALKING STREET 4/7",
+   "caption": "WALKING STREET *4/7*",
    "pts": 750,
    "c": [
-    105.153,
+    89.236,
     3.7,
-    -245.734
+    -226.429
    ],
    "n": [
-    0.668,
+    -0.668,
     0,
-    -0.745
+    0.745
    ],
-   "w": 13.81,
+   "w": 8.03,
    "h": 3,
    "u": [
     -0.745,
@@ -474,21 +428,21 @@
    "pre": [
     {
      "c": [
-      73.504,
+      122.461,
       3.7,
-      -215.014
+      -255.948
      ],
      "n": [
-      0.667,
+      -0.803,
       0,
-      -0.745
+      0.596
      ],
      "w": 13.81,
      "h": 3,
      "u": [
-      -0.745,
+      -0.596,
       0,
-      -0.667
+      -0.803
      ]
     }
    ],
@@ -497,20 +451,158 @@
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 5/6",
-   "caption": "WALKING STREET *5/6*",
+   "name": "WALKING STREET 4/7",
+   "caption": "WALKING STREET *4/7*",
    "pts": 750,
    "c": [
-    47.116,
+    122.461,
     3.7,
-    -175.586
+    -255.948
+   ],
+   "n": [
+    0.803,
+    0,
+    -0.596
+   ],
+   "w": 13.81,
+   "h": 3,
+   "u": [
+    -0.596,
+    0,
+    -0.803
+   ],
+   "pre": [
+    {
+     "c": [
+      89.236,
+      3.7,
+      -226.429
+     ],
+     "n": [
+      0.668,
+      0,
+      -0.745
+     ],
+     "w": 8.03,
+     "h": 3,
+     "u": [
+      -0.745,
+      0,
+      -0.668
+     ]
+    }
+   ],
+   "within": 17,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 5/7",
+   "caption": "WALKING STREET *5/7*",
+   "pts": 750,
+   "c": [
+    62.26,
+    3.7,
+    -198.113
+   ],
+   "n": [
+    -0.589,
+    0,
+    0.808
+   ],
+   "w": 4.699,
+   "h": 2.79,
+   "u": [
+    -0.808,
+    0,
+    -0.589
+   ],
+   "pre": [
+    {
+     "c": [
+      89.236,
+      3.7,
+      -226.429
+     ],
+     "n": [
+      -0.668,
+      0,
+      0.745
+     ],
+     "w": 8.03,
+     "h": 3,
+     "u": [
+      -0.745,
+      0,
+      -0.668
+     ]
+    }
+   ],
+   "within": 16,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 5/7",
+   "caption": "WALKING STREET *5/7*",
+   "pts": 750,
+   "c": [
+    89.236,
+    3.7,
+    -226.429
+   ],
+   "n": [
+    0.668,
+    0,
+    -0.745
+   ],
+   "w": 8.03,
+   "h": 3,
+   "u": [
+    -0.745,
+    0,
+    -0.668
+   ],
+   "pre": [
+    {
+     "c": [
+      62.26,
+      3.7,
+      -198.113
+     ],
+     "n": [
+      0.589,
+      0,
+      -0.808
+     ],
+     "w": 4.699,
+     "h": 2.79,
+     "u": [
+      -0.808,
+      0,
+      -0.589
+     ]
+    }
+   ],
+   "within": 16,
+   "micro": true,
+   "seg": "WALKING STREET"
+  },
+  {
+   "name": "WALKING STREET 6/7",
+   "caption": "WALKING STREET *6/7*",
+   "pts": 750,
+   "c": [
+    36.039,
+    3.7,
+    -157.743
    ],
    "n": [
     -0.515,
     0,
     0.857
    ],
-   "w": 12.072,
+   "w": 13.81,
    "h": 3,
    "u": [
     -0.857,
@@ -520,21 +612,21 @@
    "pre": [
     {
      "c": [
-      73.504,
+      62.26,
       3.7,
-      -215.014
+      -198.113
      ],
      "n": [
-      -0.667,
+      -0.589,
       0,
-      0.745
+      0.808
      ],
-     "w": 13.81,
-     "h": 3,
+     "w": 4.699,
+     "h": 2.79,
      "u": [
-      -0.745,
+      -0.808,
       0,
-      -0.667
+      -0.589
      ]
     }
    ],
@@ -543,39 +635,39 @@
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 5/6",
-   "caption": "WALKING STREET *5/6*",
+   "name": "WALKING STREET 6/7",
+   "caption": "WALKING STREET *6/7*",
    "pts": 750,
    "c": [
-    73.504,
+    62.26,
     3.7,
-    -215.014
+    -198.113
    ],
    "n": [
-    0.667,
+    0.589,
     0,
-    -0.745
+    -0.808
    ],
-   "w": 13.81,
-   "h": 3,
+   "w": 4.699,
+   "h": 2.79,
    "u": [
-    -0.745,
+    -0.808,
     0,
-    -0.667
+    -0.589
    ],
    "pre": [
     {
      "c": [
-      47.116,
+      36.039,
       3.7,
-      -175.586
+      -157.743
      ],
      "n": [
       0.515,
       0,
       -0.857
      ],
-     "w": 12.072,
+     "w": 13.81,
      "h": 3,
      "u": [
       -0.857,
@@ -589,8 +681,8 @@
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 6/6",
-   "caption": "WALKING STREET *6/6*",
+   "name": "WALKING STREET 7/7",
+   "caption": "WALKING STREET *7/7*",
    "pts": 750,
    "c": [
     9.318,
@@ -612,16 +704,16 @@
    "pre": [
     {
      "c": [
-      47.116,
+      36.039,
       3.7,
-      -175.586
+      -157.743
      ],
      "n": [
       -0.515,
       0,
       0.857
      ],
-     "w": 12.072,
+     "w": 13.81,
      "h": 3,
      "u": [
       -0.857,
@@ -630,25 +722,25 @@
      ]
     }
    ],
-   "within": 22,
+   "within": 16,
    "micro": true,
    "seg": "WALKING STREET"
   },
   {
-   "name": "WALKING STREET 6/6",
-   "caption": "WALKING STREET *6/6*",
+   "name": "WALKING STREET 7/7",
+   "caption": "WALKING STREET *7/7*",
    "pts": 750,
    "c": [
-    47.116,
+    36.039,
     3.7,
-    -175.586
+    -157.743
    ],
    "n": [
     0.515,
     0,
     -0.857
    ],
-   "w": 12.072,
+   "w": 13.81,
    "h": 3,
    "u": [
     -0.857,
@@ -676,7 +768,7 @@
      ]
     }
    ],
-   "within": 22,
+   "within": 16,
    "micro": true,
    "seg": "WALKING STREET"
   },
@@ -4412,6 +4504,131 @@
     ],
     "sweep": 1.3
    }
+  },
+  {
+   "name": "TO THE BAR ALLEY 1",
+   "caption": "TO THE BAR *ALLEY*",
+   "pts": 500,
+   "c": [
+    158.563,
+    6.5,
+    46.041
+   ],
+   "n": [
+    -0.638,
+    0,
+    0.77
+   ],
+   "w": 8.75,
+   "h": 3,
+   "u": [
+    -0.77,
+    0,
+    -0.638
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
+   "name": "TO HONGIK-RO 1",
+   "caption": "TO *HONGIK-RO*",
+   "pts": 500,
+   "c": [
+    -62.732,
+    6.5,
+    -220.982
+   ],
+   "n": [
+    -0.731,
+    0,
+    0.682
+   ],
+   "w": 18.5,
+   "h": 3,
+   "u": [
+    -0.682,
+    0,
+    -0.731
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
+   "name": "TO HONGIK-RO 2",
+   "caption": "TO *HONGIK-RO*",
+   "pts": 500,
+   "c": [
+    -53.396,
+    6.5,
+    -194.64
+   ],
+   "n": [
+    0.683,
+    0,
+    0.73
+   ],
+   "w": 8.75,
+   "h": 3,
+   "u": [
+    -0.73,
+    0,
+    0.683
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
+   "name": "TO HONGIK-RO 3",
+   "caption": "TO *HONGIK-RO*",
+   "pts": 500,
+   "c": [
+    -28.239,
+    6.5,
+    -167.762
+   ],
+   "n": [
+    0.684,
+    0,
+    0.73
+   ],
+   "w": 8.75,
+   "h": 3,
+   "u": [
+    -0.73,
+    0,
+    0.684
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
+   "name": "TO HONGIK-RO 4",
+   "caption": "TO *HONGIK-RO*",
+   "pts": 500,
+   "c": [
+    -3.062,
+    6.5,
+    -140.903
+   ],
+   "n": [
+    0.684,
+    0,
+    0.729
+   ],
+   "w": 8.5,
+   "h": 3,
+   "u": [
+    -0.729,
+    0,
+    0.684
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
   },
   {
    "name": "STATION STAIRS",

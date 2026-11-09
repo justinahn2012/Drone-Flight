@@ -125,7 +125,7 @@ function buildPath(route, rng, spread) {
       const last = path[path.length - 1];
       let leg = losClear(last, a) ? [last, a] : astar3(last, a), bb = b;
       if (!leg) { const a0 = along(G, -2.5); bb = along(G, 2.5); leg = losClear(last, a0) ? [last, a0] : astar3(last, a0); }   // the gate centre instead
-      if (!leg) { console.log('NO LEG to', name, gi, a.toArray().map((x) => x.toFixed(1))); return null; }
+      if (!leg) { console.log('NO LEG to', name, gi, a.toArray().map((x) => x.toFixed(1)), '(gate skipped: the 1 m A* found no 0.9 m-clear path)'); continue; }
       path.push(...simplify(leg).slice(1), bb);
     }
   }
