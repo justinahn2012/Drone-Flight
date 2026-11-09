@@ -431,8 +431,12 @@ uniform sampler2D tNoise; // 256^2 gaussian noise (r luma, gb chroma), repeat + 
 uniform vec4 uNoiseOff;   // luma lattice offsets (px): xy this frame, zw last frame (3DNR: half of the grain carries over)
 uniform vec4 uNoiseOffC;  // chroma lattice offsets (px)
 uniform vec4 uNoiseK;     // x luma cell (px), y chroma cell (px), z read floor (linear, gain-independent), w chroma kept in the deepest shadows
-uniform vec4 uGhostS;     // lens ghosts: xyz mirror scales through the frame centre, w: on
-uniform vec3 uGhostT[3];  // ghost tint x weight (of the narrow-lobe bright pass)
+uniform vec4 uGhostS;     // lens ghosts: w on (the ghost pass renders them, aperture-shaped, into tGhost)
+uniform sampler2D tGhost; // [P3-A] ghosts of the point sources, 1/8 res, output space (GHOST_FS)
+uniform vec2 uCoreSrc;    // [P3-A] true sources: white-equivalent radiance (max channel, scene units) where the source path ramps in
+uniform vec3 uCoreSrcK;   // [P3-A] the source path's x crosstalk, y..z EV over the white point where its cores ramp in
+uniform vec2 uRetroSh;    // [P3-A] retro shadow split-tone: x Oklab hue (rad), y chroma at uRetro 1
+uniform vec2 uVibGate;    // [P3-A] Oklab hue band (rad) the retro vibrance leaves alone (amber rooms)
 vec3 nightTone(vec3 e){
   vec3 x = max(e, 0.0);
   vec3 pc = pow(x, vec3(uTone.x)) / (pow(x, vec3(uTone.x * uTone.y)) * uTone.z + uTone.w);
@@ -464,21 +468,27 @@ const NIGHT_FINAL_BODY = /* glsl */`
   // face goes pink-white and its colour survives only in the halo (plan-L5 2B: the single most important night cue)
   // [P2-A] keyed on the MIN channel (+ sensor crosstalk), not the max: a red letter 2 EV over the white point keeps its red
   // (its G and B are stops under); a narrowband neon tube whitens only when even its weakest channel saturates (colour #1)
+  // [P3-A] colour #3 / FPV #5: true sources (tube and channel-letter cores, bulbs, lamps: >= 600 white-equivalent nits, against
+  // faces <= 350) take a second path: more crosstalk (uCoreSrcK.x) and a ramp 2 EV earlier, so they bleach to white cores with
+  // coloured rims at the exposures the street runs at; light boxes, screens and windows keep the colour path above
   {
-    float mn = mix(min(eCore.r, min(eCore.g, eCore.b)), max(eCore.r, max(eCore.g, eCore.b)), uCore.x);
+    float sw = smoothstep(uCoreSrc.x, uCoreSrc.y, max(lin.r, max(lin.g, lin.b)));
+    float xt = mix(uCore.x, uCoreSrcK.x, sw);
+    vec2 cev = mix(uCore.yz, uCoreSrcK.yz, sw);
+    float mn = mix(min(eCore.r, min(eCore.g, eCore.b)), max(eCore.r, max(eCore.g, eCore.b)), xt);
     float over = log2(max(mn, 1e-6) / uNightK.x);
-    float core = smoothstep(uCore.y, uCore.z, over) * uNightK.y;
+    float core = smoothstep(cev.x, cev.y, over) * uNightK.y;
     t = mix(t, vec3(1.0), core * smoothstep(0.6, 1.0, max(t.r, max(t.g, t.b))));
   }
   // retrowave grade (plan-G5 2F): one knob, linear light, after the clip, before the sensor noise (the grain is never graded)
   if (uRetro > 0.0) {
     vec3 lab = okLab(max(t, 0.0));
     float Lt = uNightK.z;
-    // 1) split-tone: upper shadows toward cyan (205 deg), the deepest toward blue-violet (255 deg); +0.06 chroma at uRetro 1
+    // 1) split-tone: shadows toward cyan-teal (uRetroSh.x, 205 deg), uRetroSh.y chroma at uRetro 1. [P3-A] FPV #1: the deepest
+    //    shadows no longer swing to blue-violet (255 deg): that was half of the purple veil's tint on the dark walls
     float ws = 1.0 - smoothstep(0.35 * Lt, 0.8 * Lt, lab.x);
-    float hS = mix(4.45, 3.58, smoothstep(0.0, 0.6 * Lt, lab.x));
-    lab.yz += vec2(cos(hS), sin(hS)) * (0.06 * uRetro * ws * (0.2 + 0.8 * smoothstep(0.0, 0.3 * Lt, lab.x)));
-    lab.x -= 0.25 * 0.06 * uRetro * ws * smoothstep(0.0, 0.3 * Lt, lab.x);        // hold the shadows' luma: the tint, not a lift
+    lab.yz += vec2(cos(uRetroSh.x), sin(uRetroSh.x)) * (uRetroSh.y * uRetro * ws * (0.2 + 0.8 * smoothstep(0.0, 0.3 * Lt, lab.x)));
+    lab.x -= 0.25 * uRetroSh.y * uRetro * ws * smoothstep(0.0, 0.3 * Lt, lab.x);   // hold the shadows' luma: the tint, not a lift
     // 2) magenta roll-off: +1..+3 EV over the target shoulders into white through pink-magenta (330 deg); clipped cores stay white.
     //    [P2-A] keyed on the source (eCore), not source + halo: the glow ring round every sign no longer turns magenta; and only
     //    on highlights that already have colour (white windows and walls keep their white) (colour #3)
@@ -489,6 +499,9 @@ const NIGHT_FINAL_BODY = /* glsl */`
     // 3) neon vibrance: bright AND already saturated pixels only (skin, asphalt and grey concrete are left alone)
     float C = length(lab.yz);
     float wn = smoothstep(0.8 * Lt, 1.3 * Lt, lab.x) * smoothstep(0.05, 0.12, C) * wc;
+    // [P3-A] colour #2: not on amber (Oklab hue uVibGate, soft 10 deg edges): the rooms stay amber, not pumpkin
+    float hv = atan(lab.z, lab.y); hv += hv < 0.0 ? 6.2831853 : 0.0;
+    wn *= 1.0 - smoothstep(uVibGate.x - 0.1745, uVibGate.x, hv) * (1.0 - smoothstep(uVibGate.y, uVibGate.y + 0.1745, hv));
     lab.yz *= 1.0 + uRetroVib * uRetro * wn;
     t = clamp(okLabInv(lab), 0.0, 1.0);
   }
@@ -538,7 +551,9 @@ uniform float uClipL;     // sensor clip in exposed units (meter saturates there
 uniform float uVeilL;     // veil: per-tap cap in exposed units (the glare of what the lens passes; a blown face caps)
 uniform vec4 uAe;         // x: tau darken (s), y: tau brighten (s), z: zeta, w: deadband (EV)
 uniform float uReject;    // brightest share of taps dropped
-uniform vec2 uArea;       // x: tap radiance (scene units) above which a tap is an area source, y: its weight
+uniform vec4 uArea;       // x: tap radiance (scene units) above which a tap is an area source, y: its weight; [P3-A] z: its weight once
+                          // area sources cover more than w of the taps (FPV #4: a shopfront filling the frame doesn't set the street's EV)
+float gAreaW;
 uniform vec2 uMat;        // x: weighting centre (v), y: falloff (1.6 = the old centre-weighted spot)
 float Lr[192];
 float meterWant(float capEv){
@@ -555,7 +570,7 @@ float meterWant(float capEv){
     if (L >= cut) continue;
     vec2 uv = (vec2(float(x), float(y)) + 0.5) / vec2(16.0, 12.0);
     vec2 d = (uv - vec2(0.5, uMat.x)) * vec2(1.6, 2.0);
-    float w = exp(-dot(d, d) * uMat.y) * (L0 > uArea.x ? uArea.y : 1.0);
+    float w = exp(-dot(d, d) * uMat.y) * (L0 > uArea.x ? gAreaW : 1.0);
     lsum += w * log2(L + 1e-5); asum += w * L; wsum += w;
   }
   float avg = wsum > 0.0 ? exp2(mix(lsum / wsum, log2(asum / wsum + 1e-5), 0.15)) : 1.0;
@@ -571,6 +586,8 @@ void main(){
     aAll += min(L, 4.0 * uVeilL * exp2(-prevEv));
     Lr[y * 16 + x] = L;
   }
+  float na = 0.0; for (int i = 0; i < 192; i++) na += Lr[i] > uArea.x ? 1.0 : 0.0;
+  gAreaW = mix(uArea.y, uArea.z, smoothstep(uArea.w - 0.05, uArea.w + 0.05, na / 192.0));
   float want = meterWant(prevEv);
   if (uReset > 0.5) { for (int k = 0; k < 3; k++) want = meterWant(clamp(want, uEvMin, uEvMax)); }
   float target = clamp(want, uEvMin, uEvMax);
@@ -594,6 +611,56 @@ void main(){
   float pk = uReset > 0.5 ? 1.0 : 1.0 - exp(-uDt * 2.5);
   fragColor = vec4(ev, vel, 0.5 * aAll / 192.0 * exp2(ev), P.a + (pin - P.a) * pk);
 }`;
+
+// [P3-A] lens ghosts (colour #5, FPV #6, graphics #3), night only, at 1/8 res in output space. A ghost is the source seen through a
+// stray reflection path: mirrored through the frame centre at scale s, defocused into the 7-blade aperture's shape (radius R), with
+// the coating's chroma fringe (red rim out, blue in). Only point sources far over the street feed it (block luma uGEv EV over
+// grey: lamps, headlights; not neon or light boxes), desaturated to uGChroma. Gather: G(p) = w / s^2 * mean of the source over the
+// aperture's footprint mapped back through the mirror, on a 37-tap hex lattice per ghost.
+const GHOST_FS = /* glsl */`precision highp float;
+${COMMON}
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D tSmall;   // rgb: bright pass (exposed), a: block-mean scene luma
+uniform sampler2D tExp;
+uniform vec2 uGEv;
+uniform float uGChroma;
+uniform float uFringe;
+uniform float uBlades;
+uniform float uAspect;
+uniform vec4 uG[3];         // x mirror scale s, y weight / s^2, z radius (frame heights), w aperture rotation (rad)
+uniform vec3 uGT[3];
+uniform vec2 uLat[37];      // hex lattice in the unit disc
+float hept(vec2 o, float R, float rot){
+  float sec = 6.2831853 / uBlades, a = atan(o.y, o.x) - rot;
+  float d = length(o) / R * cos(mod(a, sec) - 0.5 * sec) - cos(3.14159265 / uBlades);
+  return 1.0 - smoothstep(-0.12, 0.12, d);
+}
+vec3 src(vec2 x, float ev){
+  if (x.x < 0.0 || x.y < 0.0 || x.x > 1.0 || x.y > 1.0) return vec3(0.0);
+  vec4 s = texture(tSmall, x);
+  vec3 b = max(s.rgb, 0.0); float l = dot(b, LUMA);
+  return (vec3(l) + (b - l) * uGChroma) * smoothstep(uGEv.x, uGEv.y, log2(max(s.a * exp2(ev), 1e-6) / 0.24));
+}
+void main(){
+  float ev = decodeEv(texelFetch(tExp, ivec2(0), 0));
+  vec3 acc = vec3(0.0);
+  for (int g = 0; g < 3; g++) {
+    vec4 G = uG[g];
+    if (G.y <= 0.0) continue;
+    vec3 sum = vec3(0.0), ws = vec3(0.0);
+    for (int i = 0; i < 37; i++) {
+      vec2 o = uLat[i] * G.z * (1.0 + uFringe);
+      vec2 x = 0.5 + (vUv - vec2(o.x / uAspect, o.y) - 0.5) / G.x;
+      vec3 wc = vec3(hept(o, G.z * (1.0 + uFringe), G.w), hept(o, G.z, G.w), hept(o, G.z * (1.0 - uFringe), G.w));
+      sum += src(x, ev) * wc; ws += wc;
+    }
+    acc += sum / max(ws, vec3(1e-6)) * G.y * uGT[g];
+  }
+  fragColor = vec4(acc, 1.0);
+}`;
+// 37-point hex lattice (3 rings) in the unit disc
+const HEX37 = (() => { const p = [[0, 0]]; for (let k = 1; k <= 3; k++) for (let s6 = 0; s6 < 6; s6++) for (let j = 0; j < k; j++) { const f = j / k, a0 = Math.PI / 3 * s6, a1 = Math.PI / 3 * (s6 + 1); p.push([(k * ((1 - f) * Math.cos(a0) + f * Math.cos(a1))) / 3, (k * ((1 - f) * Math.sin(a0) + f * Math.sin(a1))) / 3]); } return p; })();
 
 const FINAL_FS = /* glsl */`precision highp float;
 ${COMMON}
@@ -702,17 +769,9 @@ void main(){
 #ifdef NIGHT
   vec3 eCore = e;                                                          // pre-halo exposure: the clip/core test reads the source, not its glow
   e += texture(tHalo, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uHalo * uHaloTint;   // wide warm halation (lens glow + sensor scatter)
-  // [P2-A] FPV #2: tBloom is the PSF's narrow lobe, tHalo its wide lobe (energy fractions of the uncapped bright pass); plus
-  // 3 ghosts of the bright pass mirrored through the frame centre (only the brightest sources leave a visible one)
-  if (uGhostS.w > 0.0) {
-    vec2 g0 = 0.5 + (vUv - 0.5) * uGhostS.x, g1 = 0.5 + (vUv - 0.5) * uGhostS.y, g2 = 0.5 + (vUv - 0.5) * uGhostS.z;
-    vec2 f0 = smoothstep(vec2(0.0), vec2(0.06), g0) * smoothstep(vec2(0.0), vec2(0.06), 1.0 - g0);
-    vec2 f1 = smoothstep(vec2(0.0), vec2(0.06), g1) * smoothstep(vec2(0.0), vec2(0.06), 1.0 - g1);
-    vec2 f2 = smoothstep(vec2(0.0), vec2(0.06), g2) * smoothstep(vec2(0.0), vec2(0.06), 1.0 - g2);
-    e += texture(tBloom, clamp(g0, 0.0, 1.0)).rgb * uGhostT[0] * (f0.x * f0.y)
-       + texture(tBloom, clamp(g1, 0.0, 1.0)).rgb * uGhostT[1] * (f1.x * f1.y)
-       + texture(tBloom, clamp(g2, 0.0, 1.0)).rgb * uGhostT[2] * (f2.x * f2.y);
-  }
+  // [P2-A] FPV #2: tBloom is the PSF's narrow lobe, tHalo its wide lobe (energy fractions of the uncapped bright pass)
+  // [P3-A] colour #5 / FPV #6 / graphics #3: ghosts come from GHOST_FS (point sources only, aperture-shaped, desaturated)
+  if (uGhostS.w > 0.0) e += texture(tGhost, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb;
   // [P2-A] codec (FPV #3): in the shadow 8x8 blocks the long-GOP encoder keeps little more than the block mean, so fine detail
   // flattens toward it (block-consistent mask: the block edges show) and part of the luma grain goes with it (below)
   float codecK = 0.0;
@@ -831,23 +890,34 @@ export const GRADES = {
   //   over grey: grey (0.24) -> code ~123, ground (-2 EV) ~55, +2 ~190, +4 ~227, +5 ~238, +6 ~246, +7 ~252 (a log camera graded to Rec.709: light boxes at
   //   EV -1..0 hold under code 250, only true sources clip). tonePc: per-channel share of the shoulder (the rest preserves hue on max(rgb)).
   //   core keyed on the min channel (+ coreXtalk of the max: sensor crosstalk), ramping in coreEv EV over the white point.
-  //   wb [1, 1, 0.96] (G5 2E: fixed ~4300 K; the old blue gain neutralised the warm interiors), toe 0.08 -> 0.045, lift 0.02 (colour #4).
+  //   wb [1, 1, 0.96]: a small warm nudge (~ -300 K) on a scene that is already white-balanced at its emitters (cctRGB is relative
+  //   to D65, so these gains alone are ~6000 K, not the 4300 K the phase-2 comment claimed; the 4300 K balance is C's colourOf = cctRGB(K)
+  //   / cctRGB(4300) and B's filter model, panel 2 colour #1/#2). toe 0.08 -> 0.045, lift 0.02 (colour #4).
   //   veil 0.03 -> 0.012 with veilCapEv 3 (the wide PSF lobe carries the local glare now). mag/magC: retro magenta amount and chroma gate.
   //   PSF (FPV #2): bright pass over psfThEv EV above grey, uncapped (bloomCap 4096); narrow lobe = bloom (energy share) after psfNarrowIt
   //   blur passes at psfNarrowR texel spacing (sigma ~0.8 % of width); wide lobe = halo (sigma ~6 %, haloR); ghosts: [mirror scale,
   //   weight, tint] x 3. Noise (FPV #3): noise [shot, read, chroma] + noiseFloor (gain-independent), noiseCell [luma, chroma] px,
   //   chromaDark (chroma kept in the deepest shadows); codec [amount, exposed level where it fades from 1 .. to 0, share of the luma
   //   grain removed]; sharpDark: exposed level where sharpening fades in. AE (colour #6, graphics #1): aeReject 1 %, aeArea [scene
-  //   units above which a tap is an area source, its weight], aeMatrix [centre v, falloff].
+  //   units above which a tap is an area source, its weight, its weight once area taps exceed the share in [3]], aeMatrix [centre v, falloff].
+  // Phase 3 [P3-A] (panel 2 colour #1/#3/#5, FPV #1/#2/#4/#5/#6, graphics #3; fitted offline on HDR captures of walk0/walk180/club90/club270):
+  //   coreSrc [a, b]: true sources are pixels whose white-equivalent radiance (max channel, scene units: 400..700 nits, between faces
+  //   <= 350 and tubes >= 600) passes a..b; they take coreXtalkSrc crosstalk and the earlier ramp coreEvSrc (colour #3: [-2.5, -0.5]
+  //   EV under the white point), so letters and tubes white-core with coloured rims while faces, screens and windows keep their colour.
+  //   ghosts [mirror scale, weight, radius (frame heights), tint]: only point sources whose 1/8 block luma is ghostEv EV over grey feed
+  //   them (lamps, headlights; neon and boxes don't), desaturated to ghostChroma, shaped by a ghostBlades-blade aperture with a
+  //   ghostFringe chroma rim (GHOST_FS). retroShadow [Oklab hue deg, chroma]: one split-tone hue (the deep blue-violet swing is gone);
+  //   retroVibGate [deg, deg]: the retro vibrance skips amber (rooms). aeArea 4th entry: area sources over 20 % of the taps weigh 0.3.
   night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.0, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.045,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
-    ghosts: [[-0.55, 0.004, [0.9, 1.0, 0.8]], [-1.25, 0.0025, [1.0, 0.85, 1.0]], [0.4, 0.002, [1.0, 0.95, 0.8]]],
-    core: 1, coreXtalk: 0.15, coreEv: [0, 2], mag: 0.035, magC: 0.04, grain: 0, grainEv: [0, 0], grainPx: 2,
+    ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
+    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [40, 70], coreXtalkSrc: 0.4, coreEvSrc: [-2.5, -0.5], retroShadow: [205, 0.06], retroVibGate: [40, 100],
+    mag: 0.035, magC: 0.04, grain: 0, grainEv: [0, 0], grainPx: 2,
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
     codec: [0.4, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
     recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,
-    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.01, aeArea: [0.8, 0.5], aeMatrix: [0.45, 0.5],
+    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.01, aeArea: [0.8, 0.5, 0.3, 0.2], aeMatrix: [0.45, 0.5],
     shutter: 1 / 60, readout: 0.011 },
 };
 // Lottes 2016 shoulder constants: x^a / (x^(a d) b + c) passes (0.24, mid) and reaches 1 at the white point hdrMax
@@ -1076,19 +1146,38 @@ export class FPVCamera {
       uTone: { value: new V4(1, 1, 1, 1) }, uTonePc: { value: 1 }, uCore: { value: new V3(0, 0, 2) }, uMag: { value: new V2(0.05, 0) },
       tSmall: { value: null }, uCodec: { value: new V4(0, 0.02, 0.08, 0) }, uSharpDark: { value: new V2(0, 0) },
       tNoise: { value: null }, uNoiseOff: { value: new V4() }, uNoiseOffC: { value: new V4() }, uNoiseK: { value: new V4(1.4, 8, 0, 1) },
-      uGhostS: { value: new V4(-0.55, -1.25, 0.4, 0) }, uGhostT: { value: [new V3(), new V3(), new V3()] } };
+      uGhostS: { value: new V4(0, 0, 0, 0) },
+      // [P3-A]
+      tGhost: { value: null }, uCoreSrc: { value: new V2(1e9, 2e9) }, uCoreSrcK: { value: new V3(0, 0, 2) }, uRetroSh: { value: new V2(3.578, 0.06) }, uVibGate: { value: new V2(7, 7) } };
     const bl = () => pass(BLOOM_FS, { tSrc: { value: null }, uDir: { value: new V2() } });
     this._nightP = {
       down: pass(DOWN_FS, this.down.u, D), final: pass(FINAL_FS, nfU, D),
       meter: pass(METER_N_FS, { tSmall: { value: null }, tPrev: { value: null }, uDt: { value: 0.016 }, uBias: { value: 0 }, uReset: { value: 1 }, uLock: { value: 0 },
         uLockEv: { value: 0 }, uEvMin: { value: -4.5 }, uEvMax: { value: 1.5 }, uClipL: { value: 1 }, uAe: { value: new THREE.Vector4(0.25, 0.8, 0.7, 0.15) }, uReject: { value: 0.02 },
-        uVeilL: { value: 1 }, uArea: { value: new V2(1e9, 1) }, uMat: { value: new V2(0.45, 1.6) } }),
+        uVeilL: { value: 1 }, uArea: { value: new V4(1e9, 1, 1, 2) }, uMat: { value: new V2(0.45, 1.6) } }),
       copy: bl(), haloH: bl(), haloV: bl(), noise: noiseTexture(), noiseOff: [0, 0, 0, 0], noiseOffC: [0, 0, 0, 0],
+      // [P3-A] lens ghosts (GHOST_FS) into a 1/8-res target
+      ghost: pass(GHOST_FS, { tSmall: { value: null }, tExp: { value: null }, uGEv: { value: new V2(9, 10.5) }, uGChroma: { value: 0.3 }, uFringe: { value: 0.08 },
+        uBlades: { value: 7 }, uAspect: { value: 16 / 9 }, uG: { value: [new V4(), new V4(), new V4()] }, uGT: { value: [new V3(1, 1, 1), new V3(1, 1, 1), new V3(1, 1, 1)] },
+        uLat: { value: HEX37.map(([x, y]) => new V2(x, y)) } }, D), ghostRT: null,
       // [P2-A] FPV #6 object motion blur: the night blur variant + a half-res velocity pass of the movers (contract P2-A1)
       blur: pass(BLUR_FS, { ...this.blur.u, tVel: { value: null }, uVelOn: { value: 0 } }, D),
-      velRT: null, velScene: new THREE.Scene(), proxies: new Map(), velMat: new THREE.ShaderMaterial({
+      velRT: null, velScene: new THREE.Scene(), proxies: new Map(), velMats: new Map(), velMat: new THREE.ShaderMaterial({
         uniforms: { uHalfExp: { value: 1 / 120 } },
-        vertexShader: /* glsl */`attribute vec3 instanceVelocity;
+        vertexShader: /* glsl */`#ifndef VEL_ATTR
+#define VEL_ATTR instanceVelocity
+#endif
+#ifdef VEL_OBJ
+uniform vec3 uObjVel;
+#else
+attribute vec3 VEL_ATTR;
+#endif
+#ifdef VEL_POSE
+attribute vec4 POSE_ATTR;
+#ifdef VEL_SCALE
+attribute vec4 SCALE_ATTR;
+#endif
+#endif
 uniform float uHalfExp;
 varying vec3 vV;
 void main(){
@@ -1096,8 +1185,23 @@ void main(){
 #ifdef USE_INSTANCING
   m = m * instanceMatrix;
 #endif
-  vec4 wp = m * vec4(position, 1.0);
-  vec3 v = instanceVelocity, wn = normalize(mat3(m) * normal);
+  vec3 lp = position, ln = normal;
+#ifdef VEL_POSE
+  // [P3-A] seoul-life's crowd placement: scale, then yaw about +y in its (z, x) convention, then the instance position
+#ifdef VEL_SCALE
+  lp *= SCALE_ATTR.w;
+#endif
+  float cy = cos(POSE_ATTR.w), sy = sin(POSE_ATTR.w);
+  lp = vec3(sy * lp.z + cy * lp.x, lp.y, cy * lp.z - sy * lp.x) + POSE_ATTR.xyz;
+  ln = vec3(sy * ln.z + cy * ln.x, ln.y, cy * ln.z - sy * ln.x);
+#endif
+  vec4 wp = m * vec4(lp, 1.0);
+#ifdef VEL_OBJ
+  vec3 v = uObjVel;
+#else
+  vec3 v = VEL_ATTR;
+#endif
+  vec3 wn = normalize(mat3(m) * ln);
   vec4 c0 = projectionMatrix * viewMatrix * vec4(wp.xyz - v * uHalfExp, 1.0), c1 = projectionMatrix * viewMatrix * vec4(wp.xyz + v * uHalfExp, 1.0);
   vec2 d = (c0.w > 0.02 && c1.w > 0.02) ? 0.5 * (c1.xy / c1.w - c0.xy / c0.w) : vec2(0.0);
   vec4 mv = viewMatrix * wp;
@@ -1218,7 +1322,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
     const prev = r.getRenderTarget();
     try {
       for (const p of [this.blur, this.tile, this.nbr, this.ssao, this.aoBlur, this.down, this.meter, this.bloomH, this.final]) r.compile(p.scene, this.quadCam);
-      if (this.look.night) { const N = this._initNight(); for (const p of [N.down, N.final, N.meter, N.blur]) r.compile(p.scene, this.quadCam); }
+      if (this.look.night) { const N = this._initNight(); for (const p of [N.down, N.final, N.meter, N.blur, N.ghost]) r.compile(p.scene, this.quadCam); }
       if (!this._warmScene) {
         this._warmScene = new THREE.Scene();
         for (const m of [this.depthMat, this.sentinel.material, this.lensMask.material]) { const o = new THREE.Mesh(TRI, m); o.frustumCulled = false; this._warmScene.add(o); }
@@ -1296,19 +1400,54 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
   // scene.userData.motionMeshes); each geometry carries an `instanceVelocity` InstancedBufferAttribute (itemSize 3, world m/s, same
   // instance order as instanceMatrix, flagged needsUpdate with it). We draw proxies that share their geometry and instanceMatrix with
   // a velocity material into a half-res target; the night blur adds each mover's own smear. Absent: no object blur, no cost.
+  // [P3-A] FPV #2: three kinds of mover (contract P3-A1, a superset of P2-A1), each with an `instanceVelocity` (or `iVel`) vec3 in m/s:
+  //   'inst' an InstancedMesh (instanceMatrix order: vehicles);
+  //   'pose' a Mesh on an InstancedBufferGeometry whose instances are placed by a vec4 (x, y, z, yaw) attribute (default `iPos`,
+  //          seoul-life's crowd), optionally scaled by a vec4's .w (default `iAnim`); userData.motionPose = {pos, scale} renames them;
+  //   'obj'  any Mesh with userData.velocity (Vector3 or [x, y, z], m/s): one rigid mover.
+  // The proxies draw the source's geometry undeformed (no skinning or gait): the swept footprint only has to be about right.
+  _velKind(src) {
+    const g = src?.geometry, at = g?.attributes; if (!at) return null;
+    const va = at.instanceVelocity ? 'instanceVelocity' : at.iVel ? 'iVel' : null;
+    if (src.isInstancedMesh && va) return { k: 'inst', va };
+    const mp = src.userData?.motionPose || {}, pa = mp.pos || 'iPos', sa = mp.scale || 'iAnim';
+    if (src.isMesh && g.isInstancedBufferGeometry && va && at[pa]?.itemSize === 4) return { k: 'pose', va, pa, sa: at[sa]?.itemSize === 4 ? sa : null };
+    const v = src.userData?.velocity;
+    if (src.isMesh && v && (v.isVector3 || (Array.isArray(v) && v.length === 3))) return { k: 'obj' };
+    return null;
+  }
+  _velMatFor(NP, kind) {
+    const key = kind.k === 'obj' ? null : `${kind.k}|${kind.va}|${kind.pa || ''}|${kind.sa || ''}`;
+    if (key && NP.velMats.has(key)) return NP.velMats.get(key);
+    const defines = { VEL_ATTR: kind.va || 'instanceVelocity' };
+    if (kind.k === 'pose') { defines.VEL_POSE = 1; defines.POSE_ATTR = kind.pa; if (kind.sa) { defines.VEL_SCALE = 1; defines.SCALE_ATTR = kind.sa; } }
+    if (kind.k === 'obj') defines.VEL_OBJ = 1;
+    const m = new THREE.ShaderMaterial({ defines, uniforms: { uHalfExp: NP.velMat.uniforms.uHalfExp, uObjVel: { value: new THREE.Vector3() } },
+      vertexShader: NP.velMat.vertexShader, fragmentShader: NP.velMat.fragmentShader });
+    if (key) NP.velMats.set(key, m);
+    return m;
+  }
   _velocityPass(world, NP, dw, dh, shutter) {
     const list = world.motionMeshes ?? world.scene?.userData?.motionMeshes;
     if (!Array.isArray(list) || !list.length) { if (NP.proxies.size) { for (const p of NP.proxies.values()) NP.velScene.remove(p); NP.proxies.clear(); } return false; }
     const r = this.r, seen = new Set(); let any = false;
     for (const src of list) {
-      if (!src?.isInstancedMesh || !src.geometry?.attributes?.instanceVelocity) continue;
+      const kind = this._velKind(src); if (!kind) continue;
       let vis = true; for (let o = src; o; o = o.parent) if (!o.visible) { vis = false; break; }
       let p = NP.proxies.get(src);
-      if (!p) { p = new THREE.InstancedMesh(src.geometry, NP.velMat, 1); p.matrixAutoUpdate = false; p.frustumCulled = false; NP.proxies.set(src, p); NP.velScene.add(p); }
-      p.geometry = src.geometry; p.instanceMatrix = src.instanceMatrix; p.count = src.count; p.matrix.copy(src.matrixWorld); p.matrixWorldNeedsUpdate = true;
-      p.visible = vis && src.count > 0; any ||= p.visible; seen.add(src);
+      if (p && p.userData.velK !== kind.k) { NP.velScene.remove(p); NP.proxies.delete(src); p = null; }
+      if (!p) {
+        p = kind.k === 'inst' ? new THREE.InstancedMesh(src.geometry, this._velMatFor(NP, kind), 1) : new THREE.Mesh(src.geometry, this._velMatFor(NP, kind));
+        p.matrixAutoUpdate = false; p.frustumCulled = false; p.userData.velK = kind.k; NP.proxies.set(src, p); NP.velScene.add(p);
+      }
+      p.geometry = src.geometry; p.matrix.copy(src.matrixWorld); p.matrixWorldNeedsUpdate = true;
+      let n = 1;
+      if (kind.k === 'inst') { p.instanceMatrix = src.instanceMatrix; p.count = src.count; n = src.count; }
+      else if (kind.k === 'pose') n = src.geometry.instanceCount ?? 0;
+      else { const v = src.userData.velocity; p.material.uniforms.uObjVel.value.set(v.isVector3 ? v.x : v[0], v.isVector3 ? v.y : v[1], v.isVector3 ? v.z : v[2]); }
+      p.visible = vis && n > 0 && Number.isFinite(n); any ||= p.visible; seen.add(src);
     }
-    for (const [s, p] of NP.proxies) if (!seen.has(s)) { NP.velScene.remove(p); NP.proxies.delete(s); }
+    for (const [s, p] of NP.proxies) if (!seen.has(s)) { NP.velScene.remove(p); NP.proxies.delete(s); if (p.userData.velK === 'obj') p.material.dispose(); }
     if (!any) return false;
     if (!NP.velRT || NP.velRT.width !== this.depthRT.width || NP.velRT.height !== this.depthRT.height) {
       NP.velRT?.dispose(); NP.velRT = rt(this.depthRT.width, this.depthRT.height, { filter: THREE.NearestFilter, type: THREE.HalfFloatType, depth: true });
@@ -1532,7 +1671,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       nu.uEvMin.value = lk.evMin; nu.uEvMax.value = lk.evMax; nu.uClipL.value = 0.24 * Math.pow(2, lk.clipEv ?? 3);
       nu.uAe.value.fromArray(lk.ae || [0.25, 0.8, 0.7, 0.15]); nu.uReject.value = lk.aeReject ?? 0.02;
       nu.uVeilL.value = 0.24 * Math.pow(2, Number.isFinite(lk.veilCapEv) ? lk.veilCapEv : (lk.clipEv ?? 3));   // [P2-A]
-      if (lk.aeArea) nu.uArea.value.fromArray(lk.aeArea); else nu.uArea.value.set(1e9, 1);
+      const aa = lk.aeArea; if (aa) nu.uArea.value.set(aa[0], aa[1], aa[2] ?? aa[1], aa[3] ?? 2); else nu.uArea.value.set(1e9, 1, 1, 2);
       if (lk.aeMatrix) nu.uMat.value.fromArray(lk.aeMatrix); else nu.uMat.value.set(0.45, 1.6);
       r.setRenderTarget(nextExp); r.clear(true, false, false); r.render(NP.meter.scene, this.quadCam);
       NP.idx = 1 - NP.idx;
@@ -1576,6 +1715,21 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
         NP.haloV.u.tSrc.value = NP.haloA.texture; NP.haloV.u.uDir.value.set(0, rr / hh);
         r.setRenderTarget(NP.haloB); r.clear(true, false, false); r.render(NP.haloV.scene, this.quadCam);
       }
+      // [P3-A] lens ghosts: point sources only, aperture-shaped, at 1/8 res (colour #5, FPV #6, graphics #3)
+      const gs = (lk.ghosts || []).filter((g) => g && g[1] > 0);
+      if (gs.length) {
+        if (!NP.ghostRT || NP.ghostRT.width !== bw || NP.ghostRT.height !== bh) { NP.ghostRT?.dispose(); NP.ghostRT = rt(bw, bh, { type: THREE.HalfFloatType }); }
+        const gu = NP.ghost.u;
+        gu.tSmall.value = this.smallRT.texture; gu.tExp.value = nextExp.texture; gu.uGEv.value.fromArray(lk.ghostEv || [9, 10.5]);
+        gu.uGChroma.value = lk.ghostChroma ?? 0.3; gu.uFringe.value = lk.ghostFringe ?? 0.08; gu.uBlades.value = lk.ghostBlades || 7; gu.uAspect.value = this.outW / this.outH;
+        for (let i = 0; i < 3; i++) {
+          const g = gs[i], G = gu.uG.value[i];
+          // [scale, weight, radius (frame heights), tint]; the phase-2 form [scale, weight, tint] still reads (radius 0.05)
+          if (g) { G.set(g[0], g[1] / (g[0] * g[0]), typeof g[2] === 'number' ? g[2] : 0.05, g[0] < 0 ? 0.3 + Math.PI : 0.3); gu.uGT.value[i].fromArray(Array.isArray(g[3]) ? g[3] : Array.isArray(g[2]) ? g[2] : [1, 1, 1]); } else G.set(1, 0, 0, 0);
+        }
+        r.setRenderTarget(NP.ghostRT); r.clear(true, false, false); r.render(NP.ghost.scene, this.quadCam);
+      }
+      NP.ghostOn = gs.length > 0;
     }
 
     // 8) lens + colour science + sensor -> screen
@@ -1610,6 +1764,12 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       let tg = Math.min(1, tn[2]); const to = lk.toe || 0; if (to > 0) tg = tg * tg / (tg + to) * (1 + to);
       nf.uNightK.value.set(wp, lk.core ?? 1, Math.cbrt(tg));
       const cev = lk.coreEv || [1, 3]; nf.uCore.value.set(lk.coreXtalk ?? 0, cev[0], cev[1]);
+      // [P3-A] true-source cores (off without coreSrc), retro shadow hue, vibrance gate
+      const cs = lk.coreSrc, ces = lk.coreEvSrc || cev;
+      if (cs) nf.uCoreSrc.value.set(cs[0], cs[1]); else nf.uCoreSrc.value.set(1e9, 2e9);
+      nf.uCoreSrcK.value.set(lk.coreXtalkSrc ?? lk.coreXtalk ?? 0, ces[0], ces[1]);
+      const rsh = lk.retroShadow || [205, 0.06]; nf.uRetroSh.value.set(rsh[0] * Math.PI / 180, rsh[1]);
+      const vg = lk.retroVibGate; if (vg) nf.uVibGate.value.set(vg[0] * Math.PI / 180, vg[1] * Math.PI / 180); else nf.uVibGate.value.set(7, 7);
       nf.uMag.value.set(lk.mag ?? 0.05, lk.magC ?? 0);
       nf.tSmall.value = this.smallRT.texture;
       const cd = lk.codec || [0, 0.02, 0.08, 0]; nf.uCodec.value.set(cd[0], cd[1], cd[2], cd[3]);
@@ -1621,9 +1781,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       oc[2] = oc[0]; oc[3] = oc[1]; oc[0] = fh(0x13) * 256 * nc[1]; oc[1] = fh(0x2f) * 256 * nc[1];
       nf.tNoise.value = NP.noise; nf.uNoiseOff.value.fromArray(o); nf.uNoiseOffC.value.fromArray(oc);
       nf.uNoiseK.value.set(nc[0], nc[1], lk.noiseFloor ?? 0, lk.chromaDark ?? 1);
-      const gs = lk.ghosts || [];
-      nf.uGhostS.value.set(gs[0]?.[0] ?? 0, gs[1]?.[0] ?? 0, gs[2]?.[0] ?? 0, gs.length ? 1 : 0);
-      for (let i = 0; i < 3; i++) { const g = gs[i], v = nf.uGhostT.value[i]; if (g) v.fromArray(g[2]).multiplyScalar(g[1]); else v.set(0, 0, 0); }
+      nf.uGhostS.value.set(0, 0, 0, NP.ghostOn ? 1 : 0); nf.tGhost.value = NP.ghostOn ? NP.ghostRT.texture : NP.haloB.texture;
       nf.uRetro.value = rt0; nf.uRetroVib.value = lk.retroVib ?? 0.5; nf.uRetroCA.value = (lk.retroCA || 0) * rt0 * 0.004;
       nf.uNoise.value.fromArray(lk.noise || [0.010, 0.0011, 1.6]); nf.uNoiseRGB.value.fromArray(lk.noiseRGB || [1.1, 0.8, 1.5]);
       nf.uNoiseEv.value.set(lk.evMax - (lk.noiseSpan ?? 6), lk.noiseSpan ?? 6);
@@ -1673,8 +1831,12 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       ...(lk.night ? { night: {
         tone: { curve: 'lottes2016 per channel: t = x^a / (x^(a d) b + c), x = exposed radiance; mix(hue-preserving on max(rgb), per-channel, tonePc); clamp 1',
           a: (lk.tone || [])[0], d: (lk.tone || [])[1], midIn: 0.24, midOut: (lk.tone || [])[2], whitePoint: 0.24 * Math.pow(2, ce ?? 7.5), bc: lk.tone ? nightToneBC(lk.tone[0], lk.tone[1], lk.tone[2], 0.24 * Math.pow(2, ce ?? 7.5)) : null, tonePc: lk.tonePc },
-        core: { key: 'mix(min(rgb), max(rgb), coreXtalk) of the pre-halo exposure, EV over the white point', xtalk: lk.coreXtalk, ev: lk.coreEv },
-        meter: { grid: [16, 12], reject: lk.aeReject, areaSource: lk.aeArea, matrix: lk.aeMatrix, veilCapEv: lk.veilCapEv, resetSolvesCap: true },
+        core: { key: 'mix(min(rgb), max(rgb), xtalk) of the pre-halo exposure, EV over the white point; xtalk/ev blend to the source path by smoothstep(coreSrc, max(scene rgb))', xtalk: lk.coreXtalk, ev: lk.coreEv,
+          source: { radiance: lk.coreSrc, xtalk: lk.coreXtalkSrc, ev: lk.coreEvSrc } },
+        ghosts: { list: lk.ghosts, sourceEv: lk.ghostEv, chroma: lk.ghostChroma, fringe: lk.ghostFringe, blades: lk.ghostBlades, resolution: 1 / 8, taps: 37,
+          model: 'G(p) = w / s^2 * mean over the aperture (radius R, per channel R * (1 +- fringe)) of S(0.5 + (p - o - 0.5) / s); S = desat(bright pass) * smoothstep(sourceEv, log2(block luma / 0.24))' },
+        retro: { shadow: lk.retroShadow, vibGate: lk.retroVibGate },
+        meter: { grid: [16, 12], reject: lk.aeReject, areaSource: lk.aeArea, areaRule: '[thr, weight, weight when > share of taps are area, share] (soft +-0.05)', matrix: lk.aeMatrix, veilCapEv: lk.veilCapEv, resetSolvesCap: true },
         psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, ghosts: lk.ghosts, cap: lk.bloomCap },
         noise: { shot: (lk.noise || [])[0], read: (lk.noise || [])[1], chroma: (lk.noise || [])[2], floor: lk.noiseFloor, cellPx: lk.noiseCell, chromaDark: lk.chromaDark, temporal: 'mean of this and last frame lattice (corr 0.5)', texture: '256^2 gaussian, seed 0x9e3779b9 mulberry32' },
         codec: lk.codec, sharpDark: lk.sharpDark, objectBlur: { on: lk.objBlur, contract: 'P2-A1: world.motionMeshes / scene.userData.motionMeshes, geometry attribute instanceVelocity (m/s)' },
