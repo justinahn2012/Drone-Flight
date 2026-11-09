@@ -96,7 +96,9 @@ function voice(out, sr, t0, dur, { f0 = 120, female = false, rate = 5, pitch = 0
   }
 }
 // babble: ~10 talkers at different distances, phrases and pauses, 22.05 kHz stereo (pre-rendered once)
-export function makeBabble(sr = 22050, secs = 14, seed = 5, talkers = 10) {
+export function makeBabble(sr = 22050, secs = 12, seed = 5, talkers = 9) { const it = babbleSteps(sr, secs, seed, talkers); let r; while (!(r = it.next()).done); return r.value; }
+// a generator: one phrase per step (~10-25 ms on a desktop), so a live attach can render it across frames
+export function* babbleSteps(sr = 22050, secs = 12, seed = 5, talkers = 9) {
   const n = Math.floor(sr * secs), out = [new Float32Array(n), new Float32Array(n)], R = new Rng(seed);
   for (let k = 0; k < talkers; k++) {
     const female = R.next() < 0.5, f0 = female ? 185 + R.next() * 70 : 98 + R.next() * 40, pan = (R.next() * 2 - 1) * 0.85, far = R.next();
@@ -104,6 +106,7 @@ export function makeBabble(sr = 22050, secs = 14, seed = 5, talkers = 10) {
     while (t < secs) {
       const len = 0.8 + R.next() * 2.6; voice(out, sr, t, Math.min(len, secs - t), { f0, female, rate: 4.4 + R.next() * 1.8, pitch: (R.next() - 0.3) * 0.25, gain: 0.25 + 0.75 * (1 - far), pan, seed: Math.floor(R.next() * 1e9) });
       t += len + 0.25 + R.next() * 1.4;
+      yield k;   // one phrase per step (~10-25 ms)
     }
   }
   const m = Math.floor(sr * 0.08); let pk = 1e-6;
@@ -302,9 +305,10 @@ export function createSeoulAudio(layout, life, opts = {}) {
       if (wander) { const l = ctx.createBufferSource(); l.buffer = lfoBuf(ctx, 37, 0.05, wseed); l.loop = true; const d = G(rate * wander); l.connect(d); d.connect(s.playbackRate); l.start(0); }
       return s;
     };
-    if (!bank) bank = makeOneShots();
-    if (!babble) babble = makeBabble();
-    if (!acoustic) acoustic = makeAcousticLoop();
+    // pre-rendered material: up front offline (clips, tests); live, in idle slices after attach so the level load
+    // doesn't stall (babble ~0.5 s of CPU in 9 steps, one-shots, the acoustic loop, then the shop loops one by one)
+    const live = !offline && typeof setTimeout === 'function';
+    if (!live) { if (!bank) bank = makeOneShots(); if (!babble) babble = makeBabble(); if (!acoustic) acoustic = makeAcousticLoop(); }
     const target = raw ? dest : (dest && dest.world) || dest, viaWorld = target !== dest;
     const out = G(SND.level * (viaWorld ? SND.world : 1)); out.connect(target);
     // canyon reverbs (sends from the mix)
@@ -313,7 +317,8 @@ export function createSeoulAudio(layout, life, opts = {}) {
     const mix = G(1); mix.connect(out); mix.connect(sendA); mix.connect(sendR); sendA.connect(cvA); sendR.connect(cvR); cvA.connect(out); cvR.connect(out);
     const g = { ctx, out, mix, sendA, sendR, offline, viaWorld, pv: {}, lastT: null, camV: [0, 0, 0], camPrev: null, rain: !!opts.rain, shots: [], feetPh: new Map(), guideC: null, guideWalk: false, nextTick: 0, buskState: [], occT: -1 };
     const B = (o) => toBuf(ctx, o[0], o[1], 22050);
-    g.buf = { laugh: bank.laugh.map(B), shout: bank.shout.map(B), cheer: B(bank.cheer), clap: B(bank.clap), guide: B(bank.guide), bus: B(bank.bus), conv: B(bank.conv), tick: B(bank.tick), horn: bank.horn.map(B), heel: bank.heel.map(B), step: bank.step.map(B) };
+    const setBank = () => { g.buf = { laugh: bank.laugh.map(B), shout: bank.shout.map(B), cheer: B(bank.cheer), clap: B(bank.clap), guide: B(bank.guide), bus: B(bank.bus), conv: B(bank.conv), tick: B(bank.tick), horn: bank.horn.map(B), heel: bank.heel.map(B), step: bank.step.map(B) }; };
+    g.buf = { laugh: [], shout: [], horn: [], heel: [], step: [] }; if (bank) setBank();
     const white = noise(ctx, 3, 'white', 11), bed = () => { const gg = G(0); gg.connect(mix); return gg; };
     g.white = white;
     // ---- beds (voiced for a phone speaker: sound #4; long seeded noise + rate wander: sound #6)
@@ -327,10 +332,11 @@ export function createSeoulAudio(layout, life, opts = {}) {
     }
     g.bCrowd = bed();
     {
-      const bb = toBuf(ctx, babble.out[0], babble.out[1], babble.sr);
-      const s1 = loop(bb, 1, 0, 0.02, 41), s2 = loop(bb, 0.94, babble.secs * 0.53, 0.02, 42), pa = ctx.createStereoPanner(), pb = ctx.createStereoPanner(); pa.pan.value = -0.35; pb.pan.value = 0.4;
+      const pa = ctx.createStereoPanner(), pb = ctx.createStereoPanner(); pa.pan.value = -0.35; pb.pan.value = 0.4;
       const hp = F('highpass', 260, 0.7), eq = F('highshelf', 1500); eq.gain.value = 10;   // consonants 2-5 kHz carry on a phone speaker
-      s1.connect(pa); s2.connect(pb); pa.connect(hp); pb.connect(hp); hp.connect(eq); eq.connect(g.bCrowd); g.crowdSrc = [pa, pb];
+      pa.connect(hp); pb.connect(hp); hp.connect(eq); eq.connect(g.bCrowd); g.crowdSrc = [pa, pb];
+      g.startBabble = () => { const bb = toBuf(ctx, babble.out[0], babble.out[1], babble.sr); loop(bb, 1, 0, 0.02, 41).connect(pa); loop(bb, 0.94, babble.secs * 0.53, 0.02, 42).connect(pb); };
+      if (babble) g.startBabble();
     }
     g.bAlley = bed();
     {
@@ -383,20 +389,29 @@ export function createSeoulAudio(layout, life, opts = {}) {
       const s = loop(white, 0.9, 0.4), hp = F('highpass', 2500), gg = G(0.4), cr = loop(lfoBuf(ctx, 5, 40, 91), 1), cd = G(0.4); cr.connect(cd); cd.connect(gg.gain);
       s.connect(hp); hp.connect(gg); gg.connect(dst); return {};
     }));
-    g.music = { buf: new Map(), acoustic: toBuf(ctx, acoustic.L, acoustic.R, acoustic.sr) };
+    g.music = { buf: new Map(), acoustic: acoustic ? toBuf(ctx, acoustic.L, acoustic.R, acoustic.sr) : null };
+    if (live) {   // idle slices: ~one task per 30 ms until everything is rendered
+      const q = [];
+      if (!babble) { const it = babbleSteps(); q.push(function step() { const r = it.next(); if (r.done) { babble = r.value; if (!g.dead) g.startBabble(); } else q.unshift(step); }); }
+      if (!bank) q.push(() => { bank = makeOneShots(); setBank(); });
+      if (!acoustic) q.push(() => { acoustic = makeAcousticLoop(); g.music.acoustic = toBuf(ctx, acoustic.L, acoustic.R, acoustic.sr); });
+      const run = () => { if (!q.length || g.dead) { g.idleOn = false; return; } q.shift()(); setTimeout(run, 20); };
+      g.idle = (fn, key) => { if (key && g.idleKeys.has(key)) return; if (key) g.idleKeys.add(key); q.push(fn); if (!g.idleOn) { g.idleOn = true; setTimeout(run, 20); } };
+      g.idleKeys = new Set(); g.idleOn = true; setTimeout(run, 200);
+    }
     S.voices = Object.values(g.pv).reduce((n, a) => n + a.length, 0) + 5 + 2;
     return g;
   }
 
   api.attach = (ctx, dest, o = {}) => { if (A) api.detach(); A = build(ctx, dest, o); api.__g = A; api.__beds = { bTraffic: A.bTraffic, bCrowd: A.bCrowd, bAlley: A.bAlley, bAir: A.bAir, bRain: A.bRain }; api.attached = true; applyRecorded(A); return api; };
-  api.detach = () => { if (!A) return; try { A.out.disconnect(); } catch (e) {} A = null; api.attached = false; };
+  api.detach = () => { if (!A) return; A.dead = true; try { A.out.disconnect(); } catch (e) {} A = null; api.attached = false; };
   api.setLevel = (x) => { SND.level = x; if (A) A.out.gain.value = x * (A.viaWorld ? SND.world : 1); };
   api.setRain = (on) => { if (A) A.rain = !!on; };
   // HQ clips (sound bug: clipAudio built only MotorAudio): the same city on the clip's OfflineAudioContext, driven per
   // output frame with that frame's camera pose and take clock (main.js clipAudio: see the G report for the 4 lines)
   api.clip = (actx, motor, o = {}) => {
     const g = build(actx, motor ? motor.bus : actx.destination, { offline: true, raw: !!o.raw });
-    if (!motor) g.out.connect(actx.destination);
+    g.isClip = true; if (!motor) g.out.connect(actx.destination);
     return { graph: g, feed: (cam, fwd, t, at) => { if (life?.sim) { life.sim.advanceTo(t); if (life.crowd) { life.crowd.evaluate(t, cam); refreshFeet(cam); } } feedGraph(g, cam, fwd, t, at); } };
   };
   // recorded beds (sound #2): fetch + decode; played as overlapping 6-9 s grains from seeded offsets (no audible loop)
@@ -429,10 +444,10 @@ export function createSeoulAudio(layout, life, opts = {}) {
   }
 
   // ---- per-frame helpers
-  const musicBuf = (g, site) => {
+  const musicBuf = (g, site, cachedOnly = false) => {
     const key = site.style + ':' + (site.seed % 6); let b = g.music.buf.get(key);
-    if (!b) { const m = synthLoop(site.style, site.seed % 6); b = toBuf(g.ctx, m.L, m.R, m.sr); g.music.buf.set(key, b); }
-    return b;
+    if (!b && !cachedOnly) { const m = synthLoop(site.style, site.seed % 6); b = toBuf(g.ctx, m.L, m.R, m.sr); g.music.buf.set(key, b); }
+    return b || null;
   };
   const nearList = [], clipFeet = [];
   function refreshNear(cam) {   // people within 3-25 m (for laughs / shouts), from the crowd arrays
@@ -471,6 +486,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     };
     // one-shot: buffer at a world point, gain at 1 m, rate, delay; occluded like the voices
     const shot = (buf, x, y, z, gain, rate = 1, delay = 0) => {
+      if (!buf) return null;
       if (g.shots.length > 6) { const o = g.shots.shift(); try { o.stop(at); } catch (e) {} }
       const dx = x - cam.x, dz = z - cam.z, d = Math.max(1, Math.hypot(dx, y - cam.y, dz)), pan = Math.max(-0.85, Math.min(0.85, (dx * rx + dz * rz) / d)), oc = d > 3 && occl(cam.x, cam.y, cam.z, x, y, z);
       const s = ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
@@ -567,11 +583,14 @@ export function createSeoulAudio(layout, life, opts = {}) {
       }
       return n;
     };
-    const startLoop = (vo, s, dst = vo.ctl.glass.inp || vo.ctl.glass, buf = musicBuf(g, s)) => {
+    const startLoop = (vo, s, dst = vo.ctl.glass.inp || vo.ctl.glass, buf = musicBuf(g, s, !g.offline)) => {
+      if (!buf) { vo.pending = [s, dst]; if (g.idle && s.style !== 'acoustic') g.idle(() => musicBuf(g, s), s.style + ':' + (s.seed % 6)); return; }
+      vo.pending = null;   // live: a loop not rendered yet is queued for an idle slice and starts when it is
       const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true; src.connect(dst);
       src.start(at, ((t + s.phase) % buf.duration + buf.duration) % buf.duration); vo.ctl.src = src;
     };
     // doorway speakers (82-88 dB at 2 m, full band when open) vs music behind glass
+    for (const V of [g.pv.music, g.pv.club, g.pv.busk]) for (const vo of V) if (vo.pending && vo.who) { const [s0, dst] = vo.pending; const b = s0.style === 'acoustic' ? g.music.acoustic : musicBuf(g, s0, true); if (b) startLoop(vo, s0, dst, b); }
     S.music = assignSites(g.pv.music, sites.music, 50, (s) => nrm('music') * dbA(SND.music) * 2 * (s.open ? 1 : 0.5), (vo, s) => { startLoop(vo, s); T(vo.ctl.glass.frequency, s.open ? 7000 : 2500, 0.01); });
     S.club = assignSites(g.pv.club, sites.club, 70, (s) => nrm('music') * dbA(SND.club) * 2, (vo, s) => startLoop(vo, s));
     // club doors open on their own rhythm: the kick's beater click (1-3 kHz) leaks shut, full band open
@@ -580,7 +599,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     const busk = life?.near?.busk || life?.crowd?.busk || [];
     const bsites = busk.map((b) => ({ x: b.x, y: 1.4, z: b.z, id: 'busk' + b.id, phase: b.off, style: b.kind === 'dance' ? 'kpop' : 'acoustic', seed: 40 + b.id, minD: 3, b }));
     S.busk = assignSites(g.pv.busk, bsites, 130, (s) => { const sp = ((t + s.b.off) / s.b.song) % 1; return dbA(SND.busk) * 2 * (sp < 0.94 ? 1 : 0); },
-      (vo, s) => startLoop(vo, s, vo.ctl.inp, s.style === 'acoustic' ? g.music.acoustic : musicBuf(g, s)));
+      (vo, s) => startLoop(vo, s, vo.ctl.inp, s.style === 'acoustic' ? g.music.acoustic : musicBuf(g, s, !g.offline)));
     busk.forEach((b, i) => {
       const sp = ((t + b.off) / b.song) % 1, end = sp > 0.94, d = Math.hypot(b.x - cam.x, b.z - cam.z);
       if (end && g.buskState[i] === false && d < 120) { const n = b.aud.length / 40; shot(g.buf.clap, b.x, 1.4, b.z, dbA(SND.applause) * 2 * n); shot(g.buf.cheer, b.x, 1.6, b.z, dbA(SND.applause - 4) * 2 * n, 1, 0.3); S.applause++; }
@@ -601,7 +620,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
         }
       }
       // footsteps: heel strikes (gait phase crossing 0 / 0.5) of walkers within 5 m, when the drone is low
-      const feet = g.offline ? clipFeet : (life.near?.feet || []), C = life.crowd, low = cam.y < 4.5, seen = new Set();
+      const feet = g.isClip ? clipFeet : (life.near?.feet || []), C = life.crowd, low = cam.y < 4.5, seen = new Set();
       for (const i of feet) {
         seen.add(i); const ph = C.PH[i], prev = g.feetPh.get(i); g.feetPh.set(i, ph);
         if (prev == null || !low) continue;

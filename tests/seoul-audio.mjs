@@ -74,7 +74,7 @@ const life = build(layout, { seed: 7 });
 const pts = (layout.hero?.length >= 2 ? layout.hero.map((h) => [h.pos[0], h.pos[2]]) : layout.streets.slice(0, 2).flatMap((s) => [s.points[0], s.points[s.points.length - 1]]));
 const DUR = +(process.env.DUR || 24);
 {
-  const ctx = new WA.OfflineAudioContext(2, DUR * SR, SR), bus = ctx.createGain(); bus.connect(ctx.destination);
+  const ctx = new WA.OfflineAudioContext(2, DUR * SR, SR), bus = ctx.createGain(); bus.gain.value = SND.world; bus.connect(ctx.destination);   // as on the world path
   life.audio.attach(ctx, bus, { offline: true });
   const seg = []; let tot = 0; for (let i = 1; i < pts.length; i++) { const l = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); seg.push(l); tot += l; }
   const camAt = (u) => { let s = u * tot; for (let i = 0; i < seg.length; i++) { if (s <= seg[i] || i === seg.length - 1) { const k = Math.min(1, s / seg[i]); return { x: pts[i][0] + (pts[i + 1][0] - pts[i][0]) * k, y: 2.5 + 6 * Math.max(0, Math.sin(u * 9)), z: pts[i][1] + (pts[i + 1][1] - pts[i][1]) * k, fx: (pts[i + 1][0] - pts[i][0]) / seg[i], fz: (pts[i + 1][1] - pts[i][1]) / seg[i] }; } s -= seg[i]; } };
@@ -94,7 +94,7 @@ const DUR = +(process.env.DUR || 24);
     e.rms = Math.sqrt(s / (2 * (i1 - i0)));
     console.log(`${String(e.t).padStart(3)} ${db(e.rms).padStart(6)}  ${String(e.crowdNear).padStart(6)} ${String(e.trafficNear).padStart(5)} ${String(e.canyon).padStart(5)} | ${e.engine} ${e.bus} ${e.scooter} ${e.music} ${e.club} ${e.busk} | ${e.laughs} ${e.steps} ${e.horns} ${e.chimes} ${e.guides} ${e.applause} ${e.occluded}`);
   }
-  ok(nan === 0, 'no NaN'); ok(pk < 1, `no clipping at the city out (peak ${db(pk)} dBFS)`);
+  ok(nan === 0, 'no NaN'); ok(pk < 1, `no clipping at the city out, world trim applied (peak ${db(pk)} dBFS; the master limiter follows in game)`);
   ok(log.every((e) => e.rms > 1e-4), 'never silent'); ok(Math.max(...log.map((e) => e.rms)) / Math.min(...log.map((e) => e.rms)) > 2, 'it is a map, not a loop: >6 dB swing along the path');
   ok(life.audio.stats.voices <= 26, `voice budget ${life.audio.stats.voices} (beds + reverbs + positional)`);
   const S = life.audio.stats; ok(S.laughs > 3 && S.music > 0 && S.occluded >= 0, `signature layers fire on the hero path (laughs/shouts ${S.laughs}, steps ${S.steps}, horns ${S.horns}, chimes ${S.chimes}, guides ${S.guides}, applause ${S.applause})`);

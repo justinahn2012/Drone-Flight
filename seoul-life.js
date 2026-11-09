@@ -1826,6 +1826,29 @@ export function build(layout, ctx = {}) {
   return life;
 }
 
+// ================================================================ native export (H, native #2): life.json
+// Everything a native port needs to rebuild both sims bit-for-bit from the same layout: constants, vehicle classes,
+// signal timing, the lane graph (stops, successors, entries), walkways with their junction links, doors and portals,
+// the crowd's static set-up (people, units, queues, busk rings), and the seeds. Hashes let CI check parity.
+export function exportData(layout, { seed = 7, density = 1, maxAgents } = {}) {
+  const sim = new LifeSim(layout, { seed, density, maxAgents }), T = sim.traffic, C = sim.crowd, r3 = (v) => Math.round(v * 1000) / 1000;
+  const laneId = (l) => l && l.id;
+  sim.advanceTo(90); const h90 = sim.hash();
+  return {
+    version: 2, seed, density, LIFE: { ...LIFE, sidewalk: 'w => clamp(w * 0.15, 3, 6)' }, VEH, signal: LIFE.signal,
+    crossings: sim.net.crossings.map((c) => ({ id: c.id, kind: c.kind, street: c.main.id, sc: r3(c.sc), x: r3(c.x), z: r3(c.z), cw: c.cw, halfSpan: r3(c.halfSpan), axis: c.axis, offset: c.offset, toward: c.toward })),
+    lanes: T.lanes.map((l) => ({ id: l.id, street: l.street.id, dir: l.dir, k: l.k, lat: r3(l.lat), s0: r3(l.s0), s1: r3(l.s1), bus: l.bus, shared: l.shared, curb: l.curb,
+      stops: l.stops.map((st) => ({ s: r3(st.s), crossing: st.c.id })), busStops: l.busStops.map(r3), succ: l.succ.map((g) => ({ turn: r3(g.turn), lanes: g.lanes.map(laneId) })), adj: l.adj.map(laneId) })),
+    entries: { road: T.entries.road.map(laneId), shared: T.entries.shared.map(laneId), bus: T.busEntries.map(laneId) },
+    walkways: C.ways.map((w) => ({ id: w.id, street: w.street.id, kind: w.kind, c: r3(w.c), dmin: r3(w.dmin), dmax: r3(w.dmax), s0: r3(w.s0), s1: r3(w.s1),
+      ends: w.ends.map((e) => e.map((j) => ({ way: j.way.id, s: r3(j.s), d: r3(j.d) }))), doors: w.doors.map((d) => ({ s: r3(d.s), d: r3(d.d), x: r3(d.x), z: r3(d.z), wt: r3(d.wt), use: d.use, portal: d.portal || (d.edge ? 'edge' : null) })) })),
+    crowd: { people: C.people.length, units: C.units.map((u) => ({ home: u.home.id, v: r3(u.v), P: r3(u.P), phi: r3(u.phi), fvis: r3(u.fvis), members: u.members.length, exit: !!u.exit })),
+      queues: C.queues.map((q) => ({ lot: q.lot, door: q.door.map(r3), t: q.t.map(r3), n: q.n.map(r3), Q: q.Q, G: r3(q.G), seed: q.seed })),
+      busk: C.busk.map((b) => ({ x: r3(b.x), z: r3(b.z), yaw: r3(b.yaw), kind: b.kind, song: r3(b.song), off: r3(b.off), performers: b.perf.length, audience: b.aud.length })) },
+    parity: { trafficHash90: h90 },
+  };
+}
+
 function acousticsAt(layout, net, p) {
   let best = Infinity, cnt = 0;
   for (const l of layout.lots || []) {
@@ -1841,4 +1864,4 @@ function acousticsAt(layout, net, p) {
   return { wallDist: best, streetW: w, canyon: Math.max(0, Math.min(1, (12 - w) / 9)) * (p.y < 25 ? 1 : 0.3) };
 }
 
-export default { build, LIFE, LifeSim };
+export default { build, LIFE, LifeSim, exportData };

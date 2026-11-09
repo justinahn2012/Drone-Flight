@@ -2,7 +2,7 @@
 // budgets (agents, vehicles, step cost), sanity (no NaN, vehicles never overlap in a lane, crossers obey the light).
 //   node tests/seoul-life.mjs [layout.json]
 import { readFileSync, existsSync } from 'fs';
-import { LifeSim, LIFE, crossPhase, K_WALK, K_STAND, K_QUEUE, K_CROSS } from '../seoul-life.js';
+import { LifeSim, LIFE, crossPhase, K_WALK, K_STAND, K_QUEUE, K_CROSS, exportData } from '../seoul-life.js';
 const arg = process.argv[2];
 const cands = [arg, 'seoul/layout.json', 'seoul/layout.provisional.json', 'tests/seoul-life-layout.json'].filter(Boolean);
 const file = cands.find((f) => existsSync(f)); const layout = JSON.parse(readFileSync(file, 'utf8'));
@@ -95,4 +95,6 @@ ok(perStepT * 60 < 30, 'traffic cost < 30 ms per second of take');
 // rewinds are cheap: snapshots every 10 s
 { const q = new LifeSim(layout, { seed: 7 }); q.advanceTo(300); const h = q.hash(); const c0 = process.cpuUsage(); q.advanceTo(295); q.advanceTo(300); const c = process.cpuUsage(c0);
   ok(q.hash() === h, 'snapshot rewind reproduces the traffic bit for bit'); ok((c.user + c.system) / 1000 < 400, `rewind 5 s at t=300 costs ${((c.user + c.system) / 1000).toFixed(0)} ms CPU (P1: a full re-sim from 0)`); }
+// native export (H): life.json round-trips through JSON and carries the parity hash
+{ const d = JSON.parse(JSON.stringify(exportData(layout, { seed: 7 }))); ok(d.lanes.length === a.traffic.lanes.length && d.walkways.length === a.crowd.ways.length && d.parity.trafficHash90 === ha[ha.length - 1], `exportData(): life.json with ${d.lanes.length} lanes, ${d.walkways.length} walkways, ${d.crowd.units.length} units, parity hash ${d.parity.trafficHash90}`); }
 process.exit(fail ? 1 : 0);
