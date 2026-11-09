@@ -15,11 +15,21 @@
 //   * Luminance (cd/m^2) follows the panel's binding table: channel-letter / neon cores 600-2000, light-box letters
 //     100-220 with a diffuser profile (centre +20 %, edges -30 %, LED rows at grazing angles), box ground 25-35 % of the
 //     letters, window vinyl x0.3 of an 8-25 nit room, LED screens 180-350 with content whose mean is ~0.3 of peak.
+// Phase 3 (panel 2: lighting #1/#2, colour #1, graphics #5, art #1):
+//   * Filter model: coloured light is white light through a filter, rgb / max(rgb) x white-equivalent nits (85 % dye peak);
+//     NITS is white-equivalent, so hue sets luminance. L3 records keep their contract (rgb Y = 1, nits = luminance), which
+//     is now hue-aware. Hero mix warm-heavy with pink / cyan / violet as accents. Sign light budget R/G 1.4, B/G 0.95.
+//   * Hot structure: channel / galva LED letters 1.0 at the stroke centre -> 0.45 at the edge; neon cos^2 across the tube
+//     (core 3x the sleeve); bulbs 2 cm points (LEDs 1.2 cm) at 1800-2000 nits. Contract P3-B1: the scene target's alpha
+//     is 1 + w on those cores (w in [0, 1]) and 1 elsewhere, so A's camera can white-core true sources only.
+//   * Density: street-facing side walls of corner lots (as world-seoul finds them) get a wrapped fascia, a blade stack and
+//     floor boxes; a floor box on ~80 % of lit 2F-5F tenants; main-road towers carry boxes to 8F and a lit roof crown;
+//     hangul-only names on ~80 % of faces. Galva letters stand proud of their panel on returns; roof letters too.
 //   * All faces draw with ONE MeshStandardMaterial (patched by seoul-light: haze + the city light grid on the unlit
 //     parts), opaque, depth-writing, alpha-to-coverage edges; meshes are split into 80 m tiles so they frustum-cull.
 //     The 120 LED screens are one instanced mesh (one draw) with per-instance program state.
 //
-// Emitter record (L3): { id, pos, normal, w, h, rgb (linear, luminance-normalised: Y = 1), nits (mean over w*h),
+// Emitter record (L3): { id, pos, normal, w, h, rgb (linear, luminance-normalised: Y = 1), nits (mean luminance over w*h; hue-aware),
 //                        kind, flicker?, animated }. Animated records (screens, scrollers) are mutated in place by update().
 import * as THREE from 'three';
 import { Rng } from './rng.js';
@@ -629,6 +639,13 @@ export function designFace(s, w, h) {
     }
     default: break;
   }
+  // graphics #5: channel letters are acrylic faces on returns. Galva LED letters on box faces stand 3.5 cm proud of their
+  // panel over a dark return copy; roof letters get 10 cm returns (fascia channel letters have theirs above, 6 cm)
+  if (s.style === 'roof' || (s.design === 'galva' && (s.style === 'fascia' || s.style === 'round'))) {
+    const roof = s.style === 'roof', n0 = els.length;
+    for (let i = 0; i < n0; i++) { const e = els[i]; if (!e.glyph || e.p[0] !== 1 || e.ret) continue; if (!roof) e.z = 0.035;
+      els.push({ ...e, q: e.q.slice(), layer: roof ? 0 : 1, z: roof ? -0.1 : 0.004, col: [0, 0, 0], alb: [0.03, 0.03, 0.035], p: [0, 0, e.p[2]], ink: 0, ret: true }); }
+  }
   if (s.bulbs && lit) {
     const mode = s.bulbs === 'chase' ? 1 : s.bulbs === 'bulbs' ? 0 : 2;
     const c = mode === 2 ? (s.accentName === 'white' ? s.rgb : s.accent) : srgb(HEX.bulb);
@@ -935,7 +952,7 @@ export function exportData(layout, opts = {}) {
     col: e.col.map((v) => +v.toFixed(2)), alb: e.alb.map((v) => +v.toFixed(3)), p: e.p.map((v) => +(+v).toFixed(4)) })));
   const signs = {
     version: SIGNS_VERSION, units: { length: 'm', luminance: 'cd/m^2', frame: 'x east, y up, z south' },
-    kinds: K, kindDoc: 'BOX light-box ground (diffuser: centre +20 %, edges -30 %, LED rows 0.12 m at grazing angles; p=[w,h,round]); PANEL flat (emits col, reflects alb); FILL MSDF glyph fill (p.x=1 LED edge profile; p.z = mean coverage of the quad); TUBE neon tube on the glyph outline (p.x half width, em); DOTS exposed LEDs inside the glyph (p.x pitch, em); BULBS border strip (uv.x metres along; p=[pitch m, 0 static|1 chase|2 LED, width m]); ROOM lit room behind window film (ceiling gradient; p.z=1 blinds). layer: draw order on the face plane (pull toward the eye 6e-4 x depth per layer); z: offset along the normal (m). Face frame: right = up x n.',
+    kinds: K, kindDoc: 'BOX light-box ground (diffuser: centre +20 %, edges -30 %, LED rows 0.12 m at grazing angles; p=[w,h,round]); PANEL flat (emits col, reflects alb); FILL MSDF glyph fill (p.x=1 LED channel letter: 0.45 + 0.55 smoothstep(0, 0.055 em, d) across the stroke, mean 0.78 when unresolved; p.x=2 script neon: (1 + 2 sin^2(pi/2 min(d / 0.028 em, 1))) / 3; p.z = mean coverage of the quad); TUBE neon tube on the glyph outline (p.x half width, em; (1 + 2 cos^2(pi/2 |dc| / hw)) / 3: core 3x the sleeve); DOTS exposed LEDs inside the glyph (p.x pitch, em); BULBS border strip (uv.x metres along; p=[pitch m, 0 static|1 chase|2 LED, width m]; points of radius 1.0 cm (LED 0.6 cm), unresolved mean pi (0.72 r)^2 / (pitch x width)); ROOM lit room behind window film (ceiling gradient; p.z=1 blinds). layer: draw order on the face plane (pull toward the eye 6e-4 x depth per layer); z: offset along the normal (m). Face frame: right = up x n. col is linear cd/m^2 under the filter model (rgb / max x white-equivalent nits). True-source cores (channel stroke centres, tube axes, bulb / LED / dot points) write scene alpha 1 + w (contract P3-B1).',
     msdf: { image: MSDF.image, meta: 'seoul/signs/msdf-meta.js', size: MSDF.size, pxPerEm: MSDF.px, range: MSDF.range, median: 'max(min(r,g),min(max(r,g),b)) - 0.5, x range px' },
     faces: faceRecs, designs: designList,
     housings: D.boxes.map((b) => ({ c: b.c, r: b.r, n: b.n, half: [+b.hw.toFixed(3), +b.hh.toFixed(3), +b.hd.toFixed(3)], albedo: b.col, noFront: b.noFront, collide: b.collide })),
