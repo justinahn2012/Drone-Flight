@@ -171,7 +171,7 @@ async function EW() { return (_ew ||= await import('./export-world.mjs')); }
 /** JSON text: meta pretty (export-world stringify), each array in `tables` one record per line. */
 async function jsonText(obj, tables = []) {
   const { plain, stringify } = await EW();
-  const p = plain(obj), out = [];
+  const p = noTimes(plain(obj)), out = [];   // [P3 H] no wall-clock fields (light stats.marks, dressing facts.ms / msParts): --check compares bytes
   for (const [k, v] of Object.entries(p)) {
     if (v === undefined) continue;
     if (tables.includes(k) && Array.isArray(v)) out.push(`  ${JSON.stringify(k)}: [\n${v.map((r) => '    ' + JSON.stringify(r)).join(',\n')}\n  ]`);
@@ -180,8 +180,9 @@ async function jsonText(obj, tables = []) {
   return new TextEncoder().encode('{\n' + out.join(',\n') + '\n}\n');
 }
 const fnSrc = (f) => (typeof f === 'function' ? f.toString() : null);
-/** Drop wall-clock fields (buildMs, binMs, ms...) so every output is byte-identical run to run. */
-export const noTimes = (o) => (Array.isArray(o) ? o.map(noTimes) : o && typeof o === 'object' && !ArrayBuffer.isView(o) ? Object.fromEntries(Object.entries(o).filter(([k]) => !/^ms$|Ms$/.test(k)).map(([k, v]) => [k, noTimes(v)])) : o);
+/** Drop wall-clock fields (buildMs, binMs, ms, msParts, marks...) so every output is byte-identical run to run. Apply to plain() output. */
+export const TIME_KEY = /^(ms|marks)$|Ms$|^ms[A-Z]/;
+export const noTimes = (o) => (Array.isArray(o) ? o.map(noTimes) : o && typeof o === 'object' && !ArrayBuffer.isView(o) ? Object.fromEntries(Object.entries(o).filter(([k]) => !TIME_KEY.test(k)).map(([k, v]) => [k, noTimes(v)])) : o);
 const r6 = (v) => (typeof v === 'number' ? +v.toFixed(6) : v);
 
 // ================================================================================================================
@@ -334,8 +335,9 @@ export const SEOUL_COVERAGE = [
   { id: 'life-props', match: { name: '^pocha-', instanced: true, ancestor: '^seoul-life$' }, export: 'life.json (pocha tables / stools at the tents)', requires: 'data.life.count' },
   { id: 'headlight-pools', match: { name: '^headlight-pools$', ancestor: '^seoul-life$' }, export: 'runtimeOnly.headlightPools (life.json vehicles + light.json)', requires: 'data.life.count' },
   { id: 'sky', match: { name: '^seoul\\.sky$' }, export: 'light.json NIGHT_SKY (dome)', requires: 'data.light.count' },
+  { id: 'airlight', match: { name: '^seoul\\.airlight$' }, export: 'runtimeOnly.airlight (light.json AIRLIGHT + HAZE: single-scatter sprites round the brightest emitters in view)', requires: 'data.light.count' },
   { id: 'steam', match: { name: '^seoul\\.steam$' }, export: 'runtimeOnly.steam (light.json QUALITY.steam)', requires: 'data.light.count' },
-  { id: 'dressing', match: { ancestor: '^seoul-dressing' }, export: 'dressing.json (E: runtime parts, cable renderer)', requires: 'data.dressing.count' },
+  { id: 'dressing', match: { ancestor: '^seoul[-.]dressing' }, export: 'dressing.json (E: runtime parts, cable renderer)', requires: 'data.dressing.count' },
 ];
 export const SEOUL_RUNTIME_ONLY = {
   crowd: 'CrowdSim (seoul-life.js) at 10 Hz, interpolated; one procedural 13-bone human, instanced in near / mid / far LODs (life.json LIFE)',
@@ -344,6 +346,7 @@ export const SEOUL_RUNTIME_ONLY = {
   signsAtlas: 'the sign face atlas (Canvas2D + fonts) until B ships MSDF glyph runs',
   headlightPools: 'additive pools under each vehicle head lamp (life)',
   steam: 'steam puffs (Points), count QUALITY[q].steam (light)',
+  airlight: 'closed-form single-scatter airlight sprites (one instanced quad) round the AIRLIGHT.n brightest emitters in view, re-picked every 3 frames (light)',
   light: 'the clustered light grid is binned at load from emitters.json (light.json rules)',
 };
 
@@ -385,7 +388,7 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
     } catch (e) { warn(`seoul-signs exportData() threw: ${e.message}; using the shim`); }
   } else note('seoul-signs has no exportData() yet (B, native #2): signs.json / screens.json from the shim');
   signs ||= signsShim(parts, X[PARTNERS.signs] || {}, signsMod); screens ||= screensShim(parts, X[PARTNERS.signs] || {}, signsMod);
-  if (signs) { await put('signs.json', signs, ['specs']); data.signs = { file: 'signs.json', count: signs.count ?? signs.specs?.length ?? 0, source: signs.source ?? data.signsSource }; }
+  if (signs) { await put('signs.json', signs, ['specs', 'faces', 'designs', 'housings', 'scrollers', 'emitters']); data.signs = { file: 'signs.json', count: signs.count ?? signs.specs?.length ?? signs.faces?.length ?? 0, source: signs.source ?? data.signsSource }; }
   else data.signs = { status: 'pending', count: 0, note: 'seoul-signs did not build in node' };
   if (screens) { await put('screens.json', screens, ['screens']); data.screens = { file: 'screens.json', count: screens.count ?? screens.screens?.length ?? 0, source: screens.source ?? data.signsSource }; }
   else data.screens = { status: 'pending', count: 0 };

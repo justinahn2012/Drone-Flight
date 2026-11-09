@@ -10,6 +10,11 @@
 // Usage (repo root; needs `node tools/export-world.mjs --out exports` first):
 //   node tests/browser.mjs [--exports exports] [--out browser-out] [--update] [--frames 3] [--size 480x270]
 // --update rewrites tests/golden.json from this run (do it after an intentional look change; the commit shows it).
+// [P3 H] Every run writes OUT/stills.json (the numbers the golden compares) and, for a level with a camera gate (Seoul),
+// OUT/camgate/<shot>.png at the shipped grade plus <shot>.r0.png at retro 0 (one more frame), with the AE EV per shot,
+// for tools/camgate.py (CI runs it after this). No 50-minute SwiftShader run to re-baseline: take stills.json from a CI
+// artifact of the commit and
+//   node tests/browser.mjs [--level ID] --golden-from browser-out-<ID>/stills.json     (writes the golden, no browser)
 // [P2 H] --level seoul-hongdae (native #3): the same job on another level of levels.json, loaded with ?level=ID. Exports
 // default to exports/<ID> (node tools/export-world.mjs --level ID --out exports/<ID>); coverage applies that world.json
 // (Seoul: city meshes, signs, screens, crowd, traffic, sky, steam... a mesh class with no export entry fails); ?perf runs
@@ -20,12 +25,12 @@ import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const a = process.argv.slice(2), opt = (k, d) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : d; };
 const LEVEL = opt('--level', 'bando'), BANDO = LEVEL === 'bando';
 const EXPORTS = resolve(ROOT, opt('--exports', BANDO ? 'exports' : `exports/${LEVEL}`)), OUT = resolve(ROOT, opt('--out', BANDO ? 'browser-out' : `browser-out-${LEVEL}`));
+const GOLDEN_FROM = opt('--golden-from', null);
 const UPDATE = a.includes('--update'), FRAMES = +opt('--frames', 1), [W, H] = opt('--size', '320x180').split('x').map(Number);
 const TIMEOUT = 1000 * +(process.env.ONETAKE_TIMEOUT || 900), PH_DIR = process.env.ONETAKE_PH_DIR;
 const GOLDEN = join(ROOT, 'tests', BANDO ? 'golden.json' : `golden-${LEVEL}.json`);
@@ -45,6 +50,20 @@ const LEVEL_SHOTS = {
 };
 const SHOT_SET = BANDO ? SHOTS : LEVEL_SHOTS[LEVEL] || {};
 const ALLOW = [/favicon\.ico/];   // console errors that are not failures
+const CAMGATE = { 'seoul-hongdae': true };   // [P3 H] levels whose stills feed tools/camgate.py (lossless PNG, retro 0 and shipped)
+const TOL = { p50: 8, p95: 10 };
+function writeGolden(now, golden, src) {
+  writeFileSync(GOLDEN, JSON.stringify({ note: 'tests/browser.mjs golden stills (SwiftShader, ' + `${W}x${H}, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update, or --golden-from <CI artifact>/stills.json, after an intentional look change.` + (src ? ` From ${src}.` : ''),
+    shots: Object.fromEntries(Object.entries(now).map(([k, v]) => [k, { p5: v.p5, p50: v.p50, p95: v.p95, clip: v.clip, tol: golden.shots?.[k]?.tol || TOL }])) }, null, 1) + '\n');
+  console.log(`wrote ${GOLDEN}`);
+}
+if (GOLDEN_FROM) {   // [P3 H] re-baseline from a CI artifact: no browser
+  const st = JSON.parse(readFileSync(resolve(GOLDEN_FROM), 'utf8'));
+  if (st.level && st.level !== LEVEL) { console.log(`FAIL ${GOLDEN_FROM} is level ${st.level}, not ${LEVEL}`); process.exit(1); }
+  if (st.size && st.size !== `${W}x${H}`) { console.log(`FAIL ${GOLDEN_FROM} was shot at ${st.size}, not ${W}x${H}`); process.exit(1); }
+  writeGolden(st.shots, existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, 'utf8')) : { shots: {} }, `${GOLDEN_FROM.split(/[\/]/).slice(-2).join('/')}${st.commit ? ' @ ' + st.commit : ''}`);
+  process.exit(0);
+}
 
 const MIME = { '.ktx2': 'image/ktx2', '.woff2': 'font/woff2', '.glb': 'model/gltf-binary', '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.bin': 'application/octet-stream', '.otil': 'application/octet-stream', '.css': 'text/css', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
 const serveFile = (res, f) => { res.writeHead(200, { 'content-type': MIME[extname(f)] || 'application/octet-stream', 'cache-control': 'no-store' }); res.end(readFileSync(f)); };
@@ -67,6 +86,7 @@ const errors = [];
 mkdirSync(OUT, { recursive: true });
 const t0 = Date.now(), sec = () => ((Date.now() - t0) / 1000).toFixed(0) + ' s';
 
+const { chromium } = await import('playwright');   // [P3 H] dynamic: --golden-from needs no browser
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME || undefined,
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
 try {
@@ -98,19 +118,22 @@ try {
   const perf = await page.evaluate(() => window.__onetake.perfRun(0));
   const segOk = perf.scales.length === 2 && perf.scales.every((s) => perf.segments.every((n) => Number.isFinite(s.seg[n]?.p90) && Number.isFinite(s.seg[n]?.gpuP50)));
   ok(segOk && (BANDO ? perf.segments.length === 4 : perf.segments.length >= 3 && !perf.segments.includes('hover')), `?perf segments ${perf.segments.join(', ')} at ${perf.scales.map((s) => s.scale).join(' / ')} (${sec()}); ` +
-    (BANDO ? `hover ${JSON.stringify(perf.hover)}` : `world.update p50 ${perf.segments.map((n) => `${n} ${perf.scales[0].seg[n]?.updP50?.toFixed(1)}`).join(', ')} ms`));
+    (BANDO ? `hover ${JSON.stringify(perf.hover)}` : `world.update ${perf.segments.map((n) => { const g = perf.scales[0].seg[n] || {}; return `${n} ${Number.isFinite(g.updP50) ? g.updP50.toFixed(1) + ' p50' : 'parts ' + JSON.stringify(g.parts || {})}`; }).join(', ')} ms`));
   writeFileSync(join(OUT, 'perf.json'), JSON.stringify(perf, null, 1));
 
   // ---- 3. coverage
   if (ok(existsSync(join(EXPORTS, 'world.json')), `exports present (${EXPORTS})`)) {
+    const { summarize } = await import('./coverage.js');
     const cov = await page.evaluate(async () => {
       const { coverage } = await import('/tests/coverage.js');
       const w = await (await fetch('/__exports/world.json')).json();
       return coverage(window.__onetake.world.scene, w);
     });
     writeFileSync(join(OUT, 'coverage.json'), JSON.stringify(cov, null, 1));
-    ok(!cov.uncovered.length, `every scene mesh has an export entry (${cov.meshes} meshes: ${JSON.stringify(cov.byRule)})` + (cov.uncovered.length ? `\n     uncovered: ${JSON.stringify(cov.uncovered)}` : ''));
+    // [P3 H] one line per class (the raw list, 900 KB on one line, cut the CI log short); the full list is in coverage.json
+    ok(!cov.uncovered.length, `every scene mesh has an export entry (${cov.meshes} meshes; covered ${JSON.stringify(cov.byRule)})` + (cov.uncovered.length ? `\n     ${cov.uncovered.length} uncovered (coverage.json):\n     ` + summarize(cov).join('\n     ') : ''));
     ok(!cov.undrawnExports.length, `every world.glb mesh is drawn` + (cov.undrawnExports.length ? `: not drawn ${cov.undrawnExports.join(', ')}` : ''));
+    ok(!cov.partialExports?.length, `every world.glb mesh drawn whole` + (cov.partialExports?.length ? `: in part ${cov.partialExports.map((p) => `${p.name} ${p.drawn}/${p.triangles} tris`).join(', ')}` : ''));
     if (cov.pending.length) console.log(`::warning::coverage pending (exporter waits on a contract): ${cov.pending.join(', ')} (${cov.pendingMeshes} meshes)`);
   }
 
@@ -119,33 +142,48 @@ try {
   ok(gu?.path === 'worker', `graffiti atlas drawn in the Worker, uploaded in strips: ${JSON.stringify(gu)}`); }
 
   // ---- 5. golden stills
-  const golden = existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, 'utf8')) : { shots: {} }, now = {};
+  const golden = existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, 'utf8')) : { shots: {} }, now = {}, gate = !!CAMGATE[LEVEL];
+  if (gate) mkdirSync(join(OUT, 'camgate'), { recursive: true });
   for (const [name, [tp, vel]] of Object.entries(SHOT_SET)) {
-    const r = await page.evaluate(async ({ tp, vel }) => {
+    const ts = Date.now();
+    const r = await page.evaluate(async ({ tp, vel, gate }) => {
       const o = window.__onetake; o.S.mode = 'acro'; o.applySettings(); o.fpv.setQualityRange?.(1, 1); o.fpv.scale = 1; o.controls.thr = 0.39;
       new Function('o', tp)(o);
-      let url = null;
-      for (let i = 0; i < 10; i++) { if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39; url = o.step(33, 1, i === 9); await new Promise((r) => setTimeout(r, 20)); }
+      const cv = o.renderer?.domElement || document.querySelector('canvas');
+      let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null;
+      const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };
+      for (let i = 0; i < 10; i++) {
+        if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
+        o.step(33, 1, false);   // = step(33, 1, i === 9): the grab below happens in the same task, before the buffer is presented
+        if (i === 9) { url = cv.toDataURL('image/jpeg', 0.92); if (gate) png = cv.toDataURL('image/png'); }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      if (gate) {   // camgate: the AE EV, then retro 0 (colour #6 rows at retro 0 and the shipped grade): one more frame
+        ev = evOf(); retro = o.fpv.look?.retro ?? null;
+        if (o.fpv.look) o.fpv.look.retro = 0;
+        if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
+        o.step(33, 1, false); png0 = cv.toDataURL('image/png'); ev0 = evOf();
+        if (o.fpv.look) o.fpv.look.retro = retro;
+      }
       const img = new Image(); img.src = url; await img.decode();
       const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0);
       const d = g.getImageData(0, 0, c.width, c.height).data, h = new Uint32Array(256);
       for (let i = 0; i < d.length; i += 4) h[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
       const n = d.length / 4, pct = (p) => { let s = 0; for (let k = 0; k < 256; k++) { s += h[k]; if (s >= p * n) return k; } return 255; };
-      return { url, p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
-    }, { tp, vel });
+      return { url, png, png0, ev, ev0, retro, p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
+    }, { tp, vel, gate });
     writeFileSync(join(OUT, `${name}.jpg`), Buffer.from(r.url.split(',')[1], 'base64'));
-    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip };
+    if (r.png) writeFileSync(join(OUT, 'camgate', `${name}.png`), Buffer.from(r.png.split(',')[1], 'base64'));
+    if (r.png0) writeFileSync(join(OUT, 'camgate', `${name}.r0.png`), Buffer.from(r.png0.split(',')[1], 'base64'));
+    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro } : {}), s: +((Date.now() - ts) / 1000).toFixed(0) };
     const g = golden.shots[name];
-    if (UPDATE || !g) console.log(`  still ${name}: p5 ${r.p5} p50 ${r.p50} p95 ${r.p95} clip ${r.clip}${g ? '' : ' (no golden yet)'}`);
+    if (UPDATE || !g) console.log(`  still ${name}: p5 ${r.p5} p50 ${r.p50} p95 ${r.p95} clip ${r.clip}${gate ? ` EV ${r.ev?.toFixed?.(2)}` : ''} (${now[name].s} s)${g ? '' : ' (no golden yet)'}`);
     else ok(Math.abs(r.p50 - g.p50) <= g.tol.p50 && Math.abs(r.p95 - g.p95) <= g.tol.p95,
-      `still ${name}: p50 ${r.p50} (golden ${g.p50} ± ${g.tol.p50}), p95 ${r.p95} (golden ${g.p95} ± ${g.tol.p95})`);
+      `still ${name}: p50 ${r.p50} (golden ${g.p50} ± ${g.tol.p50}), p95 ${r.p95} (golden ${g.p95} ± ${g.tol.p95}) (${now[name].s} s)` +
+      (Math.abs(r.p50 - g.p50) <= g.tol.p50 && Math.abs(r.p95 - g.p95) <= g.tol.p95 ? '' : `\n     an intended look change? re-baseline: node tests/browser.mjs${BANDO ? '' : ' --level ' + LEVEL} --golden-from <this job's artifact>/stills.json`));
   }
-  if (UPDATE) {
-    const tol = { p50: 8, p95: 10 };
-    writeFileSync(GOLDEN, JSON.stringify({ note: 'tests/browser.mjs golden stills (SwiftShader, ' + `${W}x${H}, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update after an intentional look change.`,
-      shots: Object.fromEntries(Object.entries(now).map(([k, v]) => [k, { ...v, tol: golden.shots[k]?.tol || tol }])) }, null, 1) + '\n');
-    console.log(`wrote ${GOLDEN}`);
-  }
+  writeFileSync(join(OUT, 'stills.json'), JSON.stringify({ level: LEVEL, size: `${W}x${H}`, commit: process.env.GITHUB_SHA || null, shots: now }, null, 1) + '\n');
+  if (UPDATE) writeGolden(now, golden, 'tests/browser.mjs --update');
   ok(!errors.length, `no page / console / shader / request errors` + (errors.length ? `:\n     ${errors.join('\n     ')}` : ''));
 } catch (e) {
   if (e.message !== 'load failed') { ok(false, `browser job threw: ${e.message}`); if (errors.length) console.log('     ' + errors.join('\n     ')); }

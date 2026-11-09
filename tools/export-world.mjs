@@ -511,6 +511,7 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
       world.coverageNode = { meshes: cov.meshes, byRule: cov.byRule, pending: cov.pending };
       for (const u of cov.uncovered) warn(`coverage: ${u.type} "${u.name}" (parent "${u.parent}", ${u.vertices} verts${u.why ? ', ' + u.why : ''}) has no export entry`);
       for (const n of cov.undrawnExports) warn(`coverage: world.glb mesh "${n}" is not drawn by the game`);
+      for (const p of cov.partialExports || []) warn(`coverage: world.glb mesh "${p.name}" is drawn only in part (${p.drawn} of ${p.triangles} triangles in its cells)`);
     } catch (e) { warn('coverage in node: ' + e.message); }
   }
   const dataFiles = D?.files || {};
