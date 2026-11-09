@@ -1212,11 +1212,14 @@ export async function build(layout, ctx = {}) {
       g.setAttribute('aF', new THREE.BufferAttribute(t.f.fl, 2));
       g.setIndex(new THREE.BufferAttribute(t.f.idx, 1));
       g.computeBoundingSphere(); g.computeBoundingBox();
+      // free the CPU copies once on the GPU (~45 MB of renderer memory on the phone; node never uploads, so exports keep them)
+      if (ctx.keepArrays !== true) { const free = function () { this.array = null; }; for (const at of Object.values(g.attributes)) at.onUpload(free); g.index.onUpload(free); }
       const m = new THREE.Mesh(g, faceMat); m.name = `signs-faces-${t.key}`; m.matrixAutoUpdate = false;
       m.onBeforeRender = (renderer) => { const rt = renderer.getRenderTarget(); uMS.value = rt && rt.samples > 0 ? 1 : 0; };
       group.add(m); meshes.push(m); tris += t.f.idx.length / 3;
     }
   }
+  tiles.clear();   // the closures below keep this scope alive: drop the staging arrays (the meshes own their attributes)
   // collider triangles for the integrator (blades, boxes, stands, cabinets): not added to any collider here
   const collider = new THREE.BufferGeometry(); collider.setAttribute('position', new THREE.Float32BufferAttribute(colP, 3));
 
