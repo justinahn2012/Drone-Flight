@@ -4,6 +4,10 @@
 //   start(), update(motors, speed, wash, crashed, mute, x?, at?), thud(v, at?), hit(v, at?), kick(force?), idle(),
 //   setCraft(key), setMode('on' | 'mix' | 'off'), snap(), streamDest, on.   x = { dist, hall, tube, tubeD, scrape, grass }
 //   startOffline(ctx): the same graph on an OfflineAudioContext (HQ clip export); then pass `at` (s) to update/hit/thud.
+//   world (G, sound #1): openWorld() -> a GainNode for the level's city sound that joins AFTER the camera chain (no mic
+//   AGC, no auto-gain ride), ducked by at most 6 dB (80 ms down / 400 ms up) when the props and wind get loud, then a
+//   master limiter on the sum. Nothing is rewired until a level opens it, so bando's chain is bit-identical. bus.world
+//   exposes it to code that only holds the bus (main.js passes audio.bus to the level's attach).
 // No recorded layer: no genuinely CC0 onboard 5" recording could be found (see the F2 report), so the realism comes
 // from synthesis plus the camera's own behaviour (auto-gain ride, two-capsule wind, AGC/limiter, noise floor).
 const CRAFT = {
@@ -18,6 +22,8 @@ const PAN = [-0.22, 0.22, -0.22, 0.22];          // motors 0,2 = left side (roll
 const MODES = { on: { session: 'playback', spk: 1 }, mix: { session: 'ambient', spk: 0.7 }, off: { session: 'ambient', spk: 0 } };
 // Camera auto-gain ride: target bus RMS and the most it may add (+6 dB). See update().
 const RIDE_REF = 0.040, RIDE_MAX = 2.0;
+// rideEst at a still hover (freestyle5, motors 0.392): where the world duck starts (measured: tests/seoul-audio.mjs)
+const RIDE_HOVER = 0.056;
 const clamp = (x, a = 0, b = 1) => (x < a ? a : x > b ? b : x);
 const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) * 2;   // ~N(0,1), cheap
 
@@ -121,6 +127,8 @@ export class MotorAudio {
     this.bus = G(1); this.rideG = G(1);
     this.bus.connect(hpf); hpf.connect(box); box.connect(pres); pres.connect(lpf); lpf.connect(this.rideG); this.rideG.connect(shp);
     shp.connect(agc); agc.connect(lim); lim.connect(out); out.connect(this.master);
+    this._out = out; this._wOpen = false; this.world = null; this.worldDuck = null; this.duck = 1;
+    const self = this; Object.defineProperty(this.bus, 'world', { configurable: true, get: () => self.openWorld() });
     if (live) {
       this.spk = G(0); this.master.connect(this.spk); this.spk.connect(ctx.destination);   // speaker mute is separate from the clip feed
       this.streamDest = ctx.createMediaStreamDestination(); this.master.connect(this.streamDest);
@@ -189,6 +197,19 @@ export class MotorAudio {
     this.white = white;
     if (live) ctx.onstatechange = () => { this.state = ctx.state; };
   }
+  // the world path (sound #1). Idempotent. out -> master becomes out -> limiter -> master, with world -> duck -> limiter.
+  openWorld() {
+    if (this._wOpen) return this.world;
+    const ctx = this.ctx; if (!ctx) return null;
+    const lim = ctx.createDynamicsCompressor(); lim.threshold.value = -1; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.002; lim.release.value = 0.1;
+    const trim = ctx.createGain(); trim.gain.value = Math.pow(10, -0.57 / 20);   // cancels the compressor's auto make-up (-1 dB, 20:1 -> +0.57 dB)
+    this.world = ctx.createGain(); this.worldDuck = ctx.createGain();
+    this.world.connect(this.worldDuck); this.worldDuck.connect(trim);
+    try { this._out.disconnect(this.master); } catch (e) { try { this._out.disconnect(); } catch (e2) {} }
+    this._out.connect(trim); trim.connect(lim); lim.connect(this.master);
+    this._wLim = lim; this._wOpen = true;
+    return this.world;
+  }
   // resume after iOS 'interrupted'/'suspended' (call call/Siri/lock); must run inside a gesture.
   // force: run even with Sound Off (clip export needs samples; the speaker stays muted)
   kick(force) { const c = this.ctx; if (c && (this.on || force) && c.state !== 'running') { const p = c.resume?.(); p?.catch?.(() => {}); } }
@@ -254,6 +275,13 @@ export class MotorAudio {
     const want = !crashed && this.spin < 1 ? 1 : clamp(RIDE_REF / Math.max(1e-6, this.rideEst), 1, RIDE_MAX);   // no ride during a re-arm spool-up
     this.ride = k < 1 ? want : this.ride + (want - this.ride) * (1 - Math.exp(-dt / (want > this.ride ? 1.2 : 0.12)));
     S(this.rideG.gain, this.ride, 0.03);
+    // world duck (sound #1): 0 dB up to the hover level of the props+wind, -6 dB at +12 dB over it; 80 ms down, 400 ms up
+    if (this.worldDuck) {
+      const over = 20 * Math.log10(Math.max(1e-6, this.rideEst) / RIDE_HOVER), want = Math.pow(10, -6 * clamp(over / 12) / 20);
+      this.duck = k < 1 ? want : this.duck + (want - this.duck) * (1 - Math.exp(-dt / (want < this.duck ? 0.08 : 0.4)));
+      // (offline: a linear ramp per frame. node-web-audio-api's setTargetAtTime on this param blew up a render: +60 dB)
+      if (this.offline) this.worldDuck.gain.linearRampToValueAtTime(crashed ? 1 : this.duck, t + 0.033); else S(this.worldDuck.gain, crashed ? 1 : this.duck, 0.02);
+    }
   }
 
   // non-crash touch: frame "tock" (carbon modes) + prop-tip chatter at blade-pass rate. v = impact speed, m/s
