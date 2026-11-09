@@ -56,6 +56,11 @@ export const SOURCE_TYPES = {
   store:    { nits: 80,    rgb: [0.9, 0.97, 1.0],  omni: 0.0,  range: 16 },   // shop interiors through glass 30-130
   tent:     { nits: 120,   rgb: [1.0, 0.55, 0.25], omni: 0.4,  range: 12 },   // pojangmacha tarp lit from inside
   vehicle:  { nits: 20000, rgb: [1.0, 0.95, 0.88], omni: 0.0,  range: 40 },   // head lamps (beam lobe, 25 m pool); tails ~250-1500 red
+  // P3 lighting #4 (main-road architecture; C places them, contract P3-CD): a tower's glazed podium lobby (80-150 nits,
+  // the record is the glass face) and a roof-crown flood (a wash up the top floors: the record faces the wall, tilted
+  // up, w x h = the lit band; nits = the band's mean luminance as seen, ~15-40)
+  lobby:    { nits: 110,   rgb: [1.0, 0.93, 0.82], omni: 0.1,  range: 22 },
+  crown:    { nits: 30,    rgb: [0.95, 0.97, 1.0], omni: 0.0,  range: 30 },
 };
 // Night sky (plan-L5 2F; P3 lighting #5 / color #4): zenith and horizon radiance in cd/m2. Seoul's sky at 1 am is the
 // city's own sodium/LED light scattered by a low deck: brown-grey overhead, orange-brown at the horizon, never blue.
