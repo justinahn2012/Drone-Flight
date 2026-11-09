@@ -1,6 +1,8 @@
 // seoul/tools/take-sim.mjs — noisy-pilot takes through the Hongdae lines, scored by take.js with the level's tuning
 // (stream F1, design #1: "stars from noisy-pilot sims"). Node only, ~1-3 min:
-//   node seoul/tools/take-sim.mjs [--runs N] [--route short|loop|long|all] [--json out.json] [--no-movers]
+//   node seoul/tools/take-sim.mjs [--runs N] [--route short|loop|long|...|all, or a,b,c] [--json out.json] [--no-movers]
+//   env: PILOT=careful,regular  TL=1 (per-run timelines)  NOPIECES=1 (no set pieces)  NOWALKERS=1
+// [P3-F1] set-piece routes ('from' starts a route 14 m before a line's first gate), walkers, per-run timelines.
 // A Cine autopilot (pure pursuit over a 3D A* route at 1 m, 0.9 m clearance) flies each route through the gates in order,
 // with a pilot's cruise speed, OU thumb noise on every stick and a line choice inside each gate; buses, taxis and people
 // are on (world.movers via seoul-movers.js, the drawn sim's seed). Each take ends in a CUT (3 s hands off) or a crash.
@@ -28,11 +30,13 @@ if (MOVERS) {
   try {
     const { LifeSim } = await import('../../seoul-life.js'), { lifeMovers } = await import('../../seoul-movers.js');
     const sim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: 2400 });
-    movers = lifeMovers({ sim, colliders: {} });
+    // [P3-F1] walkers too (the panel: "take-sim has no walkers"): seoul-life's soft people colliders, at the take clock
+    // + the drawn city's 75 s warm start, as world-seoul's build() serves them to the game (colliders.people)
+    movers = lifeMovers({ sim, colliders: process.env.NOWALKERS ? {} : { people: (p, r, t) => sim.hitPeople(p, r, t + 75) } });
   } catch (e) { console.log('movers off:', e.message); }
 }
 const world = { bvh, lastDist: Infinity, funnels: geo.funnels, envelope: { min: new THREE.Vector3(-300, -2, -600), max: new THREE.Vector3(400, 160, 400) },
-  lines: geo.lines, skimBvh: geo.skimBvh, tuning: lineData.tuning, takeStart: { pos: V(lineData.takeStart.pos), yaw: lineData.takeStart.yaw }, movers };
+  lines: geo.lines, skimBvh: geo.skimBvh, tuning: lineData.tuning, setPieces: process.env.NOPIECES ? null : geo.setPieces, takeStart: { pos: V(lineData.takeStart.pos), yaw: lineData.takeStart.yaw }, movers };
 
 // ---- 3D voxel A* (1 m), occupancy cached, clearance RC
 const RC = 0.9, Y0 = 1, NY = 34; const occ = new Map();
@@ -79,6 +83,17 @@ const lineGates = (name, k = 0) => { const e = entries(name)[k]; return e ? [...
 const ROUTES = {
   short: [['street', 'WALKING STREET', 0]],
   loop: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['street', 'BAR ALLEY', 0]],
+  stairs: [['from', 'STATION STAIRS', 0, 14], ['line', 'STATION STAIRS', 0]],
+  stage0: [['from', 'UNDER THE STAGE', 0, 14], ['line', 'UNDER THE STAGE', 0]],
+  stage1: [['from', 'UNDER THE STAGE', 1, 14], ['line', 'UNDER THE STAGE', 1]],
+  thread0: [['from', 'CABLE THREAD', 0, 14], ['line', 'CABLE THREAD', 0]],
+  thread1: [['from', 'CABLE THREAD', 1, 14], ['line', 'CABLE THREAD', 1]],
+  shelter0: [['from', 'BUS SHELTER', 0, 14], ['line', 'BUS SHELTER', 0]],
+  shelter2: [['from', 'BUS SHELTER', 2, 14], ['line', 'BUS SHELTER', 2]],
+  slot0: [['from', 'ROOF SLOT', 0, 14], ['line', 'ROOF SLOT', 0]],
+  gap: [['from', 'THE GAP', 0, 14], ['line', 'THE GAP', 0]],
+  canyon: [['from', 'SCREEN CANYON', 0, 14], ['street', 'SCREEN CANYON', 0]],
+  sig: [['street', 'WALKING STREET', 0], ['line', 'UNDER THE STAGE', 1], ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
   long: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'SIGN STACK', 0], ['line', 'ROOFLINE', 1]],
 };
 // a pilot: cruise m/s, thumb noise (stick OU sigma), line choice spread (share of the gate half-size), reaction lookahead m
@@ -89,7 +104,8 @@ const PILOTS = {
 };
 
 function buildPath(route, rng, spread) {
-  const ts = world.takeStart; const path = [ts.pos.clone()];
+  const ts = world.takeStart; let path = [ts.pos.clone()];
+  if (route[0][0] === 'from') { const [, nm, kk, back] = route[0]; const g = lineGates(nm, kk)[0]; const n = V(g.n).setY(0).normalize(); const p0 = V(g.c).addScaledVector(n, -back); if (p0.y < 2) p0.y = 2.2; path = [p0]; route = route.slice(1); }
   for (const [kind, name, k] of route) {
     const gates = kind === 'street' ? streetGates(name, k) : lineGates(name, k);
     if (!gates) { console.log('no line', name); return null; }
@@ -111,7 +127,7 @@ function buildPath(route, rng, spread) {
 
 function fly(path, P, rng) {
   const dr = new Drone('freestyle5'); let crashed = false; dr.onCrash = () => { crashed = true; };
-  dr.reset(path[0].clone(), world.takeStart.yaw);
+  { const d0 = path[1].clone().sub(path[0]); dr.reset(path[0].clone(), Math.atan2(-d0.x, -d0.z)); }
   const tk = new Take(), evs = [], DT = 1 / 240; let seg = 0, t = 0, stuck = 0, lastP = dr.pos.clone();
   const ou = { p: 0, r: 0, c: 0 }, vC = P.v * (0.9 + 0.2 * rng.next());
   while (t < 600) {
@@ -141,21 +157,21 @@ function fly(path, P, rng) {
     lines: evs.filter((e) => e.type === 'line' && !e.micro).length, micros: evs.filter((e) => e.type === 'line' && e.micro).length, banks: evs.filter((e) => e.type === 'bank' && !e.cut).length,
     scrapes: evs.filter((e) => e.type === 'scrape').length, heads: evs.filter((e) => e.heads).length, maxFlow: tk.stats.maxFlow,
     first: caps.length ? +(caps[0] - start).toFixed(1) : null, gapMean: gaps.length ? +(gaps.reduce((a, b) => a + b, 0) / gaps.length).toFixed(1) : null, gapMax: gaps.length ? +Math.max(...gaps).toFixed(1) : null,
-    names: evs.filter((e) => e.type === 'line').map((e) => e.name) };
+    names: evs.filter((e) => e.type === 'line').map((e) => e.name), tl: evs.filter((e)=>['line','repeat','bank','scrape','crash','cut'].includes(e.type)).map((e)=>`${e.at.toFixed(1)} ${e.type} ${e.name||''}${e.by?' by '+e.by:''}${e.heads?' HEADS':''} +${e.pts||0} x${e.flow||''}`) };
 }
 
 const q = (a, f) => { const s = a.slice().sort((x, y) => x - y); return s.length ? s[Math.min(s.length - 1, Math.floor(f * s.length))] : null; };
 const results = {};
-const routes = ROUTE === 'all' ? Object.keys(ROUTES) : [ROUTE];
+const routes = ROUTE === 'all' ? Object.keys(ROUTES) : ROUTE.split(',');
 const T0 = performance.now();
-for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS)) {
+for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS).filter(([k]) => !process.env.PILOT || process.env.PILOT.split(',').includes(k))) {
   const R = []; const rng = new Rng(1000 + rn.length * 31 + pn.length * 7);
   for (let i = 0; i < RUNS; i++) { const path = buildPath(ROUTES[rn], rng, P.spread); if (!path) break; R.push(fly(path, P, rng)); }
   const tot = R.map((r) => r.total);
   results[`${rn}/${pn}`] = { runs: R.length, p25: q(tot, 0.25), p50: q(tot, 0.5), p75: q(tot, 0.75), crash: R.filter((r) => r.crashed).length, by: R.map((r) => r.by).filter(Boolean),
     stars: R.map((r) => r.stars), lines: q(R.map((r) => r.lines), 0.5), micros: q(R.map((r) => r.micros), 0.5), banks: q(R.map((r) => r.banks), 0.5), scrapes: q(R.map((r) => r.scrapes), 0.5),
     heads: R.reduce((a, r) => a + r.heads, 0), first: q(R.map((r) => r.first ?? 99), 0.5), gapMean: q(R.map((r) => r.gapMean ?? 99), 0.5), gapMax: q(R.map((r) => r.gapMax ?? 99), 0.5), t: q(R.map((r) => r.t), 0.5), maxFlow: q(R.map((r) => r.maxFlow), 0.5) };
-  console.log(`${rn.padEnd(5)} ${pn.padEnd(8)} ${JSON.stringify(results[`${rn}/${pn}`])}`);
+  console.log(`${rn.padEnd(5)} ${pn.padEnd(8)} ${JSON.stringify(results[`${rn}/${pn}`])}`); if (process.env.TL) for (const r of R) console.log('   ', r.total, r.stars, r.crashed?'CRASH '+r.by:'', '|', r.tl.join(' ; '));
 }
 console.log(`stars ${JSON.stringify(tuning.stars)} | ${((performance.now() - T0) / 1000).toFixed(0)} s`);
 if (OUT) fs.writeFileSync(OUT, JSON.stringify({ tuning, results }, null, 1));
