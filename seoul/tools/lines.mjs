@@ -224,7 +224,7 @@ run({ path: red.points, name: 'RED ROAD', caption: 'THE RED *ROAD*!', value: 200
 // 2. BAR ALLEY: Wausan-ro 21-gil, the E-W bar and club alley (reference hero line 4), 2.0-4.0 m (drops cross from 4.2 m)
 const club = longest('와우산로21길', 'club'); const CL = len(club.points);
 run({ path: club.points, name: 'BAR ALLEY', caption: 'THE BAR *ALLEY*!', value: 2000, s0: 14, s1: -14, y0: 2.0, y1: 4.0, w: club.width - 0.8,
-  cuts: [57, 100, 150], feats: [
+  cuts: [46, 95, 145], feats: [   // [P3-F1 design #4] the first piece ends 32 m after the pre-gate (phase 2: 43 m, a 21 s gap off Hongik-ro)
     { name: 'DOOR QUEUE', caption: 'DOOR *QUEUE*!', s: 121, queue: true, ...HEADS, what: 'the club queue at 120 m (karaoke, blades both sides)' },
     { name: 'CLUB DOORS', s: 173, ...HEADS, pts: 750, what: 'club door at 173 m, head height under the awnings' },
     { name: 'POCHA ROW', s: 188, ...HEADS, pts: 750, what: 'pocha at 187 m, head height' },
@@ -237,7 +237,10 @@ run({ path: club.points, name: 'BAR ALLEY', caption: 'THE BAR *ALLEY*!', value: 
     report.push(`  (CLUB STREET: Wausan-ro 19-gil piece ${c19.id}, ${L19.toFixed(0)} m)`); } }
 // 2c. PLAYGROUND POP (micro): out of the bar alleys, up over Hongdae Playground (hero line 4's pop-up): a 10 m
 // horizontal portal at 9 m over the park, crossed climbing
-{ const G = g([80, 9, 97], [0, 1, 0], 10, 10, [1, 0, 0]); add('PLAYGROUND POP', 'PLAYGROUND *POP*!', 500, G, { micro: true }); }
+// [P3-F1 design #5] anchored: a 4 x 4 m portal 7 m straight over the Playground's busker (layout hero 'playground', where
+// seoul-life's acoustic ring stands), not phase 2's 10 x 10 m square in the air
+{ const pg = (layout.hero || []).find((h) => h.id === 'playground')?.pos || [80, 2, 97];
+  const G = fit(g([pg[0], 7, pg[2]], [0, 1, 0], 4, 4, [1, 0, 0]), 'PLAYGROUND POP'); add('PLAYGROUND POP', 'PLAYGROUND *POP*!', 500, G, { micro: true, feature: 'over the Playground busker' }); }
 // 3. HONGIK-RO: down the main road from the station to the university, 5-8 m: over the buses, under the lamp arms' reach
 const hong = longest('홍익로', 'main'); const HL = len(hong.points);
 run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value: 1500, s0: 10, s1: -10, y0: 5.0, y1: 8.0, w: hong.width });
@@ -261,7 +264,8 @@ run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value:
   const near = masts.filter((m) => m.d > 0).sort((a, b) => a.d - b.d)[0], far = masts.filter((m) => m.d < 0).sort((a, b) => b.d - a.d)[0];
   if (near && far) {
     // the arm runs from the head out to its pole (away from the road centre, ~5.5-6.5 m): the gate under its middle
-    const under = (m, sg) => { const dd = m.d + sg * 1.6;   // 1.6 m kerb-side of the heads: 0.9 m clear of their boxes, ~4-5 m short of the pole return g([mx + nx * dd + pa.tx * m.s, 4.3, mz + nz * dd + pa.tz * m.s], [-nx, 0, -nz], 2.4, 1.2, [pa.tx, 0, pa.tz]); };
+    // 1.6 m kerb-side of the heads: 0.9 m clear of their boxes, ~4-5 m short of the pole
+    const under = (m, sg) => { const dd = m.d + sg * 1.6; return g([mx + nx * dd + pa.tx * m.s, 4.3, mz + nz * dd + pa.tz * m.s], [-nx, 0, -nz], 2.4, 1.2, [pa.tx, 0, pa.tz]); };
     const A = fit(under(near, 1), 'CROSSING (near mast)'), B = fit(under(far, -1), 'CROSSING (far mast)'), L = dist3(A, B);
     add('CROSSING', 'THE *CROSSING*!', 1500, B, { pre: [A], within: within(L) });
     add('CROSSING', 'THE *CROSSING*!', 1500, neg(A), { pre: [neg(B)], within: within(L) });

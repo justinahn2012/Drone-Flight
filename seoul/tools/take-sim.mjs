@@ -82,7 +82,8 @@ function streetGates(name, k = 0) {
 const lineGates = (name, k = 0) => { const e = entries(name)[k]; return e ? [...(e.pre || []), e] : null; };
 const ROUTES = {
   short: [['street', 'WALKING STREET', 0]],
-  loop: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['street', 'BAR ALLEY', 0]],
+  // [P3-F1] through the transit connectors (TO THE BAR ALLEY n): a pilot follows the street between the two lines
+  loop: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0]],
   stairs: [['from', 'STATION STAIRS', 0, 14], ['line', 'STATION STAIRS', 0]],
   stage0: [['from', 'UNDER THE STAGE', 0, 14], ['line', 'UNDER THE STAGE', 0]],
   stage1: [['from', 'UNDER THE STAGE', 1, 14], ['line', 'UNDER THE STAGE', 1]],
@@ -102,7 +103,7 @@ const ROUTES = {
   roofline: [['from', 'ROOFLINE', 0, 14], ['street', 'ROOFLINE', 0], ['line', 'ROOF SLOT', 0]],
   hub: [['street', 'WALKING STREET', 0], ['street', 'RED ROAD', 1]],
   sig: [['street', 'WALKING STREET', 0], ['line', 'UNDER THE STAGE', 1], ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
-  long: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'SIGN STACK', 0], ['line', 'ROOFLINE', 1]],
+  long: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'SIGN STACK', 0], ['street', 'ROOFLINE', 1]],
 };
 // a pilot: cruise m/s, thumb noise (stick OU sigma), line choice spread (share of the gate half-size), reaction lookahead m
 const PILOTS = {
