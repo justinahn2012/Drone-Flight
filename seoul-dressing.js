@@ -43,6 +43,8 @@ export const DRESS_MATS = {
   dr_leafcard: { color: [1, 1, 1], rough: 0.78, vcol: true, map: 'seoul/dressing/ginkgo_cards.png', alphaTest: 0.42, double: true, cardNormals: true, noCol: true, albedo: [0.42, 0.31, 0.05] },
   // [P3-E graphics #2] the AC unit's face (tools/seoul-ac-face.py: louvres, fan grille, plate, grime), tinted per unit
   dr_ac: { color: [0.62, 0.62, 0.6], rough: 0.55, vcol: true, map: 'seoul/dressing/ac_face.png', noCol: true, albedo: [0.42, 0.42, 0.4] },
+  // [P3-E fpv #3] background massing (procedural facades: the ring's building shader; uv = metres, colour = floorH, seed, H)
+  dr_mass: { color: [1, 1, 1], rough: 0.9, vcol: true, mass: true, albedo: [0.2, 0.19, 0.18] },
   // [P3-E] clear vinyl (pocha fronts)
   dr_vinyl: { color: [0.32, 0.30, 0.28], rough: 0.12, transparent: true, opacity: 0.22, double: true, noCol: true, albedo: [0.05, 0.05, 0.05] },
 };
@@ -53,6 +55,12 @@ const specOf = (k) => DRESS_MATS[k] || { emissive: false, vcol: false };
 // browser: a ready material for an E key (C uses its own for C keys)
 export function material(key, renderer) {
   const m = DRESS_MATS[key]; if (!m) return null;
+  if (m.mass) {   // [P3-E] procedural facades (not lit by the city grid: their light is in the shader, like the ring's)
+    const mat = new THREE.ShaderMaterial({ uniforms: { uNits: { value: NITS }, uHaze: { value: new THREE.Vector3(1.0, 0.64, 0.4).multiplyScalar(0.11 * NITS) }, uHazeD: { value: 1900 } },
+      vertexShader: 'attribute vec3 color; varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW; void main(){ vUV = uv; vB = vec4(color.x, color.z > 24.0 ? 2.0 : 0.0, color.y, color.z); vN = normal; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+      fragmentShader: BEYOND_HZ + BEYOND_BLD_FS });
+    mat.userData.cityLight = false; mat.name = 'seoul:' + key; return mat;
+  }
   const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(...m.color), roughness: m.rough ?? 0.8, metalness: m.metal || 0, vertexColors: !!m.vcol });
   if (m.transparent) { mat.transparent = true; mat.opacity = m.opacity ?? 0.5; mat.depthWrite = false; }
   if (m.double) mat.side = THREE.DoubleSide;
@@ -1353,6 +1361,34 @@ export function geometry(layout, opts = {}) {
   }
 
   lap('cables');
+  // ---- [P3-E fpv #3] background massing inside the block box where C built nothing (the strip's interior: 118 empty 24 m
+  // cells, the "orange dots in a black void" of the high shot). Collidable villas and a few mid-rises on the local grid,
+  // drawn by dr_mass: the same procedural facades as beyond()'s ring (uv = metres along the face / height, colour = floorH,
+  // seed, H). >= 14 m from C's lots, >= 7 m off the streets, clear of gates and E's dressing.
+  {
+    const Rm = rng('mass' + seed), Bx = layout.box || layout.core;
+    let th = 0, bl = 0; for (const st of mainStreets) for (const g of st.segs) if (st.ko === '양화로' && g.L > bl) { bl = g.L; th = Math.atan2(g.tz, g.tx); }
+    const ux = Math.cos(th), uz = Math.sin(th);
+    let nM = 0;
+    for (let x = Bx.x0 + 8; x < Bx.x1 - 8; x += 13) for (let z = Bx.z0 + 8; z < Bx.z1 - 8; z += 13) {
+      const px = x + (Rm() - 0.5) * 3, pz = z + (Rm() - 0.5) * 3, hw = 4.2 + Rm() * 2.2, hd = 4.2 + Rm() * 2.4, r = Math.hypot(hw, hd);
+      if (!M.lotClear(px, pz, r + 8) || M.ribbonD(px, pz) < r + 4 || !occFree(px, pz, r)) continue;
+      const nearMain = M.ribbonD(px, pz, true) < 40, floors = nearMain && Rm() < 0.35 ? 7 + Math.floor(Rm() * 8) : 3 + Math.floor(Rm() * 4), fh = 3.0 + Rm() * 0.3, H = floors * fh;
+      const F = { o: [px, 0, pz], x: [ux, 0, uz], y: [0, 1, 0], z: [-uz, 0, ux] }, sd = Rm();
+      item(() => {
+        set('dr_mass', { c: [fh, sd, H] });
+        const cn = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]].map(([a, b]) => W(F, a, 0, b));
+        let u0 = sd * 7;
+        for (let k = 0; k < 4; k++) { const a = cn[k], b = cn[(k + 1) % 4], L = Math.hypot(b[0] - a[0], b[2] - a[2]), out = v3.norm([b[2] - a[2], 0, -(b[0] - a[0])]);
+          const o2 = v3.dot(out, [a[0] - px, 0, a[2] - pz]) > 0 ? out : v3.mul(out, -1);
+          quad(a, b, [b[0], H, b[2]], [a[0], H, a[2]], o2, [[u0, 0], [u0 + L, 0], [u0 + L, H], [u0, H]]); u0 += L; }
+        quad(...cn.map((q) => [q[0], H, q[2]]), [0, 1, 0], [[0, 0], [0, 0], [0, 0], [0, 0]]);
+        occAdd(px, pz, r); nM++;
+      }, { margin: 0.5 });
+    }
+    facts.massing = nM;
+  }
+  lap('massing');
   // ================================================================================================ output
   const merged = {}; let tris = 0;
   for (const [k, a] of Object.entries(acc)) { const g = a.geometry(); if (g) { merged[k] = g; tris += g.getAttribute('position').count / 3; } }
@@ -1374,6 +1410,40 @@ export function geometry(layout, opts = {}) {
 // tower beacons. Walls 0.5-2 nits with procedural windows (12-25 % lit, 5-25 nits) and ground-floor sign bands; all of it
 // non-colliding, past the flight bounds (box + 60). Returns typed arrays (also for H's export) and facts.
 // ================================================================================================================
+// [P3-E fpv #3] shared by the ring's buildings and the in-block massing (dr_mass)
+const BEYOND_HZ = `uniform vec3 uHaze; uniform float uHazeD; uniform float uNits;
+float h1(vec2 p){ p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
+vec3 haze(vec3 c, float d){ return mix(c, uHaze, 1.0 - exp(-d / uHazeD)); }`;
+const BEYOND_BLD_FS = `
+varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW;
+void main(){
+  float fh = vB.x, kind = vB.y, sd = vB.z, H = vB.w; vec3 c;
+  if (vN.y > 0.5) c = vec3(0.3, 0.29, 0.27) * (0.5 + 0.6 * h1(vec2(sd * 91.0, 3.0)));                        // roofs, ~0.3 nit
+  else {
+    float bay = 2.6 + 1.2 * h1(vec2(sd * 17.0, 1.0)) + (kind > 1.5 ? 0.0 : 0.5);
+    vec2 g = vec2(vUV.x / bay, vUV.y / fh), cell = floor(g), f = fract(g), fw = fwidth(g);
+    float wall = (0.5 + 1.5 * h1(vec2(sd * 13.0, 7.0))) * (1.0 + 1.3 * exp(-vUV.y / 7.0));                   // 0.5-2 nits, street spill low down
+    vec3 wallC = vec3(1.0, 0.92, 0.84) * wall;
+    float litF = kind > 1.5 ? 0.25 : 0.13, r = h1(cell + sd * vec2(31.7, 17.3));
+    vec3 lc = mix(vec3(1.0, 0.7, 0.42), vec3(0.86, 0.93, 1.0), step(0.62, h1(cell * 1.7 + sd))) * (5.0 + 20.0 * h1(cell * 2.3 + sd * 3.1));
+    vec3 uc = vec3(0.75, 0.8, 0.95) * 0.8;
+    float wx = smoothstep(0.17, 0.17 + fw.x * 1.5, f.x) * (1.0 - smoothstep(0.83 - fw.x * 1.5, 0.83, f.x));
+    float wy = smoothstep(0.3, 0.3 + fw.y * 1.5, f.y) * (1.0 - smoothstep(0.86 - fw.y * 1.5, 0.86, f.y));
+    float win = wx * wy; vec3 wc = r < litF ? lc : uc;
+    if (vUV.y > H - 0.9) win = 0.0;                                                                           // parapet
+    if (cell.y < 0.5) {                                                                                       // ground floor: shops and signs
+      float s = h1(cell + sd * 5.0);
+      wc = kind > 0.5 ? (s < 0.32 ? vec3(1.0, 0.36, 0.12) : s < 0.58 ? vec3(1.0, 0.78, 0.42) : s < 0.74 ? vec3(1.0, 0.95, 0.88) : s < 0.84 ? vec3(0.95, 0.2, 0.22) : s < 0.93 ? vec3(0.3, 0.75, 1.0) : vec3(1.0, 0.3, 0.75)) * (25.0 + 45.0 * h1(cell * 3.0 + sd))
+                      : vec3(1.0, 0.8, 0.6) * (r < 0.45 ? 6.0 : 0.6);
+      win = wx * smoothstep(0.08, 0.16, f.y) * (1.0 - smoothstep(0.9, 0.96, f.y));
+    } else if (kind > 0.5 && cell.y < 2.5 && h1(vec2(cell.x, sd)) < 0.3) {                                  // 2F-3F fascia signs
+      float s = h1(cell * 1.3 + sd); wc = (s < 0.5 ? vec3(1.0, 0.55, 0.2) : s < 0.78 ? vec3(1.0, 0.95, 0.85) : vec3(0.95, 0.25, 0.3)) * (25.0 + 35.0 * s); win = max(win, wx * 0.9);
+    }
+    vec3 det = mix(wallC, wc, win), avg = mix(wallC, litF * vec3(0.95, 0.85, 0.72) * 15.0 + (1.0 - litF) * uc, 0.37);
+    c = mix(det, avg, smoothstep(0.35, 0.9, max(fw.x, fw.y)));                                              // windows below a pixel: their mean
+  }
+  gl_FragColor = vec4(haze(c, length(vW - cameraPosition)) * uNits, 1.0);
+}`;
 const BEYOND_CACHE = new WeakMap();
 export function beyond(layout, opts = {}) {
   const dens = clamp(opts.density ?? 1, 0.25, 2), key = layout;
@@ -1598,9 +1668,7 @@ varying float vCov; varying float vSide; varying float vHw;`)
     const BY = beyond(layout, { seed: ctx.seed ?? 11, density: ctx.quality === 'low' ? 0.6 : 1 });
     const HAZE = new THREE.Vector3(1.0, 0.64, 0.4).multiplyScalar(0.11 * nit);   // lamp-lit air over Mapo, ~0.1 nit, brown-orange
     beyondU = { uNits: { value: nit }, uHaze: { value: HAZE }, uHazeD: { value: 1900 }, uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1280, 720) } };
-    const HZ = `uniform vec3 uHaze; uniform float uHazeD; uniform float uNits;
-float h1(vec2 p){ p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
-vec3 haze(vec3 c, float d){ return mix(c, uHaze, 1.0 - exp(-d / uHazeD)); }`;
+    const HZ = BEYOND_HZ;
     // ground tiles (80 m, off C's ground and off the river), roads, the river
     { const P = [], C = [], B0 = layout.box || layout.core, x0 = B0.x0 - 78, x1 = B0.x1 + 78, z0 = B0.z0 - 78, z1 = B0.z1 + 78, cxx = (B0.x0 + B0.x1) / 2, czz = (B0.z0 + B0.z1) / 2, T = 80;
       const bz = (x) => { const K = BY.bank; for (let i = 0; i < K.length - 1; i++) if (x >= K[i][0] && x <= K[i + 1][0]) return K[i][1] + (K[i + 1][1] - K[i][1]) * (x - K[i][0]) / (K[i + 1][0] - K[i][0]); return 1e9; };
@@ -1638,36 +1706,7 @@ vec3 haze(vec3 c, float d){ return mix(c, uHaze, 1.0 - exp(-d / uHazeD)); }`;
       g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
       const m = new THREE.ShaderMaterial({ uniforms: beyondU, side: THREE.DoubleSide,
         vertexShader: 'attribute vec2 aUV; attribute vec4 aB; varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW; void main(){ vUV = aUV; vB = aB; vN = normal; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
-        fragmentShader: HZ + `
-varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW;
-void main(){
-  float fh = vB.x, kind = vB.y, sd = vB.z, H = vB.w; vec3 c;
-  if (vN.y > 0.5) c = vec3(0.3, 0.29, 0.27) * (0.5 + 0.6 * h1(vec2(sd * 91.0, 3.0)));                        // roofs, ~0.3 nit
-  else {
-    float bay = 2.6 + 1.2 * h1(vec2(sd * 17.0, 1.0)) + (kind > 1.5 ? 0.0 : 0.5);
-    vec2 g = vec2(vUV.x / bay, vUV.y / fh), cell = floor(g), f = fract(g), fw = fwidth(g);
-    float wall = (0.5 + 1.5 * h1(vec2(sd * 13.0, 7.0))) * (1.0 + 1.3 * exp(-vUV.y / 7.0));                   // 0.5-2 nits, street spill low down
-    vec3 wallC = vec3(1.0, 0.92, 0.84) * wall;
-    float litF = kind > 1.5 ? 0.25 : 0.13, r = h1(cell + sd * vec2(31.7, 17.3));
-    vec3 lc = mix(vec3(1.0, 0.7, 0.42), vec3(0.86, 0.93, 1.0), step(0.62, h1(cell * 1.7 + sd))) * (5.0 + 20.0 * h1(cell * 2.3 + sd * 3.1));
-    vec3 uc = vec3(0.75, 0.8, 0.95) * 0.8;
-    float wx = smoothstep(0.17, 0.17 + fw.x * 1.5, f.x) * (1.0 - smoothstep(0.83 - fw.x * 1.5, 0.83, f.x));
-    float wy = smoothstep(0.3, 0.3 + fw.y * 1.5, f.y) * (1.0 - smoothstep(0.86 - fw.y * 1.5, 0.86, f.y));
-    float win = wx * wy; vec3 wc = r < litF ? lc : uc;
-    if (vUV.y > H - 0.9) win = 0.0;                                                                           // parapet
-    if (cell.y < 0.5) {                                                                                       // ground floor: shops and signs
-      float s = h1(cell + sd * 5.0);
-      wc = kind > 0.5 ? (s < 0.32 ? vec3(1.0, 0.36, 0.12) : s < 0.58 ? vec3(1.0, 0.78, 0.42) : s < 0.74 ? vec3(1.0, 0.95, 0.88) : s < 0.84 ? vec3(0.95, 0.2, 0.22) : s < 0.93 ? vec3(0.3, 0.75, 1.0) : vec3(1.0, 0.3, 0.75)) * (25.0 + 45.0 * h1(cell * 3.0 + sd))
-                      : vec3(1.0, 0.8, 0.6) * (r < 0.45 ? 6.0 : 0.6);
-      win = wx * smoothstep(0.08, 0.16, f.y) * (1.0 - smoothstep(0.9, 0.96, f.y));
-    } else if (kind > 0.5 && cell.y < 2.5 && h1(vec2(cell.x, sd)) < 0.3) {                                  // 2F-3F fascia signs
-      float s = h1(cell * 1.3 + sd); wc = (s < 0.5 ? vec3(1.0, 0.55, 0.2) : s < 0.78 ? vec3(1.0, 0.95, 0.85) : vec3(0.95, 0.25, 0.3)) * (25.0 + 35.0 * s); win = max(win, wx * 0.9);
-    }
-    vec3 det = mix(wallC, wc, win), avg = mix(wallC, litF * vec3(0.95, 0.85, 0.72) * 15.0 + (1.0 - litF) * uc, 0.37);
-    c = mix(det, avg, smoothstep(0.35, 0.9, max(fw.x, fw.y)));                                              // windows below a pixel: their mean
-  }
-  gl_FragColor = vec4(haze(c, length(vW - cameraPosition)) * uNits, 1.0);
-}` });
+        fragmentShader: BEYOND_HZ + BEYOND_BLD_FS });
       m.userData.cityLight = false; const mesh = new THREE.Mesh(g, m); mesh.name = 'seoul:beyondCity'; mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; group.add(mesh); disposables.push(g, m); beyondStats.buildingTris = v / 3; }
     // light points: lamps, cars (moving, white toward the camera / red away), crosses (a cross-shaped sprite), beacons (blink)
     { const Lm = BY.lamps, Cr = BY.cars, Mk = BY.marks, n = Lm.length / 7 + Cr.length / 8 + Mk.length / 5;
