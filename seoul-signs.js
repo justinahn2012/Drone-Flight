@@ -1154,13 +1154,24 @@ export async function build(layout, ctx = {}) {
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance = sgEm * uNit;');
   };
   faceMat.customProgramCacheKey = () => 'seoul-signs-msdf-2';
-  const houseMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.2 });
-  houseMat.name = 'seoul-signs-housing';
 
   // --- tiles (80 m): faces + housings, so the city's signs frustum-cull ---
   const TILE = ctx.tileSize ?? 80; const tiles = new Map();
-  const tileOf = (p) => { const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`; let t = tiles.get(k); if (!t) { t = { key: k, faces: [], nq: 0, h: { p: [], n: [], c: [] } }; tiles.set(k, t); } return t; };
+  const tileOf = (p) => { const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`; let t = tiles.get(k); if (!t) { t = { key: k, faces: [], nq: 0, h: [] }; tiles.set(k, t); } return t; };
   for (const f of D.faces) { const t = tileOf(f.c); t.faces.push(f); t.nq += f.els.length; }
+  const colP = [];
+  const boxInto = (H, b, P) => {
+    const { c, r, n, hw, hh, hd, col } = b;
+    const Pt = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
+    const Fc = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1], n], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1], [-n[0], 0, -n[2]]],
+      [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1], [r[0], 0, r[2]]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1], [-r[0], 0, -r[2]]],
+      [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1], [0, 1, 0]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [0, -1, 0]]];
+    Fc.forEach((fc, i) => { const q = fc.slice(0, 4).map((s) => Pt(...s));
+      if (H && !(b.noFront && i === 0)) { H.push(q, col); }
+      if (P) for (const j of [0, 1, 2, 0, 2, 3]) P.push(...q[j]); });
+  };
+  // housings ride in the face meshes as unlit PANEL quads (one material, one draw per tile: phase 3 perf, was 2 per tile)
+  for (const b of D.boxes) { const t = tileOf(b.c); const n0 = t.h.length; boxInto(t.h, b, b.collide ? colP : null); t.nq += (t.h.length - n0) / 2; }
   // fill typed arrays directly (two passes: count, then write) — this runs once at load on the phone
   for (const t of tiles.values()) {
     if (!t.nq) continue;
@@ -1183,18 +1194,12 @@ export async function build(layout, ctx = {}) {
         }
       }
     }
+    for (let i = 0; i < t.h.length; i += 2) {   // housing quads: kind PANEL, no emission, albedo = the housing colour
+      const q = t.h[i], c = t.h[i + 1], a0 = Math.round(c[0] * 255), a1 = Math.round(c[1] * 255), a2 = Math.round(c[2] * 255);
+      T.idx[ii++] = v; T.idx[ii++] = v + 1; T.idx[ii++] = v + 2; T.idx[ii++] = v; T.idx[ii++] = v + 2; T.idx[ii++] = v + 3;
+      for (let j = 0; j < 4; j++, v++) { T.p.set(q[j], v * 3); T.alb[v * 4] = a0; T.alb[v * 4 + 1] = a1; T.alb[v * 4 + 2] = a2; T.alb[v * 4 + 3] = 255; T.k[v * 4] = K.PANEL; T.k[v * 4 + 1] = 1; T.k[v * 4 + 2] = 1; }
+    }
   }
-  const colP = [];
-  const boxInto = (H, b, P) => {
-    const { c, r, n, hw, hh, hd, col } = b;
-    const Pt = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
-    const Fc = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1], n], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1], [-n[0], 0, -n[2]]],
-      [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1], [r[0], 0, r[2]]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1], [-r[0], 0, -r[2]]],
-      [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1], [0, 1, 0]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [0, -1, 0]]];
-    Fc.forEach((fc, i) => { const q = fc.slice(0, 4).map((s) => Pt(...s));
-      for (const j of [0, 1, 2, 0, 2, 3]) { if (H && !(b.noFront && i === 0)) { H.p.push(...q[j]); H.n.push(...fc[4]); H.c.push(...col); } if (P) P.push(...q[j]); } });
-  };
-  for (const b of D.boxes) boxInto(tileOf(b.c).h, b, b.collide ? colP : null);
   const meshes = []; let tris = 0;
   for (const t of [...tiles.values()].sort((a, b) => (a.key < b.key ? -1 : 1))) {
     if (t.f) {
@@ -1210,12 +1215,6 @@ export async function build(layout, ctx = {}) {
       const m = new THREE.Mesh(g, faceMat); m.name = `signs-faces-${t.key}`; m.matrixAutoUpdate = false;
       m.onBeforeRender = (renderer) => { const rt = renderer.getRenderTarget(); uMS.value = rt && rt.samples > 0 ? 1 : 0; };
       group.add(m); meshes.push(m); tris += t.f.idx.length / 3;
-    }
-    if (t.h.p.length) {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(t.h.p, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(t.h.n, 3));
-      g.setAttribute('color', new THREE.Float32BufferAttribute(t.h.c, 3)); g.computeBoundingSphere();
-      const m = new THREE.Mesh(g, houseMat); m.name = `signs-housing-${t.key}`; m.matrixAutoUpdate = false; group.add(m); meshes.push(m); tris += t.h.p.length / 9;
     }
   }
   // collider triangles for the integrator (blades, boxes, stands, cabinets): not added to any collider here
