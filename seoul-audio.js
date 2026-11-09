@@ -28,7 +28,7 @@ const NORM = { traffic: 13.5, crowd: 17.0, alley: 13.0, air: 12.5, rain: 9.0, mu
 const nrm = (k) => Math.pow(10, NORM[k] / 20);
 export const SND = {
   level: 1,
-  world: 0.86,    // trim on the world path, set so the city sits ~9 LU under a hover on the walking street (sound #1)
+  world: 1.0,     // trim on the world path, set so the city sits ~9 LU under a hover on the walking street (sound #1)
   beds: { traffic: 77, crowd: 71, alley: 58, air: 54, rain: 66 },
   car: 72, taxi: 70, truck: 76, bus: 80, scooter: 80, tyre: 74,
   music: 85, club: 90, neon: 44, sizzle: 64, hiss: 92, horn: 98, chime: 84, voice: 72, laugh: 76, heel: 66, busk: 101, applause: 88, guide: 80,
@@ -278,11 +278,11 @@ export function createSeoulAudio(layout, life, opts = {}) {
   const sites = { music: [], club: [], neon: [], sizzle: [] };
   lots.forEach((l, i) => {
     const h = ((i * 2654435761) >>> 0) / 4294967296;
-    if (l.use === 'club') sites.club.push({ ...front(l, 0.6, 1.2), id: l.id, phase: h * 97, style: 'club', seed: i });
+    if (l.use === 'club') sites.club.push({ ...front(l, 0.6, 1.2), id: l.id, phase: h * 97, style: 'club', seed: i, minD: 2 });
     else if (MUSIC_USES[l.use] && h < (l.use === 'restaurant' ? 0.3 : 0.75)) {
       const st = MUSIC_USES[l.use], style = hero.has(l.street) && h * 3 % 1 < 0.34 ? 'citypop' : st[Math.floor(h * 7) % st.length];
       // ~45 % play from a doorway speaker (open: full band, 82-88 dB at 2 m); the rest leak through glass
-      sites.music.push({ ...front(l, 1.0, 2.4), id: l.id, phase: h * 53, style, seed: i, open: h * 11 % 1 < 0.45 });
+      sites.music.push({ ...front(l, 1.0, 2.4), id: l.id, phase: h * 53, style, seed: i, open: h * 11 % 1 < 0.45, minD: 2 });
     }
     if (l.use === 'pocha') sites.sizzle.push({ ...front(l, 1.6, 0.9), id: l.id });
     if (['bar', 'club', 'karaoke', 'motel', 'pc'].includes(l.use) && h * 5 % 1 < 0.5) sites.neon.push({ ...front(l, 0.3, 3.2), id: l.id, hz: 0 });
