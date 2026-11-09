@@ -5,7 +5,7 @@
 // non-negative and fills interior probes; 7 splitCells keeps every triangle; 8 the real block: attach + update budget.
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { attach, splitCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams } from '../seoul-light.js';
+import { attach, splitCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY } from '../seoul-light.js';
 
 let pass = 0, fail = 0;
 const ok = (c, msg) => { if (c) pass++; else { fail++; console.log('FAIL', msg); } };
@@ -49,7 +49,9 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   const C = attach(world(), [sign, lamp], { layout, steam: false, airlight: false, cull: false });
   const west = C.probe(-1, 0.5, 0), east = C.probe(14, 0.5, 0);
   ok(west.lights >= 1 && west.direct > 1, `lit in front of the wall: ${west.direct.toFixed(1)} lux`);
-  ok(east.lights === 0 && east.volume < 0.5, `nothing behind the block: ${east.lights} lights, volume ${east.volume.toFixed(2)} lux`);
+  // (the P3 sky is ~0.64 lux on an open up-face: the light's share behind the block must stay under 0.5 lux on top of it)
+  const skyLux = Math.PI * 0.5 * [NIGHT_SKY.zenith, NIGHT_SKY.horizon].reduce((s, c) => s + 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], 0);
+  ok(east.lights === 0 && east.volume < 0.5 + skyLux, `nothing behind the block: ${east.lights} lights, volume ${east.volume.toFixed(2)} lux (sky ${skyLux.toFixed(2)})`);
   ok(C.stats.occludedPairs > 0, 'occluded pairs counted');
   const HF = C.heightField; ok(HF.occ(-3, 3, 0, 14, 0, [0.5, 4, 60]) === 0b011, 'heightfield: blocked at 0.5 and 4 m, clear at 60 m');
   C.dispose();
