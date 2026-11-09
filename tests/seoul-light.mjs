@@ -143,6 +143,30 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(C.qualityCap.apply('auto') && C.uniforms.uCityDyn.value.w === 0, 'auto restores K');
   C.dispose();
 }
+// 7d P3 lighting #3: the night lightmap (seoul-nightlm.js) agrees with the per-fragment model, sees the heightfield
+{
+  const layout = { lots: [{ id: 'A', footprint: [[0, 0], [20, 0], [20, 20], [0, 20]], floors: 4, floorH: 3 }, { id: 'B', footprint: [[0, 40], [20, 40], [20, 60], [0, 60]], floors: 4, floorH: 3 }],
+    streets: [{ id: 's', points: [[-20, 30], [40, 30]], width: 20, kind: 'walking' }] };
+  // a sign on A's north wall (z = 20) facing the street (+z), lighting B's south wall (z = 40) across the street
+  const sign = { id: 'sg', pos: [10, 4, 20.1], normal: [0, 0, 1], w: 3, h: 1, nits: 800, kind: 'lightbox', rgb: [1, 1, 1] };
+  const C = attach(world(), [sign], { layout, steam: false, airlight: false, cull: false, lightmap: true });
+  const st = C.stats.lightmap; ok(st.ready && st.mode === 'sync' && st.texels.facade > 1000 && st.texels.ground > 1000, `lightmap baked: ${JSON.stringify(st.texels)} in ${st.ms} ms`);
+  const U = C.uniforms, h = THREE.DataUtils.fromHalfFloat, lum = (d, o) => (0.2126 * h(d[o]) + 0.7152 * h(d[o + 1]) + 0.0722 * h(d[o + 2])) / 0.1;
+  const G = U.tCityLMG.value.image, g = U.uCityLMG.value, gAt = (x, z) => { const i = Math.floor((x - g.x) / 0.5), j = Math.floor((z - g.y) / 0.5); return (j * G.width + i) * 4; };
+  const o1 = gAt(10.2, 26.2), p1 = C.probe(10.2, 0.02, 26.2), lm1 = lum(G.data, o1);
+  ok(h(G.data[o1 + 3]) === 1 && Math.abs(lm1 - (p1.direct + p1.volume)) < 0.25 * (p1.direct + p1.volume) + 0.3, `ground under the sign: lightmap ${lm1.toFixed(1)} lux vs grid + volume ${(p1.direct + p1.volume).toFixed(1)}`);
+  ok(h(G.data[gAt(10.2, 10.2) + 3]) === 0, 'no ground texels inside a building');
+  // B's south wall at 4 m, across from the sign: the atlas texel of the edge facing -z
+  const E = U.tCityLME.value.image.data, A = U.tCityLMA.value.image; let found = -1;
+  for (let e = 0; e < U.tCityLME.value.image.width * U.tCityLME.value.image.height / 2; e++) { const o = ((e >> 8) * 512 + (e & 255) * 2) * 4; const ux = E[o + 2], uz = E[o + 3], sg = Math.sign(E[o + 6]); const nz = sg * -ux; if (Math.abs(E[o + 1] - 40) < 0.01 && Math.abs(E[o + 1] + uz * Math.abs(E[o + 6]) - 40) < 0.01 && nz < -0.9) found = e; }
+  ok(found >= 0, 'B\'s south wall is an exposed edge facing the street');
+  if (found >= 0) {
+    const o = ((found >> 8) * 512 + (found & 255) * 2) * 4, ox = E[o], ux = E[o + 2], u0 = E[o + 4], v0 = E[o + 5], t = (10 - ox) * ux, a = Math.round(t / 0.5 + 0.5), b = Math.round(4 / 0.5 + 0.5);
+    const lmW = lum(A.data, ((v0 + b) * A.width + u0 + a) * 4), pw = C.probe(10, 4, 39.9, 0, 0, -1);
+    ok(lmW > 3 && Math.abs(lmW - (pw.direct + pw.volume)) < 0.35 * (pw.direct + pw.volume) + 0.5, `B's wall across the sign: lightmap ${lmW.toFixed(1)} lux vs grid + volume ${(pw.direct + pw.volume).toFixed(1)}`);
+  }
+  C.dispose();
+}
 // 8 the real block (signs + C's emitters), when the partner modules are present
 {
   const R = new URL('..', import.meta.url).pathname;

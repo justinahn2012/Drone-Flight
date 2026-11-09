@@ -38,6 +38,8 @@
 // Optional fields read here: lumens (street lamps), forward [x,0,z] (street lamp arm direction; else the nearest street),
 // beam {lumens} (headlights, default 1400 lm at 20,000 nits), nitsMax (animated: binning nominal).
 import * as THREE from 'three';
+import { sstep, lobeStreet, lobeBeam, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM } from './seoul-nightlm.js';
+export { NIGHT_LM };
 
 export const NITS = 0.1;                      // scene units per cd/m2 (night worlds)
 const LUMA = [0.2126, 0.7152, 0.0722];
@@ -101,18 +103,7 @@ const LT = { lambert: 0, street: 1, beam: 2 };
 
 // ------------------------------------------------------------------------------------------------- lobes (JS == GLSL)
 // D = unit direction lamp -> point; f = the lamp's horizontal forward (street: arm toward the road; beam: heading).
-const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-function lobeStreet(dx, dy, dz, fx, fz) {   // type-II forward throw: ~uniform ground illuminance out to a per-azimuth cutoff
-  const c = -dy; if (c <= 1e-4) return 0;
-  const hl = Math.hypot(dx, dz), t = hl / c, fw = hl > 1e-5 ? (dx * fx + dz * fz) / hl : 0;
-  const tc = fw >= 0 ? 3.1 + (1.75 - 3.1) * fw : 3.1 + (0.7 - 3.1) * -fw;   // tan(cutoff): 72 deg along the road, 60 across, 35 back
-  return Math.min(1 / (c * c * c), 30) * (1 - sstep(tc * 0.8, tc * 1.15, t));
-}
-function lobeBeam(dx, dy, dz, fx, fz) {      // low beam: +-23 deg wide, peak 2 deg down, cut at +0.9 deg, long tail toward the bumper
-  const fw = dx * fx + dz * fz; if (fw <= 1e-4) return 0;
-  const th = (dx * fz - dz * fx) / fw, tv = dy / fw, dv = tv + 0.035, sv = dv > 0 ? 0.05 : 0.16;
-  return Math.exp(-(th * th) / (0.42 * 0.42)) * Math.exp(-(dv * dv) / (sv * sv)) * (1 - sstep(-0.02, 0.015, tv));
-}
+// lobes: one JS copy in seoul-nightlm.js (pure, Worker-safe); the GLSL mirror is CITY_HEAD's cityStreet / cityBeam
 // integral of a lobe over the sphere (sr), f = +x (tests/seoul-light.mjs re-derives the constants below)
 export function lobeIntegral(fn) {
   const NT = 720, NP = 720; let s = 0;
@@ -224,6 +215,11 @@ uniform float uCityIrrGain;
 uniform vec4 uCityHaze;            // density (1/m), height scale (m), scatter albedo, max
 uniform vec3 uCitySkyGlow;         // haze colour with no local light (sky glow at the horizon, scene units)
 uniform sampler2D uCityAO; uniform float uCityAOOn; uniform vec2 uCityAOScale;   // fpvcam's SSAO (contract C3)
+uniform vec4 uCityLM;              // P3 night lightmap: on, ground m/texel, facade m/texel, near (m)
+uniform vec4 uCityLMG;             // ground map x0, z0, texels w, h (the raster shares x0, z0 at 1 m)
+uniform vec4 uCityLMA;             // facade atlas w, h, raster w, h
+uniform highp sampler2D tCityLMG; uniform highp sampler2D tCityLMA; uniform highp usampler2D tCityLMR; uniform highp sampler2D tCityLME;
+bool cityLMOn = false;
 vec3 cityOct(vec2 e){ vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y)); if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * (step(0.0, v.xy) * 2.0 - 1.0); return normalize(v); }
 float cityStreet(vec3 D, vec3 f){ float c = -D.y; if (c <= 1e-4) return 0.0; float hl = length(D.xz), t = hl / c;
   float fw = hl > 1e-5 ? dot(D.xz, f.xz) / hl : 0.0; float tc = fw >= 0.0 ? mix(3.1, 1.75, fw) : mix(3.1, 0.7, -fw);
@@ -232,7 +228,7 @@ float cityBeam(vec3 D, vec3 f){ float fw = dot(D.xz, f.xz); if (fw <= 1e-4) retu
   float th = (D.x * f.z - D.z * f.x) / fw, tv = D.y / fw, dv = tv + 0.035, sv = dv > 0.0 ? 0.05 : 0.16;
   return exp(-(th * th) / 0.1764) * exp(-(dv * dv) / (sv * sv)) * (1.0 - smoothstep(-0.02, 0.015, tv)); }
 vec3 cityWorldPos(vec3 pv){ return transpose(mat3(viewMatrix)) * (pv - viewMatrix[3].xyz); }
-void cityOne(const in highp usampler2D tl, int idx, bool spec, vec3 wp, vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir, vec3 geometryClearcoatNormal, PhysicalMaterial material, inout ReflectedLight reflectedLight){
+void cityOne(const in highp usampler2D tl, int idx, bool spec, bool lmSkip, vec3 wp, vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir, vec3 geometryClearcoatNormal, PhysicalMaterial material, inout ReflectedLight reflectedLight){
   ivec2 b0 = ivec2((idx & ${LW - 1}) * 2, idx >> 8);
   uvec4 ra = texelFetch(tl, b0, 0), rb = texelFetch(tl, b0 + ivec2(1, 0), 0);
   vec3 P = uintBitsToFloat(ra.xyz), n = cityOct(unpackSnorm2x16(rb.x));
@@ -245,6 +241,8 @@ void cityOne(const in highp usampler2D tl, int idx, bool spec, vec3 wp, vec3 geo
   if (d2 >= br.y * br.y) return;
   float d = sqrt(d2); vec3 l = Lw / d;
   uint m = rb.w, ty = m & 3u, ci = (m >> 2u) & 16383u;
+  bool dOff = lmSkip && ci == 0u && ((m >> 16u) & 63u) == 0u;                   // P3: baked into the lightmap (diffuse)
+  if (dOff && !spec) return;
   vec3 I = ci > 0u ? texelFetch(tCityLC, ivec2(int(ci - 1u) & 255, int(ci - 1u) >> 8), 0).rgb : vec3(unpackHalf2x16(rb.y), br.x);
   float ce = -dot(l, n), omni = float(m >> 26u) / 63.0;
   float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, omni) : ty == 1u ? cityStreet(-l, n) : cityBeam(-l, n);
@@ -257,7 +255,9 @@ void cityOne(const in highp usampler2D tl, int idx, bool spec, vec3 wp, vec3 geo
   else F = 1.0 / (d2 + aa.x * 0.3183);
   vec3 E = I * (fe * q * q * fl * uCityGain * F);
   vec3 lv = normalize((viewMatrix * vec4(l, 0.0)).xyz);
-  if (spec) { IncidentLight il; il.direction = lv; il.color = E; il.visible = true; RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); }
+  if (spec) { IncidentLight il; il.direction = lv; il.color = E; il.visible = true;
+    if (dOff) { ReflectedLight t = ReflectedLight(vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0)); RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, t); reflectedLight.directSpecular += t.directSpecular; }
+    else RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); }
   else reflectedLight.directDiffuse += E * saturate(dot(geometryNormal, lv)) * BRDF_Lambert(material.diffuseColor);
 }
 void cityLights(vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir, vec3 geometryClearcoatNormal, PhysicalMaterial material, inout ReflectedLight reflectedLight){
@@ -269,7 +269,7 @@ void cityLights(vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir
   for (int s = 0; s < 3; s++) { if (s >= kl) break;
     uvec4 ids = texelFetch(tCityG, ivec2(ci.x * ks + s, ci.y), 0);
     for (int j = 0; j < 4; j++) { uint id = ids[j]; if (id == 65535u) break;
-      cityOne(tCityL, int(id), rank < 4, wp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); rank++; }
+      cityOne(tCityL, int(id), rank < 4, cityLMOn, wp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); rank++; }
     if (ids.w == 65535u) break;
   }
   ivec2 cd = ci - ivec2(uCityDyn.xy); int dw = int(uCityDyn.z);
@@ -278,7 +278,7 @@ void cityLights(vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir
     for (int s = 0; s < 2; s++) { if (s >= kd) break;
       uvec4 ids = texelFetch(tCityGD, ivec2(cd.x * kd + s, cd.y), 0);
       for (int j = 0; j < 4; j++) { uint id = ids[j]; if (id == 65535u) break;
-        cityOne(tCityLD, int(id), rank < 2, wp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); rank++; }
+        cityOne(tCityLD, int(id), rank < 2, false, wp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); rank++; }
       if (ids.w == 65535u) break;
     }
   }
@@ -290,11 +290,40 @@ vec3 cityVolUVW(vec3 wp){
   vec2 g = (wp.xz - uCityGrid.xy) * uCityGrid.z / uCityDim.xy;
   return vec3(g, (ly + 0.5) / ${VOLUME.heights.length.toFixed(1)});
 }
+float cityAOf(){ return uCityAOOn > 0.5 ? mix(1.0, texture(uCityAO, gl_FragCoord.xy * uCityAOScale).r, 0.85) : 1.0; }
 vec3 cityIrradiance(vec3 wp, vec3 nW){
   vec3 uvw = cityVolUVW(wp);
   vec4 A = texture(tCityIrrA, uvw), B = texture(tCityIrrB, uvw);
-  float ao = uCityAOOn > 0.5 ? mix(1.0, texture(uCityAO, gl_FragCoord.xy * uCityAOScale).r, 0.85) : 1.0;
-  return A.rgb * (max(0.0, 1.0 + dot(B.xyz, nW)) * uCityIrrGain * ao);
+  return A.rgb * (max(0.0, 1.0 + dot(B.xyz, nW)) * uCityIrrGain * cityAOf());
+}
+// P3 lighting #3: the night lightmap (seoul-nightlm.js). Ground: up-facing below 0.6 m; walls: a raster of the two
+// nearest exposed footprint edges, the edge whose outward normal matches. false = keep the volume.
+bool cityLightmap(vec3 wp, vec3 nW, out vec3 E){
+  E = vec3(0.0);
+  if (uCityLM.x < 0.5) return false;
+  if (nW.y > 0.7 && wp.y < 0.6) {
+    vec4 t = texture(tCityLMG, (wp.xz - uCityLMG.xy) / uCityLM.y / uCityLMG.zw);
+    if (t.a < 0.99) return false;
+    E = t.rgb; return true;
+  }
+  if (abs(nW.y) > 0.35) return false;
+  ivec2 rc = ivec2(floor(wp.xz - uCityLMG.xy));
+  if (rc.x < 0 || rc.y < 0 || rc.x >= int(uCityLMA.z) || rc.y >= int(uCityLMA.w)) return false;
+  uvec2 ids = texelFetch(tCityLMR, rc, 0).xy;
+  for (int s = 0; s < 2; s++) {
+    uint id = s == 0 ? ids.x : ids.y; if (id == 0u) continue;
+    int e = int(id) - 1; ivec2 b = ivec2((e & 255) * 2, e >> 8);
+    vec4 r0 = texelFetch(tCityLME, b, 0), r1 = texelFetch(tCityLME, b + ivec2(1, 0), 0);
+    float sg = r1.z < 0.0 ? -1.0 : 1.0, len = abs(r1.z);
+    vec2 n = sg * vec2(r0.w, -r0.z);
+    if (dot(n, nW.xz) < 0.8) continue;
+    vec2 d = wp.xz - r0.xy; if (abs(dot(d, n)) > uCityLM.w) continue;
+    vec2 tc = vec2(clamp(dot(d, r0.zw), 0.0, len), clamp(wp.y, 0.0, r1.w));
+    vec4 tx = texture(tCityLMA, (r1.xy + 1.0 + tc / uCityLM.z) / uCityLMA.xy);
+    if (tx.a < 0.99) return false;
+    E = tx.rgb; return true;
+  }
+  return false;
 }
 // height haze: optical depth of an exponential height fog along the view ray, in-scattering the volume's fluence
 vec3 cityHaze(vec3 col, vec3 pv){
@@ -550,6 +579,7 @@ export function attach(world, emitters = [], ctx = {}) {
   const tA = new Float32Array(NP * 3), tBv = new Float32Array(NP * 3), Eg = new Float32Array(NC * 3);
   const PROBE_H = YS, V4 = 1 << YS.reduce((b, h, k) => (Math.abs(h - 4) < Math.abs(YS[b] - 4) ? k : b), 0);   // the probe nearest 4 m
   // the hot loops live in their own closures (fresh JIT feedback per attach: a second visit to the level stays fast)
+  let pc = new Int32Array(1 << 18), pi = new Int32Array(1 << 18), pb = new Uint8Array(1 << 18);   // every (cell, light, occ bits) pair (lightmap bake)
   const { pairs, occl } = (function binPass() {
   let pairs = 0, occl = 0;
   for (let i = 0; i < stat.length; i++) {
@@ -566,10 +596,11 @@ export function attach(world, emitters = [], ctx = {}) {
       let s = Math.max(kAt(m, nx, 1.5, nz), kAt(m, mx, 1.5, mz), 0.5 * kAt(m, nx, Math.max(0.5, m.y - 0.5), nz));
       s *= LUMA[0] * m.I[0] + LUMA[1] * m.I[1] + LUMA[2] * m.I[2];
       if (s < E_MIN) continue;
-      pairs++;
       const c = cz * gw + cx, pin = c * NL;
       const occBits = HF.occ(m.x, m.y, m.z, mx, mz, PROBE_H);
       if (occBits) occl++;
+      if (pairs >= pc.length) { const g2 = (A) => { const B = new A.constructor(A.length * 2); B.set(A); return B; }; pc = g2(pc); pi = g2(pi); pb = g2(pb); }
+      pc[pairs] = c; pi[pairs] = i; pb[pairs] = occBits; pairs++;
       // binning visibility: the 0.5 m and 4 m probes; an interior column (facade fragments only) counts as visible
       const vis = inner[pin] ? 1 : ((occBits & 1) ? 0 : 0.6) + ((occBits & V4) ? 0 : 0.4);
       if (vis > 0) {
@@ -655,6 +686,7 @@ export function attach(world, emitters = [], ctx = {}) {
   const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.zenith[j] + NIGHT_SKY.horizon[j]) * NS * Math.PI);   // pi L of the dome
   const skyLum = lumaOf(skyL);
   const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4), ok = new Uint8Array(NP);
+  const VI = new Float32Array(NP * 4);   // P3: the indirect part alone (bounce, windows, sky) + its vertical L1, for the lightmap bake
   const oo = new Float32Array(NL), cc = new Float32Array(NL);
   (function assemble() {
   for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) {
@@ -685,26 +717,28 @@ export function attach(world, emitters = [], ctx = {}) {
       let bl = Math.hypot(bx, by, bz) / al; const sc = bl > 2 ? 2 / bl : 1;
       VB[p * 4] = bx / al * sc; VB[p * 4 + 1] = by / al * sc; VB[p * 4 + 2] = bz / al * sc;
       VB[p * 4 + 3] = k < 2 ? hazeK[c] : k === 2 ? 0.5 * (hazeK[c] + 1) : 1;   // haze extinction factor (smoke stays low)
+      { const i0 = a0 - Math.max(0, rA[q]), i1 = a1 - Math.max(0, rA[q + 1]), i2 = a2 - Math.max(0, rA[q + 2]), il = Math.max(1e-7, LUMA[0] * i0 + LUMA[1] * i1 + LUMA[2] * i2);
+        VI[p * 4] = i0; VI[p * 4 + 1] = i1; VI[p * 4 + 2] = i2; VI[p * 4 + 3] = Math.max(-1, Math.min(1, (oo[k] * skyLum / 2 - mb * gl / 2) / il)); }
       ok[p] = 1;
     }
   }
   })();
   marks.assemble = +(now() - tV0).toFixed(0);
   // interior probes: average of filled 8-neighbours, a few passes (facade fragments interpolate toward them)
-  { const addP = new Int32Array(NP), addV = new Float32Array(NP * 8);
+  { const addP = new Int32Array(NP), addV = new Float32Array(NP * 12);
     for (let pass = 0; pass < 8; pass++) {
       let na = 0;
       for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) for (let k = 0; k < NL; k++) {
         const p = (cz * gw + cx) * NL + k; if (ok[p]) continue;
-        let n = 0; const o = na * 8; for (let j = 0; j < 8; j++) addV[o + j] = 0;
+        let n = 0; const o = na * 12; for (let j = 0; j < 12; j++) addV[o + j] = 0;
         for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
           const x = cx + dx, z = cz + dz; if ((!dx && !dz) || x < 0 || z < 0 || x >= gw || z >= gh) continue;
           const pq = (z * gw + x) * NL + k; if (!ok[pq]) continue;
-          for (let j = 0; j < 4; j++) { addV[o + j] += VA[pq * 4 + j]; addV[o + 4 + j] += VB[pq * 4 + j]; } n++;
+          for (let j = 0; j < 4; j++) { addV[o + j] += VA[pq * 4 + j]; addV[o + 4 + j] += VB[pq * 4 + j]; addV[o + 8 + j] += VI[pq * 4 + j]; } n++;
         }
-        if (n) { for (let j = 0; j < 8; j++) addV[o + j] /= n; addP[na++] = p; }
+        if (n) { for (let j = 0; j < 12; j++) addV[o + j] /= n; addP[na++] = p; }
       }
-      for (let i = 0; i < na; i++) { const p = addP[i], o = i * 8; for (let j = 0; j < 4; j++) { VA[p * 4 + j] = addV[o + j]; VB[p * 4 + j] = addV[o + 4 + j]; } ok[p] = 1; }
+      for (let i = 0; i < na; i++) { const p = addP[i], o = i * 12; for (let j = 0; j < 4; j++) { VA[p * 4 + j] = addV[o + j]; VB[p * 4 + j] = addV[o + 4 + j]; VI[p * 4 + j] = addV[o + 8 + j]; } ok[p] = 1; }
       if (!na) break;
     } }
   for (let p = 0; p < NP; p++) if (!ok[p]) { VA[p * 4] = skyL[0] * 0.1; VA[p * 4 + 1] = skyL[1] * 0.1; VA[p * 4 + 2] = skyL[2] * 0.1; VB[p * 4 + 1] = 1; VB[p * 4 + 3] = 1; }
@@ -721,6 +755,57 @@ export function attach(world, emitters = [], ctx = {}) {
   };
   const tIrrA = vol3(VA), tIrrB = vol3(VB);
   const volMs = now() - tV0;
+
+  // ------------------------------------------------------------------------------------- night lightmap (P3 lighting #3)
+  // seoul-nightlm.js bakes every static emitter (no K limit, heightfield-occluded) + the volume's indirect onto the
+  // ground (0.5 m) and the exposed walls (0.5 m atlas). Browser: in a module Worker, so the level opens on the volume and
+  // the lightmap fades in when it lands (~1-3 s); node / ctx.lightmapSync: in line. ctx.lightmap === false: off.
+  // node (tests, tools): off unless ctx.lightmap === true (the bake is seconds of CPU the suites don't need)
+  const lm = { on: (typeof window === 'undefined' ? ctx.lightmap === true : ctx.lightmap !== false) && !!ctx.layout?.lots?.length, ready: false, ms: 0, texels: null, mode: 'off', worker: null };
+  const half4 = (w, h, data) => { const t = new THREE.DataTexture(data || new Uint16Array(w * h * 4), w, h, THREE.RGBAFormat, THREE.HalfFloatType);
+    t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.generateMipmaps = false; t.needsUpdate = true; return t; };
+  let tLMG = half4(1, 1), tLMA = half4(1, 1), tLMR, tLME;
+  { const t = new THREE.DataTexture(new Uint16Array(2), 1, 1, THREE.RGIntegerFormat, THREE.UnsignedShortType); t.internalFormat = 'RG16UI'; t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true; tLMR = t; }
+  { const t = new THREE.DataTexture(new Float32Array(8), 2, 1, THREE.RGBAFormat, THREE.FloatType); t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true; tLME = t; }
+  const uLM = { value: new THREE.Vector4(0, NIGHT_LM.gres, NIGHT_LM.fres, NIGHT_LM.near) }, uLMG = { value: new THREE.Vector4() }, uLMA = { value: new THREE.Vector4(1, 1, 1, 1) };
+  if (lm.on) {
+    const tP = now();
+    const plan = planLM(ctx.layout, HF, { x0, z0, x1: x0 + gw * cell, z1: z0 + gh * cell });
+    const cs = new Int32Array(NC + 1); for (let q = 0; q < pairs; q++) cs[pc[q] + 1]++; for (let c = 0; c < NC; c++) cs[c + 1] += cs[c];
+    const fillc = cs.slice(0, NC), pe = new Int32Array(pairs), po = new Uint8Array(pairs);
+    for (let q = 0; q < pairs; q++) { const o = fillc[pc[q]]++; pe[o] = pi[q]; po[o] = pb[q]; }
+    const M = new Float32Array(stat.length * LM_MS);
+    metas.forEach((m, i) => packMeta(m, M, i, i >= animBase || (m.flick?.hz > 0 && m.flick?.depth > 0) ? 1 : 0));   // screens and flicker stay per fragment
+    const job = { plan, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI };
+    // the lookup textures now (the raster and the edge table), the maps when the bake lands
+    tLMR.image = { data: plan.raster, width: plan.rw, height: plan.rh }; tLMR.needsUpdate = true;
+    { const ER = Math.max(1, Math.ceil(plan.nE / 256)), d = new Float32Array(512 * ER * 4), E = plan.edges;
+      for (let e = 0; e < plan.nE; e++) { const o = ((e >> 8) * 512 + (e & 255) * 2) * 4, ux = E[e * 8 + 2], uz = E[e * 8 + 3], nx = E[e * 8 + 4], nz = E[e * 8 + 5];
+        const sg = nx * uz - nz * ux > 0 ? 1 : -1;
+        d[o] = E[e * 8]; d[o + 1] = E[e * 8 + 1]; d[o + 2] = ux; d[o + 3] = uz; d[o + 4] = plan.rect[e * 4]; d[o + 5] = plan.rect[e * 4 + 1]; d[o + 6] = E[e * 8 + 6] * sg; d[o + 7] = E[e * 8 + 7]; }
+      tLME.image = { data: d, width: 512, height: ER }; tLME.needsUpdate = true; }
+    uLMG.value.set(plan.x0, plan.z0, plan.gw, plan.gh); uLMA.value.set(plan.atlasW, plan.atlasH, plan.rw, plan.rh);
+    lm.plan = { edges: plan.nE, atlas: [plan.atlasW, plan.atlasH], ground: [plan.gw, plan.gh], planMs: +(now() - tP).toFixed(0) };
+    const apply = (res) => {
+      if (!res?.ground || lm.disposed) return;
+      tLMG.dispose(); tLMA.dispose();
+      tLMG = half4(plan.gw, plan.gh, res.ground); tLMA = half4(plan.atlasW, plan.atlasH, res.atlas);
+      U.tCityLMG.value = tLMG; U.tCityLMA.value = tLMA; uLM.value.x = 1;
+      lm.ready = true; lm.ms = res.ms; lm.texels = res.texels;
+    };
+    const IS_NODE = typeof window === 'undefined';
+    lm.apply = apply;
+    if (ctx.lightmapSync || IS_NODE || typeof Worker === 'undefined') { lm.mode = 'sync'; lm.pending = bakeLM(job); }   // applied once U exists
+    else {
+      try {
+        lm.mode = 'worker';
+        const w = lm.worker = new Worker(new URL('./seoul-nightlm-worker.js', import.meta.url), { type: 'module' });
+        w.onmessage = (ev) => { apply(ev.data); w.terminate(); lm.worker = null; };
+        w.onerror = (e) => { console.warn('[D] night lightmap worker failed; the volume stays', e?.message || e); w.terminate(); lm.worker = null; lm.mode = 'failed'; };
+        w.postMessage(job, [job.M.buffer, job.cs.buffer, job.pe.buffer, job.po.buffer, job.H.H.buffer]);
+      } catch (e) { console.warn('[D] no lightmap worker', e); lm.mode = 'failed'; }
+    }
+  }
   // volume statistics (exterior probes at 0.5 m on streets): irradiance on an up and a side face, lux
   const volStat = (() => { let n = 0, up = 0, side = 0; for (let c = 0; c < NC; c++) { if (!roadMask[c] || inner[c * NL]) continue; const p = c * NL; const a = lumaOf([VA[p * 4], VA[p * 4 + 1], VA[p * 4 + 2]]); up += a * Math.max(0, 1 + VB[p * 4 + 1]); side += a; n++; } return { streetProbes: n, upLux: +(up / Math.max(1, n) / NS).toFixed(2), sideLux: +(side / Math.max(1, n) / NS).toFixed(2) }; })();
 
@@ -737,9 +822,11 @@ export function attach(world, emitters = [], ctx = {}) {
     uCitySkyGlow: { value: new THREE.Vector3(...NIGHT_SKY.horizon.map((v) => v * NS * 0.6)) },
     uCityAO: aoU?.uAO || { value: blackTex }, uCityAOOn: aoU?.uAOOn || { value: 0 }, uCityAOScale: aoU?.uAOScale || { value: new THREE.Vector2(1, 1) },
     uCityCar: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uCityCarS: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) },
+    uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, tCityLMG: { value: tLMG }, tCityLMA: { value: tLMA }, tCityLMR: { value: tLMR }, tCityLME: { value: tLME },
     tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
+  if (lm.pending) { lm.apply(lm.pending); lm.pending = null; }
 
   // ------------------------------------------------------------------------------------- material patch
   const patched = new Set();
@@ -754,10 +841,12 @@ export function attach(world, emitters = [], ctx = {}) {
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${CITY_HEAD}${wet ? WET_HEAD : ''}`)
         .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>
+  vec3 cityNW = normalize(transpose(mat3(viewMatrix)) * geometryNormal), cityLMv;
+  cityLMOn = cityLightmap(cityWorldPos(geometryPosition), cityNW, cityLMv);
   cityLights(geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
   ${wet ? `float cityCC = cityContact(cityWorldPos(geometryPosition)); reflectedLight.directDiffuse *= mix(1.0, cityCC, 0.75); reflectedLight.directSpecular *= mix(1.0, cityCC, 0.75);` : 'float cityCC = 1.0;'}
   #if defined( RE_IndirectDiffuse )
-  irradiance += cityIrradiance(cityWorldPos(geometryPosition), normalize(transpose(mat3(viewMatrix)) * geometryNormal)) * cityCC;
+  irradiance += (cityLMOn ? cityLMv * (uCityGain * cityAOf()) : cityIrradiance(cityWorldPos(geometryPosition), cityNW)) * cityCC;
   #endif`)
         .replace('#include <opaque_fragment>', `#include <opaque_fragment>\n  gl_FragColor.rgb = cityHaze(gl_FragColor.rgb, -vViewPosition);`);
       if (wet) {
@@ -779,7 +868,7 @@ export function attach(world, emitters = [], ctx = {}) {
     totalEmissiveRadiance += texture(tCityMirror, muv).rgb * (F * cityWet * inb); }`);
       }
     };
-    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW2' : '|city2'); };
+    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW3' : '|city3'); };
     mat.needsUpdate = true;
     return true;
   }
@@ -1311,6 +1400,7 @@ export function attach(world, emitters = [], ctx = {}) {
     binMs: +binMs.toFixed(1), volMs: +volMs.toFixed(1), attachMs: 0, pairs, occludedPairs: occl,
     cells: cellsUsed, mean: +(used / Math.max(1, cellsUsed)).toFixed(2), full, volume: volStat,
     materials: nMat, wetMaterials: nWet, mirror: mirror.on, cull: { meshes: cull.meshes, from: cull.from, batched: cull.batch ? cull.batches.length : 0, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
+    get lightmap() { return { mode: lm.mode, ready: lm.ready, ms: lm.ms, texels: lm.texels, ...(lm.plan || {}) }; },
     pools: !!pool.mesh, airlight: air.n, airCap: air.cap, airCapped: air.capped, update: uStats, marks,
   };
   function exportData() {   // native #2: the model (exportParams) + this level's grid and baked volume
@@ -1348,7 +1438,8 @@ export function attach(world, emitters = [], ctx = {}) {
     update, patchMaterial, qualityCap, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
     setWet(v) { U.uCityWet.value = v; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
     dispose() {
-      for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex]) t.dispose();
+      for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex, tLMR, tLME, U.tCityLMG.value, U.tCityLMA.value]) t.dispose();
+      lm.disposed = true; lm.worker?.terminate();
       U.tCityMirror.value?.dispose?.();
       mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); quad.geometry.dispose();
       if (steam) { steam.geometry.dispose(); steam.material.dispose(); scene.remove(steam); }
