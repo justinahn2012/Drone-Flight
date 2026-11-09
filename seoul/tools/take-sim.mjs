@@ -93,6 +93,13 @@ const ROUTES = {
   slot0: [['from', 'ROOF SLOT', 0, 14], ['line', 'ROOF SLOT', 0]],
   gap: [['from', 'THE GAP', 0, 14], ['line', 'THE GAP', 0]],
   canyon: [['from', 'SCREEN CANYON', 0, 14], ['street', 'SCREEN CANYON', 0]],
+  // [P3-F1] the re-cut lines
+  red: [['from', 'RED ROAD', 0, 14], ['street', 'RED ROAD', 0]],
+  crossing: [['from', 'CROSSING', 0, 14], ['line', 'CROSSING', 0]],
+  queue: [['from', 'OVER THE QUEUE', 0, 10], ['line', 'OVER THE QUEUE', 0]],
+  door: [['from', 'DOOR QUEUE', 0, 10], ['line', 'DOOR QUEUE', 0]],
+  roofline: [['from', 'ROOFLINE', 0, 14], ['street', 'ROOFLINE', 0], ['line', 'ROOF SLOT', 0]],
+  hub: [['street', 'WALKING STREET', 0], ['street', 'RED ROAD', 1]],
   sig: [['street', 'WALKING STREET', 0], ['line', 'UNDER THE STAGE', 1], ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
   long: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'SIGN STACK', 0], ['line', 'ROOFLINE', 1]],
 };
@@ -108,7 +115,7 @@ function buildPath(route, rng, spread) {
   if (route[0][0] === 'from') { const [, nm, kk, back] = route[0]; const g = lineGates(nm, kk)[0]; const n = V(g.n).setY(0).normalize(); const p0 = V(g.c).addScaledVector(n, -back); if (p0.y < 2) p0.y = 2.2; path = [p0]; route = route.slice(1); }
   for (const [kind, name, k] of route) {
     const gates = kind === 'street' ? streetGates(name, k) : lineGates(name, k);
-    if (!gates) { console.log('no line', name); return null; }
+    if (!gates) { console.log('no line', name, '(skipped)'); continue; }
     for (let gi = 0; gi < gates.length; gi++) {
       const G = gates[gi], n = V(G.n).normalize();
       const u = G.u ? V(G.u) : new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), n); u.addScaledVector(n, -u.dot(n)).normalize();

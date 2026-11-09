@@ -187,11 +187,13 @@ const fromHero = (st, id) => { const h = (layout.hero || []).find((x) => x.id ==
   if (!h) return P; return Math.hypot(P[0][0] - h[0], P[0][1] - h[2]) <= Math.hypot(P[P.length - 1][0] - h[0], P[P.length - 1][1] - h[2]) ? P : P.slice().reverse(); };
 
 // 1. WALKING STREET: 걷고싶은거리 itself [P3-F1 design #1]: C's widths show it is the 312 x 14.8 m Eoulmadang-ro piece
-// (s069, 50 lots) from the Hongik-ro junction SE, not the s065 fork phase 2 flew (now RED ROAD). 2.2-5.2 m over the
-// crowd, flown from the junction end (the spawn, the busking ring at 13 m). Cut <= 60 m (50-60 m pieces at the side
-// streets: the two Eoulmadang-ro branches leave at 68 and 80 m, Wausan-ro 23-gil joins at 155 m); micros on what is
-// there: OVER THE CROWD 17 m from the spawn (head height: design #6), the branches, a pocha tent at 178 m.
-const walk = longest('어울마당로', 'walking'), WP = fromHero(walk, 'hongik-junction'), WL = len(WP);
+// (s069, 50 lots) from its SE end to the Hongik-ro junction, not the s065 fork phase 2 flew (now RED ROAD). 2.2-5.2 m
+// over the crowd, flown toward the hub: the spawn is at the SE end, the line ends at the junction over the busking ring
+// (13 m before it), where RED ROAD, HONGIK-RO and the bar alleys begin (from the hub out, the take would have to fly
+// 300 m back: a transit hole, design #4). Cut <= 60 m at the side streets (Wausan-ro 23-gil joins 157 m from the SE
+// end, the two Eoulmadang-ro branches leave at 232 and 244 m); micros on what is there: OVER THE CROWD 17 m from the
+// spawn (head height: design #6), a pocha tent at 134 m, the branches.
+const walk = longest('어울마당로', 'walking'), WP = fromHero(walk, 'hongik-junction').slice().reverse(), WL = len(WP);
 const tentOn = (P, s, r) => (geo.dressingOut?.labels || []).filter((l) => l.kind === 'tent').map((l) => ({ l, a: arcOf(P, l.pos[0], l.pos[2]) })).filter((x) => Math.abs(x.a - s) < r).sort((a, b) => Math.abs(a.a - s) - Math.abs(b.a - s))[0]?.l || null;
 // over a pocha tent, along the street: the tarp's top found by a ray down, the gate 0.5-2.1 m over it
 function overTent(P, s) {
@@ -200,12 +202,12 @@ function overTent(P, s) {
   const top = 8 - h.distance, a = at(P, arcOf(P, T.pos[0], T.pos[2]));
   return g([T.pos[0], top + 1.3, T.pos[2]], [a.tx, 0, a.tz], 3.0, 1.6, [-a.tz, 0, a.tx]);
 }
-const tentG = overTent(WP, 178);
+const tentG = overTent(WP, WL - 178);
 run({ path: WP, name: 'WALKING STREET', caption: 'THE WALKING *STREET*!', value: 2500, s0: 12, s1: -6, y0: 2.2, y1: 5.2, w: walk.width - 1, first: true,
-  cuts: [60, 110, 160, 210, 260], label: 'WALKING STREET', feats: [
+  cuts: [52, 102, 152, 202, 252].map((v) => v + WL - 312), label: 'WALKING STREET', feats: [
     { name: 'OVER THE CROWD', caption: 'OVER THE *CROWD*!', s: 24, ...HEADS, w: 8, pts: 750, what: 'the walking street crowd, 17 m from the spawn (head height)' },
-    { name: 'THE BRANCHES', caption: 'THE *BRANCHES*!', s: 74, what: 'two Eoulmadang-ro branches leave (68 and 80 m)' },
-    ...(tentG ? [{ name: 'OVER THE TENT', caption: 'OVER THE *TENT*!', s: 178, gate: tentG, what: 'a pocha tent at 178 m' }] : []),
+    ...(tentG ? [{ name: 'OVER THE TENT', caption: 'OVER THE *TENT*!', s: WL - 178, gate: tentG, what: 'a pocha tent' }] : []),
+    { name: 'THE BRANCHES', caption: 'THE *BRANCHES*!', s: WL - 74, what: 'two Eoulmadang-ro branches leave (68 and 80 m before the junction)' },
   ] });
 // 1b. RED ROAD: the s065 fork of Eoulmadang-ro (phase 2's walking street: the Red Road busking stretch), 2.2-5.2 m, cut at the
 // side streets (55, 100, 160 of 226 m); micros: the first blade stack (22 m) and the densest blade stretch (58-79 m) at
@@ -239,7 +241,10 @@ run({ path: club.points, name: 'BAR ALLEY', caption: 'THE BAR *ALLEY*!', value: 
 // 3. HONGIK-RO: down the main road from the station to the university, 5-8 m: over the buses, under the lamp arms' reach
 const hong = longest('홍익로', 'main'); const HL = len(hong.points);
 run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value: 1500, s0: 10, s1: -10, y0: 5.0, y1: 8.0, w: hong.width });
-// 4. CROSSING: across Yanghwa-ro at the station front, 6-9 m over the bus lanes (a 30 m wide portal along the road)
+// 4. CROSSING: across Yanghwa-ro at the station front. [P3-F1 design #5] anchored: phase 2 was a 30 x 3 m portal in the air
+// over the median. Now a pre-gate under the near carriageway's signal mast arm (E's dressing: the arm at 5.5 m, heads at
+// 5.1-5.4 m) and the gate under the far one's, 3.7-4.9 m (a bus's roof is 3.15 m: it passes under you), across the
+// crosswalk; either way. No masts in the dressing: phase 2's portal.
 { const X9 = [46, -313];   // exit 9 (reference.md)
   const dTo = (s) => Math.min(...s.points.map((p) => Math.hypot(p[0] - X9[0], p[1] - X9[1])));
   const ys = layout.streets.filter((s) => s.ko === '양화로' && s.kind === 'main').sort((a, b) => dTo(a) - dTo(b));
@@ -249,27 +254,50 @@ run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value:
   // the far carriageway's nearest point
   let best = null; for (let s = 0; s <= len(nB.points); s += 1) { const q = at(nB.points, s), d = Math.hypot(q.x - pa.x, q.z - pa.z); if (!best || d < best.d) best = { q, d }; }
   const mx = (pa.x + best.q.x) / 2, mz = (pa.z + best.q.z) / 2, nx = -pa.tz, nz = pa.tx;
-  const G = g([mx, 7.5, mz], [nx, 0, nz], 30, 3, [pa.tx, 0, pa.tz]);
-  add('CROSSING', 'THE *CROSSING*.', 1500, G, { two: true });
+  // E's signal masts at this crossing: 4 car heads per mast (carR/A/L/G) at the end of a 5.5 m arm from the kerb pole
+  const heads = (geo.dressingOut?.lamps || []).filter((l) => /^car/.test(l.role) && Math.hypot(l.pos[0] - mx, l.pos[2] - mz) < 30);
+  const masts = [...new Set(heads.map((l) => l.id))].map((id) => { const H4 = heads.filter((l) => l.id === id), c = [0, 1, 2].map((k) => H4.reduce((a, l) => a + l.pos[k], 0) / H4.length);
+    return { id, c, d: (c[0] - mx) * nx + (c[2] - mz) * nz, s: (c[0] - mx) * pa.tx + (c[2] - mz) * pa.tz }; });
+  const near = masts.filter((m) => m.d > 0).sort((a, b) => a.d - b.d)[0], far = masts.filter((m) => m.d < 0).sort((a, b) => b.d - a.d)[0];
+  if (near && far) {
+    // the arm runs from the head out to its pole (away from the road centre, ~5.5-6.5 m): the gate under its middle
+    const under = (m, sg) => { const dd = m.d + sg * 3.0; return g([mx + nx * dd + pa.tx * m.s, 4.3, mz + nz * dd + pa.tz * m.s], [-nx, 0, -nz], 2.4, 1.2, [pa.tx, 0, pa.tz]); };
+    const A = fit(under(near, 1), 'CROSSING (near mast)'), B = fit(under(far, -1), 'CROSSING (far mast)'), L = dist3(A, B);
+    add('CROSSING', 'THE *CROSSING*!', 1500, B, { pre: [A], within: within(L) });
+    add('CROSSING', 'THE *CROSSING*!', 1500, neg(A), { pre: [neg(B)], within: within(L) });
+    report.push(`  (CROSSING: under the masts ${near.id} and ${far.id}, ${L.toFixed(1)} m, ${A.w.toFixed(1)} x ${A.h.toFixed(1)} / ${B.w.toFixed(1)} x ${B.h.toFixed(1)} m at 3.7-4.9 m)`);
+  } else {
+    add('CROSSING', 'THE *CROSSING*.', 1500, g([mx, 7.5, mz], [nx, 0, nz], 30, 3, [pa.tx, 0, pa.tz]), { two: true });
+    report.push('  (CROSSING: no signal masts in the dressing: the phase-2 portal)');
+  }
   report.push(`  (Yanghwa-ro carriageway centres ${best.d.toFixed(1)} m apart at exit 9)`);
-  // SCREEN CANYON (hero line 1): from exit 9 SW down Yanghwa-ro between the 14-16 m LED screens, 8-14 m up (over
-  // the bus lanes, at screen height), to the Hongik-ro junction. Portals across the road centre, 30 m wide.
+  // SCREEN CANYON (hero line 1): from exit 9 SW down Yanghwa-ro between the 14-16 m LED screens to the Hongik-ro junction.
+  // [P3-F1 design #5] anchored: down the exit-9 carriageway (nA) at 4.4-8.4 m (the screens' feet; a bus's roof 3.15 m),
+  // through 14 x 4 m gates strung between the street-lamp pairs (8.7 m heads every 32 m, both kerbs: C's emitters),
+  // instead of phase 2's 30 x 6 m portals at 11 m over the median. Pre-gate at the first lamp pair >= 9 m SW of exit 9,
+  // the gate at the last one ~110 m on; the pairs between cut it into micros.
+  const sg = pa.tx < 0 ? 1 : -1;   // nA's direction: the flight runs SW (toward Hongik-ro, x decreasing)
+  const lamps = geo.emitters.filter((e) => e.kind === 'street' && e.pos[1] > 7.5).map((e) => { const s = arcOf(nA.points, e.pos[0], e.pos[2]), q = at(nA.points, s);
+    return { s, d: (e.pos[0] - q.x) * -q.tz + (e.pos[2] - q.z) * q.tx }; }).filter((x) => Math.abs(x.d) < nA.width / 2 + 1 && x.s > 1 && x.s < len(nA.points) - 1);
+  // a pair: a lamp on each kerb at the same station (+-1.5 m)
+  const lampS = [...new Set(lamps.filter((a) => a.d > 0 && lamps.some((b) => b.d < 0 && Math.abs(b.s - a.s) < 1.5)).map((a) => Math.round(a.s)))];
+  const pairs = lampS.filter((v) => sg * (v - s0) >= 9 && sg * (v - s0) <= 125).sort((a, b) => sg * (a - b));
+  const canyonGate = (s) => { const q = at(nA.points, s), n = [q.tx * sg, 0, q.tz * sg]; return g([q.x, 6.4, q.z], n, Math.min(14, nA.width - 4), 4.0, [-n[2], 0, n[0]]); };
+  if (pairs.length >= 3) {
+    const Gs = pairs.map((v, i) => fit(canyonGate(v), `SCREEN CANYON lamp ${i}`)), Ga = Gs[0], Gb = Gs[Gs.length - 1], dl = Math.abs(pairs[pairs.length - 1] - pairs[0]);
+    add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, Gb, { pre: [Ga], within: within(dl) });
+    add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, neg(Ga), { pre: [neg(Gb)], within: within(dl) });
+    const N = Gs.length - 1;
+    for (let i = 0; i < N; i++) { const a = Gs[i], b = Gs[i + 1], L = Math.abs(pairs[i + 1] - pairs[i]);
+      add(`SCREEN CANYON ${i + 1}/${N}`, `SCREEN CANYON *${i + 1}/${N}*`, 750, b, { pre: [a], within: within(L), micro: true, seg: 'SCREEN CANYON' });
+      add(`SCREEN CANYON ${i + 1}/${N}`, `SCREEN CANYON *${i + 1}/${N}*`, 750, neg(a), { pre: [neg(b)], within: within(L), micro: true, seg: 'SCREEN CANYON' }); }
+    report.push(`  (SCREEN CANYON: ${dl.toFixed(0)} m down nA ${nA.id} from exit 9, gates at the lamp pairs ${pairs.map((v) => (v - s0).toFixed(0)).join(', ')} m)`);
+  } else report.push(`  (SCREEN CANYON: only ${pairs.length} lamp pairs on ${nA.id}: no line)`);
+  // OVER THE BUSES half way: low over the median bus lane (Seoul's median BRT), 4.5-8 m, where the buses are
   const cx = (s) => { const q = at(nA.points, s); let bb = null; for (let t = 0; t <= len(nB.points); t += 1) { const r = at(nB.points, t), d = Math.hypot(r.x - q.x, r.z - q.z); if (!bb || d < bb.d) bb = { r, d }; }
-    return { x: (q.x + bb.r.x) / 2, z: (q.z + bb.r.z) / 2, tx: q.tx, tz: q.tz }; };
-  // nA's direction: sign so that the flight runs SW (toward Hongik-ro, x decreasing)
-  const sg = pa.tx < 0 ? 1 : -1, sA = s0 + sg * 15, sB = s0 + sg * 120;
-  const pA = cx(sA), pB = cx(sB), dir = [pB.x - pA.x, pB.z - pA.z], dl = Math.hypot(...dir), n = [dir[0] / dl, 0, dir[1] / dl];
-  const Ga = g([pA.x, 11, pA.z], n, 30, 6, [-n[2], 0, n[0]]), Gb = g([pB.x, 11, pB.z], n, 30, 6, [-n[2], 0, n[0]]);
-  add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, Gb, { pre: [Ga], within: within(dl) });
-  add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, neg(Ga), { pre: [neg(Gb)], within: within(dl) });
-  // two halves as micros, and OVER THE BUSES half way: low over the median bus lane (Seoul's median BRT), 4.5-8 m, where
-  // the buses are (world.movers: touch one and the take is over)
-  const pM = cx(s0 + sg * 67), Gm = g([pM.x, 11, pM.z], n, 30, 6, [-n[2], 0, n[0]]);
-  for (const [i, a, b] of [[1, Ga, Gm], [2, Gm, Gb]]) { add(`SCREEN CANYON ${i}/2`, `SCREEN CANYON *${i}/2*`, 750, b, { pre: [a], within: within(dist3(a, b)), micro: true, seg: 'SCREEN CANYON' });
-    add(`SCREEN CANYON ${i}/2`, `SCREEN CANYON *${i}/2*`, 750, neg(a), { pre: [neg(b)], within: within(dist3(a, b)), micro: true, seg: 'SCREEN CANYON' }); }
-  const pBus = cx(s0 + sg * 45);
-  add('OVER THE BUSES', 'OVER THE *BUSES*!', 500, g([pBus.x, 6.25, pBus.z], n, 10, 3.5, [-n[2], 0, n[0]]), { two: true, micro: true, feature: 'Yanghwa-ro median bus lane', on: 'SCREEN CANYON' });
-  report.push(`  (SCREEN CANYON: ${dl.toFixed(0)} m from exit 9 SW along Yanghwa-ro)`); }
+    return { x: (q.x + bb.r.x) / 2, z: (q.z + bb.r.z) / 2 }; };
+  const pBus = cx(s0 + sg * 45), q45 = at(nA.points, s0 + sg * 45), nb = [q45.tx * sg, 0, q45.tz * sg];
+  add('OVER THE BUSES', 'OVER THE *BUSES*!', 500, g([pBus.x, 6.25, pBus.z], nb, 10, 3.5, [-nb[2], 0, nb[0]]), { two: true, micro: true, feature: 'Yanghwa-ro median bus lane', on: 'SCREEN CANYON' }); }
 // 5. THE GAP / TIGHT GAP: the narrowest real gaps between two buildings of 3+ storeys (parallel walls 1.4-3.2 m apart,
 // overlapping >= 6 m), found in the footprints; flown through along the gap
 const gaps = [];
@@ -366,12 +394,46 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
     }
   }
 }
-// 10. ROOFLINE: along the walking street's roofline, 1-6 m over the taller side, 30 m portals 60 m apart
-{ const roofAt = (s) => { const p = at(red.points, s); let h = 0; for (const l of layout.lots) { const d = Math.min(...l.footprint.map((q) => Math.hypot(q[0] - p.x, q[1] - p.z))); if (d < 18) h = Math.max(h, H(l)); } return h; };
-  const s1 = RL * 0.3, s2 = RL * 0.6, top = Math.max(roofAt(s1), roofAt(s2)) + 1.5;
-  const A = across(red.points, s1, red.width + 24, top, top + 5), B = across(red.points, s2, red.width + 24, top, top + 5);
-  add('ROOFLINE', 'ROOF*LINE*!', 1500, B, { pre: [A], within: within(dist3(A, B)) });
-  add('ROOFLINE', 'ROOF*LINE*!', 1500, neg(A), { pre: [neg(B)], within: within(dist3(A, B)) }); }
+// 10. ROOFLINE [P3-F1 design #5]: phase 2 flew 33 x 5 m portals 7 m over the roofline. Now a chain of slots over the run of
+// roofs E's ROOF SLOT sits on (seoul-dressing.js roofline-slot: a stair house and a water tank, 0.6-2.4 m over a 16.5 m
+// roof): every ~15 m back along the run a 2.9 x 1.8 m gate 0.6-2.4 m over that roof's deck (the lowest of five rays down,
+// so not a tank top), preferring stations with rooftop kit within 3.5 m on both sides (a slot), each straight-line open
+// to the next; the chain ends in E's slot pre-gate, so ROOFLINE runs into ROOF SLOT. No slot piece: phase 2's portals.
+{ const RS = (geo.setPieces || []).find((p) => p.id === 'roofline-slot'), Gs = RS?.gates?.gate, Ps = RS?.gates?.pre;
+  let chain = null;
+  if (Gs && Ps) {
+    const dx = Gs.n[0], dz = Gs.n[2], px = -dz, pz = dx, rays = (x, y, z, sx, sz, m) => { ray.origin.set(x, y, z); ray.direction.set(sx, 0, sz); const h = bvh.raycastFirst(ray, THREE.DoubleSide, 0, m); return h ? h.distance : m; };
+    const deck = (x, z) => { let lo = Infinity; for (const o of [-2, -1, 0, 1, 2]) { ray.origin.set(x + px * o, 60, z + pz * o); ray.direction.set(0, -1, 0); const h = bvh.raycastFirst(ray, THREE.DoubleSide, 0, 60); lo = Math.min(lo, h ? 60 - h.distance : 0); } return lo; };
+    const y0 = Ps.c[1] - Ps.h / 2 - 0.6;   // E's roof deck
+    const gateAtK = (k) => { const x = Ps.c[0] - dx * k, z = Ps.c[2] - dz * k, dk = deck(x, z); if (dk < 8 || Math.abs(dk - y0) > 4) return null;
+      const G = g([x, dk + 1.5, z], Gs.n, 2.9, 1.8, [px, 0, pz]); if (!clearOf(G).ok) return null;
+      const side = Math.min(rays(x, dk + 1.5, z, px, pz, 6), 6) + Math.min(rays(x, dk + 1.5, z, -px, -pz, 6), 6);
+      return { k, G, slot: side < 7.5, side }; };
+    chain = [{ k: 0, G: g(Ps.c, Ps.n, Ps.w, Ps.h, Ps.u) }];
+    for (let tries = 0; tries < 4; tries++) {
+      const last = chain[chain.length - 1]; let pick = null;
+      for (let k = last.k + 10; k <= last.k + 20; k++) { const c = gateAtK(k); if (!c || openPath(c.G, last.G) !== true) continue; const sc = (c.slot ? 0 : 10) + Math.abs(k - last.k - 15); if (!pick || sc < pick.sc) pick = { ...c, sc }; }
+      if (!pick) break; chain.push(pick);
+    }
+    if (chain.length < 3) chain = null;
+  }
+  if (chain) {
+    const C = chain.slice().reverse(), A = C[0].G, B = C[C.length - 1].G, L = C[C.length - 1].k === 0 ? C[0].k : dist3(A, B);
+    add('ROOFLINE', 'ROOF*LINE*!', 1500, B, { pre: [A], within: within(L) });
+    add('ROOFLINE', 'ROOF*LINE*!', 1500, neg(A), { pre: [neg(B)], within: within(L) });
+    const N = C.length - 1;
+    for (let i = 0; i < N; i++) { const a = C[i].G, b = C[i + 1].G, l = C[i].k - C[i + 1].k;
+      add(`ROOFLINE ${i + 1}/${N}`, `ROOFLINE *${i + 1}/${N}*`, 750, b, { pre: [a], within: within(l), micro: true, seg: 'ROOFLINE' });
+      add(`ROOFLINE ${i + 1}/${N}`, `ROOFLINE *${i + 1}/${N}*`, 750, neg(a), { pre: [neg(b)], within: within(l), micro: true, seg: 'ROOFLINE' }); }
+    report.push(`  (ROOFLINE: ${C[0].k} m of roofs into E's ROOF SLOT, ${N} pieces, gates ${C.slice(0, -1).map((c) => `${c.k} m ${c.slot ? 'slot' : 'open'} (${c.side.toFixed(1)} m)`).join(', ')})`);
+  } else {
+    const roofAt = (s) => { const p = at(red.points, s); let h = 0; for (const l of layout.lots) { const d = Math.min(...l.footprint.map((q) => Math.hypot(q[0] - p.x, q[1] - p.z))); if (d < 18) h = Math.max(h, H(l)); } return h; };
+    const s1 = RL * 0.3, s2 = RL * 0.6, top = Math.max(roofAt(s1), roofAt(s2)) + 1.5;
+    const A = across(red.points, s1, red.width + 24, top, top + 5), B = across(red.points, s2, red.width + 24, top, top + 5);
+    add('ROOFLINE', 'ROOF*LINE*!', 1500, B, { pre: [A], within: within(dist3(A, B)) });
+    add('ROOFLINE', 'ROOF*LINE*!', 1500, neg(A), { pre: [neg(B)], within: within(dist3(A, B)) });
+    report.push('  (ROOFLINE: no roofline-slot set piece: the phase-2 portals over the Red Road)');
+  } }
 // 11. UNDER THE WIRES (micro): under the lowest cable span over the club street or an alley, 2.0 m to 0.4 m below it
 { const span = geo.cables.filter((c) => c.low > 4.5 && c.a[0] > layout.core.x0 && c.a[0] < layout.core.x1 && c.a[2] > layout.core.z0 && c.a[2] < layout.core.z1).sort((a, b) => a.low - b.low);
   for (const c of span) {
@@ -499,9 +561,10 @@ const SC = lines.find((l) => l.name === 'SCREEN CANYON');
 const startPoints = [
   { ...st('Walking street', 15, WP, 3.2), ...hint('FLY THE WALKING STREET · OVER THE HEADS', 'WALKING STREET') },
   { ...st('Bar alley', 12, club.points, 3.2), ...hint('DOWN THE BAR ALLEY · UNDER THE DROPS', 'BAR ALLEY') },
-  { name: 'Exit 9', pos: SC.pre[0].c.map((v, i) => i === 1 ? 11 : r3(v - SC.pre[0].n[i] * 10)), yaw: r3(yawTo(SC.n[0], SC.n[2])), ...hint('DOWN THE SCREEN CANYON · ABOVE THE BUSES', 'SCREEN CANYON') },
+  { name: 'Exit 9', pos: SC.pre[0].c.map((v, i) => i === 1 ? r3(v) : r3(v - SC.pre[0].n[i] * 10)), yaw: r3(yawTo(SC.n[0], SC.n[2])), ...hint('DOWN THE SCREEN CANYON · ABOVE THE BUSES', 'SCREEN CANYON') },
   { ...st('Hongik-ro', 10, hong.points, 6.5), ...hint('DOWN HONGIK-RO · OVER THE TRAFFIC', 'HONGIK-RO') },
-  { name: 'Rooftops', pos: [r3(at(red.points, RL * 0.3 - 20).x), r3(lines.find((l) => l.name === 'ROOFLINE').c[1]), r3(at(red.points, RL * 0.3 - 20).z)], yaw: r3(yawTo(at(red.points, RL * 0.3).tx, at(red.points, RL * 0.3).tz)), ...hint('ALONG THE ROOFLINE · OVER THE TANKS', 'ROOFLINE') },
+  (() => { const R0 = lines.find((l) => l.name === 'ROOFLINE' && l.pre), A = R0.pre[0], n = R0.w < 8 ? A.n : [R0.c[0] - A.c[0], 0, R0.c[2] - A.c[2]], nl = Math.hypot(n[0], n[2]);
+    return { name: 'Rooftops', pos: [r3(A.c[0] - n[0] / nl * 8), r3(A.c[1]), r3(A.c[2] - n[2] / nl * 8)], yaw: r3(yawTo(n[0], n[2])), ...hint('ALONG THE ROOFLINE · BETWEEN THE TANKS', 'ROOFLINE') }; })(),
   { ...st('Red Road', 15, red.points, 3.2), ...hint('FLY THE RED ROAD · UNDER THE BLADES', 'RED ROAD') },
 ];
 // [P3-F1] every start point >= 1.0 m from the collider (test-seoul asks 0.8): else slide it along its heading (toward its
