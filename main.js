@@ -1734,7 +1734,7 @@ const toastSays = (s) => !!s && toastTxt === String(s).toUpperCase() && performa
 let headsTm = 0;
 function headsStamp(e) {
   const h = $('heads'); if (!h) { warn('HEADS!'); return; }
-  h.querySelector('small').textContent = `FLOW ×${e.flow || 1}${e.lost ? ` · −${e.lost}` : ''}`;
+  h.querySelector('small').textContent = e.lost ? `FLOW ×${e.flow || 1} · −${e.lost}` : 'SCRAPE';   // what it cost
   h.classList.remove('show'); void h.offsetWidth; h.classList.add('show');
   clearTimeout(headsTm); headsTm = setTimeout(() => h.classList.remove('show'), 1250);
   try { navigator.vibrate?.(20); } catch (er) {}   // Android; iOS Safari has none (native: a haptic tick)
