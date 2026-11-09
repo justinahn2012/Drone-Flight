@@ -22,6 +22,11 @@
 // PERFECT (design r4 #1): a take that ends in a CUT with 3 stars, every line CLEAN and no SCRAPE.
 // Ghost (C12, ghost.js): `take.ghost` holds a Ghost (the best take re-simulated from its input log, or a CHALLENGE);
 // take.ghostPose(alpha) is its pose at this take's clock, for the UI's OSD diamond (never drawn into clips).
+// [P2-F1] Per level: world.tuning (lines.json `tuning`) merges over TAKE_TUNING (take.tuning; bando has none, so its numbers
+// stay bit-exact): stars, bankT, holdZone, armHold (no bank while a line is armed: take.armed is the line in progress and
+// its countdown, for the OSD), microFlow (Seoul: micros keep the chain but add no FLOW), firstR, pace. Lines with `piece`
+// fly only while world.setPieces has that id. world.movers contacts come through the drone (flight.js moverN / moverKind /
+// crashBy): a pedestrian is SCRAPE + HEADS! (event heads: true), a crash into a vehicle carries by: <type>.
 // No three.js import: plain vector maths, runs headless in node too.
 
 export const TAKE_TUNING = {
@@ -55,10 +60,24 @@ export const TAKE_TUNING = {
   sameT0: 0.06,        // s: two lines whose t0 agree this closely share one clip caption (the bigger one)
   hintVert: 3.0,       // m: nextHint gives vert ('down' | 'up') instead of an arrow when the target is this close across
   viaR: 3.0,           // m: default radius around a via point (across) inside which the hint moves on to the gate
+  // [P2-F1] off for bando (its numbers above stay bit-exact); a level turns them on in its lines.json `tuning`
+  armHold: false,      // UX #2: true = the bank timer stops while a line is armed (pre-gate crossed, window open)
+  firstR: Infinity,    // m: nextHint's "first line of a new profile" rule only within this of world.takeStart
+  headsCost: 1,        // FLOW lost to a pedestrian contact (world.movers, flight.js moverN): SCRAPE + HEADS!
+  microFlow: 1,        // FLOW a new micro-line adds (bando: 1, like a line; a level dense with micros: 0, they keep the chain)
 };
 const T = TAKE_TUNING;
 
-export const starsFor = (pts) => T.stars.reduce((n, s) => n + (pts >= s ? 1 : 0), 0);
+// [P2-F1] stars against a threshold list (default TAKE_TUNING.stars; a Take passes its level's, take.tuning.stars)
+export const starsFor = (pts, stars = T.stars) => stars.reduce((n, s) => n + (pts >= s ? 1 : 0), 0);
+// [P2-F1 design #1] a level's tuning ({stars, bankT, holdZone, ...} from lines.json `tuning`, as world.tuning) merged over
+// TAKE_TUNING; unknown keys are ignored, so a stale lines.json can't break the take. No tuning: TAKE_TUNING itself.
+export function mergeTuning(t) {
+  if (!t || typeof t !== 'object') return TAKE_TUNING;
+  const o = { ...TAKE_TUNING };
+  for (const k of Object.keys(t)) if (k in TAKE_TUNING && typeof t[k] === typeof TAKE_TUNING[k] && (!Array.isArray(TAKE_TUNING[k]) || (Array.isArray(t[k]) && t[k].length === TAKE_TUNING[k].length))) o[k] = t[k];
+  return Object.freeze(o);
+}
 
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -114,7 +133,7 @@ export class Take {
     this.free = free;              // free fly: lines still fire (captions, pts 0), no scoring, no take end
     this._best = 0;
     this.reloadBest();
-    this._src = null; this._lines = []; this._carves = [];
+    this._src = null; this._lines = []; this._carves = []; this._T = TAKE_TUNING; this._tsrc = null; this._psrc = null;
     this.ghost = null;             // C12: a ghost.js Ghost (main.js / GhostKeeper sets it); survives reset()
     this.reset();
   }
@@ -124,29 +143,51 @@ export class Take {
   get flow() { return this._flow; }                       // the multiplier the next line will score at
   get unbanked() { return Math.round(this._unbanked); }
   get best() { return Math.max(this._best, this._state === 'done' ? 0 : Math.round(this._total)); }
-  get bankIn() { return this._unbanked > 0 ? Math.max(0, T.bankT - this._idle) : 0; }   // s until the chain banks (0: no chain)
+  get bankIn() { return this._unbanked > 0 ? Math.max(0, this._T.bankT - this._idle) : 0; }   // s until the chain banks (0: no chain)
   get holding() { return this._holding; }                 // the chain is being kept alive by proximity right now
   // CUT countdown: s until the CUT fires while its ring shows (>= cutShow s of hover, or a touchdown), else 0
   get cutIn() { return this._cutIn; }
   get cutFrac() { return this._cutFrac; }                 // 0..1 ring fill (1 = CUT)
   get cutKind() { return this._cutKind; }                 // 'hover' | 'land' | null
-  get stars() { return starsFor(this._total); }           // of the banked total (0-3, TAKE_TUNING.stars)
+  get stars() { return starsFor(this._total, this._T.stars); }           // of the banked total (0-3, take.tuning.stars)
+  // [P2-F1] the tuning in force (TAKE_TUNING merged with world.tuning at the last update / lineList): the UI reads its
+  // stars, bankT and cutT from here (TAKE_TUNING is bando's)
+  get tuning() { return this._T; }
+  // [P2-F1 UX #2] the line in progress: its pre-gate crossed the right way and its window (`within`) still open; a named
+  // line before a micro (a street's segments arm and fire under its named line), then the most recently armed:
+  // {name, caption, left (s to its main gate), within (s), frac (0..1 of the window used), repeat (already flown this
+  // take), micro} or null. The OSD shows "HONGIK-RO · 0:18". With tuning.armHold the bank timer waits while any is armed.
+  get armed() {
+    let best = null;
+    for (const [k, r] of this._pre) {
+      const L = this._lines[(k / 8) | 0]; if (!L || (!L.l.two && r.s !== 1)) continue;
+      const within = L.l.within ?? 6, left = within - (this._now - r.t), named = !L.l.micro;
+      if (left > 0 && (!best || (named && !best.named) || (named === best.named && r.t > best.t))) best = { t: r.t, L, within, left, named };
+    }
+    if (!best || this._state === 'done') return null;
+    const l = best.L.l;
+    return { name: l.name, caption: l.caption || l.name, left: +best.left.toFixed(2), within: best.within, frac: +Math.min(1, 1 - best.left / best.within).toFixed(3), repeat: this._done.has(l.name), micro: !!l.micro };
+  }
+  _armedAny() {
+    for (const [k, r] of this._pre) { const L = this._lines[(k / 8) | 0]; if (L && (L.l.two || r.s === 1) && this._now - r.t < (L.l.within ?? 6)) return true; }
+    return false;
+  }
   // PACE: the multiplier a CUT now would apply to the live chain (on top of cutMult), from the take time of the last
   // new (non-repeat) line: x1.5 up to pace[0] s, x1.0 from pace[1] s. 1 with no line yet. Rounded to 0.01.
   get pace() {
     let lastT = null; for (let i = this._log.length - 1; i >= 0; i--) if (!this._log[i].repeat) { lastT = this._log[i].t; break; }
     if (lastT === null) return 1;
-    const [p0, p1, pm] = T.pace, f = Math.min(1, Math.max(0, (p1 - lastT) / (p1 - p0)));
+    const [p0, p1, pm] = this._T.pace, f = Math.min(1, Math.max(0, (p1 - lastT) / (p1 - p0)));
     return Math.round((1 + (pm - 1) * f) * 100) / 100;
   }
-  get cutValue() { return Math.round(this._unbanked * T.cutMult * this.pace); }   // what a CUT now would bank
+  get cutValue() { return Math.round(this._unbanked * this._T.cutMult * this.pace); }   // what a CUT now would bank
   // C12 PERFECT: this take ended in a CUT at 3 stars with every line (repeats too) CLEAN and 0 SCRAPEs
-  get perfect() { return this._state === 'done' && this._how === 'cut' && this._perfectSoFar() && starsFor(this._total) === 3; }
+  get perfect() { return this._state === 'done' && this._how === 'cut' && this._perfectSoFar() && starsFor(this._total, this._T.stars) === 3; }
   // still on for PERFECT (live: no SCRAPE and nothing but CLEAN lines yet, at least one line): a HUD may tint gold
   get perfectLive() { return this._state === 'live' && this._perfectSoFar(); }
   _perfectSoFar() { return this._log.length > 0 && this._scrapes === 0 && this._log.every((l) => l.clean); }
   get stats() {
-    return { maxSpeed: this._maxSpeed, time: this._t, lines: this._log.slice(), maxFlow: this._maxFlow, stars: starsFor(this._total),
+    return { maxSpeed: this._maxSpeed, time: this._t, lines: this._log.slice(), maxFlow: this._maxFlow, stars: starsFor(this._total, this._T.stars),
       scrapes: this._scrapes, clean: this._log.filter((l) => l.clean).length, perfect: this.perfect };
   }
   // C12 ghost: the attached Ghost's pose at this take's clock ({pos:[x,y,z], q:[x,y,z,w], heading, t, done, crashed}),
@@ -162,7 +203,7 @@ export class Take {
     this._hover = 0; this._land = 0; this._gndAgo = 9; this._maxSpeed = 0; this._maxFlow = 1; this._log = []; this._done = new Set(); this._lastName = null;
     this._cool = {}; this._pre = new Map(); this._preT = -99; this._last = null; this._released = false; this._skim = 0; this._skimOff = 0;
     this._now = 0; this._holding = false; this._cutIn = 0; this._cutFrac = 0; this._cutKind = null;
-    this._dirty = false; this._imp = null; this._scrapeT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._how = null;
+    this._dirty = false; this._imp = null; this._mvN = null; this._scrapeT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._how = null;
     for (const C of this._carves || []) C.st.forEach((s) => { s.ref = null; s.acc = 0; s.out = 0; });
   }
   // the take ends the hard way (out of bounds, a reset mid-take): same as a crash
@@ -171,10 +212,16 @@ export class Take {
     return this._end('crash');
   }
 
+  // [P2-F1] world.tuning (lines.json `tuning`) merges over TAKE_TUNING; a world loader that passes only lines[] still
+  // gets it from the line that carries a copy (lines.mjs stamps it on the `first` line). A line with `piece` (one of E's
+  // set pieces) is skipped unless world.setPieces holds that id (lines are coded against the ids before the pieces exist).
   _compile(world) {
-    if (this._src === world.lines) return;
-    this._src = world.lines;
-    const all = world.lines || [];
+    const tun = world.tuning || (Array.isArray(world.lines) && world.lines.find((l) => l && l.tuning)?.tuning) || null, sp = world.setPieces || null;
+    if (this._tsrc !== tun) { this._tsrc = tun; this._T = mergeTuning(tun); }
+    if (this._src === world.lines && this._psrc === sp) return;
+    this._src = world.lines; this._psrc = sp;
+    const has = new Set((sp || []).map((p) => p && p.id));
+    const all = (world.lines || []).filter((l) => !l.piece || has.has(l.piece));
     this._lines = all.filter((l) => !l.carve).map((l) => ({ l, main: compileGate(l), pre: (l.pre || []).map(compileGate) }));
     this._carves = all.filter((l) => l.carve).map((l) => ({ l, st: (l.carve.axes || [0]).map(() => ({ ref: null, acc: 0, out: 0, t0: 0 })) }));
     this._names = [...new Map(all.map((l) => [l.name, l])).values()];
@@ -203,11 +250,18 @@ export class Take {
     }
     // live (hands off, the bank timer waits: letting go settles into a CUT, which banks the chain at x1.5; hands on below
     // idleSpeed it runs at idleSlow)
-    this._t += dt; if (hands) this._idle += spd > T.idleSpeed ? dt : dt * T.idleSlow;
+    this._t += dt; if (hands && !(this._T.armHold && this._armedAny())) this._idle += spd > this._T.idleSpeed ? dt : dt * this._T.idleSlow;
     this._maxSpeed = Math.max(this._maxSpeed, spd);
-    if (drone.crashed) { ev.push(...this._end('crash')); return ev; }
+    if (drone.crashed) { ev.push(...this._end('crash', 'hover', drone.crashBy)); return ev; }
     if (hit.touch) this._dirty = true;
-    if (hit.impact > T.scrapeV && !hit.floor && this._now - this._scrapeT >= T.scrapeCool) {
+    // [P2-F1 design #5] a pedestrian (world.movers via flight.js: drone.moverN counts contacts, moverKind says with what)
+    // is a SCRAPE at any speed, captioned HEADS!; it takes the scrape cooldown so the bump isn't counted twice
+    if (hit.mover === 'pedestrian' && this._now - this._scrapeT >= this._T.scrapeCool) {
+      this._dirty = true; this._scrapeT = this._now; this._scrapes++;
+      const lost = Math.min(this._flow - 1, this._T.headsCost); this._flow -= lost;
+      ev.push({ type: 'scrape', impact: +(+drone.moverImpact || 0).toFixed(2), flow: this._flow, lost, heads: true });
+    }
+    if (hit.impact > this._T.scrapeV && !hit.floor && this._now - this._scrapeT >= this._T.scrapeCool) {
       this._scrapeT = this._now; this._scrapes++;
       const lost = this._flow > 1 ? 1 : 0; this._flow -= lost;
       ev.push({ type: 'scrape', impact: +hit.impact.toFixed(2), flow: this._flow, lost });
@@ -215,23 +269,23 @@ export class Take {
     this._gates(p, drone, ev, dt);
     this._skimTick(dt, drone, world, spd, ev);
     // bank
-    if (this._unbanked > 0 && this._idle >= T.bankT) {
+    if (this._unbanked > 0 && this._idle >= this._T.bankT) {
       const pts = Math.round(this._unbanked); this._total += pts; this._unbanked = 0; this._flow = 1;
       ev.push({ type: 'bank', pts, total: this.total });
     }
     // CUT: hands off and hovering, or sat on a floor; only with something to show and not just after a pre-gate.
     // No touchdown CUT down a shaft (world.funnels): a full dive lands on the chimney floor / a stairwell landing.
-    const canCut = this._total + this._unbanked > 0 && this._now - this._preT >= T.cutGate;
+    const canCut = this._total + this._unbanked > 0 && this._now - this._preT >= this._T.cutGate;
     this._gndAgo = hit.floor ? 0 : this._gndAgo + dt;
     const shaft = inShaft(p, world);
-    this._hover = canCut && !hands && spd < T.cutSpeed && !shaft ? this._hover + dt : 0;
-    this._land = canCut && !steer && this._gndAgo < 0.15 && spd < T.landSpeed && !shaft ? this._land + dt : 0;
+    this._hover = canCut && !hands && spd < this._T.cutSpeed && !shaft ? this._hover + dt : 0;
+    this._land = canCut && !steer && this._gndAgo < 0.15 && spd < this._T.landSpeed && !shaft ? this._land + dt : 0;
     this._cutIn = 0; this._cutFrac = 0; this._cutKind = null;
-    if (this._land > 0) { this._cutIn = Math.max(0, T.landT - this._land); this._cutFrac = Math.min(1, this._land / T.landT); this._cutKind = 'land'; }
-    if (this._hover >= T.cutShow && (!this._cutKind || T.cutT - this._hover < this._cutIn)) {
-      this._cutIn = Math.max(0, T.cutT - this._hover); this._cutFrac = Math.min(1, (this._hover - T.cutShow) / (T.cutT - T.cutShow)); this._cutKind = 'hover';
+    if (this._land > 0) { this._cutIn = Math.max(0, this._T.landT - this._land); this._cutFrac = Math.min(1, this._land / this._T.landT); this._cutKind = 'land'; }
+    if (this._hover >= this._T.cutShow && (!this._cutKind || this._T.cutT - this._hover < this._cutIn)) {
+      this._cutIn = Math.max(0, this._T.cutT - this._hover); this._cutFrac = Math.min(1, (this._hover - this._T.cutShow) / (this._T.cutT - this._T.cutShow)); this._cutKind = 'hover';
     }
-    if (this._hover >= T.cutT || this._land >= T.landT) ev.push(...this._end('cut', this._land >= T.landT ? 'land' : 'hover'));
+    if (this._hover >= this._T.cutT || this._land >= this._T.landT) ev.push(...this._end('cut', this._land >= this._T.landT ? 'land' : 'hover'));
     return ev;
   }
 
@@ -239,13 +293,15 @@ export class Take {
   // A new impact shows as drone.lastImpact changing (set on every impact > 0.4 m/s), so several physics ticks per update
   // still register; drone.contactN is the last tick's summed contact normal.
   _contact(drone) {
-    const out = { touch: false, impact: 0, floor: false };
+    const out = { touch: false, impact: 0, floor: false, mover: null };
+    const mn = drone.moverN;                              // [P2-F1] a new contact with a world.movers body
+    if (mn !== undefined) { if (this._mvN !== null && mn !== this._mvN) { out.mover = drone.moverKind || 'vehicle'; out.touch = true; } this._mvN = mn; }
     const li = drone.lastImpact;
     if (li !== undefined) { if (this._imp !== null && li !== this._imp && li > 0) { out.impact = li; out.touch = true; } this._imp = li; }
     const n = drone.contactN;
     if (n) {
       const l = Math.hypot(n.x, n.y, n.z);
-      if (l > 1e-6) { out.touch = true; out.floor = n.y / l > T.landNy; }
+      if (l > 1e-6) { out.touch = true; out.floor = n.y / l > this._T.landNy; }
     }
     return out;
   }
@@ -253,7 +309,7 @@ export class Take {
   _gates(p, drone, ev, dt) {
     const a = this._last; this._last = { x: p.x, y: p.y, z: p.z };
     if (!a) return;
-    if (Math.hypot(p.x - a.x, p.y - a.y, p.z - a.z) > T.teleport) { this._carveReset(); return; }
+    if (Math.hypot(p.x - a.x, p.y - a.y, p.z - a.z) > this._T.teleport) { this._carveReset(); return; }
     const now = this._now;
     // pre-gates first (a fast pass can cross a pre-gate and its line in the same frame)
     this._lines.forEach((L, li) => L.pre.forEach((G, gi) => { const s = crossGate(G, a, p); if (s) { this._pre.set(li * 8 + gi, { t: now, s }); this._preT = now; } }));
@@ -282,7 +338,7 @@ export class Take {
   // (a turn only reads the path while it is faster than carveSpeed: a slow pivot neither counts nor resets it; leaving
   // the zone for carveGap s resets either kind)
   _carveTick(C, p, drone, dt, now) {
-    const K = C.l.carve, vx = drone.vel.x, vz = drone.vel.z, fast = Math.hypot(vx, vz) > T.carveSpeed;
+    const K = C.l.carve, vx = drone.vel.x, vz = drone.vel.z, fast = Math.hypot(vx, vz) > this._T.carveSpeed;
     let fired = null;
     C.st.forEach((s, k) => {
       let inZone = false, ang = null;
@@ -295,7 +351,7 @@ export class Take {
         const b = K.box;
         if (p.x >= b[0] && p.x <= b[1] && p.y >= b[2] && p.y <= b[3] && p.z >= b[4] && p.z <= b[5]) { inZone = true; if (fast) ang = Math.atan2(vx, vz); }
       }
-      if (!inZone) { s.out += dt; if (s.out > T.carveGap) { s.ref = null; s.acc = 0; } return; }
+      if (!inZone) { s.out += dt; if (s.out > this._T.carveGap) { s.ref = null; s.acc = 0; } return; }
       s.out = 0;
       if (ang === null) return;
       if (s.ref === null) { s.ref = ang; s.acc = 0; s.t0 = now; }
@@ -310,7 +366,7 @@ export class Take {
   // ago = s from then to now (the replay frame to caption is the event's wall time - ago), t = take time now
   _award(l, now, t0) {
     const name = l.name, caption = l.caption || name, micro = !!l.micro;
-    if (now - (this._cool[name] ?? -99) < T.cooldown) return null;
+    if (now - (this._cool[name] ?? -99) < this._T.cooldown) return null;
     const ago = +Math.max(0, now - t0).toFixed(3), tt = +this._t.toFixed(2), tt0 = +Math.max(0, this._t - ago).toFixed(2);
     const rec = (PROG[name] ||= { n: 0, flow: 0, pts: 0 });
     if (this.free) {
@@ -318,11 +374,11 @@ export class Take {
       return { type: 'line', name, caption, pts: 0, flow: 1, free: true, micro, t0: tt0, ago, t: tt };
     }
     const clean = !this._dirty; this._dirty = false;
-    const cm = clean ? T.cleanMult : 1;
+    const cm = clean ? this._T.cleanMult : 1;
     if (this._done.has(name)) {
       if (this._lastName === name) return null;                     // fly something else first
       this._cool[name] = now;
-      const pts = Math.round((l.pts || 0) * T.repeat * cm);
+      const pts = Math.round((l.pts || 0) * this._T.repeat * cm);
       this._unbanked += pts; this._idle = 0; this._lastName = name; this._lineAt = now;
       const e = this._dedupe({ type: 'repeat', name, caption, pts, clean, micro, t0: tt0, ago, t: tt });
       this._log.push({ name, pts, t: tt, t0: tt0, flow: 1, repeat: true, clean, micro });
@@ -332,7 +388,7 @@ export class Take {
     this._cool[name] = now;
     const flow = this._flow, pts = Math.round((l.pts || 0) * flow * cm);
     this._unbanked += pts; this._idle = 0; this._lastName = name; this._done.add(name); this._lineAt = now;
-    this._flow = Math.min(T.flowMax, flow + 1); this._maxFlow = Math.max(this._maxFlow, flow);
+    this._flow = Math.min(this._T.flowMax, flow + (micro ? this._T.microFlow : 1)); this._maxFlow = Math.max(this._maxFlow, flow);
     const e = this._dedupe({ type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt });
     this._log.push({ name, pts, t: tt, t0: tt0, flow, clean, micro });
     rec.n++; rec.flow = Math.max(rec.flow, flow); rec.pts = Math.max(rec.pts, pts);
@@ -348,7 +404,7 @@ export class Take {
     for (let i = this._log.length - 1; i >= 0; i--) {
       const o = this._log[i];
       if (o.t0 < e.t0 - 1) break;
-      if (Math.abs(o.t0 - e.t0) <= T.sameT0 && o.name !== e.name) { e.sameT0 = o.name; e.clip = e.pts >= o.pts ? 'replace' : 'skip'; break; }
+      if (Math.abs(o.t0 - e.t0) <= this._T.sameT0 && o.name !== e.name) { e.sameT0 = o.name; e.clip = e.pts >= o.pts ? 'replace' : 'skip'; break; }
     }
     return e;
   }
@@ -360,33 +416,34 @@ export class Take {
     dt = this._skimAcc; this._skimAcc = 0;
     const bvh = world?.skimBvh;
     let on = false; this._holding = false;
-    if (bvh && this._unbanked > 0 && spd > T.idleSpeed) {
-      const r = drone.c?.radius ?? 0.12, zone = drone.key === 'cinewhoop' ? 0.9 : T.skimZone, qz = Math.max(zone, T.holdZone);
+    if (bvh && this._unbanked > 0 && spd > this._T.idleSpeed) {
+      const r = drone.c?.radius ?? 0.12, zone = drone.key === 'cinewhoop' ? 0.9 : this._T.skimZone, qz = Math.max(zone, this._T.holdZone);
       const res = bvh.closestPointToPoint(drone.pos, this._cp || (this._cp = {}), 0, qz + r);
       const gap = res && res.distance <= qz + r ? res.distance - r : Infinity;
-      if (gap < T.holdZone) { this._idle = 0; this._holding = true; }
-      if (gap < zone && spd > T.skimSpeed && this._now - this._lineAt <= T.skimNear) { const c = 1 - Math.max(0, gap) / zone; const pts = T.skimRate * c * c * dt; this._unbanked += pts; this._skim += pts; this._idle = 0; on = true; }
+      if (gap < this._T.holdZone) { this._idle = 0; this._holding = true; }
+      if (gap < zone && spd > this._T.skimSpeed && this._now - this._lineAt <= this._T.skimNear) { const c = 1 - Math.max(0, gap) / zone; const pts = this._T.skimRate * c * c * dt; this._unbanked += pts; this._skim += pts; this._idle = 0; on = true; }
     }
     this._skimOff = on ? 0 : this._skimOff + dt;
     if (!on && this._skim > 0 && this._skimOff > 0.4) { if (this._skim >= 10) ev.push({ type: 'skim', pts: Math.round(this._skim) }); this._skim = 0; }
   }
 
-  _end(kind, how = 'hover') {
+  _end(kind, how = 'hover', by = null) {
     const ev = [];
     if (kind === 'crash') {
       const lost = Math.round(this._unbanked);
       if (lost > 0) ev.push({ type: 'lost', pts: lost });
       this._unbanked = 0;
       this._how = 'crash'; this._finish();
-      ev.push({ type: 'crash', total: this.total, stats: this.stats, lost, stars: starsFor(this._total) });
+      // by: what the quad hit when it was a world.movers body (drone.crashBy: 'bus', 'taxi', ... 'pedestrian')
+      ev.push({ type: 'crash', total: this.total, stats: this.stats, lost, stars: starsFor(this._total, this._T.stars), ...(by ? { by } : {}) });
     } else {
-      const pace = this.pace, pts = Math.round(this._unbanked * T.cutMult * pace);
+      const pace = this.pace, pts = Math.round(this._unbanked * this._T.cutMult * pace);
       this._total += pts; this._unbanked = 0;
       if (pts > 0) ev.push({ type: 'bank', pts, total: this.total, cut: true, pace });
       this._how = 'cut'; this._finish();
       const perfect = this.perfect;
       if (perfect) { try { const L = globalThis.localStorage; L?.setItem(lk('onetake.perfect'), String((+L.getItem(lk('onetake.perfect')) || 0) + 1)); } catch (e) {} }
-      ev.push({ type: 'cut', total: this.total, stats: this.stats, pts, how, pace, stars: starsFor(this._total), perfect });
+      ev.push({ type: 'cut', total: this.total, stats: this.stats, pts, how, pace, stars: starsFor(this._total, this._T.stars), perfect });
     }
     return ev;
   }
@@ -409,7 +466,7 @@ export class Take {
   progress(world) {
     const L = this.lineList(world), main = L.filter((l) => !l.micro), mic = L.filter((l) => l.micro);
     return { flown: main.filter((l) => l.flown).length, total: main.length, micro: { flown: mic.filter((l) => l.flown).length, total: mic.length },
-      best: this.best, stars: starsFor(this.best), perfects: (() => { try { return +globalThis.localStorage?.getItem(lk('onetake.perfect')) || 0; } catch (e) { return 0; } })() };
+      best: this.best, stars: starsFor(this.best, this._T.stars), perfects: (() => { try { return +globalThis.localStorage?.getItem(lk('onetake.perfect')) || 0; } catch (e) { return 0; } })() };
   }
   // The line to fly next and where to point: {name, caption, pos:[x,y,z] (the point to steer at), dist (m to pos),
   // bearing (rad from the nose, + = right), elev (rad above level), fresh (never flown), vert ('down' | 'up' | null:
@@ -434,7 +491,7 @@ export class Take {
     const aim = (L, G) => {
       for (const v of L.l.via || []) {
         const q = v.p || v, u = v.unless;
-        if (Math.hypot(q[0] - p.x, q[2] - p.z) < (v.r ?? T.viaR)) continue;
+        if (Math.hypot(q[0] - p.x, q[2] - p.z) < (v.r ?? this._T.viaR)) continue;
         if (u && p.x >= u[0] && p.x <= u[1] && p.y >= u[2] && p.y <= u[3] && p.z >= u[4] && p.z <= u[5]) continue;
         return [q, 'via', d3(q) + Math.hypot(G.c[0] - q[0], G.c[1] - q[1], G.c[2] - q[2])];
       }
@@ -457,8 +514,10 @@ export class Take {
       const L = this._lines.find((x) => x.l.name === nx); if (!L) continue;
       const [tgt, stage] = aim(L, L.pre.length ? L.pre[0] : L.main); pick = { L, tgt, stage, fresh: eligible(nx) === 1 }; break;
     }
-    // 2. the first line of a new profile
-    if (!pick && !this._names?.some((l) => !l.micro && PROG[l.name]?.n)) {
+    // 2. the first line of a new profile (with tuning.firstR: only within firstR m of world.takeStart; further out, the
+    // nearest line: design #4, the guide pointed at WALKING STREET from 393 m away with SCREEN CANYON 10 m ahead)
+    const ts = world?.takeStart?.pos, nearStart = !(this._T.firstR < Infinity) || !ts || Math.hypot(p.x - (ts.x ?? ts[0]), p.z - (ts.z ?? ts[2])) <= this._T.firstR;
+    if (!pick && nearStart && !this._names?.some((l) => !l.micro && PROG[l.name]?.n)) {
       const L = this._lines.find((x) => x.l.first && !x.l.micro);
       if (L) { const G = L.pre.length ? L.pre[0] : L.main, [tgt, stage] = aim(L, G); pick = { L, tgt, stage, fresh: true }; }
     }
@@ -474,7 +533,7 @@ export class Take {
     if (!pick) return null;
     const c = pick.tgt, dx = c[0] - p.x, dy = c[1] - p.y, dz = c[2] - p.z, hd = Math.hypot(dx, dz);
     const h = drone.heading ?? Math.atan2(-drone.vel.x, -drone.vel.z);
-    const vert = Math.abs(dy) > 1 && (hd < T.hintVert || (pick.prog && hd < 0.5 * Math.abs(dy))) ? (dy < 0 ? 'down' : 'up') : null;
+    const vert = Math.abs(dy) > 1 && (hd < this._T.hintVert || (pick.prog && hd < 0.5 * Math.abs(dy))) ? (dy < 0 ? 'down' : 'up') : null;
     return { name: pick.L.l.name, caption: pick.L.l.caption || pick.L.l.name, pos: c.slice(), dist: +Math.hypot(dx, dy, dz).toFixed(2),
       bearing: -wrap(Math.atan2(-dx, -dz) - h), elev: Math.atan2(dy, hd), fresh: pick.fresh, vert, stage: pick.stage, inProgress: !!pick.prog };
   }

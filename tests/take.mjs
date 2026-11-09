@@ -499,5 +499,71 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
   }
 }
 
+// [P2-F1] per-level tuning, armed lines + armHold, firstR, set-piece gating, microFlow, movers (HEADS / crash by)
+{
+  const TL = await import(DIR + '/take.js');
+  if (typeof TL.mergeTuning === 'function') {
+    resetProgress();
+    ok(TL.mergeTuning(null) === T && TL.mergeTuning(undefined) === T, 'no tuning: TAKE_TUNING itself (bando bit-exact)');
+    const mt = TL.mergeTuning({ stars: [10, 20, 30], bankT: 7, bogus: 1, holdZone: 'x', pace: [1, 2] });
+    ok(mt.bankT === 7 && mt.stars[2] === 30 && !('bogus' in mt) && mt.holdZone === T.holdZone && mt.pace === T.pace && T.bankT === 5, 'merge: known keys of the right type only; TAKE_TUNING untouched');
+    ok(starsFor(25, [10, 20, 30]) === 2 && starsFor(70000) === 1, 'starsFor takes a threshold list');
+    // a level world: micro M adds no FLOW, the bank timer waits while A is armed, stars [1000, 2000, 3000]
+    const tun = { stars: [1000, 2000, 3000], armHold: true, bankT: 2, microFlow: 0, firstR: 30 };
+    const W = { lines: [
+      { name: 'A', caption: 'A', pts: 1000, ...gate(0), pre: [gate(-5)], within: 20 },
+      { name: 'M', caption: 'M', pts: 500, micro: true, ...gate(-2, { two: true }) },
+      { name: 'P', caption: 'P', pts: 500, piece: 'station-stairs', ...gate(10) },
+    ], skimBvh, tuning: tun, takeStart: { pos: { x: 0, y: 2, z: -20 } } };
+    const tk = new Take(), d = mk(), evs = [];
+    const fly = (z1, v = 10) => { d.vel = { x: 0, y: 0, z: Math.sign(z1 - d.pos.z) * v }; while (Math.abs(z1 - d.pos.z) > 1e-6) { const s = Math.min(v * DT, Math.abs(z1 - d.pos.z)); d.pos = { ...d.pos, z: d.pos.z + Math.sign(z1 - d.pos.z) * s }; evs.push(...tk.update(DT, d, W, true)); } };
+    fly(-4);
+    const ar = tk.armed;
+    ok(ar && ar.name === 'A' && ar.within === 20 && ar.left > 19 && ar.left <= 20 && !ar.repeat, `armed after the pre-gate: ${JSON.stringify(ar)}`);
+    ok(tk.tuning.bankT === 2 && tk.tuning.stars[0] === 1000, 'take.tuning = the level tuning after an update');
+    fly(-1);
+    const m = evs.find((e) => e.name === 'M');
+    ok(m && m.flow === 1 && tk.flow === 1, 'microFlow 0: the micro scores at x1 and FLOW stays x1');
+    // crawl 5 s (hands on, slow): armed, so no bank (bankT 2)
+    for (let i = 0; i < Math.round(5 / DT); i++) evs.push(...tk.update(DT, d, W, true));
+    ok(!evs.some((e) => e.type === 'bank') && tk.unbanked > 0, 'armHold: no bank while A is armed');
+    fly(1);
+    const a = evs.find((e) => e.name === 'A');
+    ok(a && a.flow === 1 && tk.flow === 2 && tk.armed === null, 'A scores, FLOW +1, nothing armed');
+    fly(12);
+    ok(!evs.some((e) => e.name === 'P'), 'a set-piece line without world.setPieces is skipped');
+    for (let i = 0; i < Math.round(3 / DT); i++) evs.push(...tk.update(DT, d, W, true));
+    ok(evs.some((e) => e.type === 'bank'), 'disarmed: the bank timer runs again');
+    ok(tk.stars === starsFor(tk.total, [1000, 2000, 3000]) && tk.progress(W).stars === starsFor(tk.best, [1000, 2000, 3000]), 'stars from the level thresholds');
+    // the piece exists: P flies
+    const W2 = { ...W, setPieces: [{ id: 'station-stairs', kind: 'stairs', pos: [0, 0, 10] }] }, tk2 = new Take(), d2 = mk(), e2 = [];
+    d2.pos = { x: 0, y: 2, z: 8 }; d2.vel = { x: 0, y: 0, z: 10 };
+    for (let z = 8; z < 12; z += 10 * DT) { d2.pos = { ...d2.pos, z }; e2.push(...tk2.update(DT, d2, W2, true)); }
+    ok(e2.some((e) => e.name === 'P'), 'with its set piece in world.setPieces the line flies');
+    // firstR: a fresh profile far from the start is guided to the nearest line, not the `first` one
+    resetProgress();
+    const W3 = { lines: [{ name: 'F', caption: 'F', pts: 1000, first: true, ...gate(0) }, { name: 'N', caption: 'N', pts: 1000, ...gate(200) }], skimBvh, tuning: { firstR: 60 }, takeStart: { pos: { x: 0, y: 2, z: -5 } } };
+    const tk3 = new Take(), d3 = mk();
+    ok(tk3.nextHint(d3, W3)?.name === 'F', 'near the start: the first line');
+    d3.pos = { x: 0, y: 2, z: 190 };
+    ok(tk3.nextHint(d3, W3)?.name === 'N', 'past firstR: the nearest line');
+    ok(new Take().nextHint(d3, { ...W3, tuning: null })?.name === 'F', 'no firstR (bando): the first line from anywhere');
+    // movers: a new pedestrian contact is SCRAPE + HEADS! (once per scrapeCool), a vehicle crash names its type
+    const tk4 = new Take(), d4 = mk(); d4.moverN = 0; d4.moverKind = null; const e4 = [];
+    const W4 = { lines: [{ name: 'B', caption: 'B', pts: 2000, ...gate(20) }], skimBvh };
+    d4.pos = { x: 0, y: 2, z: 15 }; d4.vel = { x: 0, y: 0, z: 10 };
+    for (let z = 15; z < 22; z += 10 * DT) { d4.pos = { ...d4.pos, z }; e4.push(...tk4.update(DT, d4, W4, true)); }
+    d4.moverN = 1; d4.moverKind = 'pedestrian'; d4.moverImpact = 1.2; e4.push(...tk4.update(DT, d4, W4, true));
+    d4.moverN = 2; e4.push(...tk4.update(DT, d4, W4, true));
+    const hs = e4.filter((e) => e.type === 'scrape' && e.heads);
+    ok(hs.length === 1 && hs[0].lost === 1 && hs[0].flow === 1 && hs[0].impact === 1.2, `a pedestrian: one HEADS! scrape, FLOW -1 (${JSON.stringify(hs[0])})`);
+    d4.crashed = true; d4.crashBy = 'bus'; const ce = tk4.update(DT, d4, W4, true).find((e) => e.type === 'crash');
+    ok(ce && ce.by === 'bus', 'a crash into a mover names it (by: bus)');
+    const tk5 = new Take(), d5 = mk(); d5.crashed = false; tk5.update(DT, d5, W4, true); d5.crashed = true;
+    ok(!('by' in tk5.update(DT, d5, W4, true).find((e) => e.type === 'crash')), 'a plain crash has no `by` (event shape unchanged)');
+    resetProgress();
+  }
+}
+
 console.log(`take tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -5,6 +5,19 @@
 // (snapshot()/restore()), the input, the mode and the world. main.js calls it at a fixed 1/240 s tick with quantised
 // inputs (inputlog.js); the only randomness is this.rng (rng.js), re-seeded on reset(). Geometry is reached only through
 // the collider interface (bvhCollider below); world.funnels / world.envelope are plain data.
+//
+// [P2-F1 design #5] world.movers (optional, contract P2-F1): kinematic bodies that move on the tick clock (buses, taxis,
+// scooters, people). Checked once per tick after the static collision:
+//   movers.hit(p:[x,y,z], r, t) -> null | {kind: 'vehicle' | 'pedestrian', id, type?, n:[x,y,z] (unit, out of the body),
+//                                          depth (m of overlap), vel:[x,y,z] (the body's velocity, m/s)}
+//   movers.fork?() -> an independent copy (same answers, its own state)
+// t = this.tick / 240 s, where this.tick counts step() calls since reset() and rides in snapshot() (v4), so a replay, a
+// ghost or a re-sim from any snapshot asks the movers the same questions. hit() must be a pure function of (t, p, r).
+// Each Drone binds its own fork() (a sim cursor that only moves forward stays cheap: the ghost and the HQ re-sim never
+// rewind the live one). A vehicle hit faster than MV_CRASH m/s (relative, along n), or one that pins the quad against
+// a wall, is a crash (crashBy = its type); a pedestrian is soft (restitution MV_E_PED) and crashes only past the craft's
+// crash speed, like a wall. moverN counts contacts (take.js: a pedestrian is SCRAPE + HEADS!), moverKind / moverImpact
+// describe the latest.
 import * as THREE from 'three';
 import { Rng } from './rng.js';
 
@@ -75,10 +88,15 @@ const CAM_TAU = 0.2, CAM_TAU_BUMP = 0.8, CAM_KP = 0.45, CAM_TF = 0.12, CAM_TS = 
 const CAM_KY = 0.35, CAM_TH = 2.0, CAM_READY = -35 * DEG, CAM_TR = 0.35, READY_EPS = 2e-3;
 // proximity probe radius (m): turbulence near surfaces, and main.js's world.lastDist (audio, OLED bars)
 const PROX_R = 2.0;
+// world.movers (P2-F1): crash over MV_CRASH m/s against a vehicle; a contact more than MV_GAP ticks after the last one
+// (or with another body) is a new contact; MV_E_* restitution (people give)
+const MV_CRASH = 1.0, MV_GAP = 60, MV_E_VEH = 0.3, MV_E_PED = 0.15, MV_HZ = 240;
 // snapshot format version (bump when fields change; committed input logs record it). 2: floorT, guard feed-forward and
 // the camera state (camP/camD/camK + filters, pc* = the previous tick). 3: counter-yaw (camY/cyF/cyS/pcY), pull-out
 // hold camH, ready view (camR/pcR, rdy). restore() reads versions 1-2 with those at rest (rdy 0: mid-flight).
-export const SNAP_VERSION = 3;
+// 4 (P2-F1): the tick clock (tick: steps since reset(), the world.movers time) and the mover contact state (moverN,
+// moverKind, moverImpact, crashBy, mvId, mvT); older snapshots restore with tick 0 and no contact.
+export const SNAP_VERSION = 4;
 
 // Betaflight "Actual" rates (centre sensitivity, max rate, expo) -> rad/s
 export function actualRate(x, [center, max, expo]) {
@@ -155,6 +173,9 @@ export class Drone {
     this.prox = Infinity;                                             // gap (m) to the nearest surface within PROX_R
     this.dropOn = 0; this.dropP = new THREE.Vector3(); this.funI = -1;   // Cine drop lock (0 idle, 1 held, 2 declined) / funnel
     this.resets = 0;                                                  // bumped by reset(): lets main.js see a respawn
+    // [P2-F1] tick clock + world.movers contacts (see the header); moverN never resets (take.js watches it change)
+    this.tick = 0; this.moverN = 0; this.moverKind = null; this.moverImpact = 0; this.crashBy = null; this._mvId = -1; this._mvT = -1e9;
+    this._mvSrc = null; this._mvCur = null; this._mvP = [0, 0, 0];
     this.setCraft(craftKey);
   }
   setCraft(key) { this.key = key; this.c = CRAFTS[key]; this.tMax = this.c.twr * this.c.mass * G; }
@@ -170,6 +191,7 @@ export class Drone {
     this.floorT = 0; this.guardFF = 0;
     this._sP.copy(pos); this._sN.set(0, 0, 0); this._sT = 0; this._sC = 0;
     this.prox = Infinity; this.dropOn = 0; this.funI = -1;
+    this.tick = 0; this.moverKind = null; this.moverImpact = 0; this.crashBy = null; this._mvId = -1; this._mvT = -1e9;
     this.rng.seed(this.seed); this.resets++;
   }
 
@@ -191,6 +213,7 @@ export class Drone {
       wallN: v(this.wallN), wallT: this.wallT, wallN2: v(this.wallN2), wallT2: this.wallT2,
       sP: v(this._sP), sN: v(this._sN), sT: this._sT, sC: this._sC, unsticks: this.unsticks,
       prox: Number.isFinite(this.prox) ? this.prox : null, dropOn: this.dropOn, dropP: v(this.dropP), funI: this.funI,
+      tick: this.tick, moverN: this.moverN, moverKind: this.moverKind, moverImpact: this.moverImpact, crashBy: this.crashBy, mvId: this._mvId, mvT: this._mvT,
     };
   }
   restore(s) {
@@ -213,6 +236,9 @@ export class Drone {
     v(this.wallN, s.wallN); this.wallT = s.wallT; v(this.wallN2, s.wallN2); this.wallT2 = s.wallT2;
     v(this._sP, s.sP); v(this._sN, s.sN); this._sT = s.sT; this._sC = s.sC; this.unsticks = s.unsticks;
     this.prox = s.prox == null ? Infinity : s.prox; this.dropOn = s.dropOn | 0; v(this.dropP, s.dropP); this.funI = s.funI;
+    // version 1-3: no tick clock / mover contact (tick 0: a log recorded before movers never met one)
+    this.tick = s.tick ?? 0; this.moverN = s.moverN ?? 0; this.moverKind = s.moverKind ?? null; this.moverImpact = s.moverImpact ?? 0;
+    this.crashBy = s.crashBy ?? null; this._mvId = s.mvId ?? -1; this._mvT = s.mvT ?? -1e9;
     this.resets++;                                                    // a discontinuity for main.js (new log, no blur spike)
     return this;
   }
@@ -382,7 +408,7 @@ export class Drone {
 
   step(dt, inp, mode, world) {
     const c = this.c, m = c.mass, col = colliderOf(world);
-    this.prev.copy(this.pos); this.prevQ.copy(this.q);
+    this.prev.copy(this.pos); this.prevQ.copy(this.q); this.tick++;    // [P2-F1] this step ends at t = tick / 240
     // ready view: any stick past the take's start threshold (main.js STICK_EPS) ends it; Cine's throttle doesn't count
     if (this.rdy && (Math.abs(inp.pitch) > READY_EPS || Math.abs(inp.roll) > READY_EPS || Math.abs(inp.yaw) > READY_EPS || Math.abs(inp.climb) > READY_EPS ||
       (mode !== 'cine' && Math.abs(inp.thr - 0.39) > 0.04))) this.rdy = 0;
@@ -522,12 +548,58 @@ export class Drone {
     this.pos.addScaledVector(this.vel, dt);
 
     if (col) this._collide(col, mode, dt);
+    if (world?.movers && !this.crashed) this._movers(world.movers, col, mode);
     if (world?.envelope) this._envelope(world.envelope, dt);
     // proximity, inside the tick (it feeds the next tick's turbulence; main.js mirrors it into world.lastDist)
     let prox = Infinity;
     if (col && !this.crashed) { const r = col.closest(this.pos, PROX_R); if (r) prox = r.d - c.radius; }
     this.prox = prox;
     this._camStep(dt, mode === 'cine', world);
+  }
+
+  // [P2-F1 design #5] the movers' contact this tick (contract in the header). Push out along n (never through static
+  // geometry: a body that pins the quad to a wall stops at the wall), bounce relative to the body, Coulomb friction as
+  // _collide (so a quad sat on a bus roof rides it).
+  _mvBind(M) {
+    if (M !== this._mvSrc) { this._mvSrc = M; this._mvCur = M && typeof M.fork === 'function' ? M.fork() : M; }
+    return this._mvCur;
+  }
+  _movers(movers, col, mode) {
+    const M = this._mvBind(movers); if (!M || typeof M.hit !== 'function') return;
+    const r = this.c.radius, P = this._mvP;
+    P[0] = this.pos.x; P[1] = this.pos.y; P[2] = this.pos.z;
+    const h = M.hit(P, r, this.tick / MV_HZ);
+    if (!h) return;
+    const n = _v2.set(+h.n[0] || 0, +h.n[1] || 0, +h.n[2] || 0), nl = n.length();
+    if (!(nl > 1e-9)) return;
+    n.divideScalar(nl);
+    const ped = h.kind === 'pedestrian', push = Math.max(0, +h.depth || 0) + 0.003;
+    let pinned = false;
+    if (col) { const w = col.raycast(this.pos, n, push + r); if (w) { pinned = true; this.pos.addScaledVector(n, Math.max(0, w.t - r - 0.002)); } }
+    if (!pinned) this.pos.addScaledVector(n, push);
+    const mv = _v4.set(+h.vel?.[0] || 0, +h.vel?.[1] || 0, +h.vel?.[2] || 0);
+    this.vel.sub(mv);
+    const vn = this.vel.dot(n); let impact = 0;
+    if (vn < 0) {
+      impact = -vn;
+      const e = ped ? MV_E_PED : MV_E_VEH, mu = 0.25, vt = _v1.copy(this.vel).addScaledVector(n, -vn), vtl = vt.length();
+      this.vel.addScaledVector(n, -(1 + e) * vn);
+      if (vtl > 1e-5) this.vel.addScaledVector(vt, -Math.min(vtl, mu * (1 + e) * -vn) / vtl);
+    }
+    this.vel.add(mv);
+    this.contactN.add(n);
+    if (n.y > 0.7) this.floorT = FLOOR_HOLD;
+    if (h.id !== this._mvId || this.tick - this._mvT > MV_GAP) { this.moverN++; this.moverKind = ped ? 'pedestrian' : 'vehicle'; this.moverImpact = impact; }
+    this._mvId = h.id; this._mvT = this.tick;
+    if (impact > 0.4) {
+      this.lastImpact = impact; this.bump = Math.min(1, impact / 4);
+      const rng = this.rng;
+      this.w.x += rng.gauss() * impact * 2.0; this.w.z += rng.gauss() * impact * 2.0; this.w.y += rng.gauss() * impact * 0.8;
+    }
+    const crashAt = this.c.crashSpeed * (mode === 'acro' ? 1 : (this.c.assistCrash ?? 1.35));
+    if (ped ? impact > crashAt : impact > MV_CRASH || pinned) {
+      this.crashed = true; this.crashT = 0; this.crashBy = String(h.type || h.kind || 'vehicle'); this.onCrash?.(Math.max(impact, MV_CRASH));
+    }
   }
 
   // Keep the quad inside the part of the world that was actually built in 3D.
