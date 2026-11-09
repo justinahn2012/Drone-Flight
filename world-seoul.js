@@ -58,8 +58,8 @@ export const SEOUL_MATS = {
 // coloured interior, `room` the interior-atlas tile, `front` a front layer and its chance, `shut` the shutter chance.
 const USE_LOOK = {
   club: { nits: [30, 40], rgb: [1.0, 0.42, 0.9], room: [3, 4], shut: 0.15 }, bar: { nits: [30, 45], cct: 2700, room: [3], shut: 0.1 },
-  pocha: { nits: [55, 80], cct: 3000, room: [2], front: [4, 0.7], shut: 0.05 }, restaurant: { nits: [50, 75], cct: 3200, room: [2, 1], front: [6, 0.2], shut: 0.25 },
-  cafe: { nits: [45, 70], cct: 2900, room: [1], shut: 0.35 }, shop: { nits: [70, 110], cct: 4500, room: [5, 6, 5], shut: 0.45 },
+  pocha: { nits: [55, 80], cct: 3000, room: [2], front: [4, 0.7], shut: 0.05 }, restaurant: { nits: [50, 75], cct: 3500, room: [2, 1], front: [6, 0.2], shut: 0.25 },
+  cafe: { nits: [45, 70], cct: 3500, room: [1], shut: 0.35 }, shop: { nits: [70, 110], cct: 5000, room: [5, 6, 5], shut: 0.45 },
   conv: { nits: [110, 130], cct: 6000, room: [0], shut: 0 }, karaoke: { nits: [35, 50], rgb: [0.85, 0.6, 1.0], room: [4], shut: 0.05 },
   pc: { nits: [45, 60], cct: 5600, room: [7], shut: 0.05 }, motel: { nits: [35, 45], rgb: [1.0, 0.62, 0.7], room: [4], shut: 0.1 },
   office: { nits: [40, 60], cct: 5000, room: [8], shut: 0.8 }, hotel: { nits: [50, 70], cct: 3000, room: [1], shut: 0.1 },
@@ -67,9 +67,9 @@ const USE_LOOK = {
 // upper-floor tenants (2F and up) by street kind, and the interior + luminance a lit floor shows (lit windows: 5-25 nits)
 const UPPER = { walking: { bar: 3, karaoke: 2, cafe: 3, pc: 1, office: 1, home: 1, restaurant: 2 }, club: { bar: 4, karaoke: 2, pc: 1, home: 2, cafe: 1, restaurant: 1, motel: 1 },
   main: { office: 4, cafe: 2, pc: 1, karaoke: 1, bar: 1, restaurant: 1, home: 1 }, alley: { home: 5, office: 2, bar: 1, cafe: 1, karaoke: 1, study: 1 } };
-const TENANT = { bar: { room: [3], nits: [6, 12], cct: 2700 }, karaoke: { room: [4], nits: [8, 14], rgb: [0.85, 0.6, 1.0] }, cafe: { room: [1], nits: [12, 20], cct: 3000 },
+const TENANT = { bar: { room: [3], nits: [6, 12], cct: 2700 }, karaoke: { room: [4], nits: [8, 14], rgb: [0.85, 0.6, 1.0] }, cafe: { room: [1], nits: [12, 20], cct: 3500 },
   pc: { room: [13, 7], nits: [6, 12], cct: 6000 }, office: { room: [8], nits: [15, 25], cct: 5000 }, home: { room: [12, 13, 11, 12], nits: [5, 12], cct: 2800 },
-  study: { room: [11], nits: [8, 16], cct: 3500 }, restaurant: { room: [2], nits: [12, 20], cct: 3200 }, motel: { room: [12], nits: [6, 10], rgb: [1.0, 0.7, 0.75] },
+  study: { room: [11], nits: [8, 16], cct: 3500 }, restaurant: { room: [2], nits: [12, 20], cct: 3500 }, motel: { room: [12], nits: [6, 10], rgb: [1.0, 0.7, 0.75] },
   hotel: { room: [12], nits: [8, 14], cct: 3000 } };
 // a black body's colour, normalised to luminance 1 (Tanner Helland's fit; 2700-6500 K is all we use)
 export function cctRGB(K) {
@@ -81,7 +81,15 @@ export function cctRGB(K) {
   return c.map((v) => v / Y);
 }
 const lumOf = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-const colourOf = (o, u) => o.rgb ? o.rgb.map((v) => v / lumOf(o.rgb)) : cctRGB(o.cct + (u - 0.5) * 500);
+// [P3-C] (colorist #2) light colours are expressed against a 4300 K white point (the night camera's balance), not D65: a
+// 2700 K room reads amber, not pumpkin, and a 4000 K street head reads near-white. Normalised to luminance 1.
+export const WHITE_K = 4300;
+const WB_RGB = cctRGB(WHITE_K);
+export function lightRGB(K) { const c = cctRGB(K).map((v, i) => v / WB_RGB[i]), Y = lumOf(c); return c.map((v) => v / Y); }
+// [P3-C] (colorist #1, the rooms part) coloured rooms are a filter on white light: rgb / max(rgb), and `nits` is the
+// white-equivalent, so a magenta club room emits nits x lum(filter) (blue and violet no longer carry 6-7x their luminance)
+const filterOf = (rgb) => { const m = Math.max(...rgb); return rgb.map((v) => v / m); };
+const colourOf = (o, u) => o.rgb ? filterOf(o.rgb) : lightRGB(o.cct + (u - 0.5) * 500);
 const K = { band: 0.12, fascia: [2.9, 1.1, 0.08], shopTop: 2.9, parapet: 0.9, poleH: 10.0, poleR: 0.17, poleStep: 26, cableR: 0.022 };
 
 // ---- seeded helpers (no Math.random anywhere: geometry is part of the replay hash)
@@ -423,9 +431,9 @@ export function buildSeoulGeometry(layout, opts = {}) {
           }
           A('frame').box(Pt((w0 + w1) / 2, 2.32, 0.08), [gw / 2, 0.03, 0.05], yaw, false);   // transom bar
           A('frame').box(Pt((w0 + w1) / 2, 0.1, 0.06), [gw / 2, 0.1, 0.025], yaw, false);   // kick plate
-          const c = Pt((w0 + w1) / 2, K.shopTop / 2, 0.05), col = colourOf(look, cu);
+          const c = Pt((w0 + w1) / 2, K.shopTop / 2, 0.05), col = colourOf(look, cu), cY = lumOf(col);   // L3: rgb at luminance 1, nits = luminance
           emitters.push({ id: 'store:' + l.id, pos: [+c[0].toFixed(2), +c[1].toFixed(2), +c[2].toFixed(2)], normal: [+nx.toFixed(3), 0, +nz.toFixed(3)], w: +gw.toFixed(2), h: K.shopTop,
-            rgb: col.map((v) => +v.toFixed(3)), nits: Math.round(nitsS), kind: 'store', animated: false, lot: l.id });
+            rgb: col.map((v) => +(v / cY).toFixed(3)), nits: Math.round(nitsS * cY), kind: 'store', animated: false, lot: l.id });
         }
         // sign bed (aluminium composite panel), 2.9-4.0 m, 8 cm proud: charcoal on most lots, grey or dull white on some
         const [fy, fh, fd] = K.fascia, fc = [(a[0] + b[0]) / 2 + nx * fd / 2, fy + fh / 2, (a[1] + b[1]) / 2 + nz * fd / 2], fr2 = hash(l.id + 'bed');
@@ -462,7 +470,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
   // get opposite pairs every 32 m (was staggered), pedestrian posts 4 klm, and every second alley pole a 3000 K security lamp.
   const LAMP = { main: { lumens: 12000, cct: 4000, w: 0.56, h: 0.24 }, ped: { lumens: 4000, cct: 3500, w: 0.56, h: 0.24 }, security: { lumens: 3000, cct: 3000, w: 0.3, h: 0.15 } };
   const lampHead = (x, z, ox, oz, h, arm, spec = LAMP.main, pole = true) => {
-    const px = x + ox * arm, pz = z + oz * arm, nits = Math.round(spec.lumens / (Math.PI * spec.w * spec.h)), rgb = cctRGB(spec.cct), hw = spec.w / 2, hd = spec.h / 2;
+    const px = x + ox * arm, pz = z + oz * arm, nits = Math.round(spec.lumens / (Math.PI * spec.w * spec.h)), rgb = lightRGB(spec.cct), hw = spec.w / 2, hd = spec.h / 2;
     if (pole) A('pole').tube([[x, 0, z], [x, h, z], [x + ox * 0.4, h + 0.3, z + oz * 0.4], [px, h + 0.35, pz]], 0.09, 6);
     else A('pole').tube([[x, h + 0.35, z], [px, h + 0.35, pz]], 0.04, 4);
     A('pole').box([px, h + 0.3, pz], [hw + 0.04, 0.08, hd + 0.06], Math.atan2(-oz, ox), false);
@@ -625,17 +633,52 @@ uniform sampler2D tSeoulInt; uniform float uSeoulNorm[16];
 varying vec4 sEm; varying vec4 sWin; varying vec3 sWPos; varying vec3 sONrm; varying vec2 sUv;
 float sgMask = 0.0; vec3 sgEmit = vec3(0.0);
 vec4 sgTile(float t, vec2 uv, float lod) {
-  float pad = (0.5 * exp2(lod) + 0.5) / 256.0;
+  float pad = (0.5 * exp2(lod) + 0.5) / 512.0;
   uv = clamp(uv, vec2(pad), vec2(1.0 - pad));
-  return textureLod(tSeoulInt, (vec2(mod(t, 4.0), floor(t / 4.0 + 0.001)) + uv) / vec2(4.0, 5.0), lod);
+  return textureLod(tSeoulInt, (vec2(mod(t, 4.0), floor(t / 4.0 + 0.001)) + uv) / vec2(4.0, 6.0), lod);
+}
+float sgHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float sgVN(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(sgHash(i), sgHash(i + vec2(1.0, 0.0)), f.x), mix(sgHash(i + vec2(0.0, 1.0)), sgHash(i + vec2(1.0, 1.0)), f.x), f.y); }
+// [P3-C] what a pane reflects (art #3, graphics #5), scene-linear (NITS 0.1): the frontage across the street ~9 m away (a
+// sign band at 2.8-4.2 m, lit shopfronts, lit windows by floor, a blade every ~11 m, a roofline), the wet street below and
+// the dark sky above. Signs ~40-60 nits, lit windows ~10, walls ~0.2: at F = 0.04 neon shows on the glass as it does.
+vec3 sgEnv(vec3 P, vec3 rf, vec3 n) {
+  vec2 tn = vec2(-n.z, n.x);
+  if (rf.y < -0.015) {
+    vec2 gp = P.xz + rf.xz * (P.y / max(-rf.y, 0.015));
+    return vec3(0.032, 0.029, 0.026) * (0.5 + 1.2 * sgVN(gp * 0.25));
+  }
+  float th = 9.0 / max(dot(rf, n), 0.06); vec3 hp = P + rf * th;
+  float a = dot(hp.xz, tn), y = hp.y;
+  float roof = 11.0 + 10.0 * sgHash(vec2(floor(a / 7.0), 3.0));
+  if (y > roof) return vec3(0.004, 0.0036, 0.0032);
+  vec3 c = vec3(0.018, 0.016, 0.015);
+  float bs = fract(a / 11.0), bi = floor(a / 11.0);
+  if (bs < 0.07 && y > 4.5 && y < 4.5 + 9.0 * sgHash(vec2(bi, 9.0))) {
+    float hb = sgHash(vec2(bi, 5.0)); vec3 bc = hb < 0.35 ? vec3(1.0, 0.45, 0.15) : hb < 0.6 ? vec3(1.0, 0.85, 0.6) : hb < 0.8 ? vec3(1.0, 0.25, 0.4) : vec3(0.3, 0.7, 1.0);
+    return bc * (4.0 * step(0.5, fract(y / 0.9)) + 0.8);
+  }
+  if (y > 2.8 && y < 4.2) {
+    float u = fract(a / 4.7), s = sgHash(vec2(floor(a / 4.7), 1.0)), v = (y - 2.8) / 1.4;
+    vec3 sc = s < 0.3 ? vec3(1.0, 0.5, 0.18) : s < 0.55 ? vec3(1.0, 0.88, 0.7) : s < 0.68 ? vec3(0.25, 0.6, 1.0) : s < 0.82 ? vec3(1.0, 0.25, 0.45) : vec3(0.9, 0.9, 0.86);
+    float on = step(0.1, u) * step(u, 0.9) * step(0.18, v) * step(v, 0.82) * step(0.15, s);
+    return mix(c * 1.5, sc * 5.0, on);
+  }
+  if (y < 2.8) { float u = fract(a / 3.1), h = sgHash(vec2(floor(a / 3.1), 2.0)); return mix(vec3(0.02), mix(vec3(1.0, 0.86, 0.7), vec3(0.85, 0.92, 1.0), step(0.75, h)) * 3.0, step(0.3, h) * step(0.08, u) * step(u, 0.92) * step(y, 2.4)); }
+  vec2 cell = vec2(floor(a / 2.6), floor(y / 3.2)), f = vec2(fract(a / 2.6), fract(y / 3.2));
+  float h1 = sgHash(cell), h2 = sgHash(cell + 17.3);
+  if (f.x > 0.22 && f.x < 0.78 && f.y > 0.3 && f.y < 0.78) c = h1 < 0.4 ? mix(vec3(1.0, 0.85, 0.65), vec3(0.88, 0.93, 1.0), step(0.7, h2)) * (0.5 + 0.9 * h2) : vec3(0.025);
+  return c;
 }
 void seoulGlass(inout vec4 dc) {
   float w = max(sWin.x, 0.05), h = max(sWin.y, 0.05), kind = floor(sWin.z * 0.25 + 0.001), sill = sWin.z - kind * 4.0, D = max(sWin.w, 0.1);
   float code = floor(sEm.w + 0.0005), seed = sEm.w - code, room = mod(code, 32.0), front = floor(code / 32.0 + 0.001);
   vec3 L = sEm.rgb; float lit = step(0.2, dot(L, vec3(0.2126, 0.7152, 0.0722)));
+  if (kind > 3.5) { dc.rgb = vec3(0.05); sgEmit = L; sgMask = 4.0; return; }   // [P3-C] street-light heads (was its own mesh)
   if (kind > 2.5) {   // poster: flat, quadrant of a poster tile
     vec2 qd = vec2(mod(room, 2.0), floor(mod(room, 4.0) * 0.5 + 0.001));
-    float lod = clamp(log2(max(length(dFdx(sUv)), length(dFdy(sUv))) * 128.0), 0.0, 5.0);
+    float lod = clamp(log2(max(length(dFdx(sUv)), length(dFdy(sUv))) * 256.0), 0.0, 5.0);
     vec4 c = sgTile(16.0 + floor(room / 4.0 + 0.001), (qd + clamp(sUv, 0.02, 0.98)) * 0.5, lod);
     dc.rgb = c.rgb * 0.5; sgEmit = c.rgb * L; sgMask = 3.0; return;
   }
@@ -661,9 +704,23 @@ void seoulGlass(inout vec4 dc) {
   vec3 nb = vec3(hit.x / (Wr * 0.5), hit.y / (Hr * 0.5) - 1.0, clamp(hit.z / D, 0.0, 1.0));
   if (seed > 0.5) nb.x = -nb.x;
   vec2 tuv = clamp(nb.xy / (1.0 + nb.z) * 0.5 + 0.5, 0.0, 1.0);
-  float lod = clamp(log2(max(max(length(dFdx(q)), length(dFdy(q))) * 256.0 / Wr, 1e-4)), 0.0, 6.0);
+  float px = max(max(length(dFdx(q)), length(dFdy(q))), 1e-4);
+  float lod = clamp(log2(px * 512.0 / Wr), 0.0, 7.0);
   vec4 c = sgTile(room, tuv, lod);
   vec3 col = c.rgb * (1.0 + (1.0 - c.a) * 6.0 * lit) * uSeoulNorm[int(room)] * L;
+  // [P3-C] mid-depth layer (art #3): shelves, counters, menu boards, diners 1.2-2 m behind shop glass and office windows
+  float mid = room < 6.5 ? room : (room > 7.5 && room < 8.5 ? 7.0 : -1.0);
+  if (mid > -0.5) {
+    float zm = 1.2 + fract(seed * 3.17) * 0.8, tm = zm / rr.z;
+    if (zm < D - 0.4 && tm < t) {
+      vec3 hm = p0 + rr * tm; float um = hm.x / Wr + 0.5;
+      if (seed > 0.5) um = 1.0 - um;
+      if (um > 0.0 && um < 1.0 && hm.y > 0.0 && hm.y < 3.0) {
+        vec4 mc = sgTile(20.0 + floor(mid * 0.5 + 0.001), vec2((mod(mid, 2.0) + clamp(um, 0.01, 0.99)) * 0.5, hm.y / 3.0), clamp(log2(px * 256.0 / Wr), 0.0, 6.0));
+        col = mix(col, mc.rgb * uSeoulNorm[int(room)] * L * 0.85, mc.a);
+      }
+    }
+  }
   vec2 gu = e / vec2(w, h);
   if (front > 0.5 && front < 1.5) {           // blinds, lowered part way
     if (gu.y > 0.55 - fract(seed * 7.13) * 0.55) { vec4 b = sgTile(9.0, vec2(gu.x * w * 0.5, gu.y * h / 1.6), lod); col = mix(col, b.rgb * L * 0.55, b.a); }
@@ -682,11 +739,12 @@ void seoulGlass(inout vec4 dc) {
   } else if (front > 5.5 && front < 6.5) {    // cafe curtain on the lower 40 %
     if (gu.y < 0.4) { vec4 cc = sgTile(10.0, vec2(fract(gu.x * w / 0.9), gu.y), lod); col = mix(col, cc.rgb * vec3(0.95, 0.92, 0.85) * L * 0.8, cc.a); }
   }
-  // mirror term: at grazing angles the pane mirrors the lit street (warm-magenta neon haze, broken up), above ~15 deg the sky
-  vec3 rf = reflect(rd, n); float F = 0.04 + 0.96 * pow(1.0 - clamp(-dot(rd, n), 0.0, 1.0), 5.0);
-  vec2 gp = floor(sWPos.xz * 0.35 + rf.xz * 6.0); float hz = fract(sin(dot(gp, vec2(12.9898, 78.233))) * 43758.5453);
-  vec3 street = mix(vec3(0.30, 0.12, 0.20), vec3(0.32, 0.22, 0.10), hz) * (0.4 + 1.2 * hz * hz);
-  col += F * mix(street, vec3(0.006, 0.006, 0.01), smoothstep(0.05, 0.3, rf.y));
+  // [P3-C] the glass itself: Fresnel 0.04 at normal incidence, raised by grime (smears, a dusty bottom edge), which also
+  // costs a little transmission; it reflects the street it faces (sgEnv), so a lit shop is a window, not a plate
+  vec3 rf = reflect(rd, n); float ci = clamp(-dot(rd, n), 0.0, 1.0);
+  float grime = 0.55 * smoothstep(0.45, 0.85, sgVN(sWPos.xz * 1.7 + vec2(sWPos.y * 0.6, sWPos.y * 2.3))) + 0.45 * smoothstep(0.22, 0.0, gu.y);
+  float F = min(0.6, (0.04 + 0.96 * pow(1.0 - ci, 5.0)) * (1.0 + 0.9 * grime));
+  col = col * (1.0 - F) * (1.0 - 0.12 * grime) + F * sgEnv(sWPos, rf, n);
   sgEmit = col;
 }
 `;
@@ -711,7 +769,7 @@ function patchSeoul(mat, mode) {
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nsEm = aEm; sWin = aWin; sONrm = normal; sUv = uv; sWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + SG_HEAD)
         .replace('#include <color_fragment>', '#include <color_fragment>\n  seoulGlass(diffuseColor);')
-        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = sgMask > 2.5 ? 0.12 : sgMask > 1.5 ? 0.9 : sgMask > 0.5 ? 0.4 : roughnessFactor;')
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = sgMask > 3.5 ? 0.5 : sgMask > 2.5 ? 0.12 : sgMask > 1.5 ? 0.9 : sgMask > 0.5 ? 0.4 : roughnessFactor;')
         .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = sgMask > 0.5 && sgMask < 1.5 ? 0.6 : metalnessFactor;')
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += sgEmit;');
     } else if (mode === 'flat') {
@@ -727,16 +785,42 @@ function patchSeoul(mat, mode) {
   return mat;
 }
 const INTERIOR_UNIFORMS = { tSeoulInt: { value: null }, uSeoulNorm: { value: new Array(16).fill(1) } };
-let interiorTex = null;
+let interiorTex = null, interiorJob = null;
+// [P3-C] the atlas is 512 px tiles now (graphics #5), 1-4 s of painting: in the browser a module Worker paints it while the
+// geometry builds (buildSeoul starts it first), and the texture is swapped in when it lands. Node / no Worker: in line.
+export function startInteriorAtlas() {
+  if (interiorJob) return interiorJob;
+  interiorJob = (async () => {
+    if (!IS_NODE && typeof Worker !== 'undefined' && typeof Blob !== 'undefined') {
+      let url = null;
+      try {
+        const src = `import { buildInteriorAtlas } from ${JSON.stringify(new URL('./seoul-interiors.js', import.meta.url).href)};\n` +
+          'const A = buildInteriorAtlas(); postMessage({ data: A.data, mean: A.mean, width: A.width, height: A.height }, [A.data.buffer, A.mean.buffer]);';
+        url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+        return await new Promise((res, rej) => {
+          const w = new Worker(url, { type: 'module' }), to = setTimeout(() => { w.terminate(); rej(new Error('timeout')); }, 30000);
+          w.onmessage = (e) => { clearTimeout(to); w.terminate(); res(e.data); };
+          w.onerror = (e) => { clearTimeout(to); w.terminate(); rej(new Error(e?.message || 'worker error')); };
+        });
+      } catch (e) { console.warn('seoul interiors: worker failed, painting on the main thread', e?.message || e); }
+      finally { if (url) URL.revokeObjectURL(url); }
+    }
+    return buildInteriorAtlas();
+  })();
+  return interiorJob;
+}
 function interiorTexture() {
   if (interiorTex) return interiorTex;
-  const A = buildInteriorAtlas();
-  const t = new THREE.DataTexture(A.data, A.width, A.height, THREE.RGBAFormat, THREE.UnsignedByteType);
-  t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
-  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.flipY = false; t.anisotropy = 4; t.name = 'seoul:interiors'; t.needsUpdate = true;
-  INTERIOR_UNIFORMS.uSeoulNorm.value = Array.from({ length: 16 }, (_, i) => (i === 9 || i === 10 || i === 15 ? 1 : 1 / Math.max(0.05, A.mean[i])));
-  INTERIOR_UNIFORMS.tSeoulInt.value = t;
-  return (interiorTex = t);
+  interiorTex = startInteriorAtlas().then((A) => {
+    const t = new THREE.DataTexture(A.data, A.width, A.height, THREE.RGBAFormat, THREE.UnsignedByteType);
+    t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.flipY = false; t.anisotropy = 4; t.name = 'seoul:interiors'; t.needsUpdate = true;
+    t.onUpdate = () => { if (t.image) t.image.data = null; };   // perf #4: the GPU holds it; drop the 25 MB CPU copy
+    INTERIOR_UNIFORMS.uSeoulNorm.value = Array.from({ length: 16 }, (_, i) => (i === 9 || i === 10 || i === 15 ? 1 : 1 / Math.max(0.05, A.mean[i])));
+    INTERIOR_UNIFORMS.tSeoulInt.value = t;
+    return t;
+  }).catch((e) => { console.warn('seoul interiors', e); return null; });
+  return interiorTex;
 }
 function makeMaterials(renderer, texLoader, extra = {}) {
   const mats = {}, pending = [];
@@ -756,7 +840,7 @@ function makeMaterials(renderer, texLoader, extra = {}) {
         mat.needsUpdate = true; res();
       }, undefined, () => { console.warn('seoul texture failed', url); res(); })));
     }
-    if (m.emissive) { mat.emissive = new THREE.Color(0, 0, 0); if (m.interior) { interiorTexture(); patchSeoul(mat, 'glass'); } else patchSeoul(mat, 'flat'); }
+    if (m.emissive) { mat.emissive = new THREE.Color(0, 0, 0); if (m.interior) { pending.push(interiorTexture()); patchSeoul(mat, 'glass'); } else patchSeoul(mat, 'flat'); }
     else if (m.grime) patchSeoul(mat, 'grime');
     if (k === 'plaza') mat.userData.wet = 0.8;   // [P2-C] the walking streets are wet too (seoul-light's wet path; phase 1 matched only 'road')
     if (['stripe', 'yellow'].includes(k)) { mat.polygonOffset = true; mat.polygonOffsetFactor = -2; mat.polygonOffsetUnits = -2; }
@@ -815,6 +899,7 @@ export async function buildSeoul(renderer, a, b) {
   if (!layout) throw new Error('seoul/layout.json missing');
   const lineData = opts.lines || (await loadSeoulJSON('./seoul/lines.json'));
   prog(0.15, 'Hongdae: buildings');
+  if (opts.interiors !== false) startInteriorAtlas();   // [P3-C] paints in a Worker while the geometry builds
   const geo = buildSeoulGeometry(layout, { lineData, seed: opts.seed ?? SEOUL_SEED });
   prog(0.55, 'Hongdae: materials');
   const texLoader = IS_NODE ? null : new THREE.TextureLoader();

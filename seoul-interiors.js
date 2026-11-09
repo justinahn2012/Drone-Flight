@@ -1,6 +1,6 @@
 // seoul-interiors.js — [P2-C] the interior atlas behind Hongdae's glass (stream C: buildings, owned with world-seoul.js).
-// Pure CPU and deterministic (node, CI, native export): buildInteriorAtlas() paints 16 rooms + 16 posters into a 1024 x 1280
-// RGBA8 atlas (sRGB colour, linear alpha), 4 columns x 5 rows of 256 px tiles. world-seoul.js samples it with interior
+// Pure CPU and deterministic (node, CI, native export): buildInteriorAtlas() paints 16 rooms + 16 posters + 8 mid-depth layers
+// into a 2048 x 3072 RGBA8 atlas (sRGB colour, linear alpha), 4 columns x 6 rows of 512 px tiles ([P3-C] was 256 px, 5 rows). world-seoul.js samples it with interior
 // mapping (a ray-box room behind each pane), so shopfronts and windows show depth and parallax instead of flat plates.
 //
 // Room tiles are painted in one-point perspective through the room box: a room point (X, Y, Z), X,Y in [-1, 1] across the
@@ -14,9 +14,16 @@
 //   windows 8 office panels       9 blinds*    10 curtain*            11 study / bookshelves
 //          12 lamp room (home)   13 TV / monitors (blue)  14 common stair  15 frosted glass*      (* front layers, flat)
 //   16-19   posters, 4 per tile (2 x 2): menu, promo, for-lease (임대) paper, club flyer
+//   20-23   [P3-C] mid-depth layers, 2 per tile (left / right half, 256 x 512 px: u across the bay, v = 0..3 m above the
+//           floor; alpha = coverage): 0 convenience shelves, 1 cafe counter + menu board, 2 diners at pocha tables,
+//           3 bar counter + stools, 4 karaoke desk, 5 clothes rail + mannequin, 6 phone tables, 7 office partitions.
+//           The shader draws them on a plane 1.2-2 m behind shop glass (and office windows), in front of the room box.
+// [P3-C] colour (colorist #2): room albedo is pulled 35 % toward grey (the light carries the colour, not the paint), and
+// walls get a ceiling-light gradient (bright under the downlights, darker toward the floor).
 // Every room tile is normalised in the shader by TILE_MEAN (its mean linear luminance with the boost), so a pane's aEm
 // is the mean luminance the camera sees through it (nits x NITS).
-export const ATLAS = { cols: 4, rows: 5, tile: 256, width: 1024, height: 1280, boost: 6 };
+export const ATLAS = { cols: 4, rows: 6, tile: 512, width: 2048, height: 3072, boost: 6, mid: 20, desat: 0.35 };
+export const MID = { conv: 0, cafe: 1, diners: 2, bar: 3, karaoke: 4, clothes: 5, phone: 6, office: 7 };
 export const ROOM = { conv: 0, cafe: 1, pocha: 2, bar: 3, karaoke: 4, clothes: 5, phone: 6, pcstair: 7, office: 8, blinds: 9, curtain: 10,
   study: 11, home: 12, tv: 13, stair: 14, frosted: 15 };
 export const FRONT = { none: 0, blinds: 1, curtain: 2, frosted: 3, vinyl: 4, lease: 5, cafeCurtain: 6 };
@@ -194,12 +201,16 @@ const PL5 = [K93, K94, K95, K70];
 const PL6 = [K136, K137, K138, K139];
 const PL7 = [K149, K150, K151];
 // one room sample: wall 0 back, 1 left, 2 right, 3 floor, 4 ceiling; X, Y in [-1, 1], Z in [0, 1]. Returns [r, g, b, emit 0..1]
-const OUT = K0; let lightZ = 1;
+const OUT = K0; let lightZ = 1, lightY = 1;
 const E = (c, e) => { OUT[0] = c[0]; OUT[1] = c[1]; OUT[2] = c[2]; OUT[3] = e; return OUT; };
-const S = (c, k = 1) => { k *= lightZ; OUT[0] = c[0] * k; OUT[1] = c[1] * k; OUT[2] = c[2] * k; OUT[3] = 0; return OUT; };
+const S = (c, k = 1) => { k *= lightZ * lightY; OUT[0] = c[0] * k; OUT[1] = c[1] * k; OUT[2] = c[2] * k; OUT[3] = 0; return OUT; };
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 const near3 = (X, a, b, c, r) => Math.abs(X - a) < r || Math.abs(X - b) < r || Math.abs(X - c) < r;
 function room(v, wall, X, Y, Z) {
   lightZ = 1 - 0.35 * Z;                                             // falloff away from the window side lights
+  // [P3-C] ceiling-light gradient: walls darken toward the floor, side walls get downlight scallops, the ceiling sits dim
+  lightY = wall === 4 ? 0.8 : wall === 3 ? 0.9 : 0.72 + 0.28 * smooth(-1, 0.55, Y);
+  if (wall === 1 || wall === 2) lightY += 0.32 * Math.max(0, 1 - Math.hypot((fract(Z * 2.5) - 0.5) * 3.2, (0.95 - Y) * 1.25));
   switch (v) {
     case 0: { // convenience store: white ceiling with tube rows, tiled floor, product shelves, a fridge wall at the back
       if (wall === 4) { const row = near3(X, -0.55, 0, 0.55, 0.07) && fract(Z * 5) < 0.8; return row ? E(K1, 1) : S(K2); }
@@ -354,28 +365,119 @@ function poster(p, u, v) {
   return bars(0.1, 0.3, 3) ? mul(c, 0.9) : K152;
 }
 
+// [P3-C] mid-depth layers: u across the bay, y in metres above the floor (0..3). Returns [r, g, b, coverage] (linear),
+// lit from above (tops catch the ceiling light). Coverage 0 shows the room box behind.
+const MO = [0, 0, 0, 0];
+const M = (c, k = 1, a = 1) => { MO[0] = c[0] * k; MO[1] = c[1] * k; MO[2] = c[2] * k; MO[3] = a; return MO; };
+const NONE = [0, 0, 0, 0];
+const MDARK = [0.035, 0.032, 0.03], MSTEEL = [0.42, 0.43, 0.45], MWOOD = [0.16, 0.09, 0.05], MWHITE = [0.8, 0.8, 0.78], MBLACK = [0.02, 0.02, 0.022];
+const SKIN = [[0.45, 0.32, 0.24], [0.38, 0.26, 0.19], [0.5, 0.37, 0.28]], HAIR = [[0.02, 0.018, 0.016], [0.05, 0.035, 0.025], [0.12, 0.08, 0.05]];
+const CLOTH = [[0.03, 0.03, 0.035], [0.25, 0.25, 0.27], [0.06, 0.08, 0.18], [0.5, 0.48, 0.45], [0.35, 0.05, 0.05], [0.07, 0.15, 0.08], [0.6, 0.55, 0.42]];
+const PROD2 = PROD.map((c) => mix(c, [0.4, 0.4, 0.4], 0.25));
+// a person from behind / side, seated or standing: centre u (bay units), base y (seat), bay width in metres
+function person(u, y, cu, by, wb, seed, standing) {
+  const x = (u - cu) * wb, sh = standing ? 0.55 : 0, hy = by + 0.62 + sh, hr = 0.11;
+  if (Math.hypot(x, (y - hy) * 0.9) < hr) { const hairTop = y > hy - 0.02 || hh(seed, 3) < 0.5; return M(hairTop ? pick(HAIR, hh(seed, 4)) : pick(SKIN, hh(seed, 5)), 0.9 + 0.2 * (y - hy) / hr); }
+  if (y > by - (standing ? 0.95 : 0.05) && y < hy - hr * 0.7) { const w = 0.2 + 0.05 * smooth(hy - 0.3, hy - 0.15, hy - y); if (Math.abs(x) < w) return M(pick(CLOTH, hh(seed, 6)), 0.75 + 0.35 * smooth(by, hy, y)); }
+  return null;
+}
+function midLayer(m, u, y) {
+  switch (m) {
+    case 0: { // convenience store: two gondola runs (1.55 m), price rails, a hanging promo board
+      if (y < 1.55) {
+        const fu = fract(u * 2); if (fu < 0.025 || fu > 0.975) return M(MWHITE, 0.8);
+        if (y > 1.5) return M(MWHITE, 1.1);
+        const sy = fract(y / 0.36); if (sy < 0.1) return M(sy < 0.05 ? [0.85, 0.75, 0.2] : MWHITE, 0.9);
+        const pu = fract(u * 26), c = pick(PROD2, hh(Math.floor(u * 26), Math.floor(y / 0.36)));
+        return pu < 0.82 && sy < 0.82 ? M(c, 0.55 + 0.5 * sy) : M([0.3, 0.3, 0.3], 0.5);
+      }
+      if (y > 2.32 && y < 2.62 && u > 0.28 && u < 0.72) { const t = y > 2.4 && y < 2.52 && fract(u * 14) < 0.6; return M(t ? MWHITE : [0.75, 0.08, 0.06], 1); }
+      if (Math.abs(u - 0.3) < 0.004 || Math.abs(u - 0.7) < 0.004) return y > 2.6 ? M(MDARK, 1) : NONE;
+      return NONE;
+    }
+    case 1: { // cafe: a counter with an espresso machine and cups, a chalk menu board hanging from the ceiling
+      if (u < 0.78 && y < 1.05) { if (y > 1.0) return M([0.55, 0.5, 0.42], 1.2); const pl = fract(u * 9) < 0.03; return M(pl ? MDARK : MWOOD, 0.6 + 0.4 * y); }
+      if (u > 0.14 && u < 0.34 && y >= 1.05 && y < 1.48) { const top = y > 1.4; return M(top ? MDARK : MSTEEL, 0.8 + 0.6 * (y - 1.05)); }
+      if (u > 0.42 && u < 0.7 && y >= 1.05 && y < 1.16 && fract(u * 20) < 0.5) return M(MWHITE, 1);
+      if (y > 2.05 && y < 2.62 && u > 0.18 && u < 0.82) {
+        if (y > 2.58 || y < 2.09 || u < 0.2 || u > 0.8) return M(MWOOD, 1);
+        const row = Math.floor((y - 2.1) / 0.075), f = fract((y - 2.1) / 0.075), x = (u - 0.22) / 0.56;
+        const txt = f > 0.3 && f < 0.75 && x > 0 && x < 0.55 + 0.4 * hh(row, 7) && fract(x * 18) < 0.8;
+        return M(txt ? [0.85, 0.85, 0.8] : MBLACK, txt ? 1 : 1);
+      }
+      if (Math.abs(u - 0.22) < 0.003 || Math.abs(u - 0.78) < 0.003) return y > 2.62 ? M(MDARK, 1) : NONE;
+      return NONE;
+    }
+    case 2: { // pocha / restaurant: steel tables, plastic stools, diners, green bottles
+      for (let k = 0; k < 3; k++) {
+        const cu = 0.2 + k * 0.33 + (hh(k, 11) - 0.5) * 0.06;
+        if (Math.abs(u - cu) < 0.12 && y > 0.68 && y < 0.72) return M(MSTEEL, 1.3);
+        if (Math.abs(u - cu) < 0.008 && y < 0.68) return M(MSTEEL, 0.6);
+        if (hh(k, 12) < 0.4 && Math.abs(u - cu + 0.05) < 0.012 && y > 0.72 && y < 0.95) return M([0.05, 0.3, 0.12], 1.2);
+        for (const side of [-1, 1]) if (hh(k, side + 20) < 0.75) { const p = person(u, y, cu + side * 0.13, 0.45, 2.4, k * 7 + side, false); if (p) return p; }
+        if (y < 0.45 && Math.abs(Math.abs(u - cu) - 0.13) < 0.05) return M(y > 0.4 ? [0.6, 0.12, 0.06] : MDARK, 0.9);
+      }
+      return NONE;
+    }
+    case 3: { // bar: a counter with an LED under its lip, stools, two patrons
+      if (y < 1.08) { if (y > 1.03) return M([0.2, 0.12, 0.07], 1.4); if (y > 0.98) return M([1, 0.75, 0.4], 3); return M(MWOOD, 0.35 + 0.3 * y); }
+      for (const cu of [0.3, 0.72]) { const p = person(u, y, cu, 0.78, 2.4, Math.round(cu * 10), false); if (p) return p; }
+      return NONE;
+    }
+    case 4: { // karaoke: a reception desk, gold trim, a host behind it
+      if (u > 0.2 && u < 0.8 && y < 1.0) { if (y > 0.95) return M([0.75, 0.6, 0.25], 1.3); return M([0.08, 0.04, 0.1], 0.6 + 0.5 * y); }
+      { const p = person(u, y, 0.5, 0.35, 2.4, 5, true); if (p && y > 1.0) return p; }
+      return NONE;
+    }
+    case 5: { // clothes: a rail of hanging clothes, a mannequin
+      if (u < 0.62 && Math.abs(y - 1.42) < 0.012) return M(MSTEEL, 1.2);
+      if (u < 0.62 && y < 1.4 && y > 0.55) { const g = Math.floor(u * 30), f = fract(u * 30); const len = 0.55 + 0.3 * hh(g, 3); if (f < 0.85 && y > 1.4 - len) return M(pick(CLOTH, hh(g, 2)), 0.6 + 0.4 * (y - 0.55)); return NONE; }
+      { const x = (u - 0.82) * 2.4; if (Math.hypot(x, y - 1.62) < 0.1) return M(MWHITE, 0.9); if (y > 0.9 && y < 1.5 && Math.abs(x) < 0.17 - 0.04 * (1.5 - y)) return M([0.55, 0.5, 0.45], 0.9); if (y < 0.9 && Math.abs(x) < 0.02) return M(MSTEEL, 0.7); }
+      return NONE;
+    }
+    case 6: { // phone shop: two display tables with handsets (lit screens), a standee
+      for (const [a, b] of [[0.08, 0.44], [0.56, 0.92]]) {
+        if (u > a && u < b && y > 0.82 && y < 0.9) return M(MWHITE, 1.3);
+        if (u > a && u < b && y >= 0.9 && y < 0.93) { const f = fract((u - a) * 14); return f < 0.5 ? M([0.6, 0.75, 0.9], 2.5) : NONE; }
+        if (y < 0.82 && u > a + 0.03 && u < b - 0.03) return M([0.85, 0.85, 0.86], 0.7);
+      }
+      if (Math.abs(u - 0.5) < 0.05 && y < 1.8) return M(y > 0.4 ? [0.1, 0.25, 0.75] : MWHITE, 0.9);
+      return NONE;
+    }
+    case 7: { // office: desk partitions, monitors, a chair back
+      if (y < 1.15) { if (y > 1.11) return M([0.5, 0.5, 0.5], 1.1); const f = fract(u * 3); if (f < 0.02) return M(MSTEEL, 0.6); return M([0.3, 0.33, 0.38], 0.5 + 0.35 * y); }
+      if (y < 1.5 && fract(u * 3) > 0.25 && fract(u * 3) < 0.6) return y < 1.17 ? M(MDARK, 1) : M(MBLACK, 1);
+      return NONE;
+    }
+    default: return NONE;
+  }
+}
+
 const LIN = Float32Array.from({ length: 256 }, (_, x) => { x /= 255; return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
 const SRGB = Uint8Array.from({ length: 4096 }, (_, i) => { const v = i / 4095; return Math.round((v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255); });
 let cached = null;
 // -> { width, height, data: Uint8Array RGBA (sRGB rgb, linear a; row 0 = v 0), mean: Float32Array(20) linear luminance per tile }
 export function buildInteriorAtlas() {
   if (cached) return cached;
-  const { width: W, height: H, tile: T, boost } = ATLAS, data = new Uint8Array(W * H * 4), mean = new Float32Array(20);
-  for (let t = 0; t < 20; t++) {
+  const { width: W, height: H, tile: T, boost, desat } = ATLAS, data = new Uint8Array(W * H * 4), mean = new Float32Array(24), NT = ATLAS.cols * ATLAS.rows;
+  for (let t = 0; t < NT; t++) {
     const ox = (t % 4) * T, oy = Math.floor(t / 4) * T; let sum = 0;
     for (let j = 0; j < T; j++) for (let i = 0; i < T; i++) {
       let c;
-      if (t >= 16) { const p = (t - 16) * 4 + (j >= T / 2 ? 2 : 0) + (i >= T / 2 ? 1 : 0); const u = ((i % (T / 2)) + 0.5) / (T / 2), v = ((j % (T / 2)) + 0.5) / (T / 2); c = poster(p, u, v); }
+      if (t >= 20) { const half = i >= T / 2 ? 1 : 0, m = (t - 20) * 2 + half, u = ((i % (T / 2)) + 0.5) / (T / 2), y = ((j + 0.5) / T) * 3;
+        const r = midLayer(m, u, y) || NONE; c = r; }
+      else if (t >= 16) { const p = (t - 16) * 4 + (j >= T / 2 ? 2 : 0) + (i >= T / 2 ? 1 : 0); const u = ((i % (T / 2)) + 0.5) / (T / 2), v = ((j % (T / 2)) + 0.5) / (T / 2); c = poster(p, u, v); }
       else if (t === 9 || t === 10 || t === 15) c = flat(t, (i + 0.5) / T, (j + 0.5) / T);
       else {
         const ix = ((i + 0.5) / T) * 2 - 1, iy = ((j + 0.5) / T) * 2 - 1, s = Math.max(Math.abs(ix), Math.abs(iy));
         let r;
         if (s <= 0.5) r = room(t, 0, ix / 0.5, iy / 0.5, 1);
         else { const z = Math.min(1, 1 / s - 1); r = Math.abs(ix) >= Math.abs(iy) ? room(t, ix < 0 ? 1 : 2, Math.sign(ix), iy / s, z) : room(t, iy < 0 ? 3 : 4, ix / s, Math.sign(iy), z); }
-        c = r; c[3] = 1 - clamp(r[3]);
+        const e = clamp(r[3]), g = 0.2126 * r[0] + 0.7152 * r[1] + 0.0722 * r[2], k = desat * (1 - e);   // albedo toward grey, lights keep colour
+        c = r; c[0] += (g - c[0]) * k; c[1] += (g - c[1]) * k; c[2] += (g - c[2]) * k; c[3] = 1 - e;
       }
       const k = ((oy + j) * W + ox + i) * 4;
-      data[k] = toS(c[0]); data[k + 1] = toS(c[1]); data[k + 2] = toS(c[2]); data[k + 3] = t >= 16 ? 255 : Math.round(clamp(c[3]) * 255);
+      data[k] = toS(c[0]); data[k + 1] = toS(c[1]); data[k + 2] = toS(c[2]); data[k + 3] = t >= 16 && t < 20 ? 255 : Math.round(clamp(c[3]) * 255);
       const a = data[k + 3] / 255;
       sum += (0.2126 * LIN[data[k]] + 0.7152 * LIN[data[k + 1]] + 0.0722 * LIN[data[k + 2]]) * (t < 16 && t !== 9 && t !== 10 && t !== 15 ? 1 + (1 - a) * boost : 1);
     }
