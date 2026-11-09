@@ -311,6 +311,32 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
   lines.push({ name: 'THE CORNER', caption: 'THE *CORNER*!', pts: 500, micro: true, c: [r3(p.x), 3, r3(p.z)], carve: { kind: 'turn', box: [r3(p.x - 14), r3(p.x + 14), 1.5, 9, r3(p.z - 14), r3(p.z + 14)], sweep: 1.3 } });
   report.push(`THE CORNER           500  carve 28 x 28 m box at [${p.x.toFixed(1)}, ${p.z.toFixed(1)}] (micro)`); }
 
+// ---- [P3-E design #4] transit connectors (with F1): 500-point micros every ~35 m on the streets a take crosses between
+// named lines, so a transit never runs 20-28 s without a beat (one involuntary bank cut a take from 166k to 62k).
+//   TO HONGIK-RO: Yanghwa-ro (SCREEN CANYON's end, exit 9) up Hongik-ro's first two pieces to HONGIK-RO's pre-gate, 5-8 m.
+//   WAUSAN TURN: HONGIK-RO's end round the Wausan-ro junction into the BAR ALLEY, 3-6 m (under the junction's lamp arms).
+// Each is two-way; the BAR ALLEY lines get a `via` at the junction so the guide arrow goes round the corner, not through it.
+{
+  const chainBack = (ko, last) => { const out = [last.points]; let cur = last.points[0]; const used = new Set([last]);
+    for (let k = 0; k < 8; k++) { const nx = layout.streets.find((t) => !used.has(t) && t.ko === ko && t.kind === last.kind && Math.hypot(t.points[t.points.length - 1][0] - cur[0], t.points[t.points.length - 1][1] - cur[1]) < 1.5);
+      if (!nx) break; used.add(nx); out.unshift(nx.points); cur = nx.points[0]; }
+    return out.slice(0, -1).flat(); };
+  const conn = (name, path, s0, s1, y0, y1, w, step = 35) => {
+    const L = len(path); if (L < 30) return 0; const a = Math.max(8, s0), b = Math.min(L - 8, L + s1), n = Math.max(1, Math.round((b - a) / step)); let k = 0;
+    for (let i = 0; i <= n; i++) { const sv = a + (b - a) * (n ? i / n : 0.5), G = bestAcross(path, [0, 3, -3, 6, -6].map((d) => sv + d), w, y0, y1); if (!G || G.w < 2.2) continue;
+      k++; add(`${name} ${k}`, `${name.replace(/ (\S+)$/, ' *$1*')}!`, 500, G, { two: true, micro: true, feature: 'transit connector', on: name }); }
+    report.push(`  (${name}: ${k} connector micros over ${(b - a).toFixed(0)} m)`); return k; };
+  // TO HONGIK-RO: the 홍익로 pieces before HONGIK-RO's run (from Yanghwa-ro)
+  const toHong = chainBack('홍익로', hong); if (toHong.length > 1) conn('TO HONGIK-RO', toHong, 6, -4, 5.0, 8.0, hong.width);
+  // WAUSAN TURN: the junction between HONGIK-RO's far end and the BAR ALLEY's east end
+  { const e = hong.points[hong.points.length - 1], c0 = club.points[0], c1 = club.points[club.points.length - 1], cE = Math.hypot(c0[0] - e[0], c0[1] - e[1]) < Math.hypot(c1[0] - e[0], c1[1] - e[1]) ? c0 : c1;
+    const d = Math.hypot(cE[0] - e[0], cE[1] - e[1]);
+    if (d < 80) { const mx = (e[0] + cE[0]) / 2, mz = (e[1] + cE[1]) / 2, tx = (cE[0] - e[0]) / (d || 1), tz = (cE[1] - e[1]) / (d || 1);
+      const G = fit(g([mx, 4.5, mz], [tx, 0, tz], 6, 3, [-tz, 0, tx]), 'WAUSAN TURN');
+      if (G.w >= 2.2) { add('WAUSAN TURN', 'WAUSAN *TURN*!', 500, G, { two: true, micro: true, feature: 'transit connector', on: 'HONGIK-RO' }); report.push('  (WAUSAN TURN: HONGIK-RO -> BAR ALLEY)'); }
+      for (const l of lines) if (l.name === 'BAR ALLEY' && !l.via && l.pre?.[0] && Math.hypot(l.pre[0].c[0] - mx, l.pre[0].c[2] - mz) < 60) l.via = [{ p: [r3(mx), 4.5, r3(mz)], r: 6 }]; } }
+}
+
 // ---- [P2-F1 design #2] set pieces (stream E's seoul-dressing.js, contract P2-1): lines coded against E's setPieces ids.
 // E gives each piece's openings as `gates`: {pre, gate} (a pre-gate -> gate move), {left: {pre, gate}, right: {...}}
 // (alternatives: one line, either one scores), {windows: [rect...]} (threaded in order: first -> last) or {gate} (one
