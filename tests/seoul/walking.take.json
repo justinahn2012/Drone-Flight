@@ -3,10 +3,10 @@
  "world": "3f6d098a1aba293d",
  "sources": {
   "geometry": "d1f8f1830b02df87",
-  "lines": "1179a60c30cc4496",
+  "lines": "8895009482082fbf",
   "layout": "f99777aeb081b885",
   "flight": "245c4c3532ce3786",
-  "take": "71a22bb512e27359",
+  "take": "b4531146828f69ca",
   "life": "7ff5d0f55f1d9886"
  },
  "sticks": "main.js sticksActive, no touches; thrRef starts at the first tick",
@@ -16,7 +16,7 @@
    "type": "start"
   },
   {
-   "tick": 5957,
+   "tick": 8220,
    "type": "line",
    "name": "WALKING STREET",
    "caption": "THE WALKING *STREET*!",
@@ -24,9 +24,22 @@
    "flow": 1,
    "clean": true,
    "micro": false,
-   "t0": 1.86,
-   "ago": 22.962,
-   "t": 24.82
+   "t0": 1.9,
+   "ago": 32.358,
+   "t": 34.25
+  },
+  {
+   "tick": 8220,
+   "type": "line",
+   "name": "WALKING STREET 7/7",
+   "caption": "WALKING STREET *7/7*",
+   "pts": 1875,
+   "flow": 2,
+   "clean": true,
+   "micro": true,
+   "t0": 30.09,
+   "ago": 4.167,
+   "t": 34.25
   }
  ],
  "total": 0,
