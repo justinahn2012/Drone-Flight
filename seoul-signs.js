@@ -375,21 +375,28 @@ export function generateSigns(layout, opts = {}) {
     // --- street-facing side walls of corner lots (art #1: walk180 / club90 showed 20-60 m of blank wall): the corner shop
     //     wraps its fascia round, a blade stack 0.9 m from the corner, floor boxes on lit 2F-5F tenants, window film ---
     for (const SF of sides) {
+      // a long side wall on a walking street is a second frontage: shop bays along it, blades at both ends, floor boxes and
+      // film spread over its length (walk180's 22 m wall was blank past the corner)
       const Ls = SF.L, cu = (u, w) => (SF.corner === 0 ? u : Ls - u - w);   // u measured from the corner
-      const xf = { frame: SF };
-      if (Ls >= 3.5 && r.next() < 0.75) {
-        const w = Math.min(Ls - 0.8, range(r, 3, 6)), h = range(r, 0.85, 1.1), ch = r.next() < 0.3;
-        add(ch ? 'channel' : 'fascia', g, { u: cu(0.4, w), y: Math.min(fh - h - 0.15, fasciaY), w, h, d: ch ? 0.12 : 0.26 }, xf);
+      const xf = { frame: SF }, nb = Math.max(1, Math.min(4, Math.round(Ls / 6.5))), sb = Ls / nb;
+      for (let i = 0; i < nb && Ls >= 3.5; i++) {
+        const sh = i === 0 ? g : { ...g, use: pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant), name: makeName(r, 'restaurant', 0.05), lit: r.next() < 0.8 };
+        if (r.next() > (i === 0 ? 0.75 : 0.7)) continue;
+        const w = Math.min(sb - 0.6, sb * range(r, 0.55, 0.85)), h = range(r, 0.85, 1.1), ch = r.next() < 0.3;
+        add(ch ? 'channel' : 'fascia', sh, { u: cu(sb * i + (sb - w) / 2, w), y: Math.min(fh - h - 0.15, fasciaY), w, h, d: ch ? 0.12 : 0.26 }, xf);
       }
       if (nFloors >= 2) {
-        const out = range(r, 0.45, 0.85), bw = range(r, 0.55, 0.72), bu = SF.corner === 0 ? 0.9 : Ls - 0.9;
-        for (let f = 1; f < Math.max(2, signTop); f++) add('blade', tenants[f], { u: bu, y: f * fh + 0.28, w: bw, h: fh - 0.56, d: 0.3, out }, xf);
+        const ends = Ls > 12 ? [0.9, Ls - 0.9] : [0.9];
+        for (const e of ends) { const out = range(r, 0.45, 0.85), bw = range(r, 0.55, 0.72), bu = SF.corner === 0 ? e : Ls - e;
+          for (let f = 1; f < Math.max(2, signTop); f++) add('blade', tenants[f], { u: bu, y: f * fh + 0.28, w: bw, h: fh - 0.56, d: 0.3, out }, xf); }
       }
       for (let f = 1; f < Math.min(signTop, 5); f++) {
         const t = tenants[f]; if (t.use === 'motel' || t.use === 'hotel') continue;
         const y0 = f * fh, v = r.next();
-        if (Ls >= 4.5 && v < (t.lit ? 0.65 : 0.25)) { const bw = Math.min(Ls - 2.2, range(r, 3, 7)); add(v < (t.lit ? 0.5 : 0.2) ? 'fascia' : 'channel', t, { u: cu(1.7, bw), y: y0 + fh - range(r, 1.05, 1.25), w: bw, h: range(r, 0.7, 0.95), d: 0.2 }, xf); }
-        if (f <= 3 && t.lit && Ls >= 5 && r.next() < 0.5) { const ww = Math.min(Ls - 2.5, range(r, 2.0, 3.4)); add('window', t, { u: cu(range(r, 1.9, Math.max(2.0, Ls - ww - 0.4)), ww), y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.2), d: 0.0 }, xf); }
+        if (Ls >= 4.5 && v < (t.lit ? 0.75 : 0.25)) { const bw = Math.min(Ls - 3.4, range(r, 3, 7)); add(v < (t.lit ? 0.56 : 0.2) ? 'fascia' : 'channel', t, { u: cu(range(r, 1.7, Math.max(1.75, Ls - bw - 1.7)), bw), y: y0 + fh - range(r, 1.05, 1.25), w: bw, h: range(r, 0.7, 0.95), d: 0.2 }, xf); }
+        if (f <= 3 && t.lit && Ls >= 5) { const nw = Math.max(1, Math.min(3, Math.round(Ls / 8)));
+          for (let j = 0; j < nw; j++) { if (r.next() > 0.6) continue; const seg = (Ls - 3.4) / nw, ww = Math.min(seg - 0.6, range(r, 2.0, 3.4)); if (ww < 1.2) continue;
+            add('window', t, { u: cu(1.7 + seg * j + (seg - ww) / 2, ww), y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.2), d: 0.0 }, xf); } }
       }
       if (tower) { const rw = Math.min(Ls * 0.8, range(r, 6, 10)); add('roof', { ...tenants[0], lit: true }, { u: (Ls - rw) / 2, y: SF.top + 0.6, w: rw, h: range(r, 1.6, 2.4), d: 0.3, out: -1.2 }, xf); }
     }
@@ -952,7 +959,7 @@ export function exportData(layout, opts = {}) {
     col: e.col.map((v) => +v.toFixed(2)), alb: e.alb.map((v) => +v.toFixed(3)), p: e.p.map((v) => +(+v).toFixed(4)) })));
   const signs = {
     version: SIGNS_VERSION, units: { length: 'm', luminance: 'cd/m^2', frame: 'x east, y up, z south' },
-    kinds: K, kindDoc: 'BOX light-box ground (diffuser: centre +20 %, edges -30 %, LED rows 0.12 m at grazing angles; p=[w,h,round]); PANEL flat (emits col, reflects alb); FILL MSDF glyph fill (p.x=1 LED channel letter: 0.45 + 0.55 smoothstep(0, 0.055 em, d) across the stroke, mean 0.78 when unresolved; p.x=2 script neon: (1 + 2 sin^2(pi/2 min(d / 0.028 em, 1))) / 3; p.z = mean coverage of the quad); TUBE neon tube on the glyph outline (p.x half width, em; (1 + 2 cos^2(pi/2 |dc| / hw)) / 3: core 3x the sleeve); DOTS exposed LEDs inside the glyph (p.x pitch, em); BULBS border strip (uv.x metres along; p=[pitch m, 0 static|1 chase|2 LED, width m]; points of radius 1.0 cm (LED 0.6 cm), unresolved mean pi (0.72 r)^2 / (pitch x width)); ROOM lit room behind window film (ceiling gradient; p.z=1 blinds). layer: draw order on the face plane (pull toward the eye 6e-4 x depth per layer); z: offset along the normal (m). Face frame: right = up x n. col is linear cd/m^2 under the filter model (rgb / max x white-equivalent nits). True-source cores (channel stroke centres, tube axes, bulb / LED / dot points) write scene alpha 1 + w (contract P3-B1).',
+    kinds: K, kindDoc: 'BOX light-box ground (diffuser: centre +20 %, edges -30 %, LED rows 0.12 m at grazing angles; p=[w,h,round]); PANEL flat (emits col, reflects alb); FILL MSDF glyph fill (p.x=1 LED channel letter: 0.45 + 0.55 smoothstep(0, 0.055 em, d) across the stroke, mean 0.78 when unresolved; p.x=2 script neon: (1 + 2 sin^2(pi/2 min(d / 0.028 em, 1))) / 3; p.z = mean coverage of the quad); TUBE neon tube on the glyph outline (p.x half width, em; (1 + 2 cos^2(pi/2 |dc| / hw)) / 3: core 3x the sleeve); DOTS exposed LEDs inside the glyph (p.x pitch, em); BULBS border strip (uv.x metres along; p=[pitch m, 0 static|1 chase|2 LED, width m]; points of radius 1.0 cm (LED 0.6 cm), filtered to the pixel footprint (a one-pixel tent carrying the disc's energy when sub-pixel), several per pixel: mean pi (0.72 r)^2 / (pitch x width)); ROOM lit room behind window film (ceiling gradient; p.z=1 blinds). layer: draw order on the face plane (pull toward the eye 6e-4 x depth per layer); z: offset along the normal (m). Face frame: right = up x n. col is linear cd/m^2 under the filter model (rgb / max x white-equivalent nits). True-source cores (channel stroke centres, tube axes, bulb / LED / dot points) write scene alpha 1 + w (contract P3-B1).',
     msdf: { image: MSDF.image, meta: 'seoul/signs/msdf-meta.js', size: MSDF.size, pxPerEm: MSDF.px, range: MSDF.range, median: 'max(min(r,g),min(max(r,g),b)) - 0.5, x range px' },
     faces: faceRecs, designs: designList,
     housings: D.boxes.map((b) => ({ c: b.c, r: b.r, n: b.n, half: [+b.hw.toFixed(3), +b.hh.toFixed(3), +b.hd.toFixed(3)], albedo: b.col, noFront: b.noFront, collide: b.collide })),
@@ -1052,15 +1059,18 @@ const FACE_FRAG_BODY = /* glsl */`
       float pitch = vSK.y; float i = floor(u.x / pitch);
       vec2 f = vec2((fract(u.x / pitch) - 0.5) * pitch, (u.y - 0.5) * vSK.w);
       float rad = vSK.z > 1.5 ? 0.006 : 0.010; float d = length(f);          // 2 cm bulbs, 1.2 cm LEDs: hot points
-      float core = 1.0 - smoothstep(rad * 0.45, rad, d);
-      float cmean = 1.634 * rad * rad / (pitch * vSK.w);                       // pi (0.72 r)^2 / cell: what a pixel sees far off
+      // pixel-footprint filtered point: an anti-aliased disc while it covers a pixel, then a one-pixel tent carrying the
+      // disc's energy (the peak survives, so a far bulb run still reads as a string of points, not a dim strip)
+      float mpp = max(fwidth(u.x), 1.0e-5), r0 = rad * 0.72;
+      float core = r0 > mpp ? clamp((r0 - d) / mpp + 0.5, 0.0, 1.0) : max(0.0, 1.0 - d / mpp) * min(1.0, 3.14159 * r0 * r0 / (mpp * mpp));
+      float cmean = 1.634 * rad * rad / (pitch * vSK.w);                       // pi (0.72 r)^2 / cell: several bulbs per pixel
       float on = 1.0;
       if (vSK.z > 0.5 && vSK.z < 1.5) on = step(0.5, mod(i + floor(uTime * 5.0), 3.0));             // chase
       if (vSK.z > 1.5) on = 0.35 + 0.65 * step(0.5, mod(i + floor(uTime * 8.0), 4.0) * 0.5);          // LED run
       float ppp = pitch / max(fwidth(u.x), 1e-5);
-      float unres = smoothstep(4.0, 1.5, ppp);
+      float unres = smoothstep(1.5, 0.75, ppp);
       sgEm = vSCol * mix(core * on, cmean * (vSK.z > 0.5 ? 0.66 : 1.0), unres);
-      sgCore = core * on * (1.0 - unres);
+      sgCore = clamp(core * 2.0, 0.0, 1.0) * on * (1.0 - unres);
     } else {                  // glyphs
       float cov;
       if (kind == 3) {        // neon tube on the outline
