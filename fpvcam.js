@@ -500,7 +500,7 @@ const NIGHT_FINAL_BODY = /* glsl */`
     float C = length(lab.yz);
     float wn = smoothstep(0.8 * Lt, 1.3 * Lt, lab.x) * smoothstep(0.05, 0.12, C) * wc;
     // [P3-A] colour #2: not on amber (Oklab hue uVibGate, soft 10 deg edges): the rooms stay amber, not pumpkin
-    float hv = atan(lab.z, lab.y); hv += hv < 0.0 ? 6.2831853 : 0.0;
+    float hv = C > 1e-5 ? atan(lab.z, lab.y) : 0.0; hv += hv < 0.0 ? 6.2831853 : 0.0;   // atan(0, 0) is undefined
     wn *= 1.0 - smoothstep(uVibGate.x - 0.1745, uVibGate.x, hv) * (1.0 - smoothstep(uVibGate.y, uVibGate.y + 0.1745, hv));
     lab.yz *= 1.0 + uRetroVib * uRetro * wn;
     t = clamp(okLabInv(lab), 0.0, 1.0);
@@ -632,6 +632,7 @@ uniform vec4 uG[3];         // x mirror scale s, y weight / s^2, z radius (frame
 uniform vec3 uGT[3];
 uniform vec2 uLat[37];      // hex lattice in the unit disc
 float hept(vec2 o, float R, float rot){
+  if (dot(o, o) < 1e-12) return 1.0;                 // the centre tap (atan(0, 0) is undefined)
   float sec = 6.2831853 / uBlades, a = atan(o.y, o.x) - rot;
   float d = length(o) / R * cos(mod(a, sec) - 0.5 * sec) - cos(3.14159265 / uBlades);
   return 1.0 - smoothstep(-0.12, 0.12, d);
