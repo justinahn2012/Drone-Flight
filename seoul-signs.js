@@ -1322,7 +1322,8 @@ export async function build(layout, ctx = {}) {
     buildMs: Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0) };
   update(0);
   return {
-    group, emitters, update, specs: D.specs, screens: S, stats, atlas, collider, data: D,
+    group, emitters, update, specs: D.specs, screens: S, stats, atlas, collider,
+    get data() { return buildData(layout, ctx); },   // rebuilt on demand: the ~100k face elements don't stay resident
     setNitScale(k) { nit.value = k; }, get nitScale() { return nit.value; },
     setMoire(k) { scrU.uMoire.value = k; },
     get fontsReady() { return fontsReady; }, repaint: paintText,
