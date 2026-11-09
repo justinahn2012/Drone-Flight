@@ -324,6 +324,66 @@ async function lookOf(root, X, L, log) {
 }
 
 // ================================================================================================================
+// [P3 H, native #2] light tables and atlases
+// ================================================================================================================
+/** light.json from D's controller: the typed arrays leave the JSON for little-endian binary files under light/. */
+async function lightTables(L, ctl, files) {
+  const THREE = await import('three');
+  const half = (f32) => { const o = new Uint16Array(f32.length); for (let i = 0; i < f32.length; i++) o[i] = THREE.DataUtils.toHalfFloat(f32[i]); return o; };
+  const bytes = (ta) => new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength).slice();
+  const out = { ...L }, tables = {};
+  const v = L.volume;
+  if (v?.A && v?.B) {
+    const a = half(v.A), b = half(v.B), buf = new Uint8Array(a.byteLength + b.byteLength); buf.set(bytes(a), 0); buf.set(bytes(b), a.byteLength);
+    files['light/volume.bin'] = buf;
+    out.volume = { file: 'light/volume.bin', format: 'RGBA16F (IEEE half, little-endian)', dims: v.dims, heights: v.heights, layout: '[cz][cx][layer][4]: A block (count values) then B block', A: { byteOffset: 0, count: v.A.length }, B: { byteOffset: a.byteLength, count: v.B.length },
+      meaning: 'A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + sky openness; E(n) = A.rgb max(0, 1 + B.n) (exportParams().volume)' };
+  }
+  const U = ctl.uniforms || {};
+  const tex = (name, key, fmt, meaning) => {
+    const im = U[key]?.value?.image; if (!im?.data) return;
+    files[`light/${name}.bin`] = bytes(im.data);
+    tables[name] = { file: `light/${name}.bin`, format: fmt, width: im.width, height: im.height, count: im.data.length, meaning };
+  };
+  tex('records', 'tCityL', 'RGBA32UI, little-endian', 'static light records, 2 texels each (exportParams().record); texel 2i, 2i + 1 = light i; width = 2 x LW');
+  tex('grid', 'tCityG', 'RGBA16UI, little-endian; 0xFFFF = none', 'per XZ cell (grid.cell m from grid.x0, z0) the K strongest static light ids, K4 texels wide per cell, strongest first');
+  const HF = ctl.heightField;
+  if (HF?.H) { files['light/height.bin'] = bytes(HF.H); tables.height = { file: 'light/height.bin', format: 'R32F, little-endian', width: HF.nx, height: HF.nz, x0: HF.x0, z0: HF.z0, res: HF.res, meaning: 'roof height (m) per res-m texel, row = z: occlusion of light paths and the volume (heightField)' }; }
+  out.tables = tables;
+  out.runtime = 'rebuilt per frame from life.json / screens.json: the dynamic window (tCityLD, tCityGD: DW x DW cells round the camera) and the light curves of animated emitters (tCityLC)';
+  if (ctl.stats) out.stats = ctl.stats;
+  return out;
+}
+
+/** B's MSDF atlas + metrics, C's interior atlas, and the fonts the Canvas2D atlases use (copied as is). -> data.atlases */
+async function atlasFiles(root, files, mods, dressingData) {
+  const A = {};
+  const msdfPng = join(root, 'seoul/signs/msdf.png'), msdfMeta = join(root, 'seoul/signs/msdf-meta.js');
+  if (existsSync(msdfPng)) {
+    files['signs/msdf.png'] = readFileSync(msdfPng);
+    let meta = null; try { meta = (await import(pathToFileURL(msdfMeta).href)).MSDF; } catch (e) { /* metrics missing */ }
+    if (meta) files['signs/msdf.json'] = await jsonText({ format: 'onetake.msdf/1', source: 'seoul/signs/msdf-meta.js (tools/seoul-msdf.py)', ...meta, image: 'signs/msdf.png' });
+    A.msdf = { image: 'signs/msdf.png', metrics: meta ? 'signs/msdf.json' : null, size: meta?.size ?? null, pxPerEm: meta?.px ?? null, range: meta?.range ?? null, faces: meta?.faces?.length ?? null, colorSpace: 'linear (distance field: no sRGB decode)', orientation: 'row 0 = atlas y 0 (y down, as the metrics), flipY false' };
+  }
+  const im = mods?.files?.['seoul-interiors.js'] || (existsSync(join(root, 'seoul-interiors.js')) ? await import(pathToFileURL(join(root, 'seoul-interiors.js')).href) : null);
+  if (typeof im?.buildInteriorAtlas === 'function') {
+    const at = im.buildInteriorAtlas(), { encodePNG } = await import('./png.mjs');
+    files['interiors.png'] = encodePNG(at.data, at.width, at.height);
+    files['interiors.json'] = await jsonText({ format: 'onetake.interiors/1', source: 'seoul-interiors.js buildInteriorAtlas() (C; pure CPU, deterministic)', image: 'interiors.png', width: at.width, height: at.height,
+      colorSpace: 'rgb sRGB, alpha linear', orientation: 'PNG row 0 = v 0 (flipY false)', ATLAS: im.ATLAS, ROOM: im.ROOM, FRONT: im.FRONT, meanLuminance: Array.from(at.mean || []).map((x) => +x.toFixed(6)) });
+    A.interiors = { image: 'interiors.png', meta: 'interiors.json', size: [at.width, at.height], tiles: im.ATLAS ? im.ATLAS.cols * im.ATLAS.rows : null };
+  }
+  const fonts = [];
+  for (const [dir, to] of [['seoul/fonts', 'fonts'], ['seoul/dressing', 'dressing']]) {
+    const d = join(root, dir); if (!existsSync(d)) continue;
+    for (const f of readdirSync(d).sort()) if (/\.(woff2|txt)$/.test(f)) { files[`${to}/${f}`] = readFileSync(join(d, f)); if (/\.woff2$/.test(f)) fonts.push(`${to}/${f}`); }
+  }
+  A.fonts = { files: fonts, licence: 'OFL (fonts/OFL.txt, dressing/OFL.txt)', use: 'fonts/: the screen and scroller text atlases (Canvas2D at load: screens.json); dressing/E-Sans: E\'s label atlas, one cell per dressing.json labels[] entry' };
+  A.labels = dressingData?.file ? { cells: `${dressingData.file} labels`, font: 'dressing/E-Sans.woff2', note: 'painted at load in the browser (Canvas2D); a port paints the same cells (CoreText)' } : null;
+  return A;
+}
+
+// ================================================================================================================
 // exportSeoulData: called by export-world exportLevel (or this CLI). Returns files + the world.json `data` section.
 // ================================================================================================================
 export const SEOUL_COVERAGE = [
@@ -343,7 +403,7 @@ export const SEOUL_RUNTIME_ONLY = {
   crowd: 'CrowdSim (seoul-life.js) at 10 Hz, interpolated; one procedural 13-bone human, instanced in near / mid / far LODs (life.json LIFE)',
   traffic: 'TrafficSim at 60 Hz on the life.json lane graph; instanced low-poly bodies, emissive lamps (emitters.json source life = their t = 0 state)',
   screens: 'screen content is procedural per frame (screens.json playlists + SCREEN_FRAG); the emitter colour follows programMean',
-  signsAtlas: 'the sign face atlas (Canvas2D + fonts) until B ships MSDF glyph runs',
+  signsAtlas: 'sign glyphs: signs/msdf.png + signs/msdf.json (B\'s MSDF atlas); screen and scroller text: Canvas2D atlases painted at load from fonts/ (screens.json)',
   headlightPools: 'additive pools under each vehicle head lamp (life)',
   steam: 'steam puffs (Points), count QUALITY[q].steam (light)',
   airlight: 'closed-form single-scatter airlight sprites (one instanced quad) round the AIRLIGHT.n brightest emitters in view, re-picked every 3 frames (light)',
@@ -410,10 +470,15 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
     }
   } catch (e) { warn(`signs.glb: ${e.message}`); }
 
-  // ---- light.json
-  const dx = exporterOf(lightMod);
+  // ---- light.json [P3 H, native #2]: D's live controller (world.parts.light.exportData(): model, grid, baked volume) plus
+  // its GPU tables as binary files (light/*.bin), else a module-level exportData, else the shim
+  const lctl = typeof parts.light?.exportData === 'function' ? parts.light : null;
+  const dx = lctl ? () => lctl.exportData() : exporterOf(lightMod);
   let light = null;
-  if (dx) { try { const r = await dx(layout, ctx); light = r?.['light.json'] ?? r; } catch (e) { warn(`seoul-light exportData() threw: ${e.message}; using the shim`); } }
+  if (dx) {
+    try { const r = await dx(layout, ctx); light = r?.['light.json'] ?? r; if (light && lctl) light = { ...(await lightTables(light, lctl, files)), source: 'seoul-light attach() -> exportData() (live controller, headless)' }; }
+    catch (e) { warn(`seoul-light exportData() threw: ${e.stack || e.message}; using the shim`); light = null; }
+  }
   else note('seoul-light has no exportData() yet (D, native #2): light.json from the shim');
   light ||= lightShim(parts, X[PARTNERS.light] || {}, lightMod);
   if (light) { await put('light.json', light); data.light = { file: 'light.json', count: light.count ?? 1, source: light.source ?? 'seoul-light exportData()' }; } else data.light = { status: 'pending', count: 0 };
@@ -433,6 +498,10 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
   if (!dressing && (geo.setPieces || dressMod)) dressing = { format: 'onetake.dressing/1', source: 'geometry entry setPieces (contract P2-1)', count: (geo.setPieces || []).length, setPieces: geo.setPieces || [], runtime: dressMod ? 'seoulDressing.build(layout, ctx): cable renderer (screen-space lines >= 1.25 px) and animated bits' : null };
   if (dressing) { await put('dressing.json', dressing, ['setPieces']); data.dressing = { file: 'dressing.json', count: dressing.count ?? (dressing.setPieces || []).length, source: dressing.source }; }
   else { data.dressing = { status: 'pending', count: 0, note: 'seoul-dressing.js (E) not in this tree; C merges its geometry into buildGeometry' }; }
+
+  // ---- atlases and fonts the runtime paints with [P3 H, native #2]: B's MSDF glyph atlas, C's interior atlas, the fonts of
+  // the Canvas2D atlases (screens / scrollers: B; E's labels, whose cells are dressing.json labels)
+  try { data.atlases = await atlasFiles(root, files, mods, data.dressing); } catch (e) { warn(`atlases: ${e.stack || e.message}`); }
 
   // ---- look.json
   const look = await lookOf(root, X, L, note);

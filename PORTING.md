@@ -284,20 +284,24 @@ tools/export-world.mjs makes the same calls `buildSeoul` makes (layout.json, lin
   In nits on purpose: EDR on Metal keeps sign cores at 600-2000 nits instead of clipping (radiance = rgb x nits x NITS).
 - `signs.json` (`onetake.signs/1`): B's `exportData()`, else the generator's spec table (type, style, lot, floor, lit, colour
   category / hue / rgb, face nits, flicker, name, `frame` = facade basis, `geo` = placement) + constants; `signs.glb` = the
-  static sign geometry (housing, lit, off, neon, scrollers; `COLOR_0` = face nits, `_FLK` = flicker hz / depth / phase). The
-  face atlas is still Canvas2D (browser-only) until B's MSDF glyph runs (graphics #2); `atlas.status` says which.
+  static sign geometry (housing, lit, off, neon, scrollers; `COLOR_0` = face nits, `_FLK` = flicker hz / depth / phase).
+  [P3] B's exportData writes `faces` (one per sign face, one record per line); world.json `data.signs.count` = faces. Glyphs
+  come from B's MSDF atlas (`signs/msdf.png` + `signs/msdf.json`, below).
 - `screens.json` (`onetake.screens/1`): per screen pos / normal / w / h, LED grid `res` and `pitch`, `scanHz`, peak `nits`,
   refresh-band and moire constants, and the playlist (`prog`, `t0`, `dur`, palette (linear), text rows, seed). **SCREEN_FRAG**
   (source in `shaders`) is a function of: the playlist segment at `lt0 = fract((t + phase) / len) * len` (t = take clock),
   `uProg` (PROG ids), `uC0..2`, `uRow` (text texture rows), the LED grid (`uRes`; SMD dots up close, moire at mid range
   weighted by `uMoire`), louvre angle falloff, rolling refresh bands (`uBandDepth`, `uBandN = scanHz x 0.011`, `uBandRate`),
   `uBlack`, and `uCut` (the first 1/30 s of a segment). The emitter colour follows `programMean` (source included).
-- `light.json` (`onetake.light/1`): D's `exportData()`, else NITS (0.1 scene units per cd/m2), SOURCE_TYPES, NIGHT_SKY, the
+- `light.json` (`onetake.light/1`): [P3] D's live controller, `world.parts.light.exportData()` after a headless `attach()`
+  (the model of `exportParams()`, `grid` {x0, z0, cell, gw, gh, K, Kd, Nd, window, eMin}, plus binary tables, see §8); before
+  P3 the shim: NITS (0.1 scene units per cd/m2), SOURCE_TYPES, NIGHT_SKY, the
   grid (`cell` 4 m, K / Kd per quality, LPR, LW, E_MIN), the binning / range / shading rules, `emitterRadiance` source, and
   the GLSL heads (CITY_HEAD, WET_HEAD). On Metal: compute-clustered lights with no K cap.
 - `life.json` (`onetake.life/1`): G's `exportData()`, else LIFE, VEH, PAINT, the signal functions, the seed, the lane graph
   (streets, nodes, crossings, lanes with stops / bus stops / successors) and the parity vectors.
-- `dressing.json`: E's set pieces (through C's buildGeometry, contract P2-1) and runtime parts; `status: pending` until then.
+- `dressing.json`: E's `exportData()`: set pieces, emitters, holes, cables, labels (the label atlas cells), lamps,
+  obstacles, materials (wall-clock `facts.ms` / `msParts` stripped).
 - `look.json`: the night look as main.js applies it (FPVCamera → setHDR(true) → setLook('night') → levels.json `grade`).
 - `layout.json`, `lines.json`: the inputs, copied as is.
 - `tex/*.ktx2` + `tex/textures.json` (native #4): the Poly Haven maps SEOUL_MATS uses, vendored in `seoul/tex/` (CC0):
@@ -318,8 +322,10 @@ plus optional `files: {name: Uint8Array | {data, width, height} RGBA | object}` 
 
 **Coverage** (world.json `coverage`, tests/coverage.js; node: export-world, browser: `tests/browser.mjs --level`): every
 Mesh, Points and Line in the live Seoul scene must match a rule: `city` (world.glb rows), `signs`, `screens`, `crowd`,
-`traffic`, `life-props`, `headlight-pools`, `sky`, `steam`, `dressing` (any object under a group named `seoul-dressing*`:
-E, name your group that). A new mesh class needs a rule plus its data first, or CI fails.
+`traffic`, `life-props`, `headlight-pools`, `sky`, `steam`, `airlight` [P3], `dressing` (any object under a group named
+`seoul-dressing*` or `seoul.dressing*`). A new mesh class needs a rule plus its data first, or CI fails. [P3] `city` also
+matches D's culling cells (seoul-light.js `splitCells`): a mesh whose `userData.seoulKey` (or `exportKey`) names a world.glb
+row and whose box lies inside the row's; the cells of a row must draw all of its triangles (`partialExports` fails).
 
 **Parity (G7).** `tests/seoul/walking.otil`: an autopilot flies WALKING STREET along the street's centreline in Cine,
 recorded on the Seoul collider (header.world = world.json `hash.collider`); `walking.take.json` = its Take events (start,
@@ -332,10 +338,57 @@ tests/seoul/. Once F1's movers land (`world.movers`), the log should be re-recor
 the Seoul export (`--strict`, then `--check --strict` in a second process); `exports/seoul-hongdae` rides in the `exports`
 artifact. The `browser-seoul` job loads `?level=seoul-hongdae&perf` in SwiftShader: no errors, the level's ?perf segments
 (perf-levels.js: walk, canyon, club, high, each with `upd` = world.update() alone), coverage, three stills vs
-tests/golden-seoul-hongdae.json (`--update` writes it). tests/seoul-audio.mjs needs node-web-audio-api and stays local.
+tests/golden-seoul-hongdae.json (`--update` writes it). [P3: see §8 for what CI runs now.]
 
 **What Metal buys this level** (panel native #6): EDR sign cores at 1000+ nits (emitters.json is already in nits); MetalFX
 temporal upscaling from ~0.6x against cable and window-grid shimmer; in-tile MSAA resolve (~0.8 ms); ICB culling of the
 340 lots; compute-clustered lights with no K cap and RT shadow rays for the brightest emitters; ASTC (206 → ~70 MB);
 120 Hz ProMotion with `thermalState` feeding the governor; LifeSim on its own thread (it is pure and deterministic).
+
+## 8. Phase 3 (stream H): CI, light tables, atlases, snapshot v4
+
+**CI is green on main and stays honest** (`.github/workflows/ci.yml`, four jobs):
+- `test` (~4 min on a runner): syntax, replay, lightmaps, take, stress-lite, test-export, test-seoul, test-facades, seoul-life,
+  movers, seoul-signs, seoul-light, seoul-dressing, camera-night, seoul-ui, `seoul-parity --strict`, the bando export, the
+  Seoul export `--strict` then `--check --strict`. Every step runs even after one fails (`if: !cancelled()`).
+- `audio`: tests/seoul-audio.mjs (node-web-audio-api 1.0.4 from ci/package.json; it links libasound, installed if missing).
+- `browser`: bando in SwiftShader, stills vs tests/golden.json.
+- `browser-seoul` (90-min cap): Seoul in SwiftShader, coverage, stills vs tests/golden-seoul-hongdae.json, then the camera gate.
+
+**Known failures** (`ci/known-failures.json`, `ci/run.mjs`): a suite with a failure that is already on main runs through
+`node ci/run.mjs <suite> [args]`. It passes only when every FAIL line it prints matches an entry for that suite (each names
+an owner and becomes a `::warning::`), and nothing crashed. A fixed entry prints a notice: delete it. At P3 start: G1's
+crowd densities, F2's lineNames, and camgate's [colour] rows, club90's floor and the AE EV (A, with D).
+
+**Goldens without a 50-minute run.** Every browser run writes `stills.json` (p5 / p50 / p95 / clip per shot, EV, seconds)
+into its artifact. After an intended look change, download the artifact of that commit and
+`node tests/browser.mjs [--level seoul-hongdae] --golden-from <artifact>/stills.json`, then commit the golden. Seeded from
+main bfe39b1's CI run (bando from its log; Seoul re-measured from its JPEGs, which reproduces the in-page numbers exactly).
+
+**Camera gate in CI (colour #6).** For a level in `CAMGATE` (Seoul), each still is also saved lossless:
+`camgate/<shot>.png` at the shipped grade and `camgate/<shot>.r0.png` one frame later at retro 0, with `readEv()` for each.
+`tools/camgate.py --stills DIR --evs stills.json` gates the exposure rows (clip, blob, EV, ground, sky) and the colour rows:
+neutral fill R-G <= +10 and |B-G| <= 8 at retro 0; lit warm surfaces' median saturation <= 0.55; warm share 45-65 %; white
+area 2-5 % on sign frames. FAIL lines are tagged `[exposure]` / `[colour]`. Locally it still takes seoulsnap stills + log.
+
+**Light tables (native #2).** light.json keeps the JSON model; the GPU tables are little-endian binaries:
+- `light/records.bin`: RGBA32UI, 2 texels per static light (`record` in light.json), width 2 x LW.
+- `light/grid.bin`: RGBA16UI, per 4 m XZ cell the K strongest static ids (0xFFFF = none), K/4 texels per cell.
+- `light/volume.bin`: RGBA16F, A block then B block, `[cz][cx][layer][4]` at `volume.heights`; E(n) = A.rgb max(0, 1 + B.n).
+- `light/height.bin`: R32F roof heights at `res` m (occlusion of light paths).
+Rebuilt per frame (not exported): the dynamic window (animated screens, vehicles) and the light curves.
+
+**Atlases and fonts (native #2):** `signs/msdf.png` (2048^2 MSDF, linear, y down) + `signs/msdf.json` (8 faces, 10 numbers
+per glyph); `interiors.png` (C's 1024 x 1280 room/poster atlas, sRGB rgb + linear alpha, PNG row 0 = v 0) +
+`interiors.json` (ATLAS, ROOM, FRONT, mean luminance per tile); `fonts/*.woff2` (screen / scroller text, painted at load) and
+`dressing/E-Sans.woff2` (E's labels: the cells are dressing.json `labels`). All OFL; licences copied alongside.
+
+**Snapshot v4** (flight.js `SNAP_VERSION` 4, `Drone.snapshot()`): v3 plus
+- `tick`: step() calls since reset(); the movers' clock is t = tick / 240 s, so a re-sim from any snapshot asks
+  `world.movers.hit(p, r, t)` the same questions. Restore it exactly (UInt64 in Swift).
+- `moverN` (contacts so far: a pedestrian is SCRAPE + HEADS! in take.js), `moverKind` ('vehicle' | 'pedestrian' | null),
+  `moverImpact` (m/s), `crashBy` (the vehicle type that crashed the quad, or null), `mvId` / `mvT` (the last mover touched
+  and its tick: a contact counts again when the body changes or after MV_GAP ticks).
+Older snapshots restore with tick 0 and no contact. A port's movers must be a pure function of (t, p, r): life.json's
+parity vectors pin the traffic.
 
