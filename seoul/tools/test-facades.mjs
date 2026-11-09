@@ -28,9 +28,22 @@ ok(share('high') >= 0.12 && share('high') <= 0.2, `5F+ commercial lit share ${sh
 ok(litN.every((n) => n >= 5 && n <= 25), `lit windows 5-25 nits (${Math.min(...litN)}-${Math.max(...litN)})`);
 ok(unlitN.every((n) => n >= 0.5 && n <= 5), `unlit windows 0.5-5 nits (${Math.min(...unlitN)}-${Math.max(...unlitN)})`);
 // the aEm channel really carries those luminances (rgb luminance / NITS)
-{ const e = geo.merged.glass.getAttribute('aEm'); let lo = Infinity, hi = 0;
-  for (let i = 0; i < e.count; i += 6) { const Y = (0.2126 * e.getX(i) + 0.7152 * e.getY(i) + 0.0722 * e.getZ(i)) / NITS; lo = Math.min(lo, Y); hi = Math.max(hi, Y); }
+{ const e = geo.merged.glass.getAttribute('aEm'), wk = geo.merged.glass.getAttribute('aWin'); let lo = Infinity, hi = 0;
+  for (let i = 0; i < e.count; i += 6) { if (wk.getZ(i) >= 4) continue; const Y = (0.2126 * e.getX(i) + 0.7152 * e.getY(i) + 0.0722 * e.getZ(i)) / NITS; lo = Math.min(lo, Y); hi = Math.max(hi, Y); }
   ok(lo >= 0.45 && hi <= 26, `glass aEm luminance ${lo.toFixed(2)}-${hi.toFixed(2)} nits`); }
+
+// [P3-C] atlas groups (perf #1): what is drawn is ground / city / glass / lanepaint / ao, layers resolve, KTX2 slices exist
+{ const { SEOUL_GROUPS, SEOUL_TEX_IDS, SEOUL_LAYER_MAX } = await import('../../world-seoul.js');
+  const keys = Object.keys(geo.merged).sort();
+  ok(['ao', 'city', 'glass', 'ground', 'lanepaint'].every((k) => keys.includes(k)) && keys.length === 5, `drawn groups ${keys.join(', ')} (dressing off)`);
+  for (const g of ['ground', 'city']) { const a = geo.merged[g].getAttribute('aLay'); let bad = 0; for (let i = 0; i < a.count; i++) { const l = geo.layers[a.getX(i)]; if (!l || (g === 'ground') !== SEOUL_GROUPS.ground.includes(l.key)) bad++; } ok(a && !bad, `${g}: every vertex has a valid aLay (${a?.count})`); }
+  ok(geo.layers.length <= SEOUL_LAYER_MAX && geo.layers.every((l) => l.diff < SEOUL_TEX_IDS.length && l.nor < SEOUL_TEX_IDS.length), `${geo.layers.length} layers, slices in range`);
+  const tris = (o) => Object.values(o).reduce((s, g) => s + g.getAttribute('position').count / 3, 0);
+  ok(tris(geo.merged) === tris(geo.byKey), `grouping keeps every triangle (${tris(geo.merged)})`);
+  const tex = new URL('../tex/', import.meta.url);
+  ok(SEOUL_TEX_IDS.every((id) => fs.existsSync(new URL(`${id}_diff.ktx2`, tex)) && fs.existsSync(new URL(`${id}_nor_gl.ktx2`, tex))), `${SEOUL_TEX_IDS.length} x 2 KTX2 slices vendored`);
+  ok(fs.existsSync(new URL('basis/basis_transcoder.wasm', tex)) && fs.existsSync(new URL('basis/basis_transcoder.js', tex)), 'Basis transcoder vendored (no hot-links)');
+  ok(!fs.readFileSync(new URL('../../world-seoul.js', import.meta.url), 'utf8').includes('texLoader.load('), 'no JPG hot-link on the main path'); }
 
 // 2. shops
 const stores = geo.emitters.filter((e) => e.kind === 'store');

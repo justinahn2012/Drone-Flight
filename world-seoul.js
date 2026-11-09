@@ -474,7 +474,9 @@ export function buildSeoulGeometry(layout, opts = {}) {
     if (pole) A('pole').tube([[x, 0, z], [x, h, z], [x + ox * 0.4, h + 0.3, z + oz * 0.4], [px, h + 0.35, pz]], 0.09, 6);
     else A('pole').tube([[x, h + 0.35, z], [px, h + 0.35, pz]], 0.04, 4);
     A('pole').box([px, h + 0.3, pz], [hw + 0.04, 0.08, hd + 0.06], Math.atan2(-oz, ox), false);
+    Acc.win = [spec.w, spec.h, 16, 0];   // [P3-C] kind 4: a flat emitter inside the glass mesh
     A('lamp').quad([px - ox * hw - oz * hd, h + 0.215, pz - oz * hw + ox * hd], [px + ox * hw - oz * hd, h + 0.215, pz + oz * hw + ox * hd], [px + ox * hw + oz * hd, h + 0.215, pz + oz * hw - ox * hd], [px - ox * hw + oz * hd, h + 0.215, pz - oz * hw - ox * hd], [0, -1, 0], undefined, [rgb[0] * nits * NIT, rgb[1] * nits * NIT, rgb[2] * nits * NIT, 0]);
+    Acc.win = WIN0;
     emitters.push({ id: 'street:' + emitters.length, pos: [+px.toFixed(2), +(h + 0.2).toFixed(2), +pz.toFixed(2)], normal: [0, -1, 0], w: spec.w, h: spec.h, rgb: rgb.map((v) => +v.toFixed(3)), nits, kind: 'street', animated: false, lumens: spec.lumens, cct: spec.cct, ...(spec === LAMP.security ? { role: 'security' } : spec === LAMP.ped ? { role: 'pedestrian' } : {}) });
     facts.streetLights++;
   };
@@ -594,10 +596,16 @@ export function buildSeoulGeometry(layout, opts = {}) {
   facts.tris = tris; facts.colTris = colGeo.getAttribute('position').count / 3; facts.ms = Date.now() - t0;
   facts.winLitShare = +(facts.windowsLit / Math.max(1, facts.windows)).toFixed(3); facts.winMeanNits = +(facts.winNits / Math.max(1, facts.windows)).toFixed(2); delete facts.winNits;
 
+  // [P3-C] perf #1 (with D): draw by atlas group, not by scan. byKey keeps the per-material meshes (collider ranges, tests);
+  // `merged` is what is drawn and exported: ground (road/walk/plaza) and city (every opaque facade, trim and prop layer,
+  // with E's plain opaque keys folded in) carry aLay, a layer index into SEOUL_LAYERS / the KTX2 texture arrays; glass
+  // holds windows, shops, posters and lamp heads (kind 4); lanepaint the stripes (colour baked); ao the multiply decals.
+  const byKey = merged, grouped = groupMeshes(byKey, dressing.materials);
+  facts.groups = Object.fromEntries(Object.entries(grouped.merged).map(([k, g]) => [k, g.getAttribute('position').count / 3]));
   const L = lineData || {};
   const v3 = (p) => p;
   return {
-    merged, colGeo, colRanges, colKeyOf, bvh, skimBvh, emitters, facts, lotInfo, poles, cables, layout,
+    merged: grouped.merged, byKey, layers: grouped.layers, groupMats: grouped.mats, colGeo, colRanges, colKeyOf, bvh, skimBvh, emitters, facts, lotInfo, poles, cables, layout,
     lines: L.lines || [], funnels: L.funnels || [],
     startPoints: (L.startPoints || []).map(v3), takeStart: L.takeStart || null,
     spawn: layout.spawn, setPieces: dressing.setPieces, dressingMats: dressing.materials, dressing: DM, dressingOut: dressing.out,
@@ -614,6 +622,60 @@ function conform(g0, like) {
   }
   for (const name of Object.keys(g.attributes)) if (!like.attributes[name]) g.deleteAttribute(name);
   return g;
+}
+// ---- [P3-C] atlas groups (perf #1, native #3). Layer order is fixed for our keys (ground 0-2, city 3-15); E's plain opaque
+// keys (no texture, emission, transparency, alpha or decal; `fold: false` opts out) are appended per build.
+export const SEOUL_GROUPS = {
+  ground: ['road', 'walk', 'plaza'],
+  city: ['tile', 'brick', 'plaster', 'concrete', 'roof', 'metal', 'shutter', 'white', 'fascia', 'frame', 'sill', 'dark', 'pole'],
+  glass: ['glass', 'shop', 'lamp'],
+  lanepaint: ['stripe', 'yellow'],
+  ao: ['ao'],
+};
+export const SEOUL_LAYER_MAX = 32;
+const GROUP_OF = Object.fromEntries(Object.entries(SEOUL_GROUPS).flatMap(([g, ks]) => ks.map((k) => [k, g])));
+const foldable = (m) => !!m && m.fold !== false && !m.emissive && !m.transparent && !m.decal && !m.double && !m.alphaTest && !m.map && !m.maps && !m.id && !m.tex && !m.texture && !m.shader && !m.side;
+// one layer record: textures by id (KTX2 array slices: SEOUL_TEX_IDS order), uv scale, colour, roughness, metalness, grime
+export const SEOUL_TEX_IDS = [...new Set(Object.values(SEOUL_MATS).filter((m) => m.id).map((m) => m.id))];
+function layerOf(key, m) {
+  const diff = m.id && m.maps?.includes('diff') ? SEOUL_TEX_IDS.indexOf(m.id) : -1, nor = m.id && m.maps?.includes('nor_gl') ? SEOUL_TEX_IDS.indexOf(m.id) : -1;
+  return { key, diff, nor, id: m.id || null, tile: m.tile || 1, color: [...(m.color || [1, 1, 1])], rough: m.rough ?? 0.8, metal: m.metal || 0, grime: m.grime ? 1 : 0, albedo: m.albedo || m.color || [0.3, 0.3, 0.3] };
+}
+function groupMeshes(byKey, dmats = {}) {
+  const layers = [...SEOUL_GROUPS.ground, ...SEOUL_GROUPS.city].map((k) => layerOf(k, SEOUL_MATS[k]));
+  const parts = {}, out = {}, put = (g, k, geo) => (parts[g] ||= []).push([k, geo]);
+  for (const [k, g] of Object.entries(byKey)) {
+    if (GROUP_OF[k]) { put(GROUP_OF[k], k, g); continue; }
+    const dm = dmats[k];
+    if (!SEOUL_MATS[k] && foldable(dm) && layers.length < SEOUL_LAYER_MAX) { layers.push(layerOf(k, dm)); put('city', k, g); continue; }
+    out[k] = g;   // E's own material (or an unconformable E: key)
+  }
+  const layerIx = new Map(layers.map((l, i) => [l.key, i]));
+  const ATTR = { ground: ['position', 'normal', 'uv', 'color'], city: ['position', 'normal', 'uv', 'color'], glass: ['position', 'normal', 'uv', 'aEm', 'aWin'], lanepaint: ['position', 'normal', 'uv', 'color'], ao: ['position', 'normal', 'uv', 'color'] };
+  for (const [gk, list] of Object.entries(parts)) {
+    const geos = [];
+    for (const [k, g0] of list) {
+      const g = new THREE.BufferGeometry(), src = g0.index ? g0.toNonIndexed() : g0, n = src.getAttribute('position').count;
+      for (const a of ATTR[gk]) {
+        let at = src.getAttribute(a);
+        if (!at) { if (a === 'normal') { const t = src.clone(); t.computeVertexNormals(); at = t.getAttribute('normal'); } else at = new THREE.Float32BufferAttribute(new Float32Array(n * ({ uv: 2, aEm: 4, aWin: 4 }[a] || 3)).fill(a === 'color' ? 1 : 0), { uv: 2, aEm: 4, aWin: 4 }[a] || 3); }
+        g.setAttribute(a, at);
+      }
+      if (gk === 'lanepaint') { const c = g.getAttribute('color').clone(), m = SEOUL_MATS[k].color; for (let i = 0; i < n; i++) c.setXYZ(i, c.getX(i) * m[0], c.getY(i) * m[1], c.getZ(i) * m[2]); g.setAttribute('color', c); }
+      if (gk === 'ground' || gk === 'city') g.setAttribute('aLay', new THREE.Float32BufferAttribute(new Float32Array(n).fill(layerIx.get(k)), 1));
+      geos.push(g);
+    }
+    const m = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+    if (m) { m.computeBoundingSphere(); m.computeBoundingBox(); out[gk] = m; }
+  }
+  const mats = {
+    ground: { group: 'ground', layers: layers.filter((l) => SEOUL_GROUPS.ground.includes(l.key)).map((l) => l.key), attribute: 'aLay', vcol: true, wet: true, albedo: SEOUL_MATS.road.albedo, rough: 1, metal: 1 },
+    city: { group: 'city', layers: layers.filter((l) => !SEOUL_GROUPS.ground.includes(l.key)).map((l) => l.key), attribute: 'aLay', vcol: true, albedo: SEOUL_MATS.tile.albedo, rough: 1, metal: 1 },
+    glass: { ...SEOUL_MATS.glass, group: 'glass', layers: ['glass', 'shop', 'lamp'], kinds: 'aWin.z / 4: 0 window, 1 shop bay, 2 door, 3 poster, 4 lamp head (flat emitter)' },
+    lanepaint: { group: 'lanepaint', layers: ['stripe', 'yellow'], vcol: true, rough: 0.6, color: [1, 1, 1], albedo: SEOUL_MATS.stripe.albedo, decal: 'offset', wet: true },
+    ao: { ...SEOUL_MATS.ao },
+  };
+  return { merged: out, layers, mats };
 }
 // stream E's module, if present (top-level, so node tests, the exporter and the game all get the same geometry)
 let DRESSING = null;
@@ -775,6 +837,23 @@ function patchSeoul(mat, mode) {
     } else if (mode === 'flat') {
       sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute vec4 aEm;\nvarying vec3 vEm;').replace('#include <begin_vertex>', '#include <begin_vertex>\nvEm = aEm.rgb;');
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vEm;').replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vEm;');
+    } else if (mode === 'atlas') {   // [P3-C] ground / city: layer table + KTX2 arrays + two-scale detail
+      Object.assign(sh.uniforms, ATLAS_UNIFORMS);
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float aLay;\nflat varying float sLay; varying vec2 sUv;').replace('#include <begin_vertex>', '#include <begin_vertex>\nsLay = aLay; sUv = uv;');
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + GRIME_HEAD + ATLAS_HEAD)
+        .replace('#include <map_fragment>', `
+  sgLi = int(sLay + 0.5); sgLA = uLayA[sgLi]; sgLB = uLayB[sgLi]; sgLuv = sUv * sgLA.z;
+  sgDet = texture(tCityDetail, sUv * 0.83) * 0.6 + texture(tCityDetail, sUv * 3.1 + 0.37) * 0.4;
+  { vec3 td = texture(tCityDiff, vec3(sgLuv, max(sgLA.x, 0.0))).rgb; diffuseColor.rgb *= (sgLA.x > -0.5 ? td : vec3(1.0)) * sgLB.rgb * (0.86 + 0.28 * sgDet.a); }
+  if (sgLA.w > 0.5) diffuseColor.rgb *= seoulGrime(sUv);`)
+        .replace('#include <normal_fragment_maps>', `
+  { vec3 tn = texture(tCityNor, vec3(sgLuv, max(sgLA.y, 0.0))).xyz * 2.0 - 1.0;
+    vec3 mapN = sgLA.y > -0.5 ? tn : vec3(0.0, 0.0, 1.0);
+    mapN.xy += (sgDet.xy * 2.0 - 1.0) * uSeoulDetail.x;
+    mapN.xy *= normalScale;
+    normal = normalize(tbn * mapN); }`)
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor *= clamp(sgLB.a * (1.0 + (sgDet.z - 0.5) * uSeoulDetail.y * 2.0), 0.04, 1.0);')
+        .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor *= uLayM[sgLi];');
     } else if (mode === 'grime') {
       sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 sUv;').replace('#include <begin_vertex>', '#include <begin_vertex>\nsUv = uv;');
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + GRIME_HEAD).replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= seoulGrime(sUv);');
@@ -822,31 +901,113 @@ function interiorTexture() {
   }).catch((e) => { console.warn('seoul interiors', e); return null; });
   return interiorTex;
 }
-function makeMaterials(renderer, texLoader, extra = {}) {
-  const mats = {}, pending = [];
-  const aniso = renderer?.capabilities?.getMaxAnisotropy?.() || 1;
-  for (const [k, m] of Object.entries({ ...SEOUL_MATS, ...extra })) {
-    if (m.decal === 'multiply') {   // contact darkening and leak streaks: dst *= vertex colour
-      const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
-        blendSrc: THREE.ZeroFactor, blendDst: THREE.SrcColorFactor, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4, fog: false, toneMapped: false });
-      mat.userData.cityLight = false; mat.name = 'seoul:' + k; mats[k] = mat; continue;
-    }
-    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(...m.color), roughness: m.rough ?? 0.8, metalness: m.metal || 0, vertexColors: !m.emissive });
-    if (m.id && texLoader) for (const map of m.maps) {
-      const url = `${PH}/Textures/jpg/1k/${m.id}/${m.id}_${map}_1k.jpg`;
-      pending.push(new Promise((res) => texLoader.load(url, (t) => {
-        t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1 / m.tile, 1 / m.tile); t.anisotropy = Math.min(8, aniso);
-        if (map === 'diff') { t.colorSpace = THREE.SRGBColorSpace; mat.map = t; } else { mat.normalMap = t; mat.normalScale.set(1, 1); }
-        mat.needsUpdate = true; res();
-      }, undefined, () => { console.warn('seoul texture failed', url); res(); })));
-    }
-    if (m.emissive) { mat.emissive = new THREE.Color(0, 0, 0); if (m.interior) { pending.push(interiorTexture()); patchSeoul(mat, 'glass'); } else patchSeoul(mat, 'flat'); }
-    else if (m.grime) patchSeoul(mat, 'grime');
-    if (k === 'plaza') mat.userData.wet = 0.8;   // [P2-C] the walking streets are wet too (seoul-light's wet path; phase 1 matched only 'road')
-    if (['stripe', 'yellow'].includes(k)) { mat.polygonOffset = true; mat.polygonOffsetFactor = -2; mat.polygonOffsetUnits = -2; }
-    if (k === 'glass' || k === 'shop') { mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -1; }
-    mat.name = 'seoul:' + k; mats[k] = mat;
+// ---- [P3-C] native #3 + perf #1: the scans as two KTX2 texture arrays (diffuse sRGB, normals linear; one slice per
+// SEOUL_TEX_IDS entry), from the vendored seoul/tex/*.ktx2 through a vendored Basis transcoder (seoul/tex/basis/), so
+// the browser and the native port sample the same texels and nothing is hot-linked. Fallbacks: the Poly Haven JPGs
+// (decoded into RGBA arrays), then flat per-layer albedo. -> { diff, nor, source }
+const TEX_BASE = new URL('./seoul/tex/', import.meta.url);
+async function loadScanArrays(renderer, { jpg = true } = {}) {
+  const ids = SEOUL_TEX_IDS, aniso = Math.min(8, renderer?.capabilities?.getMaxAnisotropy?.() || 1);
+  const finish = (t, srgb) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.anisotropy = aniso; t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.needsUpdate = true; return t; };
+  // 1. KTX2 -> CompressedArrayTexture (every slice must transcode to one format, size and mip count)
+  try {
+    const { KTX2Loader } = await import('three/addons/loaders/KTX2Loader.js');
+    const kl = new KTX2Loader().setTranscoderPath(new URL('./basis/', TEX_BASE).href).detectSupport(renderer);
+    const load = (f) => kl.loadAsync(new URL(f, TEX_BASE).href);
+    const [D, N] = await Promise.all([Promise.all(ids.map((id) => load(`${id}_diff.ktx2`))), Promise.all(ids.map((id) => load(`${id}_nor_gl.ktx2`)))]);
+    const stack = (T, srgb) => {
+      const t0 = T[0], m0 = t0.mipmaps;
+      if (T.some((t) => t.format !== t0.format || t.type !== t0.type || t.mipmaps.length !== m0.length || t.mipmaps[0].width !== m0[0].width || t.mipmaps[0].height !== m0[0].height)) throw new Error('KTX2 slices differ in format or size');
+      const mips = m0.map((m, i) => { const sz = m.data.byteLength, data = new Uint8Array(sz * T.length);
+        T.forEach((t, j) => { const d = t.mipmaps[i].data; data.set(new Uint8Array(d.buffer, d.byteOffset, sz), j * sz); }); return { data, width: m.width, height: m.height }; });
+      const a = new THREE.CompressedArrayTexture(mips, m0[0].width, m0[0].height, T.length, t0.format, t0.type);
+      a.generateMipmaps = false; T.forEach((t) => t.dispose());
+      return finish(a, srgb);
+    };
+    const out = { diff: stack(D, true), nor: stack(N, false), source: 'ktx2' };
+    kl.dispose();
+    return out;
+  } catch (e) { console.warn('seoul: KTX2 arrays failed, trying the JPGs', e?.message || e); }
+  // 2. the JPGs (rows flipped to the KTX2 orientation: row 0 = v 0 = the image bottom)
+  const S = 1024, rgbaArray = (layers, srgb) => { const t = new THREE.DataArrayTexture(layers, S, S, ids.length); t.generateMipmaps = true; return finish(t, srgb); };
+  if (jpg && typeof createImageBitmap === 'function' && typeof OffscreenCanvas !== 'undefined') {
+    try {
+      const cv = new OffscreenCanvas(S, S), cx = cv.getContext('2d', { willReadFrequently: true });
+      const one = async (id, map, buf, j) => {
+        const r = await fetch(`${PH}/Textures/jpg/1k/${id}/${id}_${map}_1k.jpg`); if (!r.ok) throw new Error(`${id} ${map}: HTTP ${r.status}`);
+        const bm = await createImageBitmap(await r.blob(), { imageOrientation: 'flipY', colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+        cx.clearRect(0, 0, S, S); cx.drawImage(bm, 0, 0, S, S); buf.set(cx.getImageData(0, 0, S, S).data, j * S * S * 4); bm.close?.();
+      };
+      const dd = new Uint8Array(S * S * 4 * ids.length), nd = new Uint8Array(S * S * 4 * ids.length);
+      for (let j = 0; j < ids.length; j++) { await one(ids[j], 'diff', dd, j); await one(ids[j], 'nor_gl', nd, j); }
+      return { diff: rgbaArray(dd, true), nor: rgbaArray(nd, false), source: 'jpg' };
+    } catch (e) { console.warn('seoul: scan JPGs failed, flat materials', e?.message || e); }
   }
+  // 3. flat: each slice is its layer's albedo / tint, normals straight up
+  const s1 = (v) => Math.round(255 * (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055));
+  const dd = new Uint8Array(16 * ids.length), nd = new Uint8Array(16 * ids.length);
+  ids.forEach((id, j) => { const m = Object.values(SEOUL_MATS).find((q) => q.id === id); for (let p = 0; p < 4; p++) { for (let c = 0; c < 3; c++) dd[j * 16 + p * 4 + c] = s1(Math.min(1, m.albedo[c] / Math.max(0.05, m.color[c]))); dd[j * 16 + p * 4 + 3] = 255; nd.set([128, 128, 255, 255], j * 16 + p * 4); } });
+  const flat = (d, srgb) => { const t = new THREE.DataArrayTexture(d, 2, 2, ids.length); t.generateMipmaps = false; t.minFilter = t.magFilter = THREE.NearestFilter; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.needsUpdate = true; return t; };
+  return { diff: flat(dd, true), nor: flat(nd, false), source: 'flat' };
+}
+// a tileable 512^2 detail map (graphics #1): RG a micro-normal (height gradient of 3 octaves of value noise: pits, trowel
+// marks, aggregate), B a roughness variation, A an albedo variation (stains, patches). Sampled at two scales per fragment.
+export function detailMap(N = 512) {
+  const H = new Float32Array(N * N), hv = (x, y, p) => { x = ((x % p) + p) % p; y = ((y % p) + p) % p; let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(p, 2246822519); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  const vn = (x, y, p) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const a = hv(xi, yi, p), b = hv(xi + 1, yi, p), c = hv(xi, yi + 1, p), d = hv(xi + 1, yi + 1, p); return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy; };
+  const A = new Float32Array(N * N), R = new Float32Array(N * N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const u = x / N, v = y / N, i = y * N + x;
+    H[i] = vn(u * 8, v * 8, 8) * 0.5 + vn(u * 32, v * 32, 32) * 0.3 + vn(u * 128, v * 128, 128) * 0.2 + (hv(x, y, N) > 0.985 ? -0.35 : 0);
+    A[i] = vn(u * 4 + 9, v * 4 + 3, 4) * 0.6 + vn(u * 16 + 1, v * 16, 16) * 0.4; R[i] = vn(u * 12 + 5, v * 12 + 7, 12);
+  }
+  const out = new Uint8Array(N * N * 4), q = (v) => Math.max(0, Math.min(255, Math.round(v * 255)));
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const i = y * N + x, gx = H[y * N + ((x + 1) % N)] - H[y * N + ((x + N - 1) % N)], gy = H[((y + 1) % N) * N + x] - H[((y + N - 1) % N) * N + x];
+    out[i * 4] = q(0.5 - gx * 2.2); out[i * 4 + 1] = q(0.5 - gy * 2.2); out[i * 4 + 2] = q(R[i]); out[i * 4 + 3] = q(A[i]);
+  }
+  return { data: out, width: N, height: N };
+}
+// the shared uniforms of the ground and city materials (layer table + arrays); textures land when loadScanArrays resolves
+const ATLAS_UNIFORMS = { tCityDiff: { value: null }, tCityNor: { value: null }, tCityDetail: { value: null },
+  uLayA: { value: Array.from({ length: SEOUL_LAYER_MAX }, () => new THREE.Vector4(-1, -1, 1, 0)) }, uLayB: { value: Array.from({ length: SEOUL_LAYER_MAX }, () => new THREE.Vector4(1, 1, 1, 0.8)) },
+  uLayM: { value: new Array(SEOUL_LAYER_MAX).fill(0) }, uSeoulDetail: { value: new THREE.Vector2(0.35, 0.35) } };
+function setLayers(layers) {
+  layers.forEach((l, i) => { if (i >= SEOUL_LAYER_MAX) return; ATLAS_UNIFORMS.uLayA.value[i].set(l.diff, l.nor, 1 / l.tile, l.grime); ATLAS_UNIFORMS.uLayB.value[i].set(l.color[0], l.color[1], l.color[2], l.rough); ATLAS_UNIFORMS.uLayM.value[i] = l.metal; });
+}
+const ATLAS_HEAD = /* glsl */`
+uniform highp sampler2DArray tCityDiff; uniform highp sampler2DArray tCityNor; uniform sampler2D tCityDetail;
+uniform vec4 uLayA[${SEOUL_LAYER_MAX}]; uniform vec4 uLayB[${SEOUL_LAYER_MAX}]; uniform float uLayM[${SEOUL_LAYER_MAX}]; uniform vec2 uSeoulDetail;
+flat varying float sLay;
+int sgLi = 0; vec4 sgLA = vec4(-1.0); vec4 sgLB = vec4(1.0); vec2 sgLuv = vec2(0.0); vec4 sgDet = vec4(0.5);
+`;
+function makeMaterials(renderer, layers, groupMats = {}, extra = {}) {
+  const mats = {}, pending = [];
+  setLayers(layers);
+  if (!IS_NODE) {
+    pending.push(loadScanArrays(renderer).then((A) => { ATLAS_UNIFORMS.tCityDiff.value = A.diff; ATLAS_UNIFORMS.tCityNor.value = A.nor; mats.texSource = A.source; }));
+    const d = detailMap(), t = new THREE.DataTexture(d.data, d.width, d.height, THREE.RGBAFormat, THREE.UnsignedByteType);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.anisotropy = 4; t.needsUpdate = true; t.name = 'seoul:detail';
+    ATLAS_UNIFORMS.tCityDetail.value = t;
+  }
+  const flatNormal = new THREE.DataTexture(new Uint8Array([128, 128, 255, 255]), 1, 1); flatNormal.needsUpdate = true;
+  for (const g of ['ground', 'city']) {   // vertex colour x layer (scan x tint x grime), per-layer roughness / metalness, scan + detail normals
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 1, vertexColors: true });
+    mat.normalMap = flatNormal; mat.normalScale.set(1, 1);   // turns on three's tangent-space path; the slices are sampled in patchSeoul
+    patchSeoul(mat, 'atlas'); if (g === 'ground') mat.userData.wet = 1;
+    mat.name = 'seoul:' + g; mats[g] = mat;
+  }
+  { const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(...SEOUL_MATS.glass.color), roughness: SEOUL_MATS.glass.rough, metalness: 0 });
+    mat.emissive = new THREE.Color(0, 0, 0); pending.push(interiorTexture()); patchSeoul(mat, 'glass');
+    mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -1; mat.name = 'seoul:glass'; mats.glass = mat; }
+  { const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, metalness: 0, vertexColors: true });
+    mat.polygonOffset = true; mat.polygonOffsetFactor = -2; mat.polygonOffsetUnits = -2; mat.userData.wet = 1; mat.name = 'seoul:lanepaint'; mats.lanepaint = mat; }
+  { const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
+      blendSrc: THREE.ZeroFactor, blendDst: THREE.SrcColorFactor, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4, fog: false, toneMapped: false });
+    mat.userData.cityLight = false; mat.name = 'seoul:ao'; mats.ao = mat; }   // contact darkening and leak streaks: dst *= vertex colour
+  // partner keys that were not folded (their own material comes from the partner; this is the fallback)
+  for (const [k, m] of Object.entries(extra)) if (!mats[k]) { const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(...(m.color || [0.3, 0.3, 0.3])), roughness: m.rough ?? 0.8, metalness: m.metal || 0, vertexColors: !!m.vcol }); mat.name = 'seoul:' + k; mats[k] = mat; }
   return { mats, ready: Promise.all(pending) };
 }
 
@@ -866,12 +1027,16 @@ export async function buildGeometry({ seed = SEOUL_SEED, layout = null, lines = 
     floors: i.floors.filter(Boolean), windows: i.windows }));
   return {
     merged: geo.merged, colGeo: geo.colGeo, spawn: { pos: sp.pos, yaw: sp.yaw ?? 0 }, takeStart: geo.takeStart, startPoints: geo.startPoints, lines: geo.lines, funnels: geo.funnels,
-    materials: { ...SEOUL_MATS, ...(geo.dressingMats || {}) },
+    materials: { ...SEOUL_MATS, ...(geo.dressingMats || {}), ...geo.groupMats },
     bounds: { min: [B.x0 - 60, -5, B.z0 - 60], max: [B.x1 + 60, 200, B.z1 + 60] }, envelope: { min: [B.x0 - 30, -2, B.z0 - 30], max: [B.x1 + 30, 160, B.z1 + 30] },
     site: { level: 'seoul-hongdae', seed, NITS, facts: (({ ms, ...f }) => f)(geo.facts), colRanges: geo.colRanges.map(({ key, tri0, tris }) => ({ key, tri0, tris })) },
     extra: { emitters: geo.emitters, setPieces: geo.setPieces, lots,
+      // [P3-C] the ground and city meshes draw from two texture arrays (seoul/tex/<id>_diff.ktx2 and _nor_gl.ktx2, slice = textures.ids
+      // order) through aLay -> layers[i]: diff / nor slice (-1 none), uv scale 1 / tile, tint colour, roughness, metalness, grime
+      layers: geo.layers.map((l) => ({ key: l.key, diff: l.diff, nor: l.nor, id: l.id, tile: l.tile, color: l.color, rough: l.rough, metal: l.metal, grime: l.grime, albedo: l.albedo })),
+      textures: { ids: SEOUL_TEX_IDS, diff: SEOUL_TEX_IDS.map((id) => `tex/${id}_diff.ktx2`), nor: SEOUL_TEX_IDS.map((id) => `tex/${id}_nor_gl.ktx2`), detail: { fn: 'world-seoul.js detailMap(512)', scales: [0.83, 3.1], weights: [0.6, 0.4] } },
       interiorAtlas: { module: 'seoul-interiors.js', fn: 'buildInteriorAtlas', width: A.width, height: A.height, tile: A.tile, cols: A.cols, rows: A.rows, boost: A.boost, colour: 'sRGB rgb, linear alpha (1 - light boost / boost)', mean: [...A.mean] },
-      attributes: { aEm: 'rgb = mean luminance seen through the pane x NITS; w = room + 32 x front + seed', aWin: 'width, height, kind x 4 + sill (kind 0 window, 1 shop bay, 2 door, 3 poster), room depth', color: 'vertex colour: per-lot tint, age, contact darkening (multiply on albedo)' } },
+      attributes: { aLay: 'ground / city: layer index into extra.layers', aEm: 'rgb = mean luminance seen through the pane x NITS; w = room + 32 x front + seed', aWin: 'width, height, kind x 4 + sill (kind 0 window, 1 shop bay, 2 door, 3 poster), room depth', color: 'vertex colour: per-lot tint, age, contact darkening (multiply on albedo)' } },
   };
 }
 
@@ -902,10 +1067,9 @@ export async function buildSeoul(renderer, a, b) {
   if (opts.interiors !== false) startInteriorAtlas();   // [P3-C] paints in a Worker while the geometry builds
   const geo = buildSeoulGeometry(layout, { lineData, seed: opts.seed ?? SEOUL_SEED });
   prog(0.55, 'Hongdae: materials');
-  const texLoader = IS_NODE ? null : new THREE.TextureLoader();
-  const { mats, ready } = makeMaterials(renderer, texLoader, geo.dressingMats);
+  const { mats, ready } = makeMaterials(renderer, geo.layers, geo.groupMats, geo.dressingMats);
   for (const [k, g] of Object.entries(geo.merged)) {
-    let mat = (!SEOUL_MATS[k] && geo.dressing?.material?.(k.replace(/^E:/, ''), renderer)) || mats[k] || mats[k.replace(/^E:/, '')] || mats.concrete;
+    let mat = SEOUL_GROUPS[k] ? mats[k] : (geo.dressing?.material?.(k.replace(/^E:/, ''), renderer) || mats[k.replace(/^E:/, '')] || mats.city);
     if (mat.vertexColors && !g.getAttribute('color')) { mat = mat.clone(); mat.vertexColors = false; }   // a partner mesh without vertex colour
     const mesh = new THREE.Mesh(g, mat); mesh.name = 'seoul:' + k; mesh.matrixAutoUpdate = false; mesh.receiveShadow = true;
     if (k === 'ao') { mesh.renderOrder = -10; mesh.frustumCulled = false; }
@@ -940,7 +1104,7 @@ export async function buildSeoul(renderer, a, b) {
   const colScene = new THREE.Scene(); { const cm = new THREE.Mesh(geo.colGeo, new THREE.MeshBasicMaterial()); cm.frustumCulled = false; colScene.add(cm); }
   const B = boxOf(layout);
   const sp = geo.takeStart || layout.spawn || { pos: [0, 6, 0], yaw: 0 };   // the first start point (the walking street) when lines exist
-  const stats = { ...geo.facts, ms: { geometry: geo.facts.ms, total: 0 }, emitters: emitters.length };
+  const stats = { ...geo.facts, ms: { geometry: geo.facts.ms, total: 0 }, emitters: emitters.length, textures: mats.texSource || 'pending' };
   const update = (camPos, dt = 1 / 60, camQuat) => {
     uniforms.uTime.value += dt || 0;
     const t = ctx.takeClock ? ctx.takeClock() : uniforms.uTime.value;
