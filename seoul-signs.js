@@ -15,11 +15,21 @@
 //   * Luminance (cd/m^2) follows the panel's binding table: channel-letter / neon cores 600-2000, light-box letters
 //     100-220 with a diffuser profile (centre +20 %, edges -30 %, LED rows at grazing angles), box ground 25-35 % of the
 //     letters, window vinyl x0.3 of an 8-25 nit room, LED screens 180-350 with content whose mean is ~0.3 of peak.
+// Phase 3 (panel 2: lighting #1/#2, colour #1, graphics #5, art #1):
+//   * Filter model: coloured light is white light through a filter, rgb / max(rgb) x white-equivalent nits (85 % dye peak);
+//     NITS is white-equivalent, so hue sets luminance. L3 records keep their contract (rgb Y = 1, nits = luminance), which
+//     is now hue-aware. Hero mix warm-heavy with pink / cyan / violet as accents. Sign light budget R/G 1.4, B/G 0.95.
+//   * Hot structure: channel / galva LED letters 1.0 at the stroke centre (0.04 em in) -> 0.45 at the edge; neon cos^2 across the tube
+//     (core 3x the sleeve); bulbs 2 cm points (LEDs 1.2 cm) at 1800-2000 nits. Contract P3-B1: the scene target's alpha
+//     is 1 + w on those cores (w in [0, 1]) and 1 elsewhere, so A's camera can white-core true sources only.
+//   * Density: street-facing side walls of corner lots (as world-seoul finds them) get a wrapped fascia, a blade stack and
+//     floor boxes; a floor box on ~80 % of lit 2F-5F tenants; main-road towers carry boxes to 8F and a lit roof crown;
+//     hangul-only names on ~80 % of faces. Galva letters stand proud of their panel on returns; roof letters too.
 //   * All faces draw with ONE MeshStandardMaterial (patched by seoul-light: haze + the city light grid on the unlit
 //     parts), opaque, depth-writing, alpha-to-coverage edges; meshes are split into 80 m tiles so they frustum-cull.
 //     The 120 LED screens are one instanced mesh (one draw) with per-instance program state.
 //
-// Emitter record (L3): { id, pos, normal, w, h, rgb (linear, luminance-normalised: Y = 1), nits (mean over w*h),
+// Emitter record (L3): { id, pos, normal, w, h, rgb (linear, luminance-normalised: Y = 1), nits (mean luminance over w*h; hue-aware),
 //                        kind, flicker?, animated }. Animated records (screens, scrollers) are mutated in place by update().
 import * as THREE from 'three';
 import { Rng } from './rng.js';
@@ -33,7 +43,9 @@ export const SIGNS_VERSION = 2;
 // ---------------------------------------------------------------------------------------------------------------
 export const COLOR_CATS = ['white', 'red', 'blue', 'ygo', 'pink', 'cyan', 'violet'];
 export const CENSUS =  [0.45, 0.20, 0.15, 0.12, 0.04, 0.03, 0.01];
-export const SHIPPED = [0.25, 0.14, 0.10, 0.08, 0.20, 0.14, 0.09];
+// Phase 3 (colour #1): the hero mix is the real Hongdae mix pushed toward warm (red, orange, amber, yellow) with pink, cyan
+// and violet as accents, not a magenta field. Reference stills: 78 % of bright saturated pixels are warm, 4 % violet/magenta.
+export const SHIPPED = [0.38, 0.12, 0.07, 0.24, 0.08, 0.07, 0.04];
 export const NEON_SHARE = [0.04, 0.15];        // neon-tube share of nightlife-able signs at push 0 / 1
 // default push by street kind; street.neonPush overrides. Phase 2 (colour #2): club/walking 1.0 -> 0.6, main 0.6 -> 0.4
 export const PUSH_BY_KIND = { club: 0.6, walking: 0.6, main: 0.4, alley: 0.4 };
@@ -43,25 +55,33 @@ const USE_PUSH = { club: 1.35, bar: 1.3, pocha: 1.2, karaoke: 1.3, motel: 1.25, 
 
 const srgb = (h) => { const c = new THREE.Color(h); return [c.r, c.g, c.b]; };     // THREE.Color hex -> linear
 const HEX = {
-  white: '#f2f6ff', warm: '#ffe0b0', red: '#ff2414', blue: '#1e56ff', yellow: '#ffc414', orange: '#ff7410', green: '#14d860',
+  white: '#f7f9ff', warm: '#ffe0b0', red: '#ff2414', blue: '#1e56ff', yellow: '#ffd21a', orange: '#ff7410', green: '#14d860',
   pink: '#ff3c9c', magenta: '#ff28d2', cyan: '#18e4ff', teal: '#10d8b0', violet: '#8a3cff', amber: '#ffa010',
   paleYellow: '#fff1b8', paleBlue: '#e2f2ff', bulb: '#ffc98a', roomWarm: '#ffd7a0', roomCool: '#e6efff', roomFluo: '#eaffef',
 };
 // category -> concrete light colours (weights)
 const CAT_HUES = {
-  white: [['white', 0.6], ['warm', 0.4]], red: [['red', 1]], blue: [['blue', 1]],
-  ygo: [['yellow', 0.4], ['orange', 0.35], ['green', 0.25]], pink: [['pink', 0.6], ['magenta', 0.4]],
+  white: [['white', 0.45], ['warm', 0.55]], red: [['red', 1]], blue: [['blue', 1]],
+  ygo: [['yellow', 0.35], ['orange', 0.25], ['amber', 0.15], ['green', 0.25]], pink: [['pink', 0.6], ['magenta', 0.4]],
   cyan: [['cyan', 0.65], ['teal', 0.35]], violet: [['violet', 1]],
 };
 export const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-const norm1 = (c) => { const y = Math.max(lum(c), 1e-4); return [c[0] / y, c[1] / y, c[2] / y]; };
+const norm1 = (c) => { const y = Math.max(lum(c), 1e-4); return [c[0] / y, c[1] / y, c[2] / y]; };   // L3 records only
+// Filter model (phase 3, lighting #1 / colour #1): a coloured sign is white light through a coloured filter (acrylic face,
+// tinted tube, LED die at matched drive), so its emission is rgb / max(rgb) x the WHITE-EQUIVALENT nits of its class. Blue
+// at 1000 white-equivalent has luminance 141 and B = 1000; the phase-2 luminance normalisation gave it B = 7070 (7.1x),
+// which made the sign light budget magenta. Every nits value in NITS below is white-equivalent (the brightest channel).
+// A dyed face or tinted tube passes ~85 % of its pass band (white diffusers ~100 %): peak transmission 1 - 0.15 x saturation.
+export const filt = (c) => { const m = Math.max(c[0], c[1], c[2], 1e-4), k = (1 - 0.15 * (1 - Math.min(c[0], c[1], c[2]) / m)) / m; return [c[0] * k, c[1] * k, c[2] * k]; };
 
 // Luminance, cd/m^2 (panel 1 binding table). Letters/cores are what clips; grounds and rooms sit well below them.
+// Phase 3: white-equivalent (brightest channel, filter model); the hue sets the luminance. Cores are the stroke centre /
+// tube axis / bulb point (the shader's profile peaks there; the mean over a letter is ~0.75 of the core).
 export const NITS = {
   boxLetters: [110, 220], boxLettersColour: [100, 200],   // light-box letters: the brightest part of a box face (100-220)
   ground: [0.25, 0.35],                                    // lit box ground behind the letters, as a share of the letters
-  channel: [600, 1200], channelColour: [600, 1500],        // LED channel letters / galva LED letters (cores 600-2000)
-  neon: [900, 2000], bulb: [800, 2000],                    // tube cores, bulb and exposed-LED dots (point sources)
+  channel: [700, 1400], channelColour: [600, 1100],        // LED channel letters / galva LED letters (cores; white modules drive hardest)
+  neon: [900, 2000], bulb: [1800, 2000], dots: [800, 2000], // tube cores; 2 cm bulb points; exposed-LED letter dots
   scroller: [300, 600],                                    // LED dot board: mean of an "on" cell (dots peak at 2.6x)
   room: [8, 25], vinyl: 0.3,                               // window film: the lit room behind; vinyl transmits x0.3
   screen: [180, 350], screenSmall: [180, 300], banner: [0, 0],
@@ -83,7 +103,7 @@ const NAME_EN = ['NOCTA', 'LUMEN', 'PULSE', 'DEEP ROOM', 'AFTER 4', 'NEON YARD',
   'NOVA', 'ECHO HALL', 'SLOW', 'WAVE', 'GRAIN', 'MONO', 'ROOM 7', 'B1 HOUSE', 'SIDE A', 'LOW KEY', 'NIGHTJAR'];
 // category words by tenant use: [hangul, latin?]
 const USE_WORDS = {
-  club: ['클럽', '라운지', '하우스', 'CLUB', 'LOUNGE'],
+  club: ['클럽', '라운지', '하우스', '클럽', '라운지', 'CLUB'],
   bar: ['호프', '펍', '술집', '이자카야', '칵테일바', '와인바', '감성주점', '맥주집', 'BAR', 'PUB'],
   pocha: ['포차', '포장마차', '실내포차', '꼬치', '닭발', '오뎅바', '전집', '막걸리'],
   restaurant: ['삼겹살', '갈비', '곱창', '막창', '닭갈비', '족발', '보쌈', '국밥', '김밥', '분식', '떡볶이', '냉면', '칼국수', '마라탕',
@@ -93,8 +113,8 @@ const USE_WORDS = {
   conv: ['편의점', '마트', '24시 편의점'],
   karaoke: ['코인노래방', '노래연습장', '노래방', '코인노래연습장'],
   pc: ['PC방', 'PC CAFE', '게임존', '오락실', '이스포츠', 'VR방'],
-  motel: ['모텔', '무인텔', 'MOTEL', 'HOTEL'],
-  hotel: ['호텔', '게스트하우스', 'HOTEL', 'GUEST HOUSE', '스테이'],
+  motel: ['모텔', '무인텔', '모텔', '무인텔', 'HOTEL'],
+  hotel: ['호텔', '게스트하우스', '호텔', '스테이', 'HOTEL'],
   office: ['학원', '부동산', '세무회계', '법무사', '치과', '의원', '약국', '연습실', '댄스학원', '실용음악학원', '스튜디오', '공방', '당구장', '스크린골프',
     '필라테스', '헬스장', '피부과', '한의원', '영어학원', '보컬학원'],
 };
@@ -113,8 +133,8 @@ const GROUND_NEXT = {
 };
 const TAGS = ['24시', '영업중', 'OPEN', '단체석', '생맥주', '무한리필', '포장 가능', '심야영업', '새벽까지', '예약 환영', '주차 가능',
   '1인석', 'SINCE 2009', '본점', '2호점', '맛집', '신장개업', '연중무휴'];
-const NEON_WORDS = ['술', '오늘 밤', '한잔 해', '취하고 싶은 밤', '사랑해', '청춘', 'OPEN', 'BAR', 'LOVE', 'TONIGHT', '포차', '노래',
-  'HAPPY HOUR', '짠', '낭만', '여기야', 'GOOD VIBES', '어서와'];
+const NEON_WORDS = ['술', '오늘 밤', '한잔 해', '취하고 싶은 밤', '사랑해', '청춘', 'OPEN', '포차', '노래', '짠', '낭만', '여기야', '어서와',
+  'LOVE', '한잔', '오늘 밤 한잔'];
 const BANNER_WORDS = ['신장개업 이벤트', '임대 문의', '전 메뉴 20% 할인', '점심 특선', '오픈 기념 1+1', '회원 모집', '수강생 모집',
   '분양 문의', '리모델링 오픈'];
 export const SCROLL_TEXT = ['★ 오늘의 특가 생맥주 2500원 ★ 단체 환영 ★ 새벽 5시까지 영업 ★ ',
@@ -159,6 +179,39 @@ function facadeFrame(lot) {
   return { o: [a[0], a[1]], r: [rx, rz], n: [nx, nz], L, top: lot.floors * (lot.floorH || 3.2), floors: lot.floors, fh: lot.floorH || 3.2 };
 }
 
+// street-facing side walls (art #1): a corner lot's second street face, found as world-seoul finds it (open 1.5 m out, not
+// a slot under 3.2 m, a street within 1 m of a point 2 m out), from the layout alone so node and the browser agree.
+const segDist = (px, pz, ax, az, bx, bz) => { const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1; const t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / l2)); return Math.hypot(px - ax - dx * t, pz - az - dz * t); };
+function inPoly(P, x, z) { let c = false; for (let i = 0, j = P.length - 1; i < P.length; j = i++) { const a = P[i], b = P[j]; if ((a[1] > z) !== (b[1] > z) && x < (b[0] - a[0]) * (z - a[1]) / (b[1] - a[1]) + a[0]) c = !c; } return c; }
+export function sideFaces(layout) {
+  const lots = layout.lots || [], streets = layout.streets || [], CELL = 16, G = new Map(), out = new Map();
+  lots.forEach((l, i) => { let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity; for (const p of l.footprint) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); z0 = Math.min(z0, p[1]); z1 = Math.max(z1, p[1]); }
+    for (let gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++) for (let gz = Math.floor(z0 / CELL); gz <= Math.floor(z1 / CELL); gz++) { const k = gx + ',' + gz; (G.get(k) || G.set(k, []).get(k)).push(i); } });
+  const inside = (x, z, self) => { for (const i of G.get(Math.floor(x / CELL) + ',' + Math.floor(z / CELL)) || []) if (lots[i] !== self && inPoly(lots[i].footprint, x, z)) return true; return false; };
+  const streetD = (x, z) => { let d = Infinity; for (const s of streets) for (let i = 0; i < s.points.length - 1; i++) d = Math.min(d, segDist(x, z, s.points[i][0], s.points[i][1], s.points[i + 1][0], s.points[i + 1][1]) - s.width / 2); return d; };
+  for (const l of lots) {
+    const P = l.footprint, fr = l.frontage; if (!fr || !P || P.length < 3) continue; const list = [];
+    for (let i = 0; i < P.length; i++) {
+      const a = P[i], b = P[(i + 1) % P.length], dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz); if (L < 3) continue;
+      const same = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.05;
+      if ((same(a, fr[0]) && same(b, fr[1])) || (same(a, fr[1]) && same(b, fr[0]))) continue;
+      let nx = dz / L, nz = -dx / L; const mx = (a[0] + b[0]) / 2, mz = (a[1] + b[1]) / 2;
+      if (inPoly(P, mx + nx * 0.3, mz + nz * 0.3)) { nx = -nx; nz = -nz; }
+      const at = (t, o) => [a[0] + dx * t + nx * o, a[1] + dz * t + nz * o];
+      const open = [0.25, 0.5, 0.75].filter((t) => { const q = at(t, 1.5); return !inside(q[0], q[1], l) && !inPoly(P, q[0], q[1]); }).length >= 2;
+      if (!open) continue;
+      if ([0.25, 0.5, 0.75].filter((t) => { const q = at(t, 3.2); return inside(q[0], q[1], l); }).length >= 2) continue;   // a slot
+      if (streetD(mx + nx * 2, mz + nz * 2) >= 1.0) continue;
+      // frame as facadeFrame: reading direction r = up x n; o = the end the reader sees on the left; corner = the end nearer the frontage
+      const rx = nz, rz = -nx; const [o, e] = dx * rx + dz * rz >= 0 ? [a, b] : [b, a];
+      const fd = (p) => segDist(p[0], p[1], fr[0][0], fr[0][1], fr[1][0], fr[1][1]);
+      list.push({ o: [o[0], o[1]], r: [rx, rz], n: [nx, nz], L, corner: fd(o) <= fd(e) ? 0 : L, top: l.floors * (l.floorH || 3.2), floors: l.floors, fh: l.floorH || 3.2, side: true });
+    }
+    if (list.length) out.set(l.id, list);
+  }
+  return out;
+}
+
 function makeName(r, use, latinBias) {
   const w = pick(r, USE_WORDS[use] || USE_WORDS.shop); const latinWord = /^[A-Z0-9 ]+$/.test(w);
   const latin = latinWord || r.next() < latinBias;
@@ -193,7 +246,7 @@ function chooseDesign(style, cat, use, u) {
 }
 function designNits(design, cat, u) {
   const R = design === 'neon' ? NITS.neon : design === 'channel' || design === 'galva' ? (cat === 'white' ? NITS.channel : NITS.channelColour)
-    : design === 'dots' ? NITS.bulb : design === 'vinylA' || design === 'vinylB' ? NITS.room : design === 'scroller' ? NITS.scroller
+    : design === 'dots' ? NITS.dots : design === 'vinylA' || design === 'vinylB' ? NITS.room : design === 'scroller' ? NITS.scroller
       : design === 'banner' ? NITS.banner : (cat === 'white' ? NITS.boxLetters : NITS.boxLettersColour);
   return R[0] + (R[1] - R[0]) * u;
 }
@@ -201,9 +254,10 @@ function designNits(design, cat, u) {
 export function generateSigns(layout, opts = {}) {
   const seed = (opts.seed ?? 0x5e0a1) >>> 0, pushOverride = opts.neonPush, pushScale = opts.neonPushScale ?? 1;
   const streets = new Map((layout.streets || []).map((s) => [s.id, s]));
-  const specs = [], screens = [];
+  const specs = [], screens = [], SIDES = sideFaces(layout);
   for (const lot of layout.lots || []) {
     const st = streets.get(lot.street) || { kind: 'alley' };
+    const sides = SIDES.get(lot.id) || [];
     const push = Math.max(0, Math.min(1, (pushOverride ?? st.neonPush ?? PUSH_BY_KIND[st.kind] ?? 0.4) * pushScale));
     const r = new Rng(seed ^ hashStr(lot.id));           // geometry stream (never depends on push)
     const rc = new Rng((seed * 31 + 7) ^ hashStr(lot.id + '#c')); // colour stream (fixed draws per sign)
@@ -213,7 +267,7 @@ export function generateSigns(layout, opts = {}) {
     const tenants = [];
     for (let f = 0; f < nFloors; f++) {
       const use = f === 0 ? lot.use : pick(r, UPPER_USES[lot.use] || UPPER_USES.office);
-      const name = makeName(r, use, use === 'club' ? 0.6 : use === 'cafe' ? 0.35 : use === 'shop' ? 0.4 : 0.12);
+      const name = makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05);
       const lit = r.next() < (LIT_P[use] ?? 0.5);
       tenants.push({ f, use, name, lit, phone: fakePhone(r), tag: pick(r, TAGS) });
     }
@@ -250,7 +304,7 @@ export function generateSigns(layout, opts = {}) {
     const bay = L / nShops, shops = [g];
     for (let i = 1; i < nShops; i++) {
       const use = pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant);
-      shops.push({ f: 0, use, name: makeName(r, use, use === 'club' ? 0.6 : use === 'cafe' ? 0.35 : use === 'shop' ? 0.4 : 0.12), lit: r.next() < (LIT_P[use] ?? 0.5), phone: fakePhone(r), tag: pick(r, TAGS) });
+      shops.push({ f: 0, use, name: makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05), lit: r.next() < (LIT_P[use] ?? 0.5), phone: fakePhone(r), tag: pick(r, TAGS) });
     }
     let fasciaY = 2.75;
     shops.forEach((sh, i) => {
@@ -274,7 +328,10 @@ export function generateSigns(layout, opts = {}) {
       if (NIGHT_USES.has(sh.use) && r.next() < 0.5) add('neon', sh, { u: u0 + range(r, 0.4, Math.max(0.5, bay - 2.2)), y: 1.0, w: range(r, 1.2, 1.8), h: range(r, 0.5, 0.8), d: 0.05 }, { neonText: pick(r, NEON_WORDS) });
     });
     // --- upper floors (signs stop around 6-7F; above that only the odd 학원 window): spandrel boxes, window vinyl, channel ---
-    const signTop = Math.min(nFloors, 7);
+    // Phase 3 (art #1): a floor box on 80 % of lit 2F-5F tenants (35 % of unlit ones: a dark box); main-road towers carry
+    // floor boxes 1F-8F and a roof crown.
+    const tower = st.kind === 'main' && nFloors >= 8;
+    const signTop = tower ? 8 : Math.min(nFloors, 7);
     for (let f = 1; f < nFloors; f++) {
       const t = tenants[f]; if (t.use === 'motel' || t.use === 'hotel') continue;
       const y0 = f * fh;
@@ -282,9 +339,9 @@ export function generateSigns(layout, opts = {}) {
         if (r.next() < 0.12) { const ww = Math.min(L - 0.6, range(r, 2.0, 3.6)); add('window', t, { u: range(r, 0.3, Math.max(0.35, L - ww - 0.3)), y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.3), d: 0.0 }); }
         continue;
       }
-      const v = r.next();
-      if (v < 0.55) { const bw = Math.min(L * range(r, 0.5, 0.8), range(r, 5, 9)); add('fascia', t, { u: range(r, 0.3, Math.max(0.35, L - bw - 0.3)), y: y0 + fh - range(r, 1.05, 1.3), w: bw, h: range(r, 0.75, 1.0), d: 0.22 }); }
-      else if (v < 0.75) { const cw = Math.min(L * range(r, 0.55, 0.8), range(r, 5, 8)); add('channel', t, { u: range(r, 0.3, Math.max(0.35, L - cw - 0.3)), y: y0 + fh - 1.0, w: cw, h: 0.8, d: 0.1 }); }
+      const v = r.next(), pBox = tower ? (t.lit ? 0.85 : 0.4) : f <= 4 ? (t.lit ? 0.84 : 0.35) : (t.lit ? 0.5 : 0.15);
+      if (v < pBox * 0.75) { const bw = Math.min(L * range(r, 0.5, 0.8), range(r, 5, 9)); add('fascia', t, { u: range(r, 0.3, Math.max(0.35, L - bw - 0.3)), y: y0 + fh - range(r, 1.05, 1.3), w: bw, h: range(r, 0.75, 1.0), d: 0.22 }); }
+      else if (v < pBox) { const cw = Math.min(L * range(r, 0.55, 0.8), range(r, 5, 8)); add('channel', t, { u: range(r, 0.3, Math.max(0.35, L - cw - 0.3)), y: y0 + fh - 1.0, w: cw, h: 0.8, d: 0.1 }); }
       if (r.next() < 0.7) {
         const nw = Math.max(1, Math.min(3, Math.round(L / 6) + (r.next() < 0.5 ? 0 : 1)));
         for (let j = 0; j < nw; j++) {
@@ -295,12 +352,13 @@ export function generateSigns(layout, opts = {}) {
       if (r.next() < 0.12 && t.lit === false) { const bw = Math.min(L * 0.7, 8); add('banner', t, { u: (L - bw) / 2, y: y0 + 0.5, w: bw, h: 0.8, d: 0.02 }); }
     }
     // --- vertical blade stacks (돌출간판): one tenant box per floor at the facade edge; a second stack on ~30 % ---
-    if (nFloors >= 3 && r.next() < 0.75) {
+    const bladeRoll = r.next();
+    if ((nFloors >= 3 && bladeRoll < 0.75) || (sides.length && nFloors >= 2) || tower) {   // every corner lot and tower
       const side = r.next() < 0.5 ? 0.35 : L - 0.35, out = range(r, 0.45, 0.9), bw = range(r, 0.55, 0.75);
       for (let f = 1; f < signTop; f++) add('blade', tenants[f], { u: side, y: f * fh + 0.25, w: bw, h: fh - 0.5, d: 0.32, out });
       if (lot.use === 'motel' || lot.use === 'hotel') { // one tall continuous blade for the whole building name
         add('blade', tenants[0], { u: L - side, y: fh + 0.2, w: 0.9, h: Math.min(10, (nFloors - 1) * fh - 0.4), d: 0.4, out: 1.0, tall: true });
-      } else if (r.next() < 0.3 && L > 5) {
+      } else if ((r.next() < 0.3 || tower) && L > 5) {
         const side2 = L - side, out2 = range(r, 0.45, 0.8), bw2 = range(r, 0.5, 0.7);
         for (let f = 1; f < signTop; f++) add('blade', tenants[f], { u: side2, y: f * fh + 0.3, w: bw2, h: fh - 0.6, d: 0.3, out: out2 });
       }
@@ -309,10 +367,38 @@ export function generateSigns(layout, opts = {}) {
     if (nFloors >= 2 && r.next() < ({ cafe: 0.5, restaurant: 0.3, shop: 0.3, bar: 0.3 }[g.use] ?? 0.08))
       add('round', g, { u: r.next() < 0.5 ? 0.5 : L - 0.5, y: fh + 0.4, w: 0.8, h: 0.8, d: 0.18, out: 0.6 });
     // --- rooftop sign on taller buildings: steel frame with letters ---
-    if (nFloors >= 5 && r.next() < 0.45) {
-      const t = lot.use === 'office' ? tenants[nFloors - 1] : tenants[0];
+    if ((nFloors >= 5 && r.next() < 0.45) || tower) {
+      const t = lot.use === 'office' ? tenants[nFloors - 1] : tenants[0], tc = tower ? { ...t, lit: true } : t;   // a tower's crown is always lit
       const rw = Math.min(L * 0.85, range(r, 6, 11));
-      add('roof', t, { u: (L - rw) / 2, y: F.top + 0.6, w: rw, h: range(r, 1.6, 2.6), d: 0.3, out: -1.2 });
+      add('roof', tc, { u: (L - rw) / 2, y: F.top + 0.6, w: rw, h: range(r, 1.6, 2.6), d: 0.3, out: -1.2 });
+    }
+    // --- street-facing side walls of corner lots (art #1: walk180 / club90 showed 20-60 m of blank wall): the corner shop
+    //     wraps its fascia round, a blade stack 0.9 m from the corner, floor boxes on lit 2F-5F tenants, window film ---
+    for (const SF of sides) {
+      // a long side wall on a walking street is a second frontage: shop bays along it, blades at both ends, floor boxes and
+      // film spread over its length (walk180's 22 m wall was blank past the corner)
+      const Ls = SF.L, cu = (u, w) => (SF.corner === 0 ? u : Ls - u - w);   // u measured from the corner
+      const xf = { frame: SF }, nb = Math.max(1, Math.min(4, Math.round(Ls / 6.5))), sb = Ls / nb;
+      for (let i = 0; i < nb && Ls >= 3.5; i++) {
+        const sh = i === 0 ? g : { ...g, use: pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant), name: makeName(r, 'restaurant', 0.05), lit: r.next() < 0.8 };
+        if (r.next() > (i === 0 ? 0.75 : 0.7)) continue;
+        const w = Math.min(sb - 0.6, sb * range(r, 0.55, 0.85)), h = range(r, 0.85, 1.1), ch = r.next() < 0.3;
+        add(ch ? 'channel' : 'fascia', sh, { u: cu(sb * i + (sb - w) / 2, w), y: Math.min(fh - h - 0.15, fasciaY), w, h, d: ch ? 0.12 : 0.26 }, xf);
+      }
+      if (nFloors >= 2) {
+        const ends = Ls > 12 ? [0.9, Ls - 0.9] : [0.9];
+        for (const e of ends) { const out = range(r, 0.45, 0.85), bw = range(r, 0.55, 0.72), bu = SF.corner === 0 ? e : Ls - e;
+          for (let f = 1; f < Math.max(2, signTop); f++) add('blade', tenants[f], { u: bu, y: f * fh + 0.28, w: bw, h: fh - 0.56, d: 0.3, out }, xf); }
+      }
+      for (let f = 1; f < Math.min(signTop, 5); f++) {
+        const t = tenants[f]; if (t.use === 'motel' || t.use === 'hotel') continue;
+        const y0 = f * fh, v = r.next();
+        if (Ls >= 4.5 && v < (t.lit ? 0.75 : 0.25)) { const bw = Math.min(Ls - 3.4, range(r, 3, 7)); add(v < (t.lit ? 0.56 : 0.2) ? 'fascia' : 'channel', t, { u: cu(range(r, 1.7, Math.max(1.75, Ls - bw - 1.7)), bw), y: y0 + fh - range(r, 1.05, 1.25), w: bw, h: range(r, 0.7, 0.95), d: 0.2 }, xf); }
+        if (f <= 3 && t.lit && Ls >= 5) { const nw = Math.max(1, Math.min(3, Math.round(Ls / 8)));
+          for (let j = 0; j < nw; j++) { if (r.next() > 0.6) continue; const seg = (Ls - 3.4) / nw, ww = Math.min(seg - 0.6, range(r, 2.0, 3.4)); if (ww < 1.2) continue;
+            add('window', t, { u: cu(1.7 + seg * j + (seg - ww) / 2, ww), y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.2), d: 0.0 }, xf); } }
+      }
+      if (tower) { const rw = Math.min(Ls * 0.8, range(r, 6, 10)); add('roof', { ...tenants[0], lit: true }, { u: (Ls - rw) / 2, y: SF.top + 0.6, w: rw, h: range(r, 1.6, 2.4), d: 0.3, out: -1.2 }, xf); }
     }
     // --- motels: fascia with the 휴게/숙박 tag ---
     if (lot.use === 'motel' || lot.use === 'hotel') add('fascia', g, { u: L * 0.1, y: fh * 2 - 1.1, w: L * 0.8, h: 0.9, d: 0.25 });
@@ -434,7 +520,7 @@ const fontFor = (spec, rr) => {
   if (u === 'office') return rr < 0.6 ? 'S2 Sans' : 'S2 Gothic';
   return rr < 0.45 ? 'S2 BlackHan' : rr < 0.7 ? 'S2 DoHyeon' : rr < 0.85 ? 'S2 Gothic' : 'S2 Sans';
 };
-const E = (lit, c, nits) => { if (!lit || !(nits > 0)) return [0, 0, 0]; const n = norm1(c); return [n[0] * nits, n[1] * nits, n[2] * nits]; };
+const E = (lit, c, nits) => { if (!lit || !(nits > 0)) return [0, 0, 0]; const n = filt(c); return [n[0] * nits, n[1] * nits, n[2] * nits]; };
 const scaleC = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
 
 // one face design -> { els, nits: emitter mean over w*h, rgb, letterNits, groundNits }
@@ -560,6 +646,13 @@ export function designFace(s, w, h) {
     }
     default: break;
   }
+  // graphics #5: channel letters are acrylic faces on returns. Galva LED letters on box faces stand 3.5 cm proud of their
+  // panel over a dark return copy; roof letters get 10 cm returns (fascia channel letters have theirs above, 6 cm)
+  if (s.style === 'roof' || (s.design === 'galva' && (s.style === 'fascia' || s.style === 'round'))) {
+    const roof = s.style === 'roof', n0 = els.length;
+    for (let i = 0; i < n0; i++) { const e = els[i]; if (!e.glyph || e.p[0] !== 1 || e.ret) continue; if (!roof) e.z = 0.035;
+      els.push({ ...e, q: e.q.slice(), layer: roof ? 0 : 1, z: roof ? -0.1 : 0.004, col: [0, 0, 0], alb: [0.03, 0.03, 0.035], p: [0, 0, e.p[2]], ink: 0, ret: true }); }
+  }
   if (s.bulbs && lit) {
     const mode = s.bulbs === 'chase' ? 1 : s.bulbs === 'bulbs' ? 0 : 2;
     const c = mode === 2 ? (s.accentName === 'white' ? s.rgb : s.accent) : srgb(HEX.bulb);
@@ -571,8 +664,9 @@ export function designFace(s, w, h) {
   for (const e of els) {
     const ly = lum(e.col); if (!(ly > 0)) continue;
     let a;
-    if (e.glyph) a = e.ink * (e.k === K.TUBE ? 0.3 : e.k === K.DOTS ? 0.3 : 1);
-    else if (e.bulb) a = Math.abs((e.q[2] - e.q[0]) * (e.q[5] - e.q[1])) * 0.16;
+    // area x the shader's profile mean: tube ink 0.3 x cos^2 tube 0.67; LED channel stroke 0.78; script tube 0.6; bulbs pi (0.72 r)^2 / cell
+    if (e.glyph) a = e.ink * (e.k === K.TUBE ? 0.2 : e.k === K.DOTS ? 0.3 : e.p[0] === 1 ? 0.78 : e.p[0] === 2 ? 0.6 : 1);
+    else if (e.bulb) { const rad = e.p[1] > 1.5 ? 0.006 : 0.010; a = Math.abs((e.q[2] - e.q[0]) * (e.q[5] - e.q[1])) * 1.634 * rad * rad / (e.p[0] * e.p[2]); }
     else { a = Math.abs((e.q[2] - e.q[0]) * (e.q[5] - e.q[1])); if (e.layer === 0) a = Math.max(0, a - inkLit); }
     Y += ly * a; C[0] += e.col[0] * a; C[1] += e.col[1] * a; C[2] += e.col[2] * a;
   }
@@ -737,7 +831,7 @@ void main(){
   float px = max(fwidth(cell.x), fwidth(cell.y));
   float dotm = mix(sdn(0.42, 0.28, length(f)) / 0.38, 1.0, smoothstep(0.4, 1.2, px));
   vec3 c = vC * (on * dotm + 0.004);
-  gl_FragColor = vec4(c * uNit, 1.0);
+  gl_FragColor = vec4(c * uNit, 1.0 + on * sdn(0.3, 0.12, length(f)) * (1.0 - smoothstep(0.4, 1.2, px)));   // P3-B1 core flag
 }`;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -766,7 +860,8 @@ export function buildData(layout, opts = {}) {
       const hue = pick(new Rng(s.seed), [['red', 0.6], ['amber', 0.25], ['green', 0.15]].flatMap(([h, w]) => Array(Math.round(w * 20)).fill(h)));
       const cl = srgb(HEX[s.lit ? hue : 'red']);
       scrollers.push({ id: s.id, c, n, w: G.w, h: G.h, row: s.scrollRow, speed: 7 + (s.seed % 6), cols: Math.round(G.w / (G.h / 16)), phase: s.seed % 500, rgb: cl, nits: s.lit ? s.nits : 0 });
-      if (s.lit) emitters.push({ id: s.id, pos: r3(c), normal: n, w: G.w, h: G.h, rgb: norm1(cl).map((v) => +v.toFixed(4)), nits: Math.round(s.nits * 0.3), kind: 'screen', animated: true, use: s.use, lot: s.lot });
+      // filter model: s.nits is white-equivalent (the lit dot's brightest channel); ~30 % of the cells are on
+      if (s.lit) emitters.push({ id: s.id, pos: r3(c), normal: n, w: G.w, h: G.h, rgb: norm1(cl).map((v) => +v.toFixed(4)), nits: Math.round(s.nits * 0.3 * lum(filt(cl))), kind: 'screen', animated: true, use: s.use, lot: s.lot });
       continue;
     }
     const fw = s.type === 'stand' ? G.w * 0.92 : G.w, fhh = s.type === 'stand' ? G.h * 0.94 : G.h;
@@ -864,7 +959,7 @@ export function exportData(layout, opts = {}) {
     col: e.col.map((v) => +v.toFixed(2)), alb: e.alb.map((v) => +v.toFixed(3)), p: e.p.map((v) => +(+v).toFixed(4)) })));
   const signs = {
     version: SIGNS_VERSION, units: { length: 'm', luminance: 'cd/m^2', frame: 'x east, y up, z south' },
-    kinds: K, kindDoc: 'BOX light-box ground (diffuser: centre +20 %, edges -30 %, LED rows 0.12 m at grazing angles; p=[w,h,round]); PANEL flat (emits col, reflects alb); FILL MSDF glyph fill (p.x=1 LED edge profile; p.z = mean coverage of the quad); TUBE neon tube on the glyph outline (p.x half width, em); DOTS exposed LEDs inside the glyph (p.x pitch, em); BULBS border strip (uv.x metres along; p=[pitch m, 0 static|1 chase|2 LED, width m]); ROOM lit room behind window film (ceiling gradient; p.z=1 blinds). layer: draw order on the face plane (pull toward the eye 6e-4 x depth per layer); z: offset along the normal (m). Face frame: right = up x n.',
+    kinds: K, kindDoc: 'BOX light-box ground (diffuser: centre +20 %, edges -30 %, LED rows 0.12 m at grazing angles; p=[w,h,round]); PANEL flat (emits col, reflects alb); FILL MSDF glyph fill (p.x=1 LED channel letter: 0.45 + 0.55 smoothstep(0, 0.04 em, d) across the stroke, mean 0.78 when unresolved; p.x=2 script neon: (1 + 2 sin^2(pi/2 min(d / 0.028 em, 1))) / 3; p.z = mean coverage of the quad); TUBE neon tube on the glyph outline (p.x half width, em; (1 + 2 cos^2(pi/2 |dc| / hw)) / 3: core 3x the sleeve); DOTS exposed LEDs inside the glyph (p.x pitch, em); BULBS border strip (uv.x metres along; p=[pitch m, 0 static|1 chase|2 LED, width m]; points of radius 1.0 cm (LED 0.6 cm), filtered to the pixel footprint (a one-pixel tent carrying the disc energy when sub-pixel), several per pixel: mean pi (0.72 r)^2 / (pitch x width)); ROOM lit room behind window film (ceiling gradient; p.z=1 blinds). layer: draw order on the face plane (pull toward the eye 6e-4 x depth per layer); z: offset along the normal (m). Face frame: right = up x n. col is linear cd/m^2 under the filter model (rgb / max x white-equivalent nits). True-source cores (channel stroke centres, tube axes, bulb / LED / dot points) write scene alpha 1 + w (contract P3-B1).',
     msdf: { image: MSDF.image, meta: 'seoul/signs/msdf-meta.js', size: MSDF.size, pxPerEm: MSDF.px, range: MSDF.range, median: 'max(min(r,g),min(max(r,g),b)) - 0.5, x range px' },
     faces: faceRecs, designs: designList,
     housings: D.boxes.map((b) => ({ c: b.c, r: b.r, n: b.n, half: [+b.hw.toFixed(3), +b.hh.toFixed(3), +b.hd.toFixed(3)], albedo: b.col, noFront: b.noFront, collide: b.collide })),
@@ -932,7 +1027,7 @@ varying vec2 vSUv; varying vec3 vSCol; varying vec3 vSAlb; varying vec4 vSK;
 uniform sampler2D uAtlas; uniform vec4 uAtlasP; uniform float uNit, uTime, uMS;
 float sgMed(vec3 s){ return max(min(s.r, s.g), min(max(s.r, s.g), s.b)); }`;
 const FACE_FRAG_BODY = /* glsl */`
-  vec3 sgEm = vec3(0.0); float sgA = 1.0;
+  vec3 sgEm = vec3(0.0); float sgA = 1.0; float sgCore = 0.0;   // sgCore: true-source core weight (scene alpha = 1 + core)
   { int kind = int(vSK.x + 0.5);
     vec3 fN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
     float facing = abs(dot(fN, normalize(vViewPosition)));
@@ -952,8 +1047,8 @@ const FACE_FRAG_BODY = /* glsl */`
       prof *= 1.0 + mix(0.06, 0.32, 1.0 - facing) * (rows - 0.5);
       sgEm = vSCol * prof;
       if (vSK.w > 0.5) { float r = length(c); sgA = 1.0 - smoothstep(1.0 - fwidth(r), 1.0, r); }
-    } else if (kind == 1) {   // flat panel
-      sgEm = vSCol;
+    } else if (kind == 1) {   // flat panel (emissive only as a neon frame tube)
+      sgEm = vSCol; sgCore = 0.6;
     } else if (kind == 6) {   // lit room behind film: ceiling light, optional blinds, darker frame
       float ex = min(u.x, 1.0 - u.x) * sz.x, ey = min(u.y, 1.0 - u.y) * sz.y;
       float prof = 0.72 + 0.5 * u.y * u.y;
@@ -963,39 +1058,55 @@ const FACE_FRAG_BODY = /* glsl */`
     } else if (kind == 5) {   // bulb / LED border strip
       float pitch = vSK.y; float i = floor(u.x / pitch);
       vec2 f = vec2((fract(u.x / pitch) - 0.5) * pitch, (u.y - 0.5) * vSK.w);
-      float rad = vSK.z > 1.5 ? 0.009 : 0.017; float d = length(f);
-      float core = 1.0 - smoothstep(rad * 0.45, rad, d);
+      float rad = vSK.z > 1.5 ? 0.006 : 0.010; float d = length(f);          // 2 cm bulbs, 1.2 cm LEDs: hot points
+      // pixel-footprint filtered point: an anti-aliased disc while it covers a pixel, then a one-pixel tent carrying the
+      // disc's energy (the peak survives, so a far bulb run still reads as a string of points, not a dim strip)
+      float mpp = max(fwidth(u.x), 1.0e-5), r0 = rad * 0.72;
+      float core = r0 > mpp ? clamp((r0 - d) / mpp + 0.5, 0.0, 1.0) : max(0.0, 1.0 - d / mpp) * min(1.0, 3.14159 * r0 * r0 / (mpp * mpp));
+      float cmean = 1.634 * rad * rad / (pitch * vSK.w);                       // pi (0.72 r)^2 / cell: several bulbs per pixel
       float on = 1.0;
       if (vSK.z > 0.5 && vSK.z < 1.5) on = step(0.5, mod(i + floor(uTime * 5.0), 3.0));             // chase
       if (vSK.z > 1.5) on = 0.35 + 0.65 * step(0.5, mod(i + floor(uTime * 8.0), 4.0) * 0.5);          // LED run
       float ppp = pitch / max(fwidth(u.x), 1e-5);
-      sgEm = vSCol * mix(core * on, 0.16 * (vSK.z > 0.5 ? 0.66 : 1.0), smoothstep(4.0, 1.5, ppp));
+      float unres = smoothstep(1.5, 0.75, ppp);
+      sgEm = vSCol * mix(core * on, cmean * (vSK.z > 0.5 ? 0.66 : 1.0), unres);
+      sgCore = clamp(core * 2.0, 0.0, 1.0) * on * (1.0 - unres);
     } else {                  // glyphs
       float cov;
       if (kind == 3) {        // neon tube on the outline
         float hw = vSK.y; float dc = dEm - vSK.z; float dd = hw - abs(dc);    // tube centre inset vSK.z em inside the outline
         cov = clamp(dd * emPx + 0.5, 0.0, 1.0);
-        float e = clamp(1.0 - abs(dc) / hw, 0.0, 1.0);
-        sgEm = vSCol * (0.45 + 0.75 * e);
+        float e = cos(1.5707963 * clamp(abs(dc) / hw, 0.0, 1.0)); e *= e;     // cos^2 tube: the core 3x the glass sleeve
+        sgEm = vSCol * (1.0 + 2.0 * e) / 3.0;
+        sgCore = smoothstep(0.55, 0.9, e) * (1.0 - far);
         cov = mix(cov, vSK.w * 0.35, far);
       } else {
         cov = clamp(sd * uAtlasP.z / tpp + 0.5, 0.0, 1.0);
         cov = mix(cov, vSK.w, far);
         if (kind == 2) {
           float pr = 1.0;
-          if (vSK.y > 1.5) pr = 0.5 + 0.65 * smoothstep(0.0, 0.03, dEm);           // script neon: glass tube, bright core
-          else if (vSK.y > 0.5) pr = mix(0.8, 1.06, smoothstep(0.0, 0.05, dEm));    // LED channel letter: dimmer returns at the edge
+          float res = smoothstep(10.0, 28.0, emPx);                                  // stroke profile resolved on screen
+          if (vSK.y > 1.5) {         // script neon: the stroke is the tube; cos^2 across it, core 3x the sleeve
+            float e = sin(1.5707963 * clamp(dEm / 0.028, 0.0, 1.0)); e *= e;
+            pr = mix(0.6, (1.0 + 2.0 * e) / 3.0, res); sgCore = mix(0.4, smoothstep(0.55, 0.9, e), res);
+          } else if (vSK.y > 0.5) {  // LED channel letter: modules behind an acrylic face, 1.0 at the stroke centre -> 0.45 at the edge
+            float e = smoothstep(0.0, 0.04, dEm);                                    // bold sign faces: stroke half-width 0.035-0.08 em
+            pr = mix(0.78, 0.45 + 0.55 * e, res); sgCore = mix(0.45, smoothstep(0.022, 0.038, dEm), res);
+          }
           sgEm = vSCol * pr;
         } else {              // exposed LED dots inside the letter body
           float pt = vSK.y * uAtlasP.w; vec2 f = fract(tx / pt) - 0.5;
-          float dotm = 1.0 - smoothstep(0.2, 0.33, length(f));
-          sgEm = vSCol * mix(dotm, 0.22, smoothstep(4.0, 1.5, pt / tpp));
+          float dotm = 1.0 - smoothstep(0.2, 0.33, length(f)), unres = smoothstep(4.0, 1.5, pt / tpp);
+          sgEm = vSCol * mix(dotm, 0.22, unres); sgCore = dotm * (1.0 - unres);
         }
       }
       sgA = cov;
     }
     if (uMS < 0.5) { if (sgA < 0.5) discard; sgA = 1.0; } else if (sgA < 0.02) discard;
-    diffuseColor = vec4(vSAlb, sgA); }`;
+    // contract P3-B1 (for A's white cores): the scene target's alpha is 1 + w on true-source cores (channel-letter stroke
+    // centres, neon tube axes, bulb and LED points), w in [0, 1]; 1 everywhere else. Only fully covered fragments carry it.
+    float sgOn = step(1.0e-4, max(max(vSCol.r, vSCol.g), vSCol.b));
+    diffuseColor = vec4(vSAlb, sgA + sgCore * sgOn * step(0.98, sgA)); }`;
 
 // --- LED screens: one instanced mesh; static + per-frame instance attributes ---
 const SCR_VERT_HEAD = /* glsl */`
@@ -1053,13 +1164,24 @@ export async function build(layout, ctx = {}) {
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance = sgEm * uNit;');
   };
   faceMat.customProgramCacheKey = () => 'seoul-signs-msdf-2';
-  const houseMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.2 });
-  houseMat.name = 'seoul-signs-housing';
 
   // --- tiles (80 m): faces + housings, so the city's signs frustum-cull ---
   const TILE = ctx.tileSize ?? 80; const tiles = new Map();
-  const tileOf = (p) => { const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`; let t = tiles.get(k); if (!t) { t = { key: k, faces: [], nq: 0, h: { p: [], n: [], c: [] } }; tiles.set(k, t); } return t; };
+  const tileOf = (p) => { const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`; let t = tiles.get(k); if (!t) { t = { key: k, faces: [], nq: 0, h: [] }; tiles.set(k, t); } return t; };
   for (const f of D.faces) { const t = tileOf(f.c); t.faces.push(f); t.nq += f.els.length; }
+  const colP = [];
+  const boxInto = (H, b, P) => {
+    const { c, r, n, hw, hh, hd, col } = b;
+    const Pt = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
+    const Fc = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1], n], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1], [-n[0], 0, -n[2]]],
+      [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1], [r[0], 0, r[2]]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1], [-r[0], 0, -r[2]]],
+      [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1], [0, 1, 0]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [0, -1, 0]]];
+    Fc.forEach((fc, i) => { const q = fc.slice(0, 4).map((s) => Pt(...s));
+      if (H && !(b.noFront && i === 0)) { H.push(q, col); }
+      if (P) for (const j of [0, 1, 2, 0, 2, 3]) P.push(...q[j]); });
+  };
+  // housings ride in the face meshes as unlit PANEL quads (one material, one draw per tile: phase 3 perf, was 2 per tile)
+  for (const b of D.boxes) { const t = tileOf(b.c); const n0 = t.h.length; boxInto(t.h, b, b.collide ? colP : null); t.nq += (t.h.length - n0) / 2; }
   // fill typed arrays directly (two passes: count, then write) — this runs once at load on the phone
   for (const t of tiles.values()) {
     if (!t.nq) continue;
@@ -1082,18 +1204,12 @@ export async function build(layout, ctx = {}) {
         }
       }
     }
+    for (let i = 0; i < t.h.length; i += 2) {   // housing quads: kind PANEL, no emission, albedo = the housing colour
+      const q = t.h[i], c = t.h[i + 1], a0 = Math.round(c[0] * 255), a1 = Math.round(c[1] * 255), a2 = Math.round(c[2] * 255);
+      T.idx[ii++] = v; T.idx[ii++] = v + 1; T.idx[ii++] = v + 2; T.idx[ii++] = v; T.idx[ii++] = v + 2; T.idx[ii++] = v + 3;
+      for (let j = 0; j < 4; j++, v++) { T.p.set(q[j], v * 3); T.alb[v * 4] = a0; T.alb[v * 4 + 1] = a1; T.alb[v * 4 + 2] = a2; T.alb[v * 4 + 3] = 255; T.k[v * 4] = K.PANEL; T.k[v * 4 + 1] = 1; T.k[v * 4 + 2] = 1; }
+    }
   }
-  const colP = [];
-  const boxInto = (H, b, P) => {
-    const { c, r, n, hw, hh, hd, col } = b;
-    const Pt = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
-    const Fc = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1], n], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1], [-n[0], 0, -n[2]]],
-      [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1], [r[0], 0, r[2]]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1], [-r[0], 0, -r[2]]],
-      [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1], [0, 1, 0]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [0, -1, 0]]];
-    Fc.forEach((fc, i) => { const q = fc.slice(0, 4).map((s) => Pt(...s));
-      for (const j of [0, 1, 2, 0, 2, 3]) { if (H && !(b.noFront && i === 0)) { H.p.push(...q[j]); H.n.push(...fc[4]); H.c.push(...col); } if (P) P.push(...q[j]); } });
-  };
-  for (const b of D.boxes) boxInto(tileOf(b.c).h, b, b.collide ? colP : null);
   const meshes = []; let tris = 0;
   for (const t of [...tiles.values()].sort((a, b) => (a.key < b.key ? -1 : 1))) {
     if (t.f) {
@@ -1106,17 +1222,14 @@ export async function build(layout, ctx = {}) {
       g.setAttribute('aF', new THREE.BufferAttribute(t.f.fl, 2));
       g.setIndex(new THREE.BufferAttribute(t.f.idx, 1));
       g.computeBoundingSphere(); g.computeBoundingBox();
+      // free the CPU copies once on the GPU (~45 MB of renderer memory on the phone; node never uploads, so exports keep them)
+      if (ctx.keepArrays !== true) { const free = function () { this.array = null; }; for (const at of Object.values(g.attributes)) at.onUpload(free); g.index.onUpload(free); }
       const m = new THREE.Mesh(g, faceMat); m.name = `signs-faces-${t.key}`; m.matrixAutoUpdate = false;
       m.onBeforeRender = (renderer) => { const rt = renderer.getRenderTarget(); uMS.value = rt && rt.samples > 0 ? 1 : 0; };
       group.add(m); meshes.push(m); tris += t.f.idx.length / 3;
     }
-    if (t.h.p.length) {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(t.h.p, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(t.h.n, 3));
-      g.setAttribute('color', new THREE.Float32BufferAttribute(t.h.c, 3)); g.computeBoundingSphere();
-      const m = new THREE.Mesh(g, houseMat); m.name = `signs-housing-${t.key}`; m.matrixAutoUpdate = false; group.add(m); meshes.push(m); tris += t.h.p.length / 9;
-    }
   }
+  tiles.clear();   // the closures below keep this scope alive: drop the staging arrays (the meshes own their attributes)
   // collider triangles for the integrator (blades, boxes, stands, cabinets): not added to any collider here
   const collider = new THREE.BufferGeometry(); collider.setAttribute('position', new THREE.Float32BufferAttribute(colP, 3));
 
@@ -1148,10 +1261,10 @@ export async function build(layout, ctx = {}) {
   if (D.scrollers.length) {
     const p = [], uv = [], aS = [], aC = [];
     for (const s of D.scrollers) {
-      const rr = cross(UP, s.n), c = s.c, k = s.nits / Math.max(0.05, lum(s.rgb));
+      const rr = cross(UP, s.n), c = s.c, f = filt(s.rgb), k = s.nits;   // filter model: white-equivalent dot nits
       const P = [add3(add3(c, rr, -s.w / 2), UP, -s.h / 2), add3(add3(c, rr, s.w / 2), UP, -s.h / 2), add3(add3(c, rr, s.w / 2), UP, s.h / 2), add3(add3(c, rr, -s.w / 2), UP, s.h / 2)];
       const U = [[0, 0], [1, 0], [1, 1], [0, 1]];
-      for (const i of [0, 1, 2, 0, 2, 3]) { p.push(...P[i]); uv.push(...U[i]); aS.push(s.row, s.speed, s.cols, s.phase); aC.push(s.rgb[0] * k, s.rgb[1] * k, s.rgb[2] * k); }
+      for (const i of [0, 1, 2, 0, 2, 3]) { p.push(...P[i]); uv.push(...U[i]); aS.push(s.row, s.speed, s.cols, s.phase); aC.push(f[0] * k, f[1] * k, f[2] * k); }
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
@@ -1219,7 +1332,8 @@ export async function build(layout, ctx = {}) {
     buildMs: Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0) };
   update(0);
   return {
-    group, emitters, update, specs: D.specs, screens: S, stats, atlas, collider, data: D,
+    group, emitters, update, specs: D.specs, screens: S, stats, atlas, collider,
+    get data() { return buildData(layout, ctx); },   // rebuilt on demand: the ~100k face elements don't stay resident
     setNitScale(k) { nit.value = k; }, get nitScale() { return nit.value; },
     setMoire(k) { scrU.uMoire.value = k; },
     get fontsReady() { return fontsReady; }, repaint: paintText,

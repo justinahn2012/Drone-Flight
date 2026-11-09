@@ -3,7 +3,8 @@
 import fs from 'node:fs';
 const DIR = process.env.DIR || new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const M = await import(DIR + '/seoul-signs.js');
-const { build, buildData, exportData, generateSigns, signStats, designFace, programMean, COLOR_CATS, NITS, K, lum } = M;
+const { build, buildData, exportData, generateSigns, signStats, designFace, programMean, COLOR_CATS, NITS, K, lum, filt, sideFaces } = M;
+const mx = (c) => Math.max(c[0], c[1], c[2]);
 const cand = [process.argv[2], DIR + '/seoul/layout.json', DIR + '/seoul/layout.provisional.json'].filter(Boolean);
 const lp = cand.find((p) => fs.existsSync(p)); if (!lp) { console.log('no layout; skip'); process.exit(0); }
 const layout = JSON.parse(fs.readFileSync(lp, 'utf8'));
@@ -22,7 +23,8 @@ for (const [k, push] of [['census', 0], ['alley', 0.4], ['hero', 1], ['default',
   console.log(k.padEnd(8), 'lit', st.litShare, 'neon', st.neonShare, COLOR_CATS.map((c) => `${c} ${(st.colourShare[c] * 100).toFixed(0)}%`).join(' '));
 }
 ok(out.census.litShare > 0.6 && out.census.litShare < 0.85, `lit share ${out.census.litShare} in 0.6..0.85 (T5: 20-30 % unlit)`);
-ok(out.hero.colourShare.pink + out.hero.colourShare.cyan + out.hero.colourShare.violet > 0.3, 'push 1 raises magenta+cyan+violet > 30 %');
+{ const h = out.hero.colourShare, c = out.census.colourShare, acc = (x) => x.pink + x.cyan + x.violet;
+  ok(h.red + h.ygo >= 0.33 && acc(h) <= 0.2 && acc(h) > acc(c), `colour #1: push 1 is warm-heavy (red+ygo ${pct(h.red + h.ygo)}) with accents (pink+cyan+violet ${pct(acc(h))}, census ${pct(acc(c))})`); }
 ok(out.census.colourShare.white > 0.3, 'census keeps white majority-ish');
 ok(M.PUSH_BY_KIND.club === 0.6 && M.PUSH_BY_KIND.walking === 0.6 && M.PUSH_BY_KIND.main === 0.4, 'colour #2: neonPush club/walking 0.6, main 0.4');
 
@@ -31,7 +33,19 @@ const S = a.specs, lots = layout.lots || [];
 const fasc = S.filter((s) => s.geo.bay); const wr = fasc.map((s) => s.geo.w / s.geo.bay); const wrOk = wr.filter((x) => x <= 0.86).length / wr.length;
 ok(wrOk > 0.97 && fasc.length > 400, `${fasc.length} ground shop fascias, width <= 0.85 of the bay on ${pct(wrOk)}`);
 const bays = fasc.map((s) => s.geo.bay).sort((x, y) => x - y); ok(bays[bays.length >> 1] < 9, `median shop bay ${bays[bays.length >> 1].toFixed(1)} m (Hongdae 4-8 m)`);
-ok(!S.some((s) => (s.type === 'blade' || s.type === 'fascia') && s.floor >= 7), 'no blades or boxes above 7F');
+const mainTower = new Set(lots.filter((l) => (layout.streets.find((x) => x.id === l.street) || {}).kind === 'main' && l.floors >= 8).map((l) => l.id));
+ok(!S.some((s) => (s.type === 'blade' || s.type === 'fascia') && (s.floor >= 8 || (s.floor >= 7 && !mainTower.has(s.lot)))), 'no blades or boxes above 7F (8F on main-road towers)');
+ok(mainTower.size > 5 && [...mainTower].every((id) => S.some((s) => s.lot === id && s.type === 'roof' && s.lit)) && [...mainTower].every((id) => S.some((s) => s.lot === id && s.floor === 7 && (s.type === 'fascia' || s.type === 'channel' || s.type === 'blade'))),
+  `art #1: ${mainTower.size} main-road towers carry floor boxes to 8F and a lit roof crown`);
+{ // art #1: street-facing side walls of corner lots are signed (blades on every corner lot)
+  const SF = sideFaces(layout); const corner = lots.filter((l) => SF.has(l.id) && l.floors >= 2);
+  const signed = corner.filter((l) => S.some((s) => s.lot === l.id && s.frame.side && s.type === 'blade')).length;
+  const side = S.filter((s) => s.frame.side).length;
+  ok(corner.length > 50 && signed === corner.length && side > 600, `side walls: blades on ${signed}/${corner.length} corner lots, ${side} side-wall signs`);
+  const ten = new Map(); for (const s of S) if (s.floor >= 1 && s.floor <= 4 && s.lit && !s.frame.side && s.use !== 'motel' && s.use !== 'hotel') { const k = s.lot + '/' + s.floor; const v = ten.get(k) || 0; ten.set(k, v || +(s.type === 'fascia' || s.type === 'channel')); }
+  const box = [...ten.values()].filter(Boolean).length / Math.max(1, ten.size); ok(box >= 0.75, `floor box on ${pct(box)} of lit 2F-5F tenants (80 %)`);
+  const leg = S.filter((s) => s.lit && s.type !== 'banner' && s.style !== 'scroller'); const hg = leg.filter((s) => !/[A-Z]/.test(s.name.main + (s.name.sub || ''))).length / leg.length;
+  ok(hg >= 0.75, `hangul-only names on ${pct(hg)} of lit faces (>= 75 %)`); }
 const rb = lots.filter((l) => l.use === 'restaurant' || l.use === 'bar'); const rbCh = rb.filter((l) => S.some((s) => s.id === `${l.id}:channel0`)).length / Math.max(1, rb.length);
 ok(rbCh > 0.35 && rb.length > 20, `channel letters on ${pct(rbCh)} of restaurant/bar ground floors (target 45 %)`);
 const tall = lots.filter((l) => (l.floors | 0) >= 3 && l.use !== 'motel' && l.use !== 'hotel');
@@ -51,21 +65,27 @@ const inR = (v, r) => v >= r[0] - 1e-6 && v <= r[1] + 1e-6;
 let hier = 0, hierBad = []; const ratios = [];
 for (const s of S.filter((x) => x.lit && x.type !== 'banner' && x.style !== 'scroller').slice(0, 1500)) {
   const D = designFace(s, s.geo.w, s.geo.h);
-  const glyphLum = Math.max(0, ...D.els.filter((e) => e.glyph && !e.ret).map((e) => lum(e.col)));
-  const groundLum = Math.max(0, ...D.els.filter((e) => !e.glyph && !e.bulb && e.layer === 0).map((e) => lum(e.col)));
-  const bulbLum = Math.max(0, ...D.els.filter((e) => e.bulb).map((e) => lum(e.col)));
+  // phase 3: the table is white-equivalent (the brightest channel, filter model); the hue sets the luminance
+  const glyphLum = Math.max(0, ...D.els.filter((e) => e.glyph && !e.ret).map((e) => mx(e.col)));
+  const groundLum = Math.max(0, ...D.els.filter((e) => !e.glyph && !e.bulb && e.layer === 0).map((e) => mx(e.col)));
+  const bulbLum = Math.max(0, ...D.els.filter((e) => e.bulb).map((e) => mx(e.col)));
   let good = true;
-  if (s.design === 'flex') { const k = groundLum / glyphLum; ratios.push(k); good = k >= 0.25 - 1e-6 && k <= 0.35 + 1e-6 && inR(glyphLum, [100, 220]); }
-  else if (s.design === 'blackflex') good = groundLum <= 0.35 * glyphLum && inR(glyphLum, [100, 220]);
-  else if (s.design === 'galva' || s.design === 'channel') good = groundLum === 0 && inR(glyphLum, [600, 2000]);
-  else if (s.design === 'neon') good = groundLum === 0 && inR(glyphLum, [600, 2000]);
-  else if (s.design === 'dots') good = inR(glyphLum, [600, 2000]);
-  else if (s.design === 'vinylA') good = Math.abs(glyphLum / groundLum - NITS.vinyl) < 1e-3 && inR(groundLum, [5, 25]);
-  else if (s.design === 'vinylB') good = Math.abs(groundLum / glyphLum - NITS.vinyl) < 1e-3 && inR(glyphLum, [5, 25]);
-  if (bulbLum && !inR(bulbLum, [600, 2000])) good = false;
+  if (s.design === 'flex') { const k = groundLum / glyphLum; ratios.push(k); good = k >= 0.25 * 0.85 - 1e-6 && k <= 0.35 + 1e-6 && inR(glyphLum, [100 * 0.85, 220]); }
+  else if (s.design === 'blackflex') good = groundLum <= 0.35 * glyphLum && inR(glyphLum, [100 * 0.85, 220]);
+  else if (s.design === 'galva' || s.design === 'channel') good = groundLum === 0 && inR(glyphLum, [600 * 0.85, 2000]);
+  else if (s.design === 'neon') good = groundLum === 0 && inR(glyphLum, [600 * 0.85, 2000]);
+  else if (s.design === 'dots') good = inR(glyphLum, [600 * 0.85, 2000]);
+  else if (s.design === 'vinylA') good = inR(glyphLum / groundLum, [NITS.vinyl * 0.85 - 1e-3, NITS.vinyl / 0.85 + 1e-3]) && inR(groundLum, [5, 25]);
+  else if (s.design === 'vinylB') good = inR(groundLum / glyphLum, [NITS.vinyl * 0.85 - 1e-3, NITS.vinyl / 0.85 + 1e-3]) && inR(glyphLum, [5, 25]);
+  if (bulbLum && !inR(bulbLum, [1800 * 0.85, 2000])) good = false;
   if (good) hier++; else if (hierBad.length < 4) hierBad.push(`${s.id} ${s.design} g${glyphLum.toFixed(0)} b${groundLum.toFixed(0)}`);
 }
 ok(hierBad.length === 0, `luminance hierarchy (letters 600-2000 / box letters 100-220, ground 25-35 %, vinyl x0.3, bulbs 600-2000): ${hier} ok ${hierBad.join('; ')}`);
+{ // lighting #1 / colour #1: filter model (blue at 1000 white-equivalent has luminance ~120-141, not 1000) and a neutral-warm budget
+  const blue = filt([0.013, 0.093, 1.0]); ok(Math.abs(mx(blue) - 0.85) < 0.01 && lum(blue) < 0.14, `filter model: blue luminance ${lum(blue).toFixed(3)} of its white-equivalent`);
+  const DD = buildData(layout, { seed: 11 }); const Bg = [0, 0, 0];
+  for (const e of DD.emitters) { if (e.screenKind) continue; const k = e.nits * e.w * e.h / (lum(e.rgb) || 1); for (let i = 0; i < 3; i++) Bg[i] += e.rgb[i] * k; }
+  const rg = Bg[0] / Bg[1], bg = Bg[2] / Bg[1]; ok(rg >= 1.1 && rg <= 1.6 && bg >= 0.7 && bg <= 1.05, `sign light budget neutral-warm: R/G ${rg.toFixed(2)}, B/G ${bg.toFixed(2)} (phase 2: 2.72, 2.57)`); }
 ok(ratios.length > 50, `flex grounds at ${ratios.length ? Math.min(...ratios).toFixed(2) : '-'}-${ratios.length ? Math.max(...ratios).toFixed(2) : '-'} of their letters`);
 
 // --- screens: 180-350 nits, content mean ~0.3 of peak (never a white plate) ---
