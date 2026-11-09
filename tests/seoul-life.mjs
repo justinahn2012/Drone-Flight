@@ -16,7 +16,7 @@ b.advanceTo(10); b.advanceTo(90); ok(b.hash() === ha[ha.length - 1], 'rewind + r
 const c = new LifeSim(layout, { seed: 8 }); c.advanceTo(90); ok(c.hash() !== ha[ha.length - 1], 'a different seed differs');
 // overlaps + NaN
 let nan = 0, overlap = 0;
-for (const ln of a.traffic.lanes) { const vs = ln.veh.filter((v) => !v.hidden).sort((p, q) => q.s - p.s); for (let i = 1; i < vs.length; i++) if (vs[i - 1].s - vs[i - 1].L - vs[i].s < -0.05) overlap++; for (const v of vs) if (!isFinite(v.s) || !isFinite(v.v)) nan++; }
+for (const ln of a.traffic.lanes) { const vs = ln.veh.filter((v) => !v.hidden).sort((p, q) => q.s - p.s); for (let i = 1; i < vs.length; i++) if (vs[i - 1].s - vs[i].s - (vs[i - 1].L + vs[i].L) / 2 < -0.05) overlap++; /* s is the centre (P3) */ for (const v of vs) if (!isFinite(v.s) || !isFinite(v.v)) nan++; }
 a.crowd.evaluate(90, { x: -36, z: -23 });
 for (let i = 0; i < a.crowd.people.length; i++) if (a.crowd.VIS[i] && (!isFinite(a.crowd.X[i]) || !isFinite(a.crowd.Z[i]))) nan++;
 ok(nan === 0, 'no NaN'); ok(overlap === 0, `no bumper overlaps (${overlap})`);
@@ -113,6 +113,18 @@ ok(mv > 5 && st > 0, `traffic flows and queues (moving ${mv}, stopped ${st})`);
   const E = [...T.entries.road, ...T.entries.shared];
   ok(T.entries.road.every((l) => l.start && l.start.boundary), `road traffic re-enters only at map-edge lanes (${T.entries.road.length})`);
   void E;
+}
+// junction conflicts (life #3, P3): vehicle boxes that interpenetrate > 0.1 m, sampled every second from 30 s to 600 s.
+// P2 had ~3.7 pairs per sample, 85 % on crossing paths in junction boxes.
+{
+  const pen = (a, b) => { const ax = [[a.h[0], a.h[1]], [a.h[1], -a.h[0]]], bx = [[b.h[0], b.h[1]], [b.h[1], -b.h[0]]], ah = [a.half[2], a.half[0]], bh = [b.half[2], b.half[0]], d = [b.c[0] - a.c[0], b.c[2] - a.c[2]]; let m = Infinity;
+    for (const n of [...ax, ...bx]) { const ra = ah[0] * Math.abs(n[0] * ax[0][0] + n[1] * ax[0][1]) + ah[1] * Math.abs(n[0] * ax[1][0] + n[1] * ax[1][1]), rb = bh[0] * Math.abs(n[0] * bx[0][0] + n[1] * bx[0][1]) + bh[1] * Math.abs(n[0] * bx[1][0] + n[1] * bx[1][1]); m = Math.min(m, ra + rb - Math.abs(d[0] * n[0] + d[1] * n[1])); }
+    return m; };
+  const J = new LifeSim(layout, { seed: 7 }), byId = new Map(J.traffic.vehicles.map((v) => [v.id, v])); let road = 0, alley = 0, S = 0;
+  for (let t = 30; t <= 600; t += 1) { const B = J.boxesAt(t).map((b) => ({ ...b })); S++;
+    for (let i = 0; i < B.length; i++) for (let j = i + 1; j < B.length; j++) { const a = B[i], b = B[j]; if (Math.abs(a.c[0] - b.c[0]) > 14 || Math.abs(a.c[2] - b.c[2]) > 14 || pen(a, b) <= 0.1) continue;
+      if (byId.get(a.id).lane.shared || byId.get(b.id).lane.shared) alley++; else road++; } }
+  ok(road <= 5 && alley <= 15, `junction boxes: ${road} road + ${alley} alley vehicle pairs interpenetrate in ${S} samples over 600 s (P2: ~3.7 per sample)`);
 }
 // hit test
 const v0 = a.traffic.vehicles.find((v) => !v.hidden && v.type !== 'scooter'), B = a.boxesAt(90); const bx = B.find((q) => q.id === v0.id);

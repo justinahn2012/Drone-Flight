@@ -288,6 +288,40 @@ export class TrafficSim {
       for (const g of by.values()) { g.lanes.sort((a, b) => a.k - b.k); if (g.turn > -0.7) ln.succ.push(g); }
     }
     for (const ln of this.lanes) for (const g of ln.succ) for (const m of g.lanes) m.pred++;
+    // junction boxes (life #3, P3): a lane's `entry` is where the other streets' carriageways begin (vehicles not holding the
+    // box stop their front bumper there); `clear` is how far into a lane its rear bumper must be before the box is free again
+    // nodes joined by a road lane under 25 m (the two carriageways of Yanghwa-ro) are one box: a vehicle crossing the median
+    // holds both, so it never waits on the link inside a box it is blocking
+    for (const n of net.nodes) n.bid = n.id;
+    const root = (n) => { while (net.nodes[n.bid] !== n) n = net.nodes[n.bid]; return n; };
+    for (const ln of this.lanes) if (!ln.shared && ln.start && ln.end && ln.len < 25) { const a = root(ln.start), b = root(ln.end); if (a !== b) b.bid = a.id; }
+    for (const n of net.nodes) n.bid = root(n).id;
+    for (const ln of this.lanes) ln.internal = !ln.shared && !!(ln.start && ln.end && ln.len < 25 && ln.start.bid === ln.end.bid);
+    const halfOf = (st) => st.carHalf ?? (st.kind === 'pedestrian' ? 0 : Math.min(st.width / 2, 3.2));
+    const otherHalf = (node, st) => node ? Math.max(0, ...node.ends.filter((e) => e.st !== st).map((e) => halfOf(e.st))) : 0;
+    for (const ln of this.lanes) {
+      ln.entry = Math.max(ln.len * 0.5, ln.len - otherHalf(ln.end, ln.street) - 0.6);
+      ln.clear = Math.min(ln.len * 0.5, Math.max(3, otherHalf(ln.start, ln.street) + 0.6));
+    }
+    this.mvGeo = new Map(); this.mvDist = new Map();
+    // a lane's waiting line also stops short of every other movement's swept path through its node (the hand-off ease and
+    // wide turns reach past the carriageway edges): front bumper 1 m before the first point any such path comes within
+    // 2.45 m (a bus and a car side by side) of its centre line in its last 25 m
+    for (const m of this.lanes) {
+      if (!m.end) continue; let e = m.entry;
+      for (const a of this.lanes) {
+        if (a === m || !a.end || a.end.bid !== m.end.bid) continue;
+        for (const g of a.succ) for (const b of g.lanes) {
+          const P = this.mvPath(a.idx, b.idx);
+          for (let i = 0; i < P.length; i += 2) {
+            const pr = m.base.project(P[i], P[i + 1]), sl = m.dir > 0 ? pr.s - m.s0 : m.s1 - pr.s;
+            if (sl > m.len - 25 && sl < m.len + 3 && Math.abs(pr.d - m.lat) < 2.8 && sl - 1 < e) e = sl - 1;
+          }
+        }
+      }
+      m.entry = Math.max(m.len * 0.5, Math.min(m.entry, e));
+    }
+    this.mvGeo.clear();
     // re-entry (life #6): road traffic re-enters only at map-edge lanes, so nothing pops in on stage. Alley scooters come
     // in at a map edge, else at an alley mouth on a road kerb (lane cut by the road band: start === null).
     const len10 = (l) => l.len > 10;
@@ -338,7 +372,8 @@ export class TrafficSim {
   }
   pickType(ln, R) {
     if (ln.bus) return 'bus';
-    if (ln.shared) return ln.street.kind === 'walking' || R.next() < 0.8 ? 'scooter' : 'car';
+    // (P3) a car only where one can pass an oncoming scooter (walkable half >= 1.9 m); else delivery scooters
+    if (ln.shared) { const r = R.next(); return ln.street.kind === 'walking' || r < 0.8 || (ln.street.walkHalf ?? 0) < 1.9 ? 'scooter' : 'car'; }
     const r = R.next();
     return r < 0.36 ? 'car' : r < 0.74 ? 'taxi' : r < 0.81 ? 'truck' : ln.curb && r < 0.91 ? 'scooter' : 'car';
   }
@@ -347,7 +382,7 @@ export class TrafficSim {
     const v0 = (ln.shared ? (type === 'scooter' ? 5.5 : 3.5) : c.v0) * (0.85 + 0.3 * R.next());
     return { id, type, lane: ln, s, ps: s, v: 0, v0, acc: 0, L: c.L, W: c.W, H: c.H, paint: pal[Math.floor(R.next() * pal.length)], weave: R.next(),
       dwell: null, dwellT: 0, hazard: false, brake: 0, jumped: true, hidden: false, nextPick: R.next() * 40, next: null, jx: 0, jz: 0, jhx: 0, jhz: 0, stepped: -1,
-      still: 0, hsrc: -1e9, lc0: 0, lcN: -1e9, lcCool: 0, horn: 0 };
+      still: 0, hsrc: -1e9, lc0: 0, lcN: -1e9, lcCool: 0, horn: 0, hold: -1, hin: -1, hout: -1, tk: -1, lcFrom: -1, next2: null };
   }
   // the lane v takes after ln: approaches weighted toward straight on; lane index kept (buses keep the bus lane)
   pickNext(ln, v, R) {
@@ -361,28 +396,40 @@ export class TrafficSim {
     if (L[k].bus) return null;
     return L[k];
   }
-  hasRoom(ln, need) { for (const o of ln.veh) if (!o.hidden && o.s - o.L < need) return false; return true; }
+  // (P3: s is a vehicle's centre; this compares rear bumpers, P2 took the whole length off)
+  hasRoom(ln, need) { for (const o of ln.veh) if (!o.hidden && o.s - o.L / 2 < need) return false; return true; }
   enter(v, ln, s, R, carry) {   // move v into ln at s (carry: keep the world position continuous)
     const old = v.lane, i = old.veh.indexOf(v); if (i >= 0) old.veh.splice(i, 1);
     if (carry) {
       const a = this.pose(v, 1, {}), ps = v.ps - old.len, vs = v.s;
-      v.lane = ln; v.s = 0; v.ps = 0; v.jx = 0; v.jz = 0; v.jhx = 0; v.jhz = 0;
-      const b = this.pose(v, 1, {});
-      v.jx = a.x - b.x; v.jz = a.z - b.z; v.jhx = a.hx - b.hx; v.jhz = a.hz - b.hz; v.s = s; v.ps = ps < s ? Math.max(-0.5, ps) : s; void vs;
+      // (P3) the ease is solved at the entry point itself, so a vehicle entering part-way in (an alley U-turn) doesn't jump
+      v.lane = ln; v.s = s; v.ps = s; v.jx = 0; v.jz = 0; v.jhx = 0; v.jhz = 0; v.lcN = -1e9;
+      const b = this.pose(v, 1, {}), f0 = s < 12 ? (1 - Math.max(0, s) / 12) ** 2 : 1;
+      v.jx = (a.x - b.x) / f0; v.jz = (a.z - b.z) / f0; v.jhx = (a.hx - b.hx) / f0; v.jhz = (a.hz - b.hz) / f0; v.ps = s > 1 ? s : ps < s ? Math.max(-0.5, ps) : s; void vs;
     } else { v.lane = ln; v.s = s; v.ps = s; v.jx = v.jz = v.jhx = v.jhz = 0; v.jumped = true; }
     ln.veh.push(v); v.dwell = null; v.dwellT = 0; v.hazard = false; v.nextPick = s + 30 + R.next() * 150;
-    v.next = this.pickNext(ln, v, R);
+    v.next = v.next2 && v.next2.n2 === ln.idx ? v.next2.lane : this.pickNext(ln, v, R); v.next2 = null;
   }
   respawn(v, R) {   // re-enter the block at an entry lane (off-stage), or wait hidden until there is room
     const E = v.type === 'bus' && this.busEntries.length ? this.busEntries : this.entries[v.lane.shared ? 'shared' : 'road'], ln = E[Math.floor(R.next() * E.length)];
     const type = this.pickType(ln, R), nv = this.spawn(v.id, type, ln, 0, R), old = v.lane;
     const i = old.veh.indexOf(v); if (i >= 0) old.veh.splice(i, 1);
     Object.assign(v, nv); v.lane = old; v.hidden = true;
-    this.enter(v, ln, 0, R, false); v.hidden = !this.hasRoom(ln, v.L + 8); v.v = v.hidden ? 0 : Math.min(v.v0, 6);
+    this.enter(v, ln, ln.shared && !ln.start ? v.L / 2 + 0.3 : 0, R, false); v.hidden = !this.hasRoom(ln, v.L + 8);   // (P3: alley mouths: rear bumper at the kerb) v.v = v.hidden ? 0 : Math.min(v.v0, 6);
   }
   step() {
     const dt = this.dt, R = this.R, t = this.n * dt, N = this.n;
     this.events.length = 0;
+    // who holds / waits for which junction box, as of the end of the last step (order-free: grants made during this step
+    // are added as they happen, in the step's fixed lane/position order)
+    const box = this.box || (this.box = new Map()); box.clear();
+    for (const v of this.vehicles) {
+      if (v.hidden) { if (v.hold >= 0) { v.hold = -1; v.tk = -1; } continue; }
+      // already in the box without a grant (placed there at reset, or pushed past the entry): it holds the box now
+      if (v.hold < 0 && v.next && v.lane.end && (v.lane.internal || v.s + v.L / 2 > v.lane.entry + 0.3)) { v.hold = v.lane.end.bid; v.hin = v.lane.idx; v.hout = v.next.idx; }
+      if (v.hold >= 0) { let b = box.get(v.hold); if (!b) box.set(v.hold, (b = { hold: [], wait: [] })); b.hold.push(v); }
+      if (v.tk >= 0 && v.hold < 0 && v.lane.end) { let b = box.get(v.lane.end.bid); if (!b) box.set(v.lane.end.bid, (b = { hold: [], wait: [] })); b.wait.push(v); }
+    }
     for (const ln of this.lanes) {
       const vs = ln.veh; vs.sort((a, b) => b.s - a.s || a.id - b.id);
       for (let i = 0; i < vs.length; i++) {
@@ -392,20 +439,42 @@ export class TrafficSim {
         if (v.hidden) { if (this.hasRoom(ln, v.L + 8)) { v.hidden = false; v.v = Math.min(v.v0, 6); v.jumped = true; } continue; }
         // leader: in this lane, else the last car of the lane we turn into
         let gap = Infinity, dv = 0, ldr = null;
-        for (let j = i - 1; j >= 0; j--) { const l = vs[j]; if (!l.hidden) { gap = l.s - l.L - v.s; dv = v.v - l.v; ldr = l; break; } }
+        // bumper to bumper (P3: s is the centre; P2's l.s - l.L - v.s let a bus run 3 m into a car ahead)
+        for (let j = i - 1; j >= 0; j--) { const l = vs[j]; if (!l.hidden) { gap = l.s - v.s - (l.L + v.L) / 2; dv = v.v - l.v; ldr = l; break; } }
+        for (const m of ln.adj) for (const l of m.veh) if (l.lcFrom === ln.idx && l.s > v.s && !l.hidden && this.lcOffset(l)) { const g = l.s - v.s - (l.L + v.L) / 2; if (g < gap) { gap = g; dv = v.v - l.v; ldr = l; } }   // still easing out of this lane
         if (gap === Infinity && v.next) {
           let last = null; for (const o of v.next.veh) if (!o.hidden && (!last || o.s < last.s)) last = o;
-          if (last) { gap = ln.len - v.s + last.s - last.L; dv = v.v - last.v; ldr = last; }
+          if (last) { gap = ln.len - v.s + last.s - (last.L + v.L) / 2; dv = v.v - last.v; ldr = last; }
         }
         // signals (held: a red or amber ahead within 150 m, so the watchdog doesn't count the wait)
         let held = false;
         for (const st of ln.stops) {
-          const d = st.s - v.s; if (d < -0.5 || d > 150) continue;
+          const d = st.s - v.s - v.L / 2; if (d < -0.5 || d > 150) continue;   // front bumper to the stop line (past it: committed)
           const ph = crossPhase(st.c, t);
           if (ph.car !== 'G') held = true;
           if (d > 120) continue;
           const stop = ph.car === 'R' || (ph.car === 'A' && d > v.v * v.v / (2 * c.b) + 1);
           if (stop && d < gap) { gap = Math.max(0.01, d); dv = v.v; }
+          if (stop && v.hold >= 0 && ln.end && v.hold === ln.end.bid && !ln.internal && d > -0.5) { v.hold = -1; v.tk = -1; }   // (P3) caught by the light: let the box go
+        }
+        // junction box (life #3, P3): within braking distance of the entry, ask for the box; until it is granted the entry is
+        // a stop line (and the wait is explained, so the watchdog leaves it alone)
+        if (v.next && ln.end && v.hold !== ln.end.bid) {
+          const d = ln.entry - (v.s + v.L / 2);
+          // ask only when nothing else (a leader, a red light) stops it short of the line (P3: a vehicle granted the box then
+          // held at a red kept the crossing axis out of it through its own green: gridlock)
+          if (d < v.v * v.v / (2 * c.b) + 3 && gap >= d - 0.5) {
+            // the minor road yields (+2 s), and so do turns and median crossings (+6 s: they wait for a gap in the straight flow)
+            if (v.tk < 0) { const g = ln.succ.find((q) => q.lanes.includes(v.next)); v.tk = N + (ln.shared || ln.street.kind !== 'main' ? 2 * LIFE.trafficHz : 0) + ((g && g.turn < 0.7) || v.next.internal ? 6 * LIFE.trafficHz : 0); }
+            if (this.grant(v, ln, ln.end, N)) { v.hold = ln.end.bid; v.hin = ln.idx; v.hout = v.next.idx; }
+            else { if (N - v.tk < 40 * LIFE.trafficHz) held = true; if (d < gap) { gap = Math.max(0.01, d); dv = v.v; } }   // a 40 s box wait is a jam: the watchdog may act
+          }
+        }
+        // through: release once the rear bumper is out of the box, or (a connector too short for that) at its next line
+        // (any lane past the box: a lane change on the way out must not keep the box held)
+        if (v.hold >= 0 && v.lane.idx !== v.hin) {
+          if (ln.internal && v.next && ln.end.bid === v.hold) { if (v.lane.idx === v.hout) { v.hin = ln.idx; v.hout = v.next.idx; } }   // a junction's internal link: the movement goes on
+          else if (!ln.start || ln.start.bid !== v.hold || v.s - v.L / 2 > ln.clear || (ln.end && v.s + v.L / 2 > ln.entry - 0.5)) { v.hold = -1; v.tk = -1; }
         }
         // dwell (taxi pick-up, bus stop); no exit: slow for the end of the lane only when it is a dead end on stage
         if (v.dwell != null) { const d = v.dwell - v.s; if (d < gap) { gap = Math.max(0.01, d); dv = v.v; } }
@@ -452,17 +521,83 @@ export class TrafficSim {
         }
         else if (v.still === Math.floor((9 + (v.id % 9)) * LIFE.trafficHz) && v.id % 2 === 0 && v.type !== 'bus' && !ln.shared) { v.horn = 25 * LIFE.trafficHz; this.events.push({ type: 'horn', id: v.id, k: v.type === 'taxi' ? 1 : 0 }); }
         // end of the lane: turn into the next one, U-turn (alley scooters at a road kerb), or leave the block
-        if (v.s > ln.len) {
+        // (P3) an alley cut short by a road's band ends at the kerb: turn there with the front bumper, not the centre, at it
+        const lend = ln.shared && !ln.end ? ln.len - v.L / 2 - 0.3 : ln.len;
+        if (v.s > lend) {
           const nx = v.next;
-          if (nx && !this.hasRoom(nx, v.s - ln.len + 1)) { v.s = ln.len; v.v = 0; }   // merge conflict: wait at the line
+          if (nx && !this.hasRoom(nx, v.s - ln.len + v.L / 2 + 0.5)) { v.s = ln.len; v.v = 0; }   // merge conflict: wait at the line
           else if (nx) { this.enter(v, nx, v.s - ln.len, R, true); i--; }
-          else if (ln.shared && !(ln.end && ln.end.boundary) && this.twin.get(ln)) { const tw = this.twin.get(ln); if (this.hasRoom(tw, 1.5)) { this.enter(v, tw, 0, R, true); v.v *= 0.3; i--; } else { v.s = ln.len; v.v = 0; } }
+          else if (ln.shared && !(ln.end && ln.end.boundary) && this.twin.get(ln)) { const tw = this.twin.get(ln); if (this.hasRoom(tw, 1.5 + v.L)) { this.enter(v, tw, v.L / 2 + 0.3, R, true); v.v *= 0.3; i--; } else { v.s = lend; v.v = 0; } }
           else { this.respawn(v, R); i--; }
         }
       }
     }
     if (this.n % 15 === 0) this.laneChanges(t, R);
     this.n++;
+  }
+  // ---- junction boxes (life #3, P3). A movement is (in-lane, out-lane). Two movements conflict when their swept paths
+  // (centre lines, the hand-off ease included) come within (Wa + Wb) / 2 + 0.4 m inside the box; the same in-lane never
+  // conflicts with itself (IDM follows). Grant: no conflicting holder, room on the out-lane for the whole vehicle (don't
+  // block the box), and no conflicting earlier ticket still waiting that could go itself (FIFO; minor roads +2 s).
+  grant(v, ln, node, N) {
+    const b = this.box.get(node.bid), nx = v.next;
+    if (!this.roomOut(v, nx)) return false;
+    if (b) {
+      for (const h of b.hold) if (h !== v && h.hold === node.bid && h.hin !== ln.idx && this.conflict(ln.idx, nx.idx, h.hin, h.hout, v.W, h.W)) return false;   // (a holder respawned this step has let go)
+      // FIFO: an earlier conflicting ticket with room ahead that could go now (or has waited 15 s: the box drains for it) goes first
+      for (const w of b.wait) if (w !== v && w.tk < v.tk && w.lane !== ln && w.next && w.lane.end === node && this.conflict(ln.idx, nx.idx, w.lane.idx, w.next.idx, v.W, w.W) && this.roomOut(w, w.next)
+        && (N - w.tk > 15 * LIFE.trafficHz || !b.hold.some((h) => h !== w && h.hold === node.bid && h.hin !== w.lane.idx && this.conflict(w.lane.idx, w.next.idx, h.hin, h.hout, w.W, h.W)))) return false;
+    } else this.box.set(node.bid, { hold: [], wait: [] });
+    // and its swept path must clear anyone queued at another entry line of this node (the hand-off ease reaches past the box)
+    if (!this.pathClear(ln.idx, nx.idx, v, node)) return false;
+    this.box.get(node.bid).hold.push(v);
+    return true;
+  }
+  pathClear(a, b, v, node) {
+    const P = this.mvPath(a, b), o = this._pc || (this._pc = {});
+    const ins = node.inLanes || (node.inLanes = this.lanes.filter((m) => m.end && m.end.bid === node.bid && !m.internal));
+    for (const m of ins) {
+      if (m.idx === a || !m.veh.length) continue;
+      for (const q of m.veh) {
+        if (q === v || q.hidden || q.hold === node.bid || q.s + q.L / 2 < m.entry - 0.5) continue;   // (short of the line: clear by construction)
+        this.pose(q, 1, o); const hw = q.W / 2 + v.W / 2 + 0.25, hl = q.L / 2 + 0.4;
+        for (let i = 0; i < P.length; i += 2) { const dx = P[i] - o.x, dz = P[i + 1] - o.z, lz = dx * o.hx + dz * o.hz, lx = dx * o.hz - dz * o.hx; if (Math.abs(lx) < hw && Math.abs(lz) < hl) return false; }
+      }
+    }
+    return true;
+  }
+  // room to get the whole vehicle out of the box; into a box's internal link (across the median) only an empty link with
+  // room on the way out of it (chosen now, and kept), so nobody waits inside a box they hold
+  roomOut(v, nx) {
+    if (!this.hasRoom(nx, Math.min(nx.clear + v.L + 1, nx.entry - 0.5))) return false;
+    if (nx.internal) {
+      if (nx.veh.some((o) => !o.hidden)) return false;
+      if (!v.next2 || v.next2.n2 !== nx.idx) { const c = this.pickNext(nx, v, this.R); v.next2 = c ? { lane: c, n2: nx.idx } : null; }
+      const c = v.next2 && v.next2.lane; if (c && !this.hasRoom(c, Math.min(c.clear + v.L + 1, c.entry - 0.5))) return false;
+    }
+    return true;
+  }
+  conflict(a, b, c, d, wa, wb) {
+    if (a === c) return false;
+    const k = a < c ? `${a},${b},${c},${d}` : `${c},${d},${a},${b}`;
+    let m = this.mvDist.get(k);
+    if (m === undefined) {
+      const P = this.mvPath(a, b), Q = this.mvPath(c, d); m = Infinity;
+      for (let i = 0; i < P.length; i += 2) for (let j = 0; j < Q.length; j += 2) { const dx = P[i] - Q[j], dz = P[i + 1] - Q[j + 1], e = dx * dx + dz * dz; if (e < m) m = e; }
+      m = Math.sqrt(m); this.mvDist.set(k, m);
+    }
+    return m < (wa + wb) / 2 + 0.4;
+  }
+  mvPath(a, b) {   // centre-line samples [x, z, ...] of the movement lane a -> lane b, from 2 m before a's entry to b's clear + 4 m
+    const k = a * 4096 + b; let P = this.mvGeo.get(k); if (P) return P;
+    const A = this.lanes[a], B = this.lanes[b], o = {}, at = (ln, s) => { ln.base.at(this.toBase(ln, s), o); return [o.x + o.nx * ln.lat, o.z + o.nz * ln.lat]; };
+    P = []; for (let s = Math.max(0, A.entry - 2); s < A.len; s += 0.75) P.push(...at(A, s));
+    const e = at(A, A.len), b0 = at(B, 0), jx = e[0] - b0[0], jz = e[1] - b0[1];
+    for (let s = 0; s <= (B.internal ? B.len : Math.min(B.len, B.clear + 4)); s += 0.75) { const f = s < 12 ? (1 - s / 12) ** 2 : 0, q = at(B, s); P.push(q[0] + jx * f, q[1] + jz * f); }
+    this.mvGeo.set(k, P);
+    // into a box's internal link: every way on out of it too (the grant covers the whole crossing)
+    if (B.internal) for (const g of B.succ) for (const c of g.lanes) if (!c.internal) { const Q = this.mvPath(b, c.idx); for (const x of Q) P.push(x); }
+    return P;
   }
   // IDM acceleration of class c at speed v (desired v0) behind a leader `gap` m ahead closing at dv
   idm(c, v, v0, gap, dv) {
@@ -475,8 +610,11 @@ export class TrafficSim {
   // follower brakes no harder than 3 m/s^2. Buses keep the bus lane; nobody else enters it. No changes within 25 m of a
   // stop line or the lane end, none while dwelling. Blocked vehicles (behind a dwell, a stuck head) get a lower bar.
   laneChanges(t, R) {
-    const lead = (ln, s, skip) => { let b = null; for (const o of ln.veh) if (o !== skip && !o.hidden && o.s > s && (!b || o.s < b.s)) b = o; return b; };
-    const foll = (ln, s, skip) => { let b = null; for (const o of ln.veh) if (o !== skip && !o.hidden && o.s <= s && (!b || o.s > b.s)) b = o; return b; };
+    // a vehicle still easing out of a lane (3 s) is in it too (P3: two taxis moved left a lane each in one pass and drove
+    // side by side through each other for 3 s)
+    const occ = (ln, f) => { for (const o of ln.veh) f(o); for (const m of ln.adj) for (const o of m.veh) if (o.lcFrom === ln.idx && this.lcOffset(o)) f(o); };
+    const lead = (ln, s, skip) => { let b = null; occ(ln, (o) => { if (o !== skip && !o.hidden && o.s > s && (!b || o.s < b.s)) b = o; }); return b; };
+    const foll = (ln, s, skip) => { let b = null; occ(ln, (o) => { if (o !== skip && !o.hidden && o.s <= s && (!b || o.s > b.s)) b = o; }); return b; };
     for (const ln of this.lanes) {
       if (!ln.adj.length || !ln.veh.length) continue;
       const vs = ln.veh.slice().sort((a, b) => b.s - a.s || a.id - b.id);
@@ -485,24 +623,24 @@ export class TrafficSim {
         if (v.lcCool > this.n) continue;
         if (v.s < 8 || ln.len - v.s < 25 || ln.stops.some((st) => st.s - v.s > -2 && st.s - v.s < 25)) continue;
         const c = VEH[v.type], L0 = lead(ln, v.s, v);
-        const gap0 = L0 ? L0.s - L0.L - v.s : Infinity, blocked = L0 && (L0.dwell != null || L0.still > 3 * LIFE.trafficHz) && gap0 < 30;
+        const gap0 = L0 ? L0.s - v.s - (L0.L + v.L) / 2 : Infinity, blocked = L0 && (L0.dwell != null || L0.still > 3 * LIFE.trafficHz) && gap0 < 30;
         const a0 = this.idm(c, v.v, v.v0, gap0, L0 ? v.v - L0.v : 0);
         let best = null, bestG = blocked ? 0.05 : 0.3;
         for (const m of ln.adj) {
           if (m.bus || m.s1 - m.s0 < ln.len - 1) continue;
           const Ln = lead(m, v.s, v), Fn = foll(m, v.s, v);
-          const gapN = Ln ? Ln.s - Ln.L - v.s : Infinity, gapF = Fn ? v.s - v.L - Fn.s : Infinity;
+          const gapN = Ln ? Ln.s - v.s - (Ln.L + v.L) / 2 : Infinity, gapF = Fn ? v.s - Fn.s - (v.L + Fn.L) / 2 : Infinity;
           if (gapN < 1.5 || gapF < 1.5) continue;
           const aN = this.idm(c, v.v, v.v0, gapN, Ln ? v.v - Ln.v : 0);
           let cost = 0;
-          if (Fn) { const cf = VEH[Fn.type], aF = this.idm(cf, Fn.v, Fn.v0, gapF, Fn.v - v.v); if (aF < -3) continue; cost = Math.max(0, this.idm(cf, Fn.v, Fn.v0, Ln ? Ln.s - Ln.L - Fn.s : Infinity, Ln ? Fn.v - Ln.v : 0) - aF); }
+          if (Fn) { const cf = VEH[Fn.type], aF = this.idm(cf, Fn.v, Fn.v0, gapF, Fn.v - v.v); if (aF < -3) continue; cost = Math.max(0, this.idm(cf, Fn.v, Fn.v0, Ln ? Ln.s - Fn.s - (Ln.L + Fn.L) / 2 : Infinity, Ln ? Fn.v - Ln.v : 0) - aF); }
           const g = aN - a0 - 0.25 * cost - (m.k > ln.k ? 0 : 0.05);   // a slight keep-right preference
           if (g > bestG) { bestG = g; best = m; }
         }
         if (!best) continue;
         // execute: same base path and s range, so only the lateral position changes (eased over 3 s in pose())
         const i = ln.veh.indexOf(v); ln.veh.splice(i, 1); best.veh.push(v);
-        v.lc0 = this.lcOffset(v) + (ln.lat - best.lat) * ln.dir * best.dir; v.lcN = this.n; v.lane = best; v.lcCool = this.n + Math.floor((6 + R.next() * 6) * LIFE.trafficHz);
+        v.lc0 = this.lcOffset(v) + (ln.lat - best.lat) * ln.dir * best.dir; v.lcN = this.n; v.lane = best; v.lcFrom = ln.idx; v.lcCool = this.n + Math.floor((6 + R.next() * 6) * LIFE.trafficHz);
         v.still = 0; v.next = this.pickNext(best, v, R);
       }
     }
@@ -514,9 +652,14 @@ export class TrafficSim {
     const ln = v.lane, s = v.jumped ? v.s : v.ps + (v.s - v.ps) * alpha, P = this._p || (this._p = {});
     ln.base.at(this.toBase(ln, s), P);
     let lat = ln.lat, dlat = 0;
-    if (ln.shared && v.type === 'scooter') {   // alley weave: a parabolic sine (integer-free arithmetic only, no Math.sin: native #3)
-      let u = s / 56.5 + v.weave; u -= Math.floor(u); u = 2 * u - 1;           // [-1, 1), one wiggle per 56.5 m
-      lat += ln.dir * 0.45 * 4 * u * (1 - Math.abs(u));
+    if (ln.shared) {   // (P3) alleys: keep to your side by your own width, so a car and an oncoming scooter pass (P2: both at
+      // +-0.56 m, through each other); a car in an alley too narrow to pass takes what room there is
+      const wh = ln.street.walkHalf ?? 1.6;
+      lat = ln.dir * Math.max(0.2, Math.min(v.W / 2 + (v.type === 'scooter' ? 0.45 : 0.15), wh - v.W / 2 - 0.1));
+      if (v.type === 'scooter') {   // alley weave: a parabolic sine (integer-free arithmetic only, no Math.sin: native #3)
+        let u = s / 56.5 + v.weave; u -= Math.floor(u); u = 2 * u - 1;           // [-1, 1), one wiggle per 56.5 m
+        lat += ln.dir * 0.25 * 4 * u * (1 - Math.abs(u));
+      }
     }
     if (v.lcN > -1e8) {   // easing out of a lane change: offset and the yaw that goes with it
       const n = this.n - 1 + (v.jumped ? 1 : alpha), o0 = this.lcOffset(v, n);
