@@ -41,7 +41,9 @@ export const DRESS_MATS = {
   // [P3-E art #4] ginkgo leaf cards: bando's V1 cluster tiles (CC0, tools/seoul-ginkgo-cards.py) as a luminance map, the
   // vertex colour = albedo / 0.5 (gold to yellow-green per card), alpha-tested, crown-mass normals on both faces
   dr_leafcard: { color: [1, 1, 1], rough: 0.78, vcol: true, map: 'seoul/dressing/ginkgo_cards.png', alphaTest: 0.42, double: true, cardNormals: true, noCol: true, albedo: [0.42, 0.31, 0.05] },
-  // [P3-E] clear vinyl (pocha fronts) and printed awning fabric
+  // [P3-E graphics #2] the AC unit's face (tools/seoul-ac-face.py: louvres, fan grille, plate, grime), tinted per unit
+  dr_ac: { color: [0.62, 0.62, 0.6], rough: 0.55, vcol: true, map: 'seoul/dressing/ac_face.png', noCol: true, albedo: [0.42, 0.42, 0.4] },
+  // [P3-E] clear vinyl (pocha fronts)
   dr_vinyl: { color: [0.32, 0.30, 0.28], rough: 0.12, transparent: true, opacity: 0.22, double: true, noCol: true, albedo: [0.05, 0.05, 0.05] },
 };
 // S1/C keys this module writes into (attribute layout: position, normal, uv)
@@ -1080,15 +1082,33 @@ export function geometry(layout, opts = {}) {
       const F = frameH([f.fa[0] + f.tx * (s0 + w / 2), 0, f.fa[1] + f.tz * (s0 + w / 2)], f.tx, f.tz);
       const zs = v3.dot(D(F, 0, 0, 1), [f.nx, 0, f.nz]) > 0 ? 1 : -1;
       const yTop = Math.min(shopTop - 0.08, fasciaY - 0.12), yLow = yTop - 0.35 - depth * 0.15, c = cols[Math.floor(R() * cols.length)];
+      // [P3-E graphics #2] striped or solid fabric, a scalloped valance with the shop's name printed on it (not lit: ~6 nits
+      // of reflected shop light), the roller box and the folding arms. Its own stream per awning (placement stays put).
+      const Ra = rng('awn2' + f.l.id), striped = Ra() < 0.55, c2 = Ra() < 0.7 ? srgb(0xe9e2cf) : c.map((v) => v * 0.45);
+      const light = (cc) => 0.2126 * cc[0] + 0.7152 * cc[1] + 0.0722 * cc[2] > 0.3;
+      const USE_KO = { restaurant: ['식당', '분식', '김밥', '국밥', '치킨'], cafe: ['카페', '커피', '디저트'], bar: ['호프', '포차', '이자카야'], pocha: ['포장마차', '실내포차'], conv: ['편의점'], shop: ['옷가게', '잡화', '안경'], karaoke: ['노래방', '코인노래방'], club: ['라운지'] };
+      const pool = USE_KO[f.l.use] || ['상회', '마트'], name = /[가-힣]/.test(f.l.osmName || '') && (f.l.osmName || '').length <= 9 ? f.l.osmName : pool[Math.floor(Ra() * pool.length)];
       item(() => {
-        set('dr_prop', { c });
         const a = W(F, -w / 2, yTop, zs * 0.03), b = W(F, w / 2, yTop, zs * 0.03), cc = W(F, w / 2, yLow, zs * depth), d = W(F, -w / 2, yLow, zs * depth);
         const n = v3.norm(v3.cross(v3.sub(b, a), v3.sub(d, a))), up = n[1] > 0 ? n : v3.mul(n, -1);
-        quad(a, b, cc, d, up); quad(a, d, cc, b, v3.mul(up, -1));
-        // valance + the roller box at the wall, side arms
-        boxMM(F, -w / 2, yLow - 0.22, zs * depth - 0.015, w / 2, yLow, zs * depth + 0.015);
+        const nS = striped ? Math.max(4, Math.round(w / 0.32)) : 1;
+        for (let i = 0; i < nS; i++) {
+          const t0 = i / nS, t1 = (i + 1) / nS, P = (t, o) => v3.add(o ? d : a, v3.mul(v3.sub(o ? cc : b, o ? d : a), t));
+          set('dr_prop', { c: striped && i % 2 ? c2 : c }); quad(P(t0, 0), P(t1, 0), P(t1, 1), P(t0, 1), up); quad(P(t0, 0), P(t0, 1), P(t1, 1), P(t1, 0), v3.mul(up, -1));
+        }
+        // valance (both faces) with scallops below it
+        const zv = zs * depth, yv0 = yLow - 0.17, nV = Math.max(4, Math.round(w / 0.3)), sw = w / nV, out = D(F, 0, 0, zs);
+        for (let i = 0; i < nV; i++) {
+          const x0 = -w / 2 + i * sw, x1 = x0 + sw, cv = c;
+          set('dr_prop', { c: cv }); quad(W(F, x0, yv0, zv), W(F, x1, yv0, zv), W(F, x1, yLow, zv), W(F, x0, yLow, zv), out); quad(W(F, x0, yv0, zv), W(F, x0, yLow, zv), W(F, x1, yLow, zv), W(F, x1, yv0, zv), v3.mul(out, -1));
+          const m = (x0 + x1) / 2, pts = [0, 1, 2, 3, 4].map((k) => { const th = Math.PI * k / 4; return W(F, m - Math.cos(th) * sw / 2, yv0 - Math.sin(th) * 0.075, zv); });
+          for (let k = 0; k < 4; k++) { tri(W(F, m, yv0, zv), pts[k], pts[k + 1]); tri(W(F, m, yv0, zv), pts[k + 1], pts[k]); }
+        }
+        set('dr_prop', { c: c.map((v) => v * 0.6) }); boxMM(F, -w / 2 - 0.02, yv0 - 0.005, zv - 0.012, w / 2 + 0.02, yLow + 0.01, zv + 0.012, ['py', 'ny', 'pz', 'nz']);   // hemmed ends
         set('dr_galv'); boxMM(F, -w / 2, yTop - 0.06, zs * 0.03 - 0.07, w / 2, yTop + 0.08, zs * 0.03 + 0.07);
-        for (const sx of [-1, 1]) tube([W(F, sx * (w / 2 - 0.05), yTop - 0.7, zs * 0.04), W(F, sx * (w / 2 - 0.05), yLow - 0.02, zs * (depth - 0.05))], 0.02, 4);
+        boxMM(F, -w / 2 + 0.05, yLow - 0.03, zv - zs * 0.03 - 0.02, w / 2 - 0.05, yLow + 0.01, zv - zs * 0.03 + 0.02);   // the front bar
+        for (const sx of [-1, 1]) { const el = W(F, sx * (w / 2 - 0.35), yLow + 0.12, zs * depth * 0.5); tube([W(F, sx * (w / 2 - 0.05), yTop - 0.7, zs * 0.04), el, W(F, sx * (w / 2 - 0.08), yLow - 0.02, zs * (depth - 0.05))], 0.018, 4); }
+        labels.push({ id: 'awn:' + f.l.id, kind: 'awning', pos: r3(W(F, 0, (yv0 + yLow) / 2, zv + zs * 0.004)), normal: r3(out), w: Math.min(w - 0.3, 0.16 * 1.1 * [...name].length + 0.4), h: 0.15, nits: 6, ink: light(c) ? '#2a2420' : '#f4efe4', lines: [name] });
         facts.awnings++;
       }, { margin: 0.35 });
     }
@@ -1159,15 +1179,37 @@ export function geometry(layout, opts = {}) {
   }
   lap('stairs');
   // ---- kerbside kit: scooters (clusters at restaurants / bars, ~2 per 10 m of alley), stools + crates, trash bags, cones, cabinets
+  // [P3-E graphics #2] a delivery scooter (PCX / Super Cub class) instead of boxes on hexagons: tyres and hubs, a curved leg
+  // shield, floorboard, a rounded seat, a tapered rear cowl, bars with mirrors, lamps, and on most a 배달통 (delivery box).
+  // Local x = forward (the front wheel at +0.64), y up, z = right. Same R draws as phase 2 (placement stays put).
   const scooter = (F, R) => {
     const body = [srgb(0x111111), srgb(0xe8e8e4), srgb(0xb3241f), srgb(0x5c6066), srgb(0x1d3f7a), srgb(0x2b2b2b)][Math.floor(R() * 6)];
-    set('dr_prop', { c: [0.02, 0.02, 0.02] });
+    const hasBox = R() < 0.6, boxC = hasBox ? [srgb(0xe8e8e4), srgb(0xc8261e), srgb(0xf2b705), srgb(0x161616), srgb(0x2ac1bc)][Math.floor(R() * 5)] : null;
+    const Rs = rng('scoot' + F.o[0].toFixed(2) + F.o[2].toFixed(2)), lean = 0.06 + Rs() * 0.05;            // on the side stand
+    const G = { o: F.o, x: F.x, y: v3.norm(v3.add([0, 1, 0], v3.mul(F.z, -lean))), z: v3.norm(v3.add(F.z, v3.mul([0, 1, 0], lean))) };
     const nb = ['ny'];
-    for (const x of [-0.62, 0.64]) cyl(F, [x, 0.27, 0], 'z', 0.27, 0.11, 6);
+    for (const x of [-0.6, 0.62]) { set('dr_prop', { c: [0.018, 0.018, 0.018] }); cyl(G, [x, 0.25, 0], 'z', 0.25, 0.11, 9); set('dr_galv', { col: false }); for (const sz of [-1, 1]) { const o = W(G, x, 0.25, sz * 0.058); for (let k = 0; k < 6; k++) { const a0 = k / 6 * TAU, a1 = (k + 1) / 6 * TAU; tri(o, W(G, x + Math.cos(a0) * 0.12, 0.25 + Math.sin(a0) * 0.12, sz * 0.058), W(G, x + Math.cos(a1) * 0.12, 0.25 + Math.sin(a1) * 0.12, sz * 0.058)); } } }
     set('dr_prop', { c: body });
-    boxMM(F, -0.78, 0.28, -0.2, 0.3, 0.6, 0.2, nb); boxMM(F, 0.28, 0.32, -0.21, 0.46, 1.0, 0.21, nb);
-    set('dr_prop', { c: [0.03, 0.03, 0.03] }); boxMM(F, -0.68, 0.6, -0.17, -0.06, 0.78, 0.17, nb); boxMM(F, 0.42, 1.0, -0.34, 0.5, 1.05, 0.34); boxMM(F, 0.52, 0.3, -0.03, 0.6, 1.0, 0.03, ['ny', 'py']);
-    if (R() < 0.6) { set('dr_prop', { c: [srgb(0xe8e8e4), srgb(0xc8261e), srgb(0xf2b705), srgb(0x161616)][Math.floor(R() * 4)] }); boxMM(F, -1.0, 0.78, -0.24, -0.52, 1.24, 0.24); }
+    // leg shield: three facets curving from the steering head down to the floor; the front fender over the wheel
+    { const sh = [[0.42, 1.0], [0.47, 0.72], [0.44, 0.45], [0.3, 0.3]]; for (let i = 0; i < 3; i++) { const [x0, y0] = sh[i], [x1, y1] = sh[i + 1], w0 = 0.2 + i * 0.02, w1 = 0.22 + i * 0.02;
+      quad(W(G, x0, y0, -w0), W(G, x0, y0, w0), W(G, x1, y1, w1), W(G, x1, y1, -w1), D(G, 1, 0.3, 0)); quad(W(G, x0 - 0.04, y0, -w0), W(G, x1 - 0.04, y1, -w1), W(G, x1 - 0.04, y1, w1), W(G, x0 - 0.04, y0, w0), D(G, -1, 0, 0)); } }
+    boxMM(G, 0.45, 0.47, -0.09, 0.82, 0.52, 0.09);
+    boxMM(G, -0.3, 0.28, -0.19, 0.32, 0.34, 0.19, nb);                                                 // floorboard
+    // rear cowl: tapered, elliptical (a scaled frame), and the seat on it
+    { const C = { o: W(G, -0.42, 0.56, 0), x: G.x, y: v3.mul(G.y, 0.75), z: G.z }; cyl(C, [0, 0, 0], 'x', 0.27, 0.62, 6, 0.2); }
+    set('dr_prop', { c: [0.025, 0.022, 0.02] }); { const C = { o: W(G, -0.36, 0.79, 0), x: G.x, y: v3.mul(G.y, 0.45), z: G.z }; cyl(C, [0, 0, 0], 'x', 0.17, 0.66, 6, 0.15); }
+    // steering column, bars, mirrors, headlight; tail lamp (a red reflector, off)
+    set('dr_steel', { col: false }); tube([W(G, 0.44, 0.95, 0), W(G, 0.52, 1.06, 0)], 0.035, 4); tube([W(G, 0.5, 1.06, -0.34), W(G, 0.53, 1.08, 0), W(G, 0.5, 1.06, 0.34)], 0.014, 3);
+    for (const sz of [-1, 1]) { tube([W(G, 0.5, 1.07, sz * 0.24), W(G, 0.47, 1.28, sz * 0.3)], 0.007, 3); quad(W(G, 0.465, 1.27, sz * 0.3 - 0.05), W(G, 0.465, 1.27, sz * 0.3 + 0.05), W(G, 0.465, 1.33, sz * 0.3 + 0.05), W(G, 0.465, 1.33, sz * 0.3 - 0.05), D(G, -1, 0, 0)); }
+    set('dr_prop', { c: body }); boxMM(G, 0.46, 0.98, -0.14, 0.58, 1.1, 0.14);
+    set('dr_galv', { col: false }); quad(W(G, 0.585, 0.99, -0.06), W(G, 0.585, 0.99, 0.06), W(G, 0.585, 1.07, 0.06), W(G, 0.585, 1.07, -0.06), D(G, 1, 0, 0));
+    set('dr_glow', { em: NI([1, 0.1, 0.05], 2), col: false }); quad(W(G, -0.735, 0.6, 0.08), W(G, -0.735, 0.6, -0.08), W(G, -0.735, 0.66, -0.08), W(G, -0.735, 0.66, 0.08), D(G, -1, 0, 0));
+    set('dr_steel', { col: false }); tube([W(G, -0.1, 0.32, -0.2), W(G, -0.1, 0.02, -0.38)], 0.012, 3);                 // the side stand
+    if (hasBox) {   // 배달통 on the rear rack, its lid seam a shade darker
+      set('dr_steel', { col: false }); boxMM(G, -0.95, 0.86, -0.18, -0.55, 0.88, 0.18, ['ny']);
+      set('dr_prop', { c: boxC }); boxMM(G, -1.0, 0.88, -0.24, -0.52, 1.24, 0.24);
+      set('dr_prop', { c: boxC.map((v) => v * 0.45), col: false }); boxMM(G, -1.005, 1.16, -0.245, -0.515, 1.175, 0.245);
+    }
     facts.scooters++;
   };
   {
@@ -1242,6 +1284,29 @@ export function geometry(layout, opts = {}) {
   }
 
   lap('kit');
+  // ---- [P3-E graphics #2] AC condensers: C places them (its facade rules), E draws them. Contract P3-E1: C records each unit
+  // as lotInfo.get(id).ac = [{ c: [x, y, z] centre, n: [nx, 0, nz] out of the wall, size: [w, h, d], tint, roof }] (or passes
+  // opts.acUnits) and stops drawing its box; absent, nothing is drawn here. Kit: enamel housing with a lid, the fan opening
+  // with a two-ring grille, spokes and hub, louvres, a steel bracket and strut, insulated pipes into the wall, a drain hose.
+  {
+    const units = opts.acUnits || (opts.lotInfo?.values ? [...opts.lotInfo.values()].flatMap((i) => i.ac || []) : []);
+    for (const u of units) {
+      if (!u?.c || !u?.n) continue;
+      const [w, h, d] = u.size || [0.84, 0.64, 0.34], hx = w / 2, hy = h / 2, hz = d / 2, t = u.tint || [1, 1, 1];
+      const F = frameH(u.c, u.n[2], -u.n[0]);           // local z = out of the wall
+      const enamel = [0.45 * t[0], 0.45 * t[1], 0.43 * t[2]], Ru = rng('ac' + u.c[0].toFixed(2) + u.c[2].toFixed(2));
+      set('dr_prop', { c: enamel }); box(F, 0, 0, 0, hx, hy, hz, ['pz', 'nz']);                         // housing (back to the wall)
+      set('dr_ac', { c: t.map((v) => v * 0.95), col: true }); quad(W(F, -hx, -hy, hz), W(F, hx, -hy, hz), W(F, hx, hy, hz), W(F, -hx, hy, hz), D(F, 0, 0, 1));
+      set('dr_prop', { c: enamel, col: false }); quad(W(F, hx, -hy, -hz), W(F, -hx, -hy, -hz), W(F, -hx, hy, -hz), W(F, hx, hy, -hz), D(F, 0, 0, -1));
+      if (!u.roof) {   // wall bracket: two angles to the wall, their struts
+        set('dr_steel', { col: false }); for (const sx of [-1, 1]) { const x = sx * (hx - 0.08); tube([W(F, x, -hy - 0.02, -hz - 0.2), W(F, x, -hy - 0.02, hz + 0.02)], 0.02, 3); tube([W(F, x, -hy - 0.45, -hz - 0.2), W(F, x, -hy - 0.03, hz - 0.03)], 0.012, 3); }
+      } else { set('dr_steel'); boxMM(F, -hx, -hy - 0.12, -hz, hx, -hy, hz, ['py', 'ny']); }
+      // the insulated pipes out of the side and into the wall (one bundle)
+      const side = Ru() < 0.5 ? 1 : -1;
+      set('dr_prop', { c: [0.5, 0.48, 0.42], col: false }); tube([W(F, side * hx, -0.06, -hz * 0.3), W(F, side * (hx + 0.07), -0.06, -hz * 0.3), W(F, side * (hx + 0.07), -0.04, -hz - 0.21)], 0.024, 3);
+      facts.ac = (facts.ac || 0) + 1;
+    }
+  }
   // ================================================================================================ CABLES (art #4)
   // C's spans carry 3-6 lines; real Hongdae spans carry 8-16 (power, telecom bundles, coax). Add 5-10 per span between
   // consecutive poles of a street, and a service drop to every facade on the alleys.
@@ -1467,6 +1532,8 @@ function paintLabel(g, c, fam) {
     g.fillStyle = '#ffffff'; g.textAlign = 'center'; fit(L.lines[0], h * 0.5, w * 0.9, 800); g.fillText(L.lines[0], x + w / 2, y + h * 0.36); fit(L.lines[1], h * 0.24, w * 0.9, 600); g.fillText(L.lines[1], x + w / 2, y + h * 0.78);
   } else if (L.kind === 'stage') {
     g.fillStyle = '#fff4f0'; g.textAlign = 'center'; fit(L.lines[0], h * 0.48, w * 0.92, 800); g.fillText(L.lines[0], x + w / 2, y + h * 0.36); fit(L.lines[1], h * 0.22, w * 0.92, 600); g.fillText(L.lines[1], x + w / 2, y + h * 0.78);
+  } else if (L.kind === 'awning') {                // printed on the valance: paint over transparent (the fabric is geometry)
+    g.fillStyle = L.ink || '#f4efe4'; g.textAlign = 'center'; fit(L.lines[0], h * 0.78, w * 0.94, 700); g.fillText(L.lines[0], x + w / 2, y + h * 0.54);
   } else if (L.kind === 'tent') {
     g.fillStyle = 'rgba(255,248,235,0.95)'; g.textAlign = 'center'; fit(L.lines[0], h * 0.8, w * 0.9, 800); g.fillText(L.lines[0], x + w / 2, y + h * 0.54);
   }
@@ -1479,5 +1546,6 @@ export function exportData(layout, opts = {}) {
   return { version: 1, setPieces: g.setPieces, emitters: g.emitters, holes: g.holes, cables: g.cables, labels: g.labels, lamps: g.lamps, obstacles: g.obstacles, materials: DRESS_MATS, facts: g.facts };
 }
 
-export const seoulDressing = { geometry, build, material, groundTris, exportData, DRESS_MATS, NITS };
+export const acKit = true;   // [P3-E1] C hands its AC placements to E (lotInfo .ac) when this is set
+export const seoulDressing = { geometry, build, material, groundTris, exportData, DRESS_MATS, NITS, acKit };
 export default seoulDressing;
