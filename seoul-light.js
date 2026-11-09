@@ -1266,6 +1266,42 @@ export function attach(world, emitters = [], ctx = {}) {
   }
   update(0);
 
+  // ------------------------------------------------------------------------------------- visibility (P3 perf #2)
+  // For G1's crowd and traffic (seoul-life.js owns the culling; this is the API): the render camera's frustum, captured
+  // in scene.onBeforeRender (so a query in world.update sees the previous frame's camera: spheres are inflated by
+  // `margin`), and heightfield occlusion from the camera, memoised per 4 m cell per frame. Lookup:
+  //   const V = scene.userData.seoulLight?.visibility;   // null until attach; every method answers true before a frame
+  //   V.sphere(x, y, z, r)    in the (inflated) frustum
+  //   V.occluded(x, y, z)     a building stands between the camera and both 0.3 m and 1.8 m above (x, y, z)
+  //   V.visible(x, y, z, r)   sphere && !occluded: cull a person or a car when false
+  //   V.cam (Vector3), V.frame (count), V.stats {tests, culled, occluded}
+  const visI = { margin: ctx.visMargin ?? 1.5, frame: 0, ok: false, cam: new THREE.Vector3(), fr: new THREE.Frustum(), M: new THREE.Matrix4(),
+    memoF: new Int32Array(NC).fill(-1), memoV: new Uint8Array(NC), ys: [0, 0], sph: new THREE.Sphere(), stats: { tests: 0, culled: 0, occluded: 0 } };
+  const visibility = {
+    get cam() { return visI.cam; }, get frame() { return visI.frame; }, get ready() { return visI.ok; }, get stats() { return visI.stats; },
+    sphere(x, y, z, r = 0.5) { if (!visI.ok) return true; visI.sph.center.set(x, y, z); visI.sph.radius = r + visI.margin; return visI.fr.intersectsSphere(visI.sph); },
+    occluded(x, y, z) {
+      if (!visI.ok) return false;
+      const cx = Math.floor((x - x0) / cell), cz = Math.floor((z - z0) / cell);
+      const c = cx >= 0 && cz >= 0 && cx < gw && cz < gh ? cz * gw + cx : -1;
+      if (c >= 0 && visI.memoF[c] === visI.frame) return visI.memoV[c] === 1;
+      visI.ys[0] = y + 0.3; visI.ys[1] = y + 1.8;
+      const px = c >= 0 ? x0 + (cx + 0.5) * cell : x, pz = c >= 0 ? z0 + (cz + 0.5) * cell : z;   // the cell centre (memo)
+      const o = HF.occ(visI.cam.x, visI.cam.y, visI.cam.z, px, pz, visI.ys, 0.5, cell * 0.75) === 3;
+      if (c >= 0) { visI.memoF[c] = visI.frame; visI.memoV[c] = o ? 1 : 0; }
+      return o;
+    },
+    visible(x, y, z, r = 0.5) { const st = visI.stats; st.tests++; if (!this.sphere(x, y, z, r)) { st.culled++; return false; } if (this.occluded(x, y, z)) { st.occluded++; return false; } return true; },
+  };
+  { const prevOBR = scene.onBeforeRender;
+    scene.onBeforeRender = function (r, sc, cam, target) {
+      prevOBR?.call(this, r, sc, cam, target);
+      if (!cam?.isPerspectiveCamera) return;
+      visI.M.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse); visI.fr.setFromProjectionMatrix(visI.M);
+      visI.cam.setFromMatrixPosition(cam.matrixWorld); visI.frame++; visI.ok = true;
+      visI.stats.tests = visI.stats.culled = visI.stats.occluded = 0;
+    }; }
+
   // ------------------------------------------------------------------------------------- stats, export, dispose
   const stats = {
     emitters: all.length, static: still.length, animated: nAnim, moving: nMov, dynamicSlots: Q.Nd, grid: [gw, gh, cell], K, Kd: KD,
@@ -1299,7 +1335,7 @@ export function attach(world, emitters = [], ctx = {}) {
     return { direct: Ed / NS, volume: Ev / NS, lights: n, ...(list ? { list } : {}) };
   }
   const ctl = {
-    update, patchMaterial, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe,
+    update, patchMaterial, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
     setWet(v) { U.uCityWet.value = v; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
     dispose() {
       for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex]) t.dispose();

@@ -5,7 +5,7 @@
 // non-negative and fills interior probes; 7 splitCells keeps every triangle; 8 the real block: attach + update budget.
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { attach, splitCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY } from '../seoul-light.js';
+import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY } from '../seoul-light.js';
 
 let pass = 0, fail = 0;
 const ok = (c, msg) => { if (c) pass++; else { fail++; console.log('FAIL', msg); } };
@@ -111,8 +111,28 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(tris === g.getAttribute('position').count / 3, 'every triangle kept');
   ok(sp.vertices < sp.srcVertices * 0.75, `vertices deduped ${sp.srcVertices} -> ${sp.vertices}`);
   ok(sp.parts.length >= 16 && sp.parts.every((p) => p.geometry.boundingSphere.radius < 120), `cells (${sp.parts.length}) with tight bounds`);
+  // P3 perf #1: each cell's vertices are one contiguous range; batchCells keeps every triangle in one BatchedMesh
+  let contiguous = true; for (const p of sp.parts) for (let i = p.i0; i < p.i0 + p.tris * 3; i++) if (sp.index[i] < p.v0 || sp.index[i] >= p.v1) contiguous = false;
+  ok(contiguous, 'cell vertex ranges are contiguous');
+  const bm = batchCells(sp, new THREE.MeshBasicMaterial());
+  ok(bm.isBatchedMesh && bm.instanceCount === sp.parts.length && bm.geometry.index.count >= tris * 3, `one BatchedMesh, ${bm.instanceCount} cell instances`);
+  { const sph = new THREE.Sphere(); bm.getBoundingSphereAt(0, sph); ok(Math.abs(sph.radius - sp.parts[0].sphere.radius) < 1, 'instance bounds match the cell'); }
+  bm.dispose();
   const hf = heightField({ lots: [{ footprint: [[0, 0], [4, 0], [4, 4], [0, 4]], floors: 1, floorH: 3 }] }, -10, -10, 10, 10, 2);
   ok(hf.at(2, 2) > 3 && hf.at(-5, -5) === 0, 'heightfield raster');
+}
+// 7b P3 perf #2: the visibility API (frustum of the last rendered camera + heightfield occlusion)
+{
+  const layout = { lots: [{ id: 'B', footprint: [[-10, -30], [10, -30], [10, -20], [-10, -20]], floors: 5, floorH: 3 }], streets: [{ id: 's', points: [[0, 40], [0, -60]], width: 8, kind: 'walking' }] };
+  const w = world(), C = attach(w, [], { layout, steam: false, airlight: false, cull: false });
+  const V = C.visibility; ok(V.visible(0, 0, 100) === true, 'visible before any frame (no culling yet)');
+  const cam = new THREE.PerspectiveCamera(75, 16 / 9, 0.05, 500); cam.position.set(0, 3, 0); cam.lookAt(0, 3, -10); cam.updateMatrixWorld(true);
+  w.scene.onBeforeRender(null, w.scene, cam, null);
+  ok(V.visible(0, 0, -10), 'a person in front is drawn');
+  ok(!V.visible(0, 0, 20), 'behind the camera: culled');
+  ok(!V.visible(0, 0, -45) && V.stats.occluded === 1, 'behind the block: occluded');
+  ok(V.visible(25, 0, -45, 0.5), 'beside the block, in view: drawn');
+  C.dispose();
 }
 // 8 the real block (signs + C's emitters), when the partner modules are present
 {
