@@ -905,6 +905,9 @@ export function attach(world, emitters = [], ctx = {}) {
         bm.matrixAutoUpdate = false; bm.updateMatrix(); bm.updateMatrixWorld(true);
         freeOnUpload(bm.geometry);   // perf #4: the CPU copy goes once the GPU has it (bounds are cached)
         scene.add(bm); cull.meshes += sp.parts.length; cull.batches.push(bm);
+        // peak memory: the source mesh's arrays go now (one mesh at a time), not after every split (the builder's
+        // geo.merged holds the same geometry until buildSeoul returns). ctx.keepSource keeps them.
+        if (ctx.keepSource !== true) for (const a of [...Object.values(o.geometry.attributes), o.geometry.index]) if (a?.array) a.array = new a.array.constructor(0);
       } else {
         if (sp.parts.length) freeOnUpload(sp.parts[0].geometry);
         for (const p of sp.parts) {
