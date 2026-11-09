@@ -5,7 +5,7 @@
 // non-negative and fills interior probes; 7 splitCells keeps every triangle; 8 the real block: attach + update budget.
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { attach, splitCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams } from '../seoul-light.js';
+import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY } from '../seoul-light.js';
 
 let pass = 0, fail = 0;
 const ok = (c, msg) => { if (c) pass++; else { fail++; console.log('FAIL', msg); } };
@@ -49,7 +49,9 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   const C = attach(world(), [sign, lamp], { layout, steam: false, airlight: false, cull: false });
   const west = C.probe(-1, 0.5, 0), east = C.probe(14, 0.5, 0);
   ok(west.lights >= 1 && west.direct > 1, `lit in front of the wall: ${west.direct.toFixed(1)} lux`);
-  ok(east.lights === 0 && east.volume < 0.5, `nothing behind the block: ${east.lights} lights, volume ${east.volume.toFixed(2)} lux`);
+  // (the P3 sky is ~0.64 lux on an open up-face: the light's share behind the block must stay under 0.5 lux on top of it)
+  const skyLux = Math.PI * 0.5 * [NIGHT_SKY.zenith, NIGHT_SKY.horizon].reduce((s, c) => s + 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], 0);
+  ok(east.lights === 0 && east.volume < 0.5 + skyLux, `nothing behind the block: ${east.lights} lights, volume ${east.volume.toFixed(2)} lux (sky ${skyLux.toFixed(2)})`);
   ok(C.stats.occludedPairs > 0, 'occluded pairs counted');
   const HF = C.heightField; ok(HF.occ(-3, 3, 0, 14, 0, [0.5, 4, 60]) === 0b011, 'heightfield: blocked at 0.5 and 4 m, clear at 60 m');
   C.dispose();
@@ -109,8 +111,56 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(tris === g.getAttribute('position').count / 3, 'every triangle kept');
   ok(sp.vertices < sp.srcVertices * 0.75, `vertices deduped ${sp.srcVertices} -> ${sp.vertices}`);
   ok(sp.parts.length >= 16 && sp.parts.every((p) => p.geometry.boundingSphere.radius < 120), `cells (${sp.parts.length}) with tight bounds`);
+  // P3 perf #1: each cell's vertices are one contiguous range; batchCells keeps every triangle in one BatchedMesh
+  let contiguous = true; for (const p of sp.parts) for (let i = p.i0; i < p.i0 + p.tris * 3; i++) if (sp.index[i] < p.v0 || sp.index[i] >= p.v1) contiguous = false;
+  ok(contiguous, 'cell vertex ranges are contiguous');
+  const bm = batchCells(sp, new THREE.MeshBasicMaterial());
+  ok(bm.isBatchedMesh && bm.instanceCount === sp.parts.length && bm.geometry.index.count >= tris * 3, `one BatchedMesh, ${bm.instanceCount} cell instances`);
+  { const sph = new THREE.Sphere(); bm.getBoundingSphereAt(0, sph); ok(Math.abs(sph.radius - sp.parts[0].sphere.radius) < 1, 'instance bounds match the cell'); }
+  bm.dispose();
   const hf = heightField({ lots: [{ footprint: [[0, 0], [4, 0], [4, 4], [0, 4]], floors: 1, floorH: 3 }] }, -10, -10, 10, 10, 2);
   ok(hf.at(2, 2) > 3 && hf.at(-5, -5) === 0, 'heightfield raster');
+}
+// 7b P3 perf #2: the visibility API (frustum of the last rendered camera + heightfield occlusion)
+{
+  const layout = { lots: [{ id: 'B', footprint: [[-10, -30], [10, -30], [10, -20], [-10, -20]], floors: 5, floorH: 3 }], streets: [{ id: 's', points: [[0, 40], [0, -60]], width: 8, kind: 'walking' }] };
+  const w = world(), C = attach(w, [], { layout, steam: false, airlight: false, cull: false });
+  const V = C.visibility; ok(V.visible(0, 0, 100) === true, 'visible before any frame (no culling yet)');
+  const cam = new THREE.PerspectiveCamera(75, 16 / 9, 0.05, 500); cam.position.set(0, 3, 0); cam.lookAt(0, 3, -10); cam.updateMatrixWorld(true);
+  w.scene.onBeforeRender(null, w.scene, cam, null);
+  ok(V.visible(0, 0, -10), 'a person in front is drawn');
+  ok(!V.visible(0, 0, 20), 'behind the camera: culled');
+  ok(!V.visible(0, 0, -45) && V.stats.occluded === 1, 'behind the block: occluded');
+  ok(V.visible(25, 0, -45, 0.5), 'beside the block, in view: drawn');
+  C.dispose();
+}
+// 7c P3 perf #4/#6: the Seoul render-scale cap and the live phone preset
+{
+  const w = world(), C = attach(w, [{ id: 'st', pos: [10, 1.5, -5], normal: [0, 0, 1], w: 3, h: 3, nits: 80, kind: 'store' }], { layout: flat, steam: false, cull: false });
+  ok(w.qualityCap && w.qualityCap.max === 1.0 && w.qualityCap.presets.phone.msaa === 2, 'world.qualityCap: max 1.0, phone preset MSAA 2');
+  ok(C.qualityCap.apply('phone') && C.uniforms.uCityDyn.value.w === 1 && C.qualityCap.current === 'phone', 'phone preset: 4 static lights per cell, live');
+  C.update(0.1, { x: 0, y: 2, z: 0 }); ok(C.uniforms.uCityDyn.value.w === 1, 'update keeps the live K limit');
+  ok(C.qualityCap.apply('auto') && C.uniforms.uCityDyn.value.w === 0, 'auto restores K');
+  C.dispose();
+}
+// 7d P3 lighting #3: the night lightmap (seoul-nightlm.js) agrees with the per-fragment model, sees the heightfield
+{
+  const layout = { lots: [{ id: 'A', footprint: [[0, 0], [20, 0], [20, 20], [0, 20]], floors: 4, floorH: 3 }, { id: 'B', footprint: [[0, 40], [20, 40], [20, 60], [0, 60]], floors: 4, floorH: 3 }],
+    streets: [{ id: 's', points: [[-20, 30], [40, 30]], width: 20, kind: 'walking' }] };
+  // a sign on A's north wall (z = 20) facing the street (+z), lighting B's south wall (z = 40) across the street
+  const sign = { id: 'sg', pos: [10, 4, 20.1], normal: [0, 0, 1], w: 3, h: 1, nits: 800, kind: 'lightbox', rgb: [1, 1, 1] };
+  const C = attach(world(), [sign], { layout, steam: false, airlight: false, cull: false, lightmap: true });
+  const st = C.stats.lightmap; ok(st.ready && st.mode === 'sync' && st.texels.facade > 1000 && st.texels.ground > 1000, `lightmap baked: ${JSON.stringify(st.texels)} in ${st.ms} ms`);
+  const lm1 = C.lightmapAt(10.2, 0.02, 26.2), p1 = C.probe(10.2, 0.02, 26.2);
+  ok(lm1 !== null && Math.abs(lm1 - (p1.direct + p1.volume)) < 0.25 * (p1.direct + p1.volume) + 0.3, `ground under the sign: lightmap ${lm1?.toFixed(1)} lux vs grid + volume ${(p1.direct + p1.volume).toFixed(1)}`);
+  ok(C.lightmapAt(10.2, 0.02, 10.2) === null && C.lightmapAt(10.2, 0.02, 19.6) !== null, 'no ground texels inside a building but its 2-texel rim (dilated)');
+  // B's south wall (z = 40, facing -z) at 4 m, across from the sign; A's own wall beside the sign (facing +z)
+  const lmW = C.lightmapAt(10, 4, 39.95, 0, 0, -1), pw = C.probe(10, 4, 39.9, 0, 0, -1);
+  ok(lmW !== null && lmW > 3 && Math.abs(lmW - (pw.direct + pw.volume)) < 0.35 * (pw.direct + pw.volume) + 0.5, `B's wall across the sign: lightmap ${lmW?.toFixed(1)} lux vs grid + volume ${(pw.direct + pw.volume).toFixed(1)}`);
+  ok(C.lightmapAt(10, 4, 39.95, 0, 0, 1) === null && C.lightmapAt(10, 30, 39.95, 0, 0, -1) !== null, 'a face against the edge normal falls back; above the roof clamps to the wall');
+  // one texture unit: the raster and edge table ride in tCityL's extra rows
+  ok(!('tCityLMR' in C.uniforms) && C.uniforms.tCityLM && C.uniforms.uCityLMR.value.y > C.uniforms.uCityLMR.value.x, 'lightmap = one sampler (lookup rows in tCityL)');
+  C.dispose();
 }
 // 8 the real block (signs + C's emitters), when the partner modules are present
 {

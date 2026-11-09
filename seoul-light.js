@@ -15,7 +15,7 @@
 //   25 m with a cutoff). Lobe integrals are normalised on load so every lamp emits exactly its declared flux.
 // - P2 visibility: a 2.5D heightfield of the lots (2 m raster) is marched from each emitter to each cell it bins into
 //   (4 heights), so light no longer leaks through buildings; occluded pairs are dropped or down-weighted.
-// - P2 night irradiance volume (lighting #1): probes at every cell centre at 0.5, 4, 12 and 30 m hold, as ambient + L1
+// - P2 night irradiance volume (lighting #1): probes at every cell centre at VOLUME.heights (P3: 8 layers, 0.5-50 m) hold, as ambient + L1
 //   direction, (a) the direct light of every emitter NOT in that cell's top-K (the grid's residual, so K can be 8),
 //   (b) one bounce off the ground (by street kind) and the canyon walls, (c) the sky dome through the heightfield horizon.
 //   Sampled with hardware trilinear filtering (RGBA16F 3D textures) as the materials' indirect diffuse, times the SSAO
@@ -30,6 +30,11 @@
 // - P2 city culling (perf #3): world meshes ('seoul:*') are vertex-deduped, indexed and split into `cullCell` m cells per
 //   material (shared buffers + draw ranges, so one upload); the collider is split the same way for fpvcam's depth pass.
 // - Night sky dome, steam (P2: 96 px cap, fade inside 1.5 m).
+// P3 (stream D): radiometry stays luminance-true on the light side: L3 `nits` is the record's mean luminance and `rgb`
+// its chromaticity (B's records carry the filter model in their nits: white-equivalent x luma(rgb/max)); brown-grey sky,
+// haze by street kind, airlight halos <= 3 m, none within 4 m of the lens, channel-capped at 2x a street lamp; the
+// volume at 8 layers; night lightmaps (seoul-nightlm.js, a Worker); one BatchedMesh per material for the city and one
+// for the collider (draw calls); a visibility API for G1's crowd culling; world.qualityCap (scale 1.0, phone preset).
 //
 // Contract for C (world-seoul.js): call attach() after the world's materials exist and before warm-up; ctx.layout (lots
 // with floors/floorH, streets) feeds the heightfield. Materials opt out with material.userData.cityLight === false; ground
@@ -38,6 +43,8 @@
 // Optional fields read here: lumens (street lamps), forward [x,0,z] (street lamp arm direction; else the nearest street),
 // beam {lumens} (headlights, default 1400 lm at 20,000 nits), nitsMax (animated: binning nominal).
 import * as THREE from 'three';
+import { sstep, lobeStreet, lobeBeam, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM } from './seoul-nightlm.js';
+export { NIGHT_LM };
 
 export const NITS = 0.1;                      // scene units per cd/m2 (night worlds)
 const LUMA = [0.2126, 0.7152, 0.0722];
@@ -54,17 +61,31 @@ export const SOURCE_TYPES = {
   store:    { nits: 80,    rgb: [0.9, 0.97, 1.0],  omni: 0.0,  range: 16 },   // shop interiors through glass 30-130
   tent:     { nits: 120,   rgb: [1.0, 0.55, 0.25], omni: 0.4,  range: 12 },   // pojangmacha tarp lit from inside
   vehicle:  { nits: 20000, rgb: [1.0, 0.95, 0.88], omni: 0.0,  range: 40 },   // head lamps (beam lobe, 25 m pool); tails ~250-1500 red
+  // P3 lighting #4 (main-road architecture; C places them, contract P3-CD): a tower's glazed podium lobby (80-150 nits,
+  // the record is the glass face) and a roof-crown flood (a wash up the top floors: the record faces the wall, tilted
+  // up, w x h = the lit band; nits = the band's mean luminance as seen, ~15-40)
+  lobby:    { nits: 110,   rgb: [1.0, 0.93, 0.82], omni: 0.1,  range: 22 },
+  crown:    { nits: 30,    rgb: [0.95, 0.97, 1.0], omni: 0.0,  range: 30 },
 };
-// Night sky (plan-L5 2F): zenith and horizon radiance in cd/m2 (Seoul light pollution, low cloud lit orange-brown).
-export const NIGHT_SKY = { zenith: [0.018, 0.020, 0.030], horizon: [0.22, 0.13, 0.07], glowH: 0.18 };
-// Air (lighting #3): haze extinction (1/m), scale height (m), scatter albedo, max opacity; airlight sprites.
-export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6 };
-export const AIRLIGHT = { count: 16, maxR: 10, minL: 0.004, gain: 1.0 };
+// Night sky (plan-L5 2F; P3 lighting #5 / color #4): zenith and horizon radiance in cd/m2. Seoul's sky at 1 am is the
+// city's own sodium/LED light scattered by a low deck: brown-grey overhead, orange-brown at the horizon, never blue.
+export const NIGHT_SKY = { zenith: [0.07, 0.06, 0.05], horizon: [0.5, 0.32, 0.18], glowH: 0.18 };
+// Air (lighting #3; P3 #5): haze extinction (1/m), scale height (m), scatter albedo, max opacity; byKind: the extinction
+// over each street kind (grill smoke and a closed canyon on the walking and club streets, open air on the main road),
+// blended over 8 m and stored per probe as a factor of `density`; airlight sprites. P3: an airlight sprite's radius is
+// capped at maxR (3 m: a halo round the lamp, not a cloud over the facade), none within nearM of the camera (fades in
+// over fadeM), and a source's brightest channel is capped at lampCap x the median street lamp's (no violet clouds).
+export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
+export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 4, fadeM: 2, lampCap: 2 };
 // Irradiance volume (lighting #1): probe heights, albedos for the one bounce.
 // windowNits: the mean emission of the facades a probe faces at each probe height (lit windows are not L3 emitters: binding
 // table 55 % lit on floors 2-4, 12-20 % above, 5-25 nits, ~25 % of a wall is glass); multi: 1 / (1 - mean albedo) for the
 // bounces past the first.
-export const VOLUME = { heights: [0.5, 4, 12, 30], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2, windowNits: [0.3, 1.6, 1.2, 0.5], windowRGB: [1.0, 0.86, 0.7], multi: 1.25 };
+// P3 graphics #4: 8 layers (0.5 ... 50 m) so the upper facades and the towers get their own probes, not a 12-30 m blend.
+export const VOLUME = { heights: [0.5, 2.5, 5, 8, 12, 18, 30, 50], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2, windowNits: [0.3, 1.2, 1.6, 1.5, 1.2, 0.8, 0.5, 0.3], windowRGB: [1.0, 0.86, 0.7], multi: 1.25 };
+// fractional layer index of a height (piecewise linear between VOLUME.heights): JS and GLSL
+export function layerOf(y, H = VOLUME.heights) { if (y <= H[0]) return 0; for (let k = 1; k < H.length; k++) if (y < H[k]) return k - 1 + (y - H[k - 1]) / (H[k] - H[k - 1]); return H.length - 1; }
+const LAYER_GLSL = (H) => `float cityLayer(float y){ ${H.slice(1).map((h, k) => `if (y < ${h.toFixed(2)}) return ${k.toFixed(1)} + (y - ${H[k].toFixed(2)}) / ${(h - H[k]).toFixed(2)};`).join(' ')} return ${(H.length - 1).toFixed(1)}; }`;
 // Headlights (lighting #4): low-beam flux per vehicle at the reference 20,000 nits; pool peak luminance (cd/m2 x I).
 export const HEADLIGHT = { lumens: 1400, refNits: 20000, poolNits: 1.5, poolLen: 25 };
 
@@ -76,6 +97,9 @@ export function emitterRadiance(e, out = [0, 0, 0], nitScale = NITS) {
   return out;
 }
 
+// P3 perf #4/#6: Seoul's render-scale cap and the phone preset (contract for main.js: applySettings caps
+// fpv.setQualityRange(q.min, min(q.max, world.qualityCap.max)) and takes msaa from the preset; perf.js &preset=phone).
+export const SEOUL_QUALITY = { auto: { max: 1.0, msaa: 4, crowd: 'auto', light: 'auto' }, phone: { max: 0.9, msaa: 2, crowd: 'low', light: 'low' } };
 const QUALITY = {
   low:  { K: 4,  Kd: 4, Nd: 32, refl: 0.2,  steam: 60,  air: 8 },
   auto: { K: 8,  Kd: 4, Nd: 64, refl: 0.25, steam: 120, air: 16 },
@@ -89,18 +113,7 @@ const LT = { lambert: 0, street: 1, beam: 2 };
 
 // ------------------------------------------------------------------------------------------------- lobes (JS == GLSL)
 // D = unit direction lamp -> point; f = the lamp's horizontal forward (street: arm toward the road; beam: heading).
-const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-function lobeStreet(dx, dy, dz, fx, fz) {   // type-II forward throw: ~uniform ground illuminance out to a per-azimuth cutoff
-  const c = -dy; if (c <= 1e-4) return 0;
-  const hl = Math.hypot(dx, dz), t = hl / c, fw = hl > 1e-5 ? (dx * fx + dz * fz) / hl : 0;
-  const tc = fw >= 0 ? 3.1 + (1.75 - 3.1) * fw : 3.1 + (0.7 - 3.1) * -fw;   // tan(cutoff): 72 deg along the road, 60 across, 35 back
-  return Math.min(1 / (c * c * c), 30) * (1 - sstep(tc * 0.8, tc * 1.15, t));
-}
-function lobeBeam(dx, dy, dz, fx, fz) {      // low beam: +-23 deg wide, peak 2 deg down, cut at +0.9 deg, long tail toward the bumper
-  const fw = dx * fx + dz * fz; if (fw <= 1e-4) return 0;
-  const th = (dx * fz - dz * fx) / fw, tv = dy / fw, dv = tv + 0.035, sv = dv > 0 ? 0.05 : 0.16;
-  return Math.exp(-(th * th) / (0.42 * 0.42)) * Math.exp(-(dv * dv) / (sv * sv)) * (1 - sstep(-0.02, 0.015, tv));
-}
+// lobes: one JS copy in seoul-nightlm.js (pure, Worker-safe); the GLSL mirror is CITY_HEAD's cityStreet / cityBeam
 // integral of a lobe over the sphere (sr), f = +x (tests/seoul-light.mjs re-derives the constants below)
 export function lobeIntegral(fn) {
   const NT = 720, NP = 720; let s = 0;
@@ -183,7 +196,7 @@ export function heightField(layout, x0, z0, x1, z1, res = VOLUME.rasterM) {
     const nk = ys.length; for (let k = 0; k < nk; k++) { oOut[k] = 0; cOut[k] = 0; }
     for (let a = 0; a < 8; a++) {
       const ux = Math.cos(a * Math.PI / 4), uz = Math.sin(a * Math.PI / 4);
-      const mt = [0, 0, 0, 0, 0, 0], wall = [0, 0, 0, 0, 0, 0];
+      const mt = new Float32Array(nk), wall = new Uint8Array(nk);
       for (let s = res; s <= 40; s += res) {
         const h = at(x + ux * s, z + uz * s); if (h <= 0) continue;
         for (let k = 0; k < nk; k++) { const t = (h - ys[k]) / s; if (t > mt[k]) mt[k] = t; if (s <= 12 && h > ys[k]) wall[k] = 1; }
@@ -205,13 +218,19 @@ uniform highp sampler3D tCityIrrA; // volume: ambient rgb, haze fluence
 uniform highp sampler3D tCityIrrB; // volume: L1 direction / ambient luminance, sky openness
 uniform vec4 uCityGrid;            // x0, z0, 1/cell, cell
 uniform vec4 uCityDim;             // gw, gh, K/4, KD/4
-uniform vec4 uCityDyn;             // window origin cell x, z, window size, -
+uniform vec4 uCityDyn;             // window origin cell x, z, window size, live static K/4 limit (0 = all; P3 phone preset)
 uniform float uCityTime;
 uniform float uCityGain;
 uniform float uCityIrrGain;
 uniform vec4 uCityHaze;            // density (1/m), height scale (m), scatter albedo, max
 uniform vec3 uCitySkyGlow;         // haze colour with no local light (sky glow at the horizon, scene units)
 uniform sampler2D uCityAO; uniform float uCityAOOn; uniform vec2 uCityAOScale;   // fpvcam's SSAO (contract C3)
+uniform vec4 uCityLM;              // P3 night lightmap: on, ground m/texel, facade m/texel, near (m)
+uniform vec4 uCityLMG;             // ground map x0, z0, texels w, h (the raster shares x0, z0 at 1 m)
+uniform vec4 uCityLMA;             // atlas w, h (the ground map at its origin), raster w, h
+uniform vec4 uCityLMR;             // tCityL rows: edge table, raster
+uniform highp sampler2D tCityLM;
+bool cityLMOn = false;
 vec3 cityOct(vec2 e){ vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y)); if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * (step(0.0, v.xy) * 2.0 - 1.0); return normalize(v); }
 float cityStreet(vec3 D, vec3 f){ float c = -D.y; if (c <= 1e-4) return 0.0; float hl = length(D.xz), t = hl / c;
   float fw = hl > 1e-5 ? dot(D.xz, f.xz) / hl : 0.0; float tc = fw >= 0.0 ? mix(3.1, 1.75, fw) : mix(3.1, 0.7, -fw);
@@ -220,7 +239,7 @@ float cityBeam(vec3 D, vec3 f){ float fw = dot(D.xz, f.xz); if (fw <= 1e-4) retu
   float th = (D.x * f.z - D.z * f.x) / fw, tv = D.y / fw, dv = tv + 0.035, sv = dv > 0.0 ? 0.05 : 0.16;
   return exp(-(th * th) / 0.1764) * exp(-(dv * dv) / (sv * sv)) * (1.0 - smoothstep(-0.02, 0.015, tv)); }
 vec3 cityWorldPos(vec3 pv){ return transpose(mat3(viewMatrix)) * (pv - viewMatrix[3].xyz); }
-void cityOne(const in highp usampler2D tl, int idx, bool spec, vec3 wp, vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir, vec3 geometryClearcoatNormal, PhysicalMaterial material, inout ReflectedLight reflectedLight){
+void cityOne(const in highp usampler2D tl, int idx, bool spec, bool lmSkip, vec3 wp, vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir, vec3 geometryClearcoatNormal, PhysicalMaterial material, inout ReflectedLight reflectedLight){
   ivec2 b0 = ivec2((idx & ${LW - 1}) * 2, idx >> 8);
   uvec4 ra = texelFetch(tl, b0, 0), rb = texelFetch(tl, b0 + ivec2(1, 0), 0);
   vec3 P = uintBitsToFloat(ra.xyz), n = cityOct(unpackSnorm2x16(rb.x));
@@ -233,6 +252,8 @@ void cityOne(const in highp usampler2D tl, int idx, bool spec, vec3 wp, vec3 geo
   if (d2 >= br.y * br.y) return;
   float d = sqrt(d2); vec3 l = Lw / d;
   uint m = rb.w, ty = m & 3u, ci = (m >> 2u) & 16383u;
+  bool dOff = lmSkip && ci == 0u && ((m >> 16u) & 63u) == 0u;                   // P3: baked into the lightmap (diffuse)
+  if (dOff && !spec) return;
   vec3 I = ci > 0u ? texelFetch(tCityLC, ivec2(int(ci - 1u) & 255, int(ci - 1u) >> 8), 0).rgb : vec3(unpackHalf2x16(rb.y), br.x);
   float ce = -dot(l, n), omni = float(m >> 26u) / 63.0;
   float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, omni) : ty == 1u ? cityStreet(-l, n) : cityBeam(-l, n);
@@ -245,7 +266,9 @@ void cityOne(const in highp usampler2D tl, int idx, bool spec, vec3 wp, vec3 geo
   else F = 1.0 / (d2 + aa.x * 0.3183);
   vec3 E = I * (fe * q * q * fl * uCityGain * F);
   vec3 lv = normalize((viewMatrix * vec4(l, 0.0)).xyz);
-  if (spec) { IncidentLight il; il.direction = lv; il.color = E; il.visible = true; RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); }
+  if (spec) { IncidentLight il; il.direction = lv; il.color = E; il.visible = true;
+    if (dOff) { ReflectedLight rlt = ReflectedLight(vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0)); RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, rlt); reflectedLight.directSpecular += rlt.directSpecular; }
+    else RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); }
   else reflectedLight.directDiffuse += E * saturate(dot(geometryNormal, lv)) * BRDF_Lambert(material.diffuseColor);
 }
 void cityLights(vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir, vec3 geometryClearcoatNormal, PhysicalMaterial material, inout ReflectedLight reflectedLight){
@@ -253,11 +276,11 @@ void cityLights(vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir
   vec2 cg = (wp.xz - uCityGrid.xy) * uCityGrid.z;
   if (cg.x < 0.0 || cg.y < 0.0 || cg.x >= uCityDim.x || cg.y >= uCityDim.y) return;
   ivec2 ci = ivec2(cg);
-  int ks = int(uCityDim.z), kd = int(uCityDim.w), rank = 0;
-  for (int s = 0; s < 3; s++) { if (s >= ks) break;
+  int ks = int(uCityDim.z), kd = int(uCityDim.w), rank = 0, kl = uCityDyn.w > 0.5 ? int(uCityDyn.w) : ks;
+  for (int s = 0; s < 3; s++) { if (s >= kl) break;
     uvec4 ids = texelFetch(tCityG, ivec2(ci.x * ks + s, ci.y), 0);
     for (int j = 0; j < 4; j++) { uint id = ids[j]; if (id == 65535u) break;
-      cityOne(tCityL, int(id), rank < 4, wp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); rank++; }
+      cityOne(tCityL, int(id), rank < 4, cityLMOn, wp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); rank++; }
     if (ids.w == 65535u) break;
   }
   ivec2 cd = ci - ivec2(uCityDyn.xy); int dw = int(uCityDyn.z);
@@ -266,22 +289,54 @@ void cityLights(vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir
     for (int s = 0; s < 2; s++) { if (s >= kd) break;
       uvec4 ids = texelFetch(tCityGD, ivec2(cd.x * kd + s, cd.y), 0);
       for (int j = 0; j < 4; j++) { uint id = ids[j]; if (id == 65535u) break;
-        cityOne(tCityLD, int(id), rank < 2, wp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); rank++; }
+        cityOne(tCityLD, int(id), rank < 2, false, wp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); rank++; }
       if (ids.w == 65535u) break;
     }
   }
 }
-// the volume at a world point: probe layers at 0.5, 4, 12, 30 m
+// the volume at a world point: probe layers at VOLUME.heights (P3: 8)
+${LAYER_GLSL(VOLUME.heights)}
 vec3 cityVolUVW(vec3 wp){
-  float y = wp.y, ly = y < 4.0 ? (y - 0.5) / 3.5 : y < 12.0 ? 1.0 + (y - 4.0) / 8.0 : 2.0 + (y - 12.0) / 18.0;
+  float ly = max(cityLayer(wp.y), 0.0);
   vec2 g = (wp.xz - uCityGrid.xy) * uCityGrid.z / uCityDim.xy;
-  return vec3(g, (clamp(ly, 0.0, 3.0) + 0.5) * 0.25);
+  return vec3(g, (ly + 0.5) / ${VOLUME.heights.length.toFixed(1)});
 }
+float cityAOf(){ return uCityAOOn > 0.5 ? mix(1.0, texture(uCityAO, gl_FragCoord.xy * uCityAOScale).r, 0.85) : 1.0; }
 vec3 cityIrradiance(vec3 wp, vec3 nW){
   vec3 uvw = cityVolUVW(wp);
   vec4 A = texture(tCityIrrA, uvw), B = texture(tCityIrrB, uvw);
-  float ao = uCityAOOn > 0.5 ? mix(1.0, texture(uCityAO, gl_FragCoord.xy * uCityAOScale).r, 0.85) : 1.0;
-  return A.rgb * (max(0.0, 1.0 + dot(B.xyz, nW)) * uCityIrrGain * ao);
+  return A.rgb * (max(0.0, 1.0 + dot(B.xyz, nW)) * uCityIrrGain * cityAOf());
+}
+// P3 lighting #3: the night lightmap (seoul-nightlm.js). Ground: up-facing below 0.6 m; walls: a raster of the two
+// nearest exposed footprint edges, the edge whose outward normal matches. false = keep the volume.
+bool cityLightmap(vec3 wp, vec3 nW, out vec3 E){
+  E = vec3(0.0);
+  if (uCityLM.x < 0.5) return false;
+  if (nW.y > 0.7 && wp.y < 0.6) {
+    vec4 t = texture(tCityLM, (wp.xz - uCityLMG.xy) / uCityLM.y / uCityLMA.xy);
+    if (t.a < 0.99) return false;
+    E = t.rgb; return true;
+  }
+  if (abs(nW.y) > 0.35) return false;
+  ivec2 rc = ivec2(floor(wp.xz - uCityLMG.xy));
+  if (rc.x < 0 || rc.y < 0 || rc.x >= int(uCityLMA.z) || rc.y >= int(uCityLMA.w)) return false;
+  int li = rc.y * int(uCityLMA.z) + rc.x, lt = li >> 1;
+  uvec4 rq = texelFetch(tCityL, ivec2(lt & 511, int(uCityLMR.y) + (lt >> 9)), 0);
+  uvec2 ids = (li & 1) == 0 ? rq.xy : rq.zw;
+  for (int s = 0; s < 2; s++) {
+    uint id = s == 0 ? ids.x : ids.y; if (id == 0u) continue;
+    int e = int(id) - 1; ivec2 b = ivec2((e & 255) * 2, int(uCityLMR.x) + (e >> 8));
+    vec4 r0 = uintBitsToFloat(texelFetch(tCityL, b, 0)), r1 = uintBitsToFloat(texelFetch(tCityL, b + ivec2(1, 0), 0));
+    float sg = r1.z < 0.0 ? -1.0 : 1.0, len = abs(r1.z);
+    vec2 n = sg * vec2(r0.w, -r0.z);
+    if (dot(n, nW.xz) < 0.8) continue;
+    vec2 d = wp.xz - r0.xy; if (abs(dot(d, n)) > uCityLM.w) continue;
+    vec2 tc = vec2(clamp(dot(d, r0.zw), 0.0, len), clamp(wp.y, 0.0, r1.w));
+    vec4 tx = texture(tCityLM, (r1.xy + 1.0 + tc / uCityLM.z) / uCityLMA.xy);
+    if (tx.a < 0.99) return false;
+    E = tx.rgb; return true;
+  }
+  return false;
 }
 // height haze: optical depth of an exponential height fog along the view ray, in-scattering the volume's fluence
 vec3 cityHaze(vec3 col, vec3 pv){
@@ -289,8 +344,10 @@ vec3 cityHaze(vec3 col, vec3 pv){
   float dist = length(pv), H = uCityHaze.y;
   float y0 = max(cameraPosition.y, 0.0), y1 = max(wp.y, 0.0), dy = y1 - y0;
   float od = uCityHaze.x * H * dist * (abs(dy) > 1e-3 ? (exp(-y0 / H) - exp(-y1 / H)) / dy : exp(-y0 / H) / H);
+  vec3 uvm = cityVolUVW(mix(cameraPosition, wp, 0.5));
+  od *= texture(tCityIrrB, uvm).w;                                              // P3: extinction by street kind (B.w)
   float a = min(1.0 - exp(-max(od, 0.0)), uCityHaze.w);
-  vec4 A0 = texture(tCityIrrA, cityVolUVW(wp)), A1 = texture(tCityIrrA, cityVolUVW(mix(cameraPosition, wp, 0.5)));
+  vec4 A0 = texture(tCityIrrA, cityVolUVW(wp)), A1 = texture(tCityIrrA, uvm);
   vec3 tint = (A0.rgb + A1.rgb) / max(dot(A0.rgb + A1.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-6);
   vec3 ins = uCitySkyGlow + tint * (min(A0.w + A1.w, 20.0) * 0.5 * uCityHaze.z * 0.0796);   // isotropic phase 1/4pi
   return mix(col, ins, a);
@@ -346,25 +403,30 @@ export function splitCells(g, cell = 96, minTris = 12000) {
   // dedupe: compare each corner with the corners of the previous two emitted triangles
   const names = Object.keys(g.attributes), attrs = names.map((n) => g.getAttribute(n));
   const sizes = attrs.map((a) => a.itemSize), stride = sizes.reduce((s, v) => s + v, 0);
-  const vert = new Float32Array(nT * 3 * stride), arrs = attrs.map((a) => a.array), nA = attrs.length;
-  const index = new Uint32Array(nT * 3); let nV = 0;
+  const arrs = attrs.map((a) => a.array), nA = attrs.length;
+  // P3: compared in the source arrays (no nT x 3 x stride staging buffer); output keeps each attribute's array type
+  const srcOf = new Int32Array(nT * 3), index = new Uint32Array(nT * 3); let nV = 0;
+  const same = (va, vb) => { if (va === vb) return true; for (let a = 0; a < nA; a++) { const A = arrs[a], s = sizes[a], x = va * s, y = vb * s; for (let c = 0; c < s; c++) if (A[x + c] !== A[y + c]) return false; } return true; };
   const recent = new Int32Array(6).fill(-1); let rp = 0;
+  // P3: the dedupe restarts at every cell, so each cell's vertices are one contiguous range [vS, vE) (BatchedMesh parts)
+  const vS = new Int32Array(nK), vE = new Int32Array(nK); let curK = -1;
   for (let o = 0; o < nT; o++) {
     const t = order[o];
+    if (key[t] !== curK) { if (curK >= 0) vE[curK] = nV; curK = key[t]; vS[curK] = nV; recent.fill(-1); }
     for (let k = 0; k < 3; k++) {
-      const v = idx ? idx.getX(t * 3 + k) : t * 3 + k, w = nV * stride;
-      { let q = w; for (let a = 0; a < nA; a++) { const A = arrs[a], s = sizes[a], b = v * s; for (let c = 0; c < s; c++) vert[q++] = A[b + c]; } }
+      const v = idx ? idx.getX(t * 3 + k) : t * 3 + k;
       let found = -1;
-      for (let r = 0; r < 6 && found < 0; r++) { const c = recent[r]; if (c < 0) continue; const b = c * stride; let q = 0; while (q < stride && vert[b + q] === vert[w + q]) q++; if (q === stride) found = c; }
-      if (found < 0) found = nV++;
+      for (let r = 0; r < 6 && found < 0; r++) { const c = recent[r]; if (c >= 0 && same(srcOf[c], v)) found = c; }
+      if (found < 0) { found = nV++; srcOf[found] = v; }
       index[o * 3 + k] = found; recent[rp] = found; rp = (rp + 1) % 6;
     }
   }
-  const shared = {}; let off = 0;
+  if (curK >= 0) vE[curK] = nV;
+  const shared = {};
   names.forEach((n, a) => {
-    const s = sizes[a], arr = new Float32Array(nV * s);
-    for (let v = 0; v < nV; v++) for (let k = 0; k < s; k++) arr[v * s + k] = vert[v * stride + off + k];
-    shared[n] = new THREE.BufferAttribute(arr, s, attrs[a].normalized); off += s;
+    const sz = sizes[a], A = arrs[a], arr = new A.constructor(nV * sz);
+    for (let v = 0; v < nV; v++) { const b = srcOf[v] * sz, o = v * sz; for (let k = 0; k < sz; k++) arr[o + k] = A[b + k]; }
+    shared[n] = new THREE.BufferAttribute(arr, sz, attrs[a].normalized);
   });
   const ix = new THREE.BufferAttribute(nV > 65535 ? index : new Uint16Array(index), 1);
   const out = [];
@@ -377,9 +439,30 @@ export function splitCells(g, cell = 96, minTris = 12000) {
     for (let q = s * 3; q < e * 3; q++) { const v = index[q] * 3, X = p[v], Y = p[v + 1], Z = p[v + 2]; if (X < a0) a0 = X; if (X > b0) b0 = X; if (Y < a1) a1 = Y; if (Y > b1) b1 = Y; if (Z < a2) a2 = Z; if (Z > b2) b2 = Z; }
     const bb = new THREE.Box3(new THREE.Vector3(a0, a1, a2), new THREE.Vector3(b0, b1, b2));
     geo.boundingBox = bb; geo.boundingSphere = bb.getBoundingSphere(new THREE.Sphere());
-    out.push({ geometry: geo, cell: [(k % W) + x0, Math.floor(k / W) + z0], tris: e - s });
+    out.push({ geometry: geo, cell: [(k % W) + x0, Math.floor(k / W) + z0], tris: e - s, i0: s * 3, v0: vS[k], v1: vE[k], box: bb, sphere: geo.boundingSphere });
   }
-  return { parts: out, vertices: nV, srcVertices: idx ? pos.count : nT * 3, tris: nT };
+  return { parts: out, vertices: nV, srcVertices: idx ? pos.count : nT * 3, tris: nT, attributes: shared, index };
+}
+
+// P3 perf #1: one THREE.BatchedMesh per material: every cell is an instance, culled per instance and drawn with
+// WEBGL_multi_draw (one draw call per material however many cells are in view; three loops drawElements without it).
+// Cells are identity-matrix instances of their own geometry (a contiguous vertex range of splitCells' shared buffers).
+export function batchCells(sp, material) {
+  const A = sp.attributes, idx = sp.index, P = sp.parts;
+  const bm = new THREE.BatchedMesh(P.length, sp.vertices, sp.tris * 3, material);
+  const ids = [];
+  for (const p of P) {
+    const g = new THREE.BufferGeometry();
+    for (const [n, a] of Object.entries(A)) g.setAttribute(n, new THREE.BufferAttribute(a.array.subarray(p.v0 * a.itemSize, p.v1 * a.itemSize), a.itemSize, a.normalized));
+    const n = p.tris * 3, ia = (p.v1 - p.v0) > 65535 ? new Uint32Array(n) : new Uint16Array(n);
+    for (let i = 0; i < n; i++) ia[i] = idx[p.i0 + i] - p.v0;
+    g.setIndex(new THREE.BufferAttribute(ia, 1));
+    const gid = bm.addGeometry(g); ids.push(bm.addInstance(gid));
+    bm.getBoundingBoxAt(gid, new THREE.Box3()); bm.getBoundingSphereAt(gid, new THREE.Sphere());   // cached before the arrays go
+  }
+  bm.computeBoundingBox(); bm.computeBoundingSphere();
+  bm.userData.cellSpheres = P.map((p) => p.sphere); bm.userData.cellTris = P.map((p) => p.tris); bm.userData.instanceIds = ids;
+  return bm;
 }
 
 // ------------------------------------------------------------------------------------------------- build
@@ -410,6 +493,12 @@ export function attach(world, emitters = [], ctx = {}) {
   const gw = Math.min(256, Math.ceil((x1 - x0) / cell)), gh = Math.min(256, Math.ceil((z1 - z0) / cell));
   const K4 = Math.max(1, Math.min(3, Q.K / 4)), K = K4 * 4, KD4 = Math.max(1, Math.min(2, Q.Kd / 4)), KD = KD4 * 4;
   const HF = heightField(ctx.layout, x0, z0, x0 + gw * cell, z0 + gh * cell, VOLUME.rasterM);
+  // P3 night lightmap: planned here because its lookup raster and edge table ride as extra rows of the static record
+  // texture (one texture unit for the whole lightmap). node (tests, tools): off unless ctx.lightmap === true.
+  const lm = { on: (typeof window === 'undefined' ? ctx.lightmap === true : ctx.lightmap !== false) && !!ctx.layout?.lots?.length, ready: false, ms: 0, texels: null, mode: 'off', worker: null };
+  const tP0 = now(), lmPlan = lm.on ? planLM(ctx.layout, HF, { x0, z0, x1: x0 + gw * cell, z1: z0 + gh * cell }) : null, lmPlanMs = now() - tP0;
+  const LMR0 = Math.max(1, Math.ceil(Math.max(1, stat.length) / LW)), LMER = lmPlan ? Math.ceil(lmPlan.nE / 256) : 0;
+  const LMR1 = LMR0 + LMER, LMRR = lmPlan ? Math.ceil(Math.ceil(lmPlan.rw * lmPlan.rh / 2) / 512) : 0;
   const YS = VOLUME.heights, NL = YS.length;
 
   // forward direction of a street lamp: e.forward, else toward the nearest street centreline
@@ -482,8 +571,8 @@ export function attach(world, emitters = [], ctx = {}) {
     u32[k + 4] = oct(m.n[0], m.n[1], m.n[2]); u32[k + 5] = h2(m.I[0], m.I[1]); u32[k + 6] = h2(m.I[2], m.range);
     u32[k + 7] = (m.ty | (ci << 2) | (hz << 16) | (dep << 22) | (Math.min(63, Math.round(m.omni * 63)) << 26)) >>> 0;
   }
-  const recTex = (n) => {
-    const w = LW * 2, h = Math.max(1, Math.ceil(n / LW));
+  const recTex = (n, extra = 0) => {
+    const w = LW * 2, h = Math.max(1, Math.ceil(n / LW)) + extra;
     const t = new THREE.DataTexture(new Uint32Array(w * h * 4), w, h, THREE.RGBAIntegerFormat, THREE.UnsignedIntType);
     t.internalFormat = 'RGBA32UI'; t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true;
     return t;
@@ -493,7 +582,17 @@ export function attach(world, emitters = [], ctx = {}) {
     t.internalFormat = 'RGBA16UI'; t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true;
     return t;
   };
-  const tL = recTex(Math.max(1, stat.length)), tLD = recTex(Math.max(1, Q.Nd));
+  const tL = recTex(Math.max(1, stat.length), LMER + LMRR), tLD = recTex(Math.max(1, Q.Nd));
+  if (lmPlan) {   // edge table (2 texels of float bits per edge, 256 per row) and the raster (2 cells per texel: id0, id1)
+    const u = tL.image.data, f = new Float32Array(u.buffer, u.byteOffset, u.length), E = lmPlan.edges;
+    for (let e = 0; e < lmPlan.nE; e++) {
+      const o = ((LMR0 + (e >> 8)) * 512 + (e & 255) * 2) * 4, ux = E[e * 8 + 2], uz = E[e * 8 + 3], sg = E[e * 8 + 4] * uz - E[e * 8 + 5] * ux > 0 ? 1 : -1;
+      f[o] = E[e * 8]; f[o + 1] = E[e * 8 + 1]; f[o + 2] = ux; f[o + 3] = uz;
+      f[o + 4] = lmPlan.rect[e * 4]; f[o + 5] = lmPlan.rect[e * 4 + 1]; f[o + 6] = E[e * 8 + 6] * sg; f[o + 7] = E[e * 8 + 7];
+    }
+    const R = lmPlan.raster, base = LMR1 * 512 * 4;
+    for (let li = 0; li < lmPlan.rw * lmPlan.rh; li++) { const o = base + (li >> 1) * 4 + (li & 1) * 2; u[o] = R[li * 2]; u[o + 1] = R[li * 2 + 1]; }
+  }
   const tG = gridTex(gw * K4, gh), tGD = gridTex(DW * KD4, DW);
   const tLC = new THREE.DataTexture(new Float32Array(LW * Math.max(1, Math.ceil(nAnim / LW)) * 4), LW, Math.max(1, Math.ceil(nAnim / LW)), THREE.RGBAFormat, THREE.FloatType);
   tLC.minFilter = tLC.magFilter = THREE.NearestFilter; tLC.generateMipmaps = false; tLC.needsUpdate = true;
@@ -507,8 +606,9 @@ export function attach(world, emitters = [], ctx = {}) {
   const NP = NC * NL, inner = new Uint8Array(NP);
   for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) { const h = HF.at(x0 + (cx + 0.5) * cell, z0 + (cz + 0.5) * cell); for (let k = 0; k < NL; k++) if (h > YS[k]) inner[(cz * gw + cx) * NL + k] = 1; }
   const tA = new Float32Array(NP * 3), tBv = new Float32Array(NP * 3), Eg = new Float32Array(NC * 3);
-  const PROBE_H = YS;
+  const PROBE_H = YS, V4 = 1 << YS.reduce((b, h, k) => (Math.abs(h - 4) < Math.abs(YS[b] - 4) ? k : b), 0);   // the probe nearest 4 m
   // the hot loops live in their own closures (fresh JIT feedback per attach: a second visit to the level stays fast)
+  let pc = new Int32Array(1 << 18), pi = new Int32Array(1 << 18), pb = new Uint8Array(1 << 18);   // every (cell, light, occ bits) pair (lightmap bake)
   const { pairs, occl } = (function binPass() {
   let pairs = 0, occl = 0;
   for (let i = 0; i < stat.length; i++) {
@@ -525,12 +625,13 @@ export function attach(world, emitters = [], ctx = {}) {
       let s = Math.max(kAt(m, nx, 1.5, nz), kAt(m, mx, 1.5, mz), 0.5 * kAt(m, nx, Math.max(0.5, m.y - 0.5), nz));
       s *= LUMA[0] * m.I[0] + LUMA[1] * m.I[1] + LUMA[2] * m.I[2];
       if (s < E_MIN) continue;
-      pairs++;
       const c = cz * gw + cx, pin = c * NL;
       const occBits = HF.occ(m.x, m.y, m.z, mx, mz, PROBE_H);
       if (occBits) occl++;
+      if (pairs >= pc.length) { const g2 = (A) => { const B = new A.constructor(A.length * 2); B.set(A); return B; }; pc = g2(pc); pi = g2(pi); pb = g2(pb); }
+      pc[pairs] = c; pi[pairs] = i; pb[pairs] = occBits; pairs++;
       // binning visibility: the 0.5 m and 4 m probes; an interior column (facade fragments only) counts as visible
-      const vis = inner[pin] ? 1 : ((occBits & 1) ? 0 : 0.6) + ((occBits & 2) ? 0 : 0.4);
+      const vis = inner[pin] ? 1 : ((occBits & 1) ? 0 : 0.6) + ((occBits & V4) ? 0 : 0.4);
       if (vis > 0) {
         const sv = s * Math.max(vis, 0.15), o = c * K, n = kN[c];
         if (n < K) { kS[o + n] = sv; kI[o + n] = i; kV[o + n] = occBits; kN[c] = n + 1; }
@@ -578,17 +679,23 @@ export function attach(world, emitters = [], ctx = {}) {
   // bounce + sky, then fill the interior probes from their neighbours, then pack (RGBA16F 3D textures)
   const tV0 = now();
   const roadMask = new Uint8Array(NC);   // 1 = asphalt road, 2 = walking-street pavers, 0 = sidewalk
+  const hazeK = new Float32Array(NC), HK = { ...HAZE.byKind, ...(ctx.haze?.byKind || {}) }, hd0 = ctx.haze?.density ?? HAZE.density;
   for (const s of ctx.layout?.streets || []) {
-    const w = s.width || 6, P = s.points;
+    const w = s.width || 6, P = s.points, hk = (HK[s.kind] ?? hd0) / hd0;
     for (let i = 0; i + 1 < P.length; i++) {
       const [ax, az] = P[i], [bx, bz] = P[i + 1], L = Math.hypot(bx - ax, bz - az); if (L < 0.01) continue;
       for (let t = 0; t <= L; t += cell * 0.5) for (let u = -w / 2; u <= w / 2; u += cell * 0.5) {
         const x = ax + (bx - ax) * t / L - (bz - az) / L * u, z = az + (bz - az) * t / L + (bx - ax) / L * u;
         const cx = Math.floor((x - x0) / cell), cz = Math.floor((z - z0) / cell);
-        if (cx >= 0 && cz >= 0 && cx < gw && cz < gh) roadMask[cz * gw + cx] = s.kind === 'walking' ? 2 : 1;
+        if (cx >= 0 && cz >= 0 && cx < gw && cz < gh) { roadMask[cz * gw + cx] = s.kind === 'walking' ? 2 : 1; hazeK[cz * gw + cx] = Math.max(hazeK[cz * gw + cx], hk); }
       }
     }
   }
+  // haze factor per column (P3 lighting #5): the street kinds' extinction / HAZE.density, 1 off the streets, box-blurred 8 m
+  { const src = hazeK.slice(); for (let c = 0; c < NC; c++) if (!src[c]) src[c] = 1;
+    for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) { let s0 = 0, n = 0;
+      for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) { const x = cx + dx, z = cz + dz; if (x < 0 || z < 0 || x >= gw || z >= gh) continue; s0 += src[z * gw + x]; n++; }
+      hazeK[cz * gw + cx] = s0 / n; } }
   const blur = (src, r) => {   // box blur of the ground irradiance over exterior columns
     if (r <= 0) return src;
     const out = new Float32Array(NC * 3);
@@ -602,10 +709,13 @@ export function attach(world, emitters = [], ctx = {}) {
     }
     return out;
   };
-  const EgL = [blur(Eg, 0), blur(Eg, 1), blur(Eg, 2), blur(Eg, 4)]; marks.blur = +(now() - tV0).toFixed(0);
+  // the ground a probe sees widens with its height: blur radius (cells) ~ height / 2 cells, capped at 6 (P3: per layer)
+  const blurR = YS.map((h) => Math.min(6, Math.round(h / (2 * cell)))), blurs = new Map();
+  const EgL = blurR.map((r) => { if (!blurs.has(r)) blurs.set(r, blur(Eg, r)); return blurs.get(r); }); marks.blur = +(now() - tV0).toFixed(0);
   const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.zenith[j] + NIGHT_SKY.horizon[j]) * NS * Math.PI);   // pi L of the dome
   const skyLum = lumaOf(skyL);
   const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4), ok = new Uint8Array(NP);
+  const VI = new Float32Array(NP * 4);   // P3: the indirect part alone (bounce, windows, sky) + its vertical L1, for the lightmap bake
   const oo = new Float32Array(NL), cc = new Float32Array(NL);
   (function assemble() {
   for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) {
@@ -634,30 +744,33 @@ export function attach(world, emitters = [], ctx = {}) {
       VA[p * 4] = a0; VA[p * 4 + 1] = a1; VA[p * 4 + 2] = a2; VA[p * 4 + 3] = 4 * tal + oo[k] * skyLum;   // haze fluence
       // direction / ambient, clamped (|b|/a <= 2 is a single delta source)
       let bl = Math.hypot(bx, by, bz) / al; const sc = bl > 2 ? 2 / bl : 1;
-      VB[p * 4] = bx / al * sc; VB[p * 4 + 1] = by / al * sc; VB[p * 4 + 2] = bz / al * sc; VB[p * 4 + 3] = oo[k];
+      VB[p * 4] = bx / al * sc; VB[p * 4 + 1] = by / al * sc; VB[p * 4 + 2] = bz / al * sc;
+      VB[p * 4 + 3] = k < 2 ? hazeK[c] : k === 2 ? 0.5 * (hazeK[c] + 1) : 1;   // haze extinction factor (smoke stays low)
+      { const i0 = a0 - Math.max(0, rA[q]), i1 = a1 - Math.max(0, rA[q + 1]), i2 = a2 - Math.max(0, rA[q + 2]), il = Math.max(1e-7, LUMA[0] * i0 + LUMA[1] * i1 + LUMA[2] * i2);
+        VI[p * 4] = i0; VI[p * 4 + 1] = i1; VI[p * 4 + 2] = i2; VI[p * 4 + 3] = Math.max(-1, Math.min(1, (oo[k] * skyLum / 2 - mb * gl / 2) / il)); }
       ok[p] = 1;
     }
   }
   })();
   marks.assemble = +(now() - tV0).toFixed(0);
   // interior probes: average of filled 8-neighbours, a few passes (facade fragments interpolate toward them)
-  { const addP = new Int32Array(NP), addV = new Float32Array(NP * 8);
+  { const addP = new Int32Array(NP), addV = new Float32Array(NP * 12);
     for (let pass = 0; pass < 8; pass++) {
       let na = 0;
       for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) for (let k = 0; k < NL; k++) {
         const p = (cz * gw + cx) * NL + k; if (ok[p]) continue;
-        let n = 0; const o = na * 8; for (let j = 0; j < 8; j++) addV[o + j] = 0;
+        let n = 0; const o = na * 12; for (let j = 0; j < 12; j++) addV[o + j] = 0;
         for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
           const x = cx + dx, z = cz + dz; if ((!dx && !dz) || x < 0 || z < 0 || x >= gw || z >= gh) continue;
           const pq = (z * gw + x) * NL + k; if (!ok[pq]) continue;
-          for (let j = 0; j < 4; j++) { addV[o + j] += VA[pq * 4 + j]; addV[o + 4 + j] += VB[pq * 4 + j]; } n++;
+          for (let j = 0; j < 4; j++) { addV[o + j] += VA[pq * 4 + j]; addV[o + 4 + j] += VB[pq * 4 + j]; addV[o + 8 + j] += VI[pq * 4 + j]; } n++;
         }
-        if (n) { for (let j = 0; j < 8; j++) addV[o + j] /= n; addP[na++] = p; }
+        if (n) { for (let j = 0; j < 12; j++) addV[o + j] /= n; addP[na++] = p; }
       }
-      for (let i = 0; i < na; i++) { const p = addP[i], o = i * 8; for (let j = 0; j < 4; j++) { VA[p * 4 + j] = addV[o + j]; VB[p * 4 + j] = addV[o + 4 + j]; } ok[p] = 1; }
+      for (let i = 0; i < na; i++) { const p = addP[i], o = i * 12; for (let j = 0; j < 4; j++) { VA[p * 4 + j] = addV[o + j]; VB[p * 4 + j] = addV[o + 4 + j]; VI[p * 4 + j] = addV[o + 8 + j]; } ok[p] = 1; }
       if (!na) break;
     } }
-  for (let p = 0; p < NP; p++) if (!ok[p]) { VA[p * 4] = skyL[0] * 0.1; VA[p * 4 + 1] = skyL[1] * 0.1; VA[p * 4 + 2] = skyL[2] * 0.1; VB[p * 4 + 1] = 1; }
+  for (let p = 0; p < NP; p++) if (!ok[p]) { VA[p * 4] = skyL[0] * 0.1; VA[p * 4 + 1] = skyL[1] * 0.1; VA[p * 4 + 2] = skyL[2] * 0.1; VB[p * 4 + 1] = 1; VB[p * 4 + 3] = 1; }
   marks.fill = +(now() - tV0).toFixed(0);
   const vol3 = (src) => {   // [cz][cx][k] -> 3D texture (x = cx, y = cz, z = layer)
     const d = new Uint16Array(NP * 4);
@@ -671,6 +784,44 @@ export function attach(world, emitters = [], ctx = {}) {
   };
   const tIrrA = vol3(VA), tIrrB = vol3(VB);
   const volMs = now() - tV0;
+
+  // ------------------------------------------------------------------------------------- night lightmap (P3 lighting #3)
+  // seoul-nightlm.js bakes every static emitter (no K limit, heightfield-occluded) + the volume's indirect onto the
+  // ground (0.5 m) and the exposed walls (0.5 m atlas). Browser: in a module Worker, so the level opens on the volume and
+  // the lightmap fades in when it lands (~1-3 s); node / ctx.lightmapSync: in line. ctx.lightmap === false: off.
+  const half4 = (w, h, data) => { const t = new THREE.DataTexture(data || new Uint16Array(w * h * 4), w, h, THREE.RGBAFormat, THREE.HalfFloatType);
+    t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.generateMipmaps = false; t.needsUpdate = true; return t; };
+  let tLM = half4(1, 1);
+  const uLM = { value: new THREE.Vector4(0, NIGHT_LM.gres, NIGHT_LM.fres, NIGHT_LM.near) }, uLMG = { value: new THREE.Vector4() }, uLMA = { value: new THREE.Vector4(1, 1, 1, 1) }, uLMR = { value: new THREE.Vector4(LMR0, LMR1, 0, 0) };
+  if (lm.on) {
+    const plan = lmPlan;
+    const cs = new Int32Array(NC + 1); for (let q = 0; q < pairs; q++) cs[pc[q] + 1]++; for (let c = 0; c < NC; c++) cs[c + 1] += cs[c];
+    const fillc = cs.slice(0, NC), pe = new Int32Array(pairs), po = new Uint8Array(pairs);
+    for (let q = 0; q < pairs; q++) { const o = fillc[pc[q]]++; pe[o] = pi[q]; po[o] = pb[q]; }
+    const M = new Float32Array(stat.length * LM_MS);
+    metas.forEach((m, i) => packMeta(m, M, i, i >= animBase || (m.flick?.hz > 0 && m.flick?.depth > 0) ? 1 : 0));   // screens and flicker stay per fragment
+    const job = { plan: { ...plan, raster: null }, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI };
+    uLMG.value.set(plan.x0, plan.z0, plan.gw, plan.gh); uLMA.value.set(plan.atlasW, plan.atlasH, plan.rw, plan.rh);
+    lm.plan = { edges: plan.nE, atlas: [plan.atlasW, plan.atlasH], ground: [plan.gw, plan.gh], planMs: +lmPlanMs.toFixed(0) };
+    const apply = (res) => {
+      if (!res?.atlas || lm.disposed) return;
+      tLM.dispose(); tLM = half4(plan.atlasW, plan.atlasH, res.atlas); lm.data = res.atlas;
+      U.tCityLM.value = tLM; uLM.value.x = 1;
+      lm.ready = true; lm.ms = res.ms; lm.texels = res.texels;
+    };
+    const IS_NODE = typeof window === 'undefined';
+    lm.apply = apply;
+    if (ctx.lightmapSync || IS_NODE || typeof Worker === 'undefined') { lm.mode = 'sync'; lm.pending = bakeLM(job); }   // applied once U exists
+    else {
+      try {
+        lm.mode = 'worker';
+        const w = lm.worker = new Worker(new URL('./seoul-nightlm-worker.js', import.meta.url), { type: 'module' });
+        w.onmessage = (ev) => { apply(ev.data); w.terminate(); lm.worker = null; };
+        w.onerror = (e) => { console.warn('[D] night lightmap worker failed; the volume stays', e?.message || e); w.terminate(); lm.worker = null; lm.mode = 'failed'; };
+        w.postMessage(job, [job.M.buffer, job.cs.buffer, job.pe.buffer, job.po.buffer, job.H.H.buffer]);
+      } catch (e) { console.warn('[D] no lightmap worker', e); lm.mode = 'failed'; }
+    }
+  }
   // volume statistics (exterior probes at 0.5 m on streets): irradiance on an up and a side face, lux
   const volStat = (() => { let n = 0, up = 0, side = 0; for (let c = 0; c < NC; c++) { if (!roadMask[c] || inner[c * NL]) continue; const p = c * NL; const a = lumaOf([VA[p * 4], VA[p * 4 + 1], VA[p * 4 + 2]]); up += a * Math.max(0, 1 + VB[p * 4 + 1]); side += a; n++; } return { streetProbes: n, upLux: +(up / Math.max(1, n) / NS).toFixed(2), sideLux: +(side / Math.max(1, n) / NS).toFixed(2) }; })();
 
@@ -687,9 +838,11 @@ export function attach(world, emitters = [], ctx = {}) {
     uCitySkyGlow: { value: new THREE.Vector3(...NIGHT_SKY.horizon.map((v) => v * NS * 0.6)) },
     uCityAO: aoU?.uAO || { value: blackTex }, uCityAOOn: aoU?.uAOOn || { value: 0 }, uCityAOScale: aoU?.uAOScale || { value: new THREE.Vector2(1, 1) },
     uCityCar: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uCityCarS: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) },
+    uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, uCityLMR: uLMR, tCityLM: { value: tLM },
     tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
+  if (lm.pending) { lm.apply(lm.pending); lm.pending = null; }
 
   // ------------------------------------------------------------------------------------- material patch
   const patched = new Set();
@@ -704,10 +857,12 @@ export function attach(world, emitters = [], ctx = {}) {
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${CITY_HEAD}${wet ? WET_HEAD : ''}`)
         .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>
+  vec3 cityNW = normalize(transpose(mat3(viewMatrix)) * geometryNormal), cityLMv;
+  cityLMOn = cityLightmap(cityWorldPos(geometryPosition), cityNW, cityLMv);
   cityLights(geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
   ${wet ? `float cityCC = cityContact(cityWorldPos(geometryPosition)); reflectedLight.directDiffuse *= mix(1.0, cityCC, 0.75); reflectedLight.directSpecular *= mix(1.0, cityCC, 0.75);` : 'float cityCC = 1.0;'}
   #if defined( RE_IndirectDiffuse )
-  irradiance += cityIrradiance(cityWorldPos(geometryPosition), normalize(transpose(mat3(viewMatrix)) * geometryNormal)) * cityCC;
+  irradiance += (cityLMOn ? cityLMv * (uCityGain * mix(1.0, cityAOf(), 0.45)) : cityIrradiance(cityWorldPos(geometryPosition), cityNW)) * cityCC;   // the lightmap is mostly direct: SSAO at 45 %
   #endif`)
         .replace('#include <opaque_fragment>', `#include <opaque_fragment>\n  gl_FragColor.rgb = cityHaze(gl_FragColor.rgb, -vViewPosition);`);
       if (wet) {
@@ -729,54 +884,80 @@ export function attach(world, emitters = [], ctx = {}) {
     totalEmissiveRadiance += texture(tCityMirror, muv).rgb * (F * cityWet * inb); }`);
       }
     };
-    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW2' : '|city2'); };
+    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW3' : '|city3'); };
     mat.needsUpdate = true;
     return true;
   }
 
   // ------------------------------------------------------------------------------------- city culling (perf #3)
-  const cull = { on: ctx.cull !== false && !!scene, cell: ctx.cullCell || 96, meshes: 0, from: 0, vertsBefore: 0, vertsAfter: 0, col: 0, ms: 0, freed: 0 };
+  // P3 perf #1: each material's cells are one BatchedMesh (ctx.batch === false: one Mesh per cell, the P2 path)
+  const batch = ctx.batch !== false && !!THREE.BatchedMesh;
+  const cull = { on: ctx.cull !== false && !!scene, batch, cell: ctx.cullCell || (batch ? 64 : 96), colCell: ctx.colCell || 64, meshes: 0, from: 0, vertsBefore: 0, vertsAfter: 0, col: 0, ms: 0, freed: 0, batches: [] };
+  const freeOnUpload = (g) => { if (!renderer || ctx.freeArrays === false) return; for (const a of [...Object.values(g.attributes), g.index]) if (a && !a.onUploadCallback?.__d) { const f = function () { this.array = new this.array.constructor(0); cull.freed += 1; }; f.__d = 1; a.onUpload(f); } };
+  let colBatch = null;
   if (cull.on) {
     const tc0 = now(), olds = [];
     for (const o of [...scene.children]) {
-      if (!o.isMesh || o.isInstancedMesh || !/^seoul:/.test(o.name || '') || !o.geometry?.getAttribute?.('position')) continue;
+      if (!o.isMesh || o.isInstancedMesh || o.isBatchedMesh || !/^seoul:/.test(o.name || '') || !o.geometry?.getAttribute?.('position')) continue;
       if (o.geometry.groups?.length > 1 || Array.isArray(o.material)) continue;
-      const sp = splitCells(o.geometry, cull.cell); if (!sp) continue;
-      if (renderer && ctx.freeArrays !== false && sp.parts.length) {   // perf #4: drop the CPU copy once the GPU has it
-        const g0 = sp.parts[0].geometry; for (const a of [...Object.values(g0.attributes), g0.index]) a?.onUpload?.(function () { this.array = new this.array.constructor(0); cull.freed += 1; });
-      }
+      const ts = now(), sp = splitCells(o.geometry, cull.cell); cull.tSplit = (cull.tSplit || 0) + now() - ts; if (!sp) continue;
       cull.from++; cull.vertsBefore += sp.srcVertices; cull.vertsAfter += sp.vertices;
-      for (const p of sp.parts) {
-        const m = new THREE.Mesh(p.geometry, o.material);
-        m.name = o.name; m.userData = { ...o.userData, seoulKey: o.name.slice(6), cell: p.cell }; m.receiveShadow = o.receiveShadow; m.castShadow = o.castShadow;
-        m.matrixAutoUpdate = false; m.renderOrder = o.renderOrder; m.updateMatrix(); m.updateMatrixWorld(true);
-        scene.add(m); cull.meshes++;
+      const ud = { ...o.userData, seoulKey: o.name.slice(6) };
+      if (batch) {
+        const tb = now(), bm = batchCells(sp, o.material); cull.tBatch = (cull.tBatch || 0) + now() - tb;
+        bm.name = o.name; bm.userData = { ...ud, ...bm.userData, cells: sp.parts.length };
+        bm.receiveShadow = o.receiveShadow; bm.castShadow = o.castShadow; bm.renderOrder = o.renderOrder;
+        if (o.frustumCulled === false) { bm.frustumCulled = false; bm.perObjectFrustumCulled = false; }
+        bm.matrixAutoUpdate = false; bm.updateMatrix(); bm.updateMatrixWorld(true);
+        freeOnUpload(bm.geometry);   // perf #4: the CPU copy goes once the GPU has it (bounds are cached)
+        scene.add(bm); cull.meshes += sp.parts.length; cull.batches.push(bm);
+        // peak memory: the source mesh's arrays go now (one mesh at a time), not after every split (the builder's
+        // geo.merged holds the same geometry until buildSeoul returns). ctx.keepSource keeps them.
+        if (ctx.keepSource !== true) for (const a of [...Object.values(o.geometry.attributes), o.geometry.index]) if (a?.array) a.array = new a.array.constructor(0);
+      } else {
+        if (sp.parts.length) freeOnUpload(sp.parts[0].geometry);
+        for (const p of sp.parts) {
+          const m = new THREE.Mesh(p.geometry, o.material);
+          m.name = o.name; m.userData = { ...ud, cell: p.cell }; m.receiveShadow = o.receiveShadow; m.castShadow = o.castShadow;
+          m.matrixAutoUpdate = false; m.renderOrder = o.renderOrder; m.updateMatrix(); m.updateMatrixWorld(true);
+          if (o.frustumCulled === false) m.frustumCulled = false;
+          scene.add(m); cull.meshes++;
+        }
       }
       olds.push(o);
     }
     for (const o of olds) { scene.remove(o); o.geometry.dispose(); }
-    marks.split = +(now() - tc0).toFixed(0);
-    // the collider for fpvcam's depth pass and the mirror: cells (shared positions, a cell-sorted index)
+    marks.split = +(now() - tc0).toFixed(0); marks.splitCells = +(cull.tSplit || 0).toFixed(0); marks.batch = +(cull.tBatch || 0).toFixed(0);
+    // the collider for fpvcam's depth pass and the mirror: cells (P3: one BatchedMesh, one draw; else a Mesh per cell)
     const cs = world.colliderScene;
-    const cm = cs?.children?.find((c) => c.isMesh && c.geometry?.getAttribute('position'));
+    const cm = cs?.children?.find((c) => c.isMesh && !c.isBatchedMesh && c.geometry?.getAttribute('position'));
     if (cm) {
-      const g = cm.geometry, pos = g.getAttribute('position'), idx = g.index, nT = (idx ? idx.count : pos.count) / 3, P = pos.array;
-      const vi = (t, k) => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
-      const keyOf = new Map(), keys = new Int32Array(nT);
-      for (let t = 0; t < nT; t++) { const a = vi(t, 0) * 3, b = vi(t, 1) * 3, c = vi(t, 2) * 3; const kx = Math.floor((P[a] + P[b] + P[c]) / 3 / 64), kz = Math.floor((P[a + 2] + P[b + 2] + P[c + 2]) / 3 / 64); const k = kx * 4096 + kz; if (!keyOf.has(k)) keyOf.set(k, keyOf.size); keys[t] = keyOf.get(k); }
-      const nk = keyOf.size, cnt = new Int32Array(nk + 1); for (let t = 0; t < nT; t++) cnt[keys[t] + 1]++; for (let k = 0; k < nk; k++) cnt[k + 1] += cnt[k];
-      const fillc = cnt.slice(0, nk), ix = new Uint32Array(nT * 3);
-      for (let t = 0; t < nT; t++) { const o = fillc[keys[t]]++; ix[o * 3] = vi(t, 0); ix[o * 3 + 1] = vi(t, 1); ix[o * 3 + 2] = vi(t, 2); }
-      const ia = new THREE.BufferAttribute(ix, 1), v3 = new THREE.Vector3();
-      cs.remove(cm);
-      for (let k = 0; k < nk; k++) {
-        const s = cnt[k], e = cnt[k + 1]; if (e <= s) continue;
-        const geo = new THREE.BufferGeometry(); geo.setAttribute('position', pos); geo.setIndex(ia); geo.setDrawRange(s * 3, (e - s) * 3);
-        let a0 = Infinity, a1 = Infinity, a2 = Infinity, b0 = -Infinity, b1 = -Infinity, b2 = -Infinity;
-        for (let q = s * 3; q < e * 3; q++) { const v = ix[q] * 3, X = P[v], Y = P[v + 1], Z = P[v + 2]; if (X < a0) a0 = X; if (X > b0) b0 = X; if (Y < a1) a1 = Y; if (Y > b1) b1 = Y; if (Z < a2) a2 = Z; if (Z > b2) b2 = Z; }
-        const bb = new THREE.Box3(new THREE.Vector3(a0, a1, a2), new THREE.Vector3(b0, b1, b2));
-        geo.boundingBox = bb; geo.boundingSphere = bb.getBoundingSphere(new THREE.Sphere());
-        const m = new THREE.Mesh(geo, cm.material); m.name = 'seoul:col'; m.matrixAutoUpdate = false; m.userData.colCell = true; cs.add(m); cull.col++;
+      const g = cm.geometry;
+      if (batch) {
+        const g0 = new THREE.BufferGeometry(); g0.setAttribute('position', g.getAttribute('position')); if (g.index) g0.setIndex(g.index);
+        const sp = splitCells(g0, cull.colCell, 0);
+        colBatch = batchCells(sp, cm.material); colBatch.name = 'seoul:col'; colBatch.userData.colCell = true; colBatch.matrixAutoUpdate = false;
+        freeOnUpload(colBatch.geometry);
+        cs.remove(cm); cs.add(colBatch); cull.col = sp.parts.length;
+      } else {
+        const pos = g.getAttribute('position'), idx = g.index, nT = (idx ? idx.count : pos.count) / 3, P = pos.array;
+        const vi = (t, k) => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
+        const keyOf = new Map(), keys = new Int32Array(nT), cc = cull.colCell;
+        for (let t = 0; t < nT; t++) { const a = vi(t, 0) * 3, b = vi(t, 1) * 3, c = vi(t, 2) * 3; const kx = Math.floor((P[a] + P[b] + P[c]) / 3 / cc), kz = Math.floor((P[a + 2] + P[b + 2] + P[c + 2]) / 3 / cc); const k = kx * 4096 + kz; if (!keyOf.has(k)) keyOf.set(k, keyOf.size); keys[t] = keyOf.get(k); }
+        const nk = keyOf.size, cnt = new Int32Array(nk + 1); for (let t = 0; t < nT; t++) cnt[keys[t] + 1]++; for (let k = 0; k < nk; k++) cnt[k + 1] += cnt[k];
+        const fillc = cnt.slice(0, nk), ix = new Uint32Array(nT * 3);
+        for (let t = 0; t < nT; t++) { const o = fillc[keys[t]]++; ix[o * 3] = vi(t, 0); ix[o * 3 + 1] = vi(t, 1); ix[o * 3 + 2] = vi(t, 2); }
+        const ia = new THREE.BufferAttribute(ix, 1);
+        cs.remove(cm);
+        for (let k = 0; k < nk; k++) {
+          const s = cnt[k], e = cnt[k + 1]; if (e <= s) continue;
+          const geo = new THREE.BufferGeometry(); geo.setAttribute('position', pos); geo.setIndex(ia); geo.setDrawRange(s * 3, (e - s) * 3);
+          let a0 = Infinity, a1 = Infinity, a2 = Infinity, b0 = -Infinity, b1 = -Infinity, b2 = -Infinity;
+          for (let q = s * 3; q < e * 3; q++) { const v = ix[q] * 3, X = P[v], Y = P[v + 1], Z = P[v + 2]; if (X < a0) a0 = X; if (X > b0) b0 = X; if (Y < a1) a1 = Y; if (Y > b1) b1 = Y; if (Z < a2) a2 = Z; if (Z > b2) b2 = Z; }
+          const bb = new THREE.Box3(new THREE.Vector3(a0, a1, a2), new THREE.Vector3(b0, b1, b2));
+          geo.boundingBox = bb; geo.boundingSphere = bb.getBoundingSphere(new THREE.Sphere());
+          const m = new THREE.Mesh(geo, cm.material); m.name = 'seoul:col'; m.matrixAutoUpdate = false; m.userData.colCell = true; cs.add(m); cull.col++;
+        }
       }
     }
     cull.ms = +(now() - tc0).toFixed(0);
@@ -886,11 +1067,16 @@ export function attach(world, emitters = [], ctx = {}) {
     if (occ) {
       // occluders within occR m only (perf #3): the collider cells farther away are hidden for this pass
       _cp.setFromMatrixPosition(cam.matrixWorld); hidden.length = 0;
-      for (const m of occ.children) if (m.userData.colCell && m.visible && m.geometry.boundingSphere && m.geometry.boundingSphere.center.distanceTo(_cp) - m.geometry.boundingSphere.radius > mirror.occR) { m.visible = false; hidden.push(m); }
+      for (const m of occ.children) {
+        if (m.isBatchedMesh && m.userData.colCell) {   // P3: hide the far cells (instances) of the batched collider
+          const S = m.userData.cellSpheres, I = m.userData.instanceIds;
+          for (let i = 0; i < S.length; i++) if (S[i].center.distanceTo(_cp) - S[i].radius > mirror.occR) { m.setVisibleAt(I[i], false); hidden.push([m, I[i]]); }
+        } else if (m.userData.colCell && m.visible && m.geometry.boundingSphere && m.geometry.boundingSphere.center.distanceTo(_cp) - m.geometry.boundingSphere.radius > mirror.occR) { m.visible = false; hidden.push(m); }
+      }
       const lc = r.localClippingEnabled; r.localClippingEnabled = true;
       r.clear(true, true, false); occ.overrideMaterial = occMat; r.autoClear = false; r.render(occ, mc); occ.overrideMaterial = null;
       r.localClippingEnabled = lc;
-      for (const m of hidden) m.visible = true;
+      for (const h of hidden) { if (Array.isArray(h)) h[0].setVisibleAt(h[1], true); else h.visible = true; }
     }
     r.render(mirror.scene, mc);
     _v.set(0, 0, -20).applyMatrix4(cam.matrixWorld); _v.y = mirror.y;
@@ -956,6 +1142,12 @@ export function attach(world, emitters = [], ctx = {}) {
   }
   const allMeta = new Map(); stat.forEach((e, i) => allMeta.set(e, metas[i]));
   all.forEach((e, i) => { const m = allMeta.get(e) || meta(e); const [I, c] = glowOf(e, m); airI[i] = I; airCol[i] = c; });
+  // P3 lighting #5: no source's airlight outshines lampCap x a street lamp's in any channel (the brightest channel of a
+  // luminance-normalised blue is 7-14x its luminance: that made the violet clouds)
+  { const ref = []; all.forEach((e, i) => { if (e.kind === 'street' && airI[i] > 0) ref.push(airI[i] * Math.max(...airCol[i])); });
+    ref.sort((a, b) => a - b); const cap = (ctx.airLampCap ?? AIRLIGHT.lampCap) * (ref.length ? ref[ref.length >> 1] : 100);
+    let nc = 0; all.forEach((e, i) => { const pk = airI[i] * Math.max(...airCol[i]); if (pk > cap) { airI[i] *= cap / pk; nc++; } });
+    air.cap = +cap.toFixed(1); air.capped = nc; }
   const airIdx = new Int32Array(64), airKey = new Float32Array(64), _fw = new THREE.Vector3(), _camY = [0];
   const airKind = new Uint8Array(all.length), airPos = new Float32Array(all.length * 3);   // 0 fixed, 1 animated, 2 moving
   all.forEach((e, i) => { airKind[i] = isMov(e) ? 2 : isAnim(e) ? 1 : 0; airPos[i * 3] = e.pos[0]; airPos[i * 3 + 1] = e.pos[1]; airPos[i * 3 + 2] = e.pos[2]; });
@@ -973,7 +1165,7 @@ export function attach(world, emitters = [], ctx = {}) {
         if (kd) { const e = all[i]; if (!(e.nits > 0)) continue; if (kd === 1) I *= Math.min(1, e.nits / Math.max(1, (e.nitsMax ?? SOURCE_TYPES.screen.nits))); if (kd === 2) { px = e.pos[0]; py = e.pos[1]; pz = e.pos[2]; } }
         if (kd !== 2) { px = airPos[i * 3]; py = airPos[i * 3 + 1]; pz = airPos[i * 3 + 2]; }
         const dx = px - camPos.x, dy = py - camPos.y, dz = pz - camPos.z, d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 > 140 * 140 || d2 < 0.09) continue;
+        if (d2 > 140 * 140 || d2 < AIRLIGHT.nearM * AIRLIGHT.nearM) continue;   // P3: none within nearM of the lens
         const d = Math.sqrt(d2);
         if (cq && dx * _fw.x + dy * _fw.y + dz * _fw.z < -0.3 * d) continue;
         const key = I * (1 - sig * d) / d;
@@ -995,6 +1187,8 @@ export function attach(world, emitters = [], ctx = {}) {
       const e = all[i], m = allMeta.get(e); let I = airI[i];
       if (isMov(e) || isAnim(e)) { if (!(e.nits > 0)) continue; if (isAnim(e)) I *= Math.min(1, e.nits / Math.max(1, (e.nitsMax ?? SOURCE_TYPES.screen.nits))); }
       const d = Math.hypot(e.pos[0] - camPos.x, e.pos[1] - camPos.y, e.pos[2] - camPos.z);
+      if (d < AIRLIGHT.nearM) continue;
+      I *= sstep(AIRLIGHT.nearM, AIRLIGHT.nearM + AIRLIGHT.fadeM, d);              // fades in past nearM
       const R = Math.min(AIRLIGHT.maxR, 0.4 * d + 0.5, sig * I / (8 * minL));
       if (R < 0.2) continue;
       const hmin = Math.max(0.08, 0.5 * Math.sqrt(m ? m.A : (e.w || 0.5) * (e.h || 0.5)));
@@ -1122,7 +1316,7 @@ export function attach(world, emitters = [], ctx = {}) {
       for (let a = 0; a < nd; a++) { let bi = a; for (let b = a + 1; b < nc; b++) if (movKey[b] > movKey[bi]) bi = b; if (bi !== a) { const tk = movKey[a]; movKey[a] = movKey[bi]; movKey[bi] = tk; const to = movOrd[a]; movOrd[a] = movOrd[bi]; movOrd[bi] = to; } }
       // window origin: the camera's cell minus half the window
       const ox = Math.floor((cp.x - x0) / cell) - (DW >> 1), oz = Math.floor((cp.z - z0) / cell) - (DW >> 1);
-      U.uCityDyn.value.set(ox, oz, DW, 0);
+      U.uCityDyn.value.set(ox, oz, DW, U.uCityDyn.value.w);
       dN.fill(0); const gd = tGD.image.data; gd.fill(NONE);
       let poolR = 0;
       for (let a = 0; a < nd; a++) {
@@ -1183,13 +1377,50 @@ export function attach(world, emitters = [], ctx = {}) {
   }
   update(0);
 
+  // ------------------------------------------------------------------------------------- visibility (P3 perf #2)
+  // For G1's crowd and traffic (seoul-life.js owns the culling; this is the API): the render camera's frustum, captured
+  // in scene.onBeforeRender (so a query in world.update sees the previous frame's camera: spheres are inflated by
+  // `margin`), and heightfield occlusion from the camera, memoised per 4 m cell per frame. Lookup:
+  //   const V = scene.userData.seoulLight?.visibility;   // null until attach; every method answers true before a frame
+  //   V.sphere(x, y, z, r)    in the (inflated) frustum
+  //   V.occluded(x, y, z)     a building stands between the camera and both 0.3 m and 1.8 m above (x, y, z)
+  //   V.visible(x, y, z, r)   sphere && !occluded: cull a person or a car when false
+  //   V.cam (Vector3), V.frame (count), V.stats {tests, culled, occluded}
+  const visI = { margin: ctx.visMargin ?? 1.5, frame: 0, ok: false, cam: new THREE.Vector3(), fr: new THREE.Frustum(), M: new THREE.Matrix4(),
+    memoF: new Int32Array(NC).fill(-1), memoV: new Uint8Array(NC), ys: [0, 0], sph: new THREE.Sphere(), stats: { tests: 0, culled: 0, occluded: 0 } };
+  const visibility = {
+    get cam() { return visI.cam; }, get frame() { return visI.frame; }, get ready() { return visI.ok; }, get stats() { return visI.stats; },
+    sphere(x, y, z, r = 0.5) { if (!visI.ok) return true; visI.sph.center.set(x, y, z); visI.sph.radius = r + visI.margin; return visI.fr.intersectsSphere(visI.sph); },
+    occluded(x, y, z) {
+      if (!visI.ok) return false;
+      const cx = Math.floor((x - x0) / cell), cz = Math.floor((z - z0) / cell);
+      const c = cx >= 0 && cz >= 0 && cx < gw && cz < gh ? cz * gw + cx : -1;
+      if (c >= 0 && visI.memoF[c] === visI.frame) return visI.memoV[c] === 1;
+      visI.ys[0] = y + 0.3; visI.ys[1] = y + 1.8;
+      const px = c >= 0 ? x0 + (cx + 0.5) * cell : x, pz = c >= 0 ? z0 + (cz + 0.5) * cell : z;   // the cell centre (memo)
+      const o = HF.occ(visI.cam.x, visI.cam.y, visI.cam.z, px, pz, visI.ys, 0.5, cell * 0.75) === 3;
+      if (c >= 0) { visI.memoF[c] = visI.frame; visI.memoV[c] = o ? 1 : 0; }
+      return o;
+    },
+    visible(x, y, z, r = 0.5) { const st = visI.stats; st.tests++; if (!this.sphere(x, y, z, r)) { st.culled++; return false; } if (this.occluded(x, y, z)) { st.occluded++; return false; } return true; },
+  };
+  { const prevOBR = scene.onBeforeRender;
+    scene.onBeforeRender = function (r, sc, cam, target) {
+      prevOBR?.call(this, r, sc, cam, target);
+      if (!cam?.isPerspectiveCamera) return;
+      visI.M.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse); visI.fr.setFromProjectionMatrix(visI.M);
+      visI.cam.setFromMatrixPosition(cam.matrixWorld); visI.frame++; visI.ok = true;
+      visI.stats.tests = visI.stats.culled = visI.stats.occluded = 0;
+    }; }
+
   // ------------------------------------------------------------------------------------- stats, export, dispose
   const stats = {
     emitters: all.length, static: still.length, animated: nAnim, moving: nMov, dynamicSlots: Q.Nd, grid: [gw, gh, cell], K, Kd: KD,
     binMs: +binMs.toFixed(1), volMs: +volMs.toFixed(1), attachMs: 0, pairs, occludedPairs: occl,
     cells: cellsUsed, mean: +(used / Math.max(1, cellsUsed)).toFixed(2), full, volume: volStat,
-    materials: nMat, wetMaterials: nWet, mirror: mirror.on, cull: { meshes: cull.meshes, from: cull.from, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
-    pools: !!pool.mesh, airlight: air.n, update: uStats, marks,
+    materials: nMat, wetMaterials: nWet, mirror: mirror.on, cull: { meshes: cull.meshes, from: cull.from, batched: cull.batch ? cull.batches.length : 0, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
+    get lightmap() { return { mode: lm.mode, ready: lm.ready, ms: lm.ms, texels: lm.texels, ...(lm.plan || {}) }; },
+    pools: !!pool.mesh, airlight: air.n, airCap: air.cap, airCapped: air.capped, update: uStats, marks,
   };
   function exportData() {   // native #2: the model (exportParams) + this level's grid and baked volume
     return {
@@ -1210,22 +1441,48 @@ export function attach(world, emitters = [], ctx = {}) {
       const El = (LUMA[0] * m.I[0] + LUMA[1] * m.I[1] + LUMA[2] * m.I[2]) * cw * f * Math.max(0, L3[0] * nx + L3[1] * ny + L3[2] * nz);
       Ed += El; if (list) list.push({ id: stat[id].id, kind: stat[id].kind, lux: +(El / NS).toFixed(1) });
     }
-    const ly = py < 4 ? (py - 0.5) / 3.5 : py < 12 ? 1 + (py - 4) / 8 : 2 + (py - 12) / 18, l = Math.max(0, Math.min(NL - 1, ly)), k0 = Math.floor(l), k1 = Math.min(NL - 1, k0 + 1), u = l - k0;
+    const l = Math.max(0, Math.min(NL - 1, layerOf(py, YS))), k0 = Math.floor(l), k1 = Math.min(NL - 1, k0 + 1), u = l - k0;
     const ev = (k) => { const p = (cz * gw + cx) * NL + k, a = LUMA[0] * VA[p * 4] + LUMA[1] * VA[p * 4 + 1] + LUMA[2] * VA[p * 4 + 2]; return a * Math.max(0, 1 + VB[p * 4] * nx + VB[p * 4 + 1] * ny + VB[p * 4 + 2] * nz); };
     const Ev = ev(k0) * (1 - u) + ev(k1) * u;
     return { direct: Ed / NS, volume: Ev / NS, lights: n, ...(list ? { list } : {}) };
   }
+  // P3 perf #4/#6: the cap and presets (world.qualityCap); apply() switches the light's live knobs (static K, mirror
+  // resolution, airlight count) without a rebuild
+  const Q0 = { ...Q }, qualityCap = { ...SEOUL_QUALITY.auto, presets: SEOUL_QUALITY, gpuMs: 12, current: 'auto',
+    apply(name) { const P = SEOUL_QUALITY[name]; if (!P) return false; const L = QUALITY[P.light] || Q0;
+      U.uCityDyn.value.w = P.light === 'low' ? Math.max(1, (L.K / 4) | 0) : 0; Q.refl = L.refl ?? Q0.refl; air.n = Math.min(Q0.air, L.air ?? Q0.air);
+      qualityCap.current = name; return true; } };
+  world.qualityCap = qualityCap;
+  // CPU mirror of cityLightmap (tests, diagnostics): lux at (x, y, z) on a face with world normal n, null = volume
+  function lightmapAt(x, y, z, nx = 0, ny = 1, nz = 0) {
+    if (!lm.ready || !lm.data) return null;
+    const P = lmPlan, D = lm.data, AW = P.atlasW, hf = THREE.DataUtils.fromHalfFloat;
+    const read = (u, v) => { const i = Math.floor(u), j = Math.floor(v), o = (j * AW + i) * 4; if (i < 0 || j < 0 || i >= AW || j >= P.atlasH || !hf(D[o + 3])) return null; return (LUMA[0] * hf(D[o]) + LUMA[1] * hf(D[o + 1]) + LUMA[2] * hf(D[o + 2])) / NS; };
+    if (ny > 0.7 && y < 0.6) return read((x - P.x0) / P.gres, (z - P.z0) / P.gres);
+    if (Math.abs(ny) > 0.35) return null;
+    const rx = Math.floor(x - P.x0), rz = Math.floor(z - P.z0); if (rx < 0 || rz < 0 || rx >= P.rw || rz >= P.rh) return null;
+    for (const id of [P.raster[(rz * P.rw + rx) * 2], P.raster[(rz * P.rw + rx) * 2 + 1]]) {
+      if (!id) continue; const e = id - 1, E = P.edges, ux = E[e * 8 + 2], uz = E[e * 8 + 3], enx = E[e * 8 + 4], enz = E[e * 8 + 5];
+      if (enx * nx + enz * nz < 0.8) continue;
+      const dx = x - E[e * 8], dz = z - E[e * 8 + 1]; if (Math.abs(dx * enx + dz * enz) > NIGHT_LM.near) continue;
+      const t = Math.max(0, Math.min(E[e * 8 + 6], dx * ux + dz * uz)), yy = Math.max(0, Math.min(E[e * 8 + 7], y));
+      return read(P.rect[e * 4] + 1 + t / P.fres - 0.5, P.rect[e * 4 + 1] + 1 + yy / P.fres - 0.5);
+    }
+    return null;
+  }
   const ctl = {
-    update, patchMaterial, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe,
+    update, patchMaterial, qualityCap, lightmapAt, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
     setWet(v) { U.uCityWet.value = v; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
     dispose() {
-      for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex]) t.dispose();
+      for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex, U.tCityLM.value]) t.dispose();
+      lm.disposed = true; lm.worker?.terminate();
       U.tCityMirror.value?.dispose?.();
       mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); quad.geometry.dispose();
       if (steam) { steam.geometry.dispose(); steam.material.dispose(); scene.remove(steam); }
       if (air.mesh) { air.g.dispose(); air.mat.dispose(); scene.remove(air.mesh); }
       if (pool.mesh) pool.mesh.material.dispose();
       scene.remove(sky); mirror.on = false;
+      for (const bm of cull.batches) bm.dispose?.(); colBatch?.dispose?.();
     },
   };
   // the world had no dispose(): chain ours in (main.js calls world.dispose on a level switch; the city textures leaked)
@@ -1249,7 +1506,7 @@ export function exportParams() {
     },
     geometry: 'point: E = I fe / (d^2 + A/pi); line (long faces, |w-h| > 0.5 m): representative point, E = I fe (atan((a-x)/r) + atan((a+x)/r)) / (2 a r), r^2 = perp^2 + hs^2/pi',
     record: '2 x RGBA32UI: [pos.xyz f32, half(area, signed half length)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe 2 | colour idx 14 | flicker hz x4 6 | depth x15 4 | omni x63 6]',
-    volume: 'probes at cell centres x VOLUME.heights; A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + sky openness; E(n) = A.rgb max(0, 1 + B.n) x SSAO',
+    volume: 'probes at cell centres x VOLUME.heights; A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + haze extinction factor (x HAZE.density, by street kind); E(n) = A.rgb max(0, 1 + B.n) x SSAO',
     glsl: CITY_HEAD,
   };
 }

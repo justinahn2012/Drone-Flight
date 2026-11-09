@@ -15,7 +15,8 @@
 // and the last 30 s: the last-30-s p90 is the number to size QUALITY.auto.max by.
 // Results: the overlay, window.__onetake.perf, and the console line "perf {json}".
 // A scale "fits 60 Hz" when every segment's p90 is under 14.2 ms (16.7 ms minus 15 % headroom).
-// URL options: ?perf=N, &soak=S (seconds; default 180 for N >= 60, else 0), &seg=cruise,hover (a subset).
+// URL options: ?perf=N, &soak=S (seconds; default 180 for N >= 60, else 0), &seg=cruise,hover (a subset), &preset=phone
+// (Seoul, P3 perf #6: MSAA 2 + the light's 'low' quality; the result suggests 'phone' when the GPU runs past 12 ms).
 // Neon Seoul (?level=seoul&perf, phase 2 stream D perf #5): its own segments (walk: the Eoulmadang-ro walking street at
 // 5 m/s; canyon: the Yanghwa-ro screen strip at 8 m, 8 m/s; club: Wausan-ro 19-gil at 4 m/s; high: 60 m over the block,
 // 35 deg down), the same scales and soak, and world.update split per part (light / life / signs ms per frame) so the
@@ -103,6 +104,10 @@ export function perfProbe(o, frames = 120) {
     const saved = { mode: S.mode, fps: S.fps };
     S.mode = 'cine'; S.fps = '60'; o.applySettings();
     if (fpv.maxScale < Math.max(...SCALES)) fpv.setQualityRange(fpv.minScale, Math.max(...SCALES));   // targets big enough for 1.2
+    // P3 perf #6: &preset=phone runs Seoul at the phone preset (MSAA 2, light 'low' where it can be switched live)
+    const cap = o.world?.scene?.userData?.seoulLight?.qualityCap || null, preset = params.get('preset');
+    const P = preset && cap?.presets?.[preset];
+    if (P) { fpv.look.msaa = P.msaa ?? fpv.look.msaa; cap.apply?.(preset); }
     fpv.frameTiming = () => {};                                                                        // governor frozen (own-property shadow)
     const tilt = d.c.camTilt;
     const place = (seg, t, first) => {
@@ -172,6 +177,11 @@ export function perfProbe(o, frames = 120) {
     res.suggestMax = fits.length ? Math.max(...fits) : null;
     // sustained: scale the 1.0 p90 by the soak's throttle (frame time ~ pixels for the GPU-bound part)
     if (res.soak) { const sus = res.soak.last30.p90; res.sustainedP90 = sus; res.suggestSustained = sus > 0 ? +Math.min(1.2, Math.sqrt(BUDGET / sus)).toFixed(2) : null; }
+    // P3 perf #6: Seoul's preset from the numbers: the phone preset when the GPU runs past cap.gpuMs (12) sustained
+    if (cap) {
+      const g1 = res.scales.find((x) => x.scale === 1.0), gpu = Math.max(res.soak?.last30?.gpuP50 || 0, ...Object.values(g1?.seg || {}).map((v) => v.gpuP50 || 0));
+      res.preset = { ran: P ? preset : 'auto', gpuP50: +gpu.toFixed(1), suggest: gpu > (cap.gpuMs || 12) ? 'phone' : 'auto' };
+    }
     o.perf = res;
     console.info('perf ' + JSON.stringify(res));
     const lines = ['PERF · ms per frame (CPU+GPU synced; gpu ≈ total − cpu)'];
@@ -183,6 +193,7 @@ export function perfProbe(o, frames = 120) {
       `  last 30 s  p50 ${f1(res.soak.last30.p50)}  p90 ${f1(res.soak.last30.p90)}  gpu ${f1(res.soak.last30.gpuP50)}  (×${res.soak.throttle})`);
     lines.push(`out ${res.out[0]}×${res.out[1]} · dpr ${res.dpr} · ${res.quality} · msaa ${res.msaa}`,
       `suggested auto max: ${res.suggestMax ?? '< 1.0'} (every p90 ≤ ${BUDGET} ms)` + (res.soak ? ` · sustained ≈ ${res.suggestSustained}` : ''),
+      ...(res.preset ? [`Seoul preset: ran ${res.preset.ran} · gpu ${res.preset.gpuP50} ms → suggest ${res.preset.suggest}`] : []),
       'Screenshot this. Reload without ?perf to fly.');
     say(lines.join('\n'));
     btn.textContent = 'RUN AGAIN'; bar.style.display = '';
