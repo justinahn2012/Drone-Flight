@@ -55,11 +55,16 @@ export const SOURCE_TYPES = {
   tent:     { nits: 120,   rgb: [1.0, 0.55, 0.25], omni: 0.4,  range: 12 },   // pojangmacha tarp lit from inside
   vehicle:  { nits: 20000, rgb: [1.0, 0.95, 0.88], omni: 0.0,  range: 40 },   // head lamps (beam lobe, 25 m pool); tails ~250-1500 red
 };
-// Night sky (plan-L5 2F): zenith and horizon radiance in cd/m2 (Seoul light pollution, low cloud lit orange-brown).
-export const NIGHT_SKY = { zenith: [0.018, 0.020, 0.030], horizon: [0.22, 0.13, 0.07], glowH: 0.18 };
-// Air (lighting #3): haze extinction (1/m), scale height (m), scatter albedo, max opacity; airlight sprites.
-export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6 };
-export const AIRLIGHT = { count: 16, maxR: 10, minL: 0.004, gain: 1.0 };
+// Night sky (plan-L5 2F; P3 lighting #5 / color #4): zenith and horizon radiance in cd/m2. Seoul's sky at 1 am is the
+// city's own sodium/LED light scattered by a low deck: brown-grey overhead, orange-brown at the horizon, never blue.
+export const NIGHT_SKY = { zenith: [0.07, 0.06, 0.05], horizon: [0.5, 0.32, 0.18], glowH: 0.18 };
+// Air (lighting #3; P3 #5): haze extinction (1/m), scale height (m), scatter albedo, max opacity; byKind: the extinction
+// over each street kind (grill smoke and a closed canyon on the walking and club streets, open air on the main road),
+// blended over 8 m and stored per probe as a factor of `density`; airlight sprites. P3: an airlight sprite's radius is
+// capped at maxR (3 m: a halo round the lamp, not a cloud over the facade), none within nearM of the camera (fades in
+// over fadeM), and a source's brightest channel is capped at lampCap x the median street lamp's (no violet clouds).
+export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
+export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 4, fadeM: 2, lampCap: 2 };
 // Irradiance volume (lighting #1): probe heights, albedos for the one bounce.
 // windowNits: the mean emission of the facades a probe faces at each probe height (lit windows are not L3 emitters: binding
 // table 55 % lit on floors 2-4, 12-20 % above, 5-25 nits, ~25 % of a wall is glass); multi: 1 / (1 - mean albedo) for the
@@ -289,8 +294,10 @@ vec3 cityHaze(vec3 col, vec3 pv){
   float dist = length(pv), H = uCityHaze.y;
   float y0 = max(cameraPosition.y, 0.0), y1 = max(wp.y, 0.0), dy = y1 - y0;
   float od = uCityHaze.x * H * dist * (abs(dy) > 1e-3 ? (exp(-y0 / H) - exp(-y1 / H)) / dy : exp(-y0 / H) / H);
+  vec3 uvm = cityVolUVW(mix(cameraPosition, wp, 0.5));
+  od *= texture(tCityIrrB, uvm).w;                                              // P3: extinction by street kind (B.w)
   float a = min(1.0 - exp(-max(od, 0.0)), uCityHaze.w);
-  vec4 A0 = texture(tCityIrrA, cityVolUVW(wp)), A1 = texture(tCityIrrA, cityVolUVW(mix(cameraPosition, wp, 0.5)));
+  vec4 A0 = texture(tCityIrrA, cityVolUVW(wp)), A1 = texture(tCityIrrA, uvm);
   vec3 tint = (A0.rgb + A1.rgb) / max(dot(A0.rgb + A1.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-6);
   vec3 ins = uCitySkyGlow + tint * (min(A0.w + A1.w, 20.0) * 0.5 * uCityHaze.z * 0.0796);   // isotropic phase 1/4pi
   return mix(col, ins, a);
@@ -578,17 +585,23 @@ export function attach(world, emitters = [], ctx = {}) {
   // bounce + sky, then fill the interior probes from their neighbours, then pack (RGBA16F 3D textures)
   const tV0 = now();
   const roadMask = new Uint8Array(NC);   // 1 = asphalt road, 2 = walking-street pavers, 0 = sidewalk
+  const hazeK = new Float32Array(NC), HK = { ...HAZE.byKind, ...(ctx.haze?.byKind || {}) }, hd0 = ctx.haze?.density ?? HAZE.density;
   for (const s of ctx.layout?.streets || []) {
-    const w = s.width || 6, P = s.points;
+    const w = s.width || 6, P = s.points, hk = (HK[s.kind] ?? hd0) / hd0;
     for (let i = 0; i + 1 < P.length; i++) {
       const [ax, az] = P[i], [bx, bz] = P[i + 1], L = Math.hypot(bx - ax, bz - az); if (L < 0.01) continue;
       for (let t = 0; t <= L; t += cell * 0.5) for (let u = -w / 2; u <= w / 2; u += cell * 0.5) {
         const x = ax + (bx - ax) * t / L - (bz - az) / L * u, z = az + (bz - az) * t / L + (bx - ax) / L * u;
         const cx = Math.floor((x - x0) / cell), cz = Math.floor((z - z0) / cell);
-        if (cx >= 0 && cz >= 0 && cx < gw && cz < gh) roadMask[cz * gw + cx] = s.kind === 'walking' ? 2 : 1;
+        if (cx >= 0 && cz >= 0 && cx < gw && cz < gh) { roadMask[cz * gw + cx] = s.kind === 'walking' ? 2 : 1; hazeK[cz * gw + cx] = Math.max(hazeK[cz * gw + cx], hk); }
       }
     }
   }
+  // haze factor per column (P3 lighting #5): the street kinds' extinction / HAZE.density, 1 off the streets, box-blurred 8 m
+  { const src = hazeK.slice(); for (let c = 0; c < NC; c++) if (!src[c]) src[c] = 1;
+    for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) { let s0 = 0, n = 0;
+      for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) { const x = cx + dx, z = cz + dz; if (x < 0 || z < 0 || x >= gw || z >= gh) continue; s0 += src[z * gw + x]; n++; }
+      hazeK[cz * gw + cx] = s0 / n; } }
   const blur = (src, r) => {   // box blur of the ground irradiance over exterior columns
     if (r <= 0) return src;
     const out = new Float32Array(NC * 3);
@@ -634,7 +647,8 @@ export function attach(world, emitters = [], ctx = {}) {
       VA[p * 4] = a0; VA[p * 4 + 1] = a1; VA[p * 4 + 2] = a2; VA[p * 4 + 3] = 4 * tal + oo[k] * skyLum;   // haze fluence
       // direction / ambient, clamped (|b|/a <= 2 is a single delta source)
       let bl = Math.hypot(bx, by, bz) / al; const sc = bl > 2 ? 2 / bl : 1;
-      VB[p * 4] = bx / al * sc; VB[p * 4 + 1] = by / al * sc; VB[p * 4 + 2] = bz / al * sc; VB[p * 4 + 3] = oo[k];
+      VB[p * 4] = bx / al * sc; VB[p * 4 + 1] = by / al * sc; VB[p * 4 + 2] = bz / al * sc;
+      VB[p * 4 + 3] = k < 2 ? hazeK[c] : k === 2 ? 0.5 * (hazeK[c] + 1) : 1;   // haze extinction factor (smoke stays low)
       ok[p] = 1;
     }
   }
@@ -657,7 +671,7 @@ export function attach(world, emitters = [], ctx = {}) {
       for (let i = 0; i < na; i++) { const p = addP[i], o = i * 8; for (let j = 0; j < 4; j++) { VA[p * 4 + j] = addV[o + j]; VB[p * 4 + j] = addV[o + 4 + j]; } ok[p] = 1; }
       if (!na) break;
     } }
-  for (let p = 0; p < NP; p++) if (!ok[p]) { VA[p * 4] = skyL[0] * 0.1; VA[p * 4 + 1] = skyL[1] * 0.1; VA[p * 4 + 2] = skyL[2] * 0.1; VB[p * 4 + 1] = 1; }
+  for (let p = 0; p < NP; p++) if (!ok[p]) { VA[p * 4] = skyL[0] * 0.1; VA[p * 4 + 1] = skyL[1] * 0.1; VA[p * 4 + 2] = skyL[2] * 0.1; VB[p * 4 + 1] = 1; VB[p * 4 + 3] = 1; }
   marks.fill = +(now() - tV0).toFixed(0);
   const vol3 = (src) => {   // [cz][cx][k] -> 3D texture (x = cx, y = cz, z = layer)
     const d = new Uint16Array(NP * 4);
@@ -956,6 +970,12 @@ export function attach(world, emitters = [], ctx = {}) {
   }
   const allMeta = new Map(); stat.forEach((e, i) => allMeta.set(e, metas[i]));
   all.forEach((e, i) => { const m = allMeta.get(e) || meta(e); const [I, c] = glowOf(e, m); airI[i] = I; airCol[i] = c; });
+  // P3 lighting #5: no source's airlight outshines lampCap x a street lamp's in any channel (the brightest channel of a
+  // luminance-normalised blue is 7-14x its luminance: that made the violet clouds)
+  { const ref = []; all.forEach((e, i) => { if (e.kind === 'street' && airI[i] > 0) ref.push(airI[i] * Math.max(...airCol[i])); });
+    ref.sort((a, b) => a - b); const cap = (ctx.airLampCap ?? AIRLIGHT.lampCap) * (ref.length ? ref[ref.length >> 1] : 100);
+    let nc = 0; all.forEach((e, i) => { const pk = airI[i] * Math.max(...airCol[i]); if (pk > cap) { airI[i] *= cap / pk; nc++; } });
+    air.cap = +cap.toFixed(1); air.capped = nc; }
   const airIdx = new Int32Array(64), airKey = new Float32Array(64), _fw = new THREE.Vector3(), _camY = [0];
   const airKind = new Uint8Array(all.length), airPos = new Float32Array(all.length * 3);   // 0 fixed, 1 animated, 2 moving
   all.forEach((e, i) => { airKind[i] = isMov(e) ? 2 : isAnim(e) ? 1 : 0; airPos[i * 3] = e.pos[0]; airPos[i * 3 + 1] = e.pos[1]; airPos[i * 3 + 2] = e.pos[2]; });
@@ -973,7 +993,7 @@ export function attach(world, emitters = [], ctx = {}) {
         if (kd) { const e = all[i]; if (!(e.nits > 0)) continue; if (kd === 1) I *= Math.min(1, e.nits / Math.max(1, (e.nitsMax ?? SOURCE_TYPES.screen.nits))); if (kd === 2) { px = e.pos[0]; py = e.pos[1]; pz = e.pos[2]; } }
         if (kd !== 2) { px = airPos[i * 3]; py = airPos[i * 3 + 1]; pz = airPos[i * 3 + 2]; }
         const dx = px - camPos.x, dy = py - camPos.y, dz = pz - camPos.z, d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 > 140 * 140 || d2 < 0.09) continue;
+        if (d2 > 140 * 140 || d2 < AIRLIGHT.nearM * AIRLIGHT.nearM) continue;   // P3: none within nearM of the lens
         const d = Math.sqrt(d2);
         if (cq && dx * _fw.x + dy * _fw.y + dz * _fw.z < -0.3 * d) continue;
         const key = I * (1 - sig * d) / d;
@@ -995,6 +1015,8 @@ export function attach(world, emitters = [], ctx = {}) {
       const e = all[i], m = allMeta.get(e); let I = airI[i];
       if (isMov(e) || isAnim(e)) { if (!(e.nits > 0)) continue; if (isAnim(e)) I *= Math.min(1, e.nits / Math.max(1, (e.nitsMax ?? SOURCE_TYPES.screen.nits))); }
       const d = Math.hypot(e.pos[0] - camPos.x, e.pos[1] - camPos.y, e.pos[2] - camPos.z);
+      if (d < AIRLIGHT.nearM) continue;
+      I *= sstep(AIRLIGHT.nearM, AIRLIGHT.nearM + AIRLIGHT.fadeM, d);              // fades in past nearM
       const R = Math.min(AIRLIGHT.maxR, 0.4 * d + 0.5, sig * I / (8 * minL));
       if (R < 0.2) continue;
       const hmin = Math.max(0.08, 0.5 * Math.sqrt(m ? m.A : (e.w || 0.5) * (e.h || 0.5)));
@@ -1189,7 +1211,7 @@ export function attach(world, emitters = [], ctx = {}) {
     binMs: +binMs.toFixed(1), volMs: +volMs.toFixed(1), attachMs: 0, pairs, occludedPairs: occl,
     cells: cellsUsed, mean: +(used / Math.max(1, cellsUsed)).toFixed(2), full, volume: volStat,
     materials: nMat, wetMaterials: nWet, mirror: mirror.on, cull: { meshes: cull.meshes, from: cull.from, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
-    pools: !!pool.mesh, airlight: air.n, update: uStats, marks,
+    pools: !!pool.mesh, airlight: air.n, airCap: air.cap, airCapped: air.capped, update: uStats, marks,
   };
   function exportData() {   // native #2: the model (exportParams) + this level's grid and baked volume
     return {
@@ -1249,7 +1271,7 @@ export function exportParams() {
     },
     geometry: 'point: E = I fe / (d^2 + A/pi); line (long faces, |w-h| > 0.5 m): representative point, E = I fe (atan((a-x)/r) + atan((a+x)/r)) / (2 a r), r^2 = perp^2 + hs^2/pi',
     record: '2 x RGBA32UI: [pos.xyz f32, half(area, signed half length)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe 2 | colour idx 14 | flicker hz x4 6 | depth x15 4 | omni x63 6]',
-    volume: 'probes at cell centres x VOLUME.heights; A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + sky openness; E(n) = A.rgb max(0, 1 + B.n) x SSAO',
+    volume: 'probes at cell centres x VOLUME.heights; A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + haze extinction factor (x HAZE.density, by street kind); E(n) = A.rgb max(0, 1 + B.n) x SSAO',
     glsl: CITY_HEAD,
   };
 }
