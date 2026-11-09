@@ -15,7 +15,7 @@
 //   25 m with a cutoff). Lobe integrals are normalised on load so every lamp emits exactly its declared flux.
 // - P2 visibility: a 2.5D heightfield of the lots (2 m raster) is marched from each emitter to each cell it bins into
 //   (4 heights), so light no longer leaks through buildings; occluded pairs are dropped or down-weighted.
-// - P2 night irradiance volume (lighting #1): probes at every cell centre at 0.5, 4, 12 and 30 m hold, as ambient + L1
+// - P2 night irradiance volume (lighting #1): probes at every cell centre at VOLUME.heights (P3: 8 layers, 0.5-50 m) hold, as ambient + L1
 //   direction, (a) the direct light of every emitter NOT in that cell's top-K (the grid's residual, so K can be 8),
 //   (b) one bounce off the ground (by street kind) and the canyon walls, (c) the sky dome through the heightfield horizon.
 //   Sampled with hardware trilinear filtering (RGBA16F 3D textures) as the materials' indirect diffuse, times the SSAO
@@ -69,7 +69,11 @@ export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 4, 
 // windowNits: the mean emission of the facades a probe faces at each probe height (lit windows are not L3 emitters: binding
 // table 55 % lit on floors 2-4, 12-20 % above, 5-25 nits, ~25 % of a wall is glass); multi: 1 / (1 - mean albedo) for the
 // bounces past the first.
-export const VOLUME = { heights: [0.5, 4, 12, 30], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2, windowNits: [0.3, 1.6, 1.2, 0.5], windowRGB: [1.0, 0.86, 0.7], multi: 1.25 };
+// P3 graphics #4: 8 layers (0.5 ... 50 m) so the upper facades and the towers get their own probes, not a 12-30 m blend.
+export const VOLUME = { heights: [0.5, 2.5, 5, 8, 12, 18, 30, 50], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2, windowNits: [0.3, 1.2, 1.6, 1.5, 1.2, 0.8, 0.5, 0.3], windowRGB: [1.0, 0.86, 0.7], multi: 1.25 };
+// fractional layer index of a height (piecewise linear between VOLUME.heights): JS and GLSL
+export function layerOf(y, H = VOLUME.heights) { if (y <= H[0]) return 0; for (let k = 1; k < H.length; k++) if (y < H[k]) return k - 1 + (y - H[k - 1]) / (H[k] - H[k - 1]); return H.length - 1; }
+const LAYER_GLSL = (H) => `float cityLayer(float y){ ${H.slice(1).map((h, k) => `if (y < ${h.toFixed(2)}) return ${k.toFixed(1)} + (y - ${H[k].toFixed(2)}) / ${(h - H[k]).toFixed(2)};`).join(' ')} return ${(H.length - 1).toFixed(1)}; }`;
 // Headlights (lighting #4): low-beam flux per vehicle at the reference 20,000 nits; pool peak luminance (cd/m2 x I).
 export const HEADLIGHT = { lumens: 1400, refNits: 20000, poolNits: 1.5, poolLen: 25 };
 
@@ -188,7 +192,7 @@ export function heightField(layout, x0, z0, x1, z1, res = VOLUME.rasterM) {
     const nk = ys.length; for (let k = 0; k < nk; k++) { oOut[k] = 0; cOut[k] = 0; }
     for (let a = 0; a < 8; a++) {
       const ux = Math.cos(a * Math.PI / 4), uz = Math.sin(a * Math.PI / 4);
-      const mt = [0, 0, 0, 0, 0, 0], wall = [0, 0, 0, 0, 0, 0];
+      const mt = new Float32Array(nk), wall = new Uint8Array(nk);
       for (let s = res; s <= 40; s += res) {
         const h = at(x + ux * s, z + uz * s); if (h <= 0) continue;
         for (let k = 0; k < nk; k++) { const t = (h - ys[k]) / s; if (t > mt[k]) mt[k] = t; if (s <= 12 && h > ys[k]) wall[k] = 1; }
@@ -276,11 +280,12 @@ void cityLights(vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir
     }
   }
 }
-// the volume at a world point: probe layers at 0.5, 4, 12, 30 m
+// the volume at a world point: probe layers at VOLUME.heights (P3: 8)
+${LAYER_GLSL(VOLUME.heights)}
 vec3 cityVolUVW(vec3 wp){
-  float y = wp.y, ly = y < 4.0 ? (y - 0.5) / 3.5 : y < 12.0 ? 1.0 + (y - 4.0) / 8.0 : 2.0 + (y - 12.0) / 18.0;
+  float ly = max(cityLayer(wp.y), 0.0);
   vec2 g = (wp.xz - uCityGrid.xy) * uCityGrid.z / uCityDim.xy;
-  return vec3(g, (clamp(ly, 0.0, 3.0) + 0.5) * 0.25);
+  return vec3(g, (ly + 0.5) / ${VOLUME.heights.length.toFixed(1)});
 }
 vec3 cityIrradiance(vec3 wp, vec3 nW){
   vec3 uvw = cityVolUVW(wp);
@@ -514,7 +519,7 @@ export function attach(world, emitters = [], ctx = {}) {
   const NP = NC * NL, inner = new Uint8Array(NP);
   for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) { const h = HF.at(x0 + (cx + 0.5) * cell, z0 + (cz + 0.5) * cell); for (let k = 0; k < NL; k++) if (h > YS[k]) inner[(cz * gw + cx) * NL + k] = 1; }
   const tA = new Float32Array(NP * 3), tBv = new Float32Array(NP * 3), Eg = new Float32Array(NC * 3);
-  const PROBE_H = YS;
+  const PROBE_H = YS, V4 = 1 << YS.reduce((b, h, k) => (Math.abs(h - 4) < Math.abs(YS[b] - 4) ? k : b), 0);   // the probe nearest 4 m
   // the hot loops live in their own closures (fresh JIT feedback per attach: a second visit to the level stays fast)
   const { pairs, occl } = (function binPass() {
   let pairs = 0, occl = 0;
@@ -537,7 +542,7 @@ export function attach(world, emitters = [], ctx = {}) {
       const occBits = HF.occ(m.x, m.y, m.z, mx, mz, PROBE_H);
       if (occBits) occl++;
       // binning visibility: the 0.5 m and 4 m probes; an interior column (facade fragments only) counts as visible
-      const vis = inner[pin] ? 1 : ((occBits & 1) ? 0 : 0.6) + ((occBits & 2) ? 0 : 0.4);
+      const vis = inner[pin] ? 1 : ((occBits & 1) ? 0 : 0.6) + ((occBits & V4) ? 0 : 0.4);
       if (vis > 0) {
         const sv = s * Math.max(vis, 0.15), o = c * K, n = kN[c];
         if (n < K) { kS[o + n] = sv; kI[o + n] = i; kV[o + n] = occBits; kN[c] = n + 1; }
@@ -615,7 +620,9 @@ export function attach(world, emitters = [], ctx = {}) {
     }
     return out;
   };
-  const EgL = [blur(Eg, 0), blur(Eg, 1), blur(Eg, 2), blur(Eg, 4)]; marks.blur = +(now() - tV0).toFixed(0);
+  // the ground a probe sees widens with its height: blur radius (cells) ~ height / 2 cells, capped at 6 (P3: per layer)
+  const blurR = YS.map((h) => Math.min(6, Math.round(h / (2 * cell)))), blurs = new Map();
+  const EgL = blurR.map((r) => { if (!blurs.has(r)) blurs.set(r, blur(Eg, r)); return blurs.get(r); }); marks.blur = +(now() - tV0).toFixed(0);
   const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.zenith[j] + NIGHT_SKY.horizon[j]) * NS * Math.PI);   // pi L of the dome
   const skyLum = lumaOf(skyL);
   const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4), ok = new Uint8Array(NP);
@@ -1232,7 +1239,7 @@ export function attach(world, emitters = [], ctx = {}) {
       const El = (LUMA[0] * m.I[0] + LUMA[1] * m.I[1] + LUMA[2] * m.I[2]) * cw * f * Math.max(0, L3[0] * nx + L3[1] * ny + L3[2] * nz);
       Ed += El; if (list) list.push({ id: stat[id].id, kind: stat[id].kind, lux: +(El / NS).toFixed(1) });
     }
-    const ly = py < 4 ? (py - 0.5) / 3.5 : py < 12 ? 1 + (py - 4) / 8 : 2 + (py - 12) / 18, l = Math.max(0, Math.min(NL - 1, ly)), k0 = Math.floor(l), k1 = Math.min(NL - 1, k0 + 1), u = l - k0;
+    const l = Math.max(0, Math.min(NL - 1, layerOf(py, YS))), k0 = Math.floor(l), k1 = Math.min(NL - 1, k0 + 1), u = l - k0;
     const ev = (k) => { const p = (cz * gw + cx) * NL + k, a = LUMA[0] * VA[p * 4] + LUMA[1] * VA[p * 4 + 1] + LUMA[2] * VA[p * 4 + 2]; return a * Math.max(0, 1 + VB[p * 4] * nx + VB[p * 4 + 1] * ny + VB[p * 4 + 2] * nz); };
     const Ev = ev(k0) * (1 - u) + ev(k1) * u;
     return { direct: Ed / NS, volume: Ev / NS, lights: n, ...(list ? { list } : {}) };
