@@ -6,6 +6,9 @@
 // - Ground: a top-down map over the light grid's bounds at `gres` m (texels inside a building are left invalid).
 // - Facades: each exposed footprint edge gets a rect in one atlas, `fres` m per texel along the edge and up the wall
 //   (texels with a neighbour's building in front at that height are left invalid).
+// - One texture: the ground map sits at the atlas's origin and the wall rects are packed round it (one sampler; the
+//   raster and the edge table ride as extra rows of seoul-light's static record texture, so the lightmap costs the
+//   material one texture unit, not four).
 // - Lookup: a 1 m raster holds the two nearest exposed edges of every cell within `near` m of a wall; the edge table
 //   gives origin, direction, outward normal and the atlas rect. A fragment whose normal matches an edge's reads the
 //   atlas; an up-facing fragment near the ground reads the ground map; anything else (props, people, roofs, invalid
@@ -92,16 +95,18 @@ export function planLM(layout, HF, B, P = NIGHT_LM) {
   // the outward test: a point just outside must be air at ground level for most walls; flip edges whose "outside" is
   // inside their own lot (footprints with an unexpected winding)
   for (const e of E) { const mx = e[0] + e[2] * e[6] / 2, mz = e[1] + e[3] * e[6] / 2, inA = HF.at(mx + e[4] * 0.6, mz + e[5] * 0.6), inB = HF.at(mx - e[4] * 0.6, mz - e[5] * 0.6); if (inA >= e[7] - 0.1 && inB < inA) { e[4] = -e[4]; e[5] = -e[5]; } }
-  // atlas: shelf packing, tallest first, 1 texel gutter round each rect
-  const f = P.fres, W = P.atlasW, ord = E.map((_, i) => i).sort((p, q) => E[q][7] - E[p][7]);
-  const rect = new Int32Array(E.length * 4); let sx = 0, sy = 0, sh = 0;
+  // atlas: the ground map at (0, 0), then shelf packing round it, tallest first, 1 texel gutter round each rect
+  const g = P.gres, gw = Math.ceil((B.x1 - B.x0) / g), gh = Math.ceil((B.z1 - B.z0) / g);
+  const f = P.fres, W = Math.max(P.atlasW, gw + 256), ord = E.map((_, i) => i).sort((p, q) => E[q][7] - E[p][7]);
+  const left = (y) => (y < gh + 2 ? gw + 2 : 0);
+  const rect = new Int32Array(E.length * 4); let sx = left(0), sy = 0, sh = 0;
   for (const i of ord) {
     const w = Math.ceil(E[i][6] / f) + 2, h = Math.ceil(E[i][7] / f) + 2;
     if (w > W) { rect[i * 4 + 2] = 0; continue; }
-    if (sx + w > W) { sy += sh; sx = 0; sh = 0; }
+    if (sx + w > W) { sy += sh; sh = 0; sx = left(sy); if (sx + w > W) { sy = Math.max(sy, gh + 2); sx = 0; } }
     rect[i * 4] = sx; rect[i * 4 + 1] = sy; rect[i * 4 + 2] = w; rect[i * 4 + 3] = h; sx += w; sh = Math.max(sh, h);
   }
-  const atlasH = Math.max(1, sy + sh);
+  const atlasH = Math.max(gh, sy + sh);
   // lookup raster: two nearest edges (with different normals) per cell within `near` m
   const rr = P.rasterRes, rw = Math.ceil((B.x1 - B.x0) / rr), rh = Math.ceil((B.z1 - B.z0) / rr);
   const ras = new Uint16Array(rw * rh * 2), rd = new Float32Array(rw * rh * 2).fill(1e9);
@@ -118,7 +123,6 @@ export function planLM(layout, HF, B, P = NIGHT_LM) {
         else if (d < rd[c + 1] && (E[ras[c] - 1][4] * nx + E[ras[c] - 1][5] * nz) < 0.7) { ras[c + 1] = id; rd[c + 1] = d; }
       }
   });
-  const g = P.gres, gw = Math.ceil((B.x1 - B.x0) / g), gh = Math.ceil((B.z1 - B.z0) / g);
   return { edges: Float32Array.from(E.flat()), nE: E.length, rect, atlasW: W, atlasH, raster: ras, rw, rh, rr, x0: B.x0, z0: B.z0, gres: g, fres: f, gw, gh };
 }
 
@@ -146,24 +150,24 @@ export function bakeLM(job) {
     for (let j = 0; j < 3; j++) { const a = VI[p0 + j] * (1 - u) + VI[p1 + j] * u; out[j] += a * Math.max(0, 1 + (VI[p0 + 3] * (1 - u) + VI[p1 + 3] * u) * ny); }
     out[3] = 1; return out;
   }
-  // ground
-  const gw = plan.gw, gh = plan.gh, G = new Uint16Array(gw * gh * 4); let nG = 0;
+  // ground: the atlas's top-left gw x gh texels
+  const gw = plan.gw, gh = plan.gh, AW = plan.atlasW, AH = plan.atlasH, A = new Uint16Array(AW * AH * 4), G = A; let nG = 0;
   for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) {
     const x = plan.x0 + (i + 0.5) * plan.gres, z = plan.z0 + (j + 0.5) * plan.gres;
     if (at(x, z) > 0) continue;
     const r = texel(x, 0.02, z, 0, 1, 0, Math.floor((x - grid.x0) / grid.cell), Math.floor((z - grid.z0) / grid.cell)); if (!r[3]) continue;
-    const o = (j * gw + i) * 4; G[o] = toHalf(r[0]); G[o + 1] = toHalf(r[1]); G[o + 2] = toHalf(r[2]); G[o + 3] = toHalf(1); nG++;
+    const o = (j * AW + i) * 4; G[o] = toHalf(r[0]); G[o + 1] = toHalf(r[1]); G[o + 2] = toHalf(r[2]); G[o + 3] = toHalf(1); nG++;
   }
   // dilate 2 texels into the buildings, so a bilinear read at a wall's foot stays on the map (no seam to the volume)
   for (let pass = 0; pass < 2; pass++) {
-    const src = G.slice();
+    const src = G.slice(0, gh * AW * 4);
     for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) {
-      const o = (j * gw + i) * 4; if (src[o + 3]) continue;
-      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const x = i + di, y = j + dj; if (x < 0 || y < 0 || x >= gw || y >= gh) continue; const q = (y * gw + x) * 4; if (src[q + 3]) { G[o] = src[q]; G[o + 1] = src[q + 1]; G[o + 2] = src[q + 2]; G[o + 3] = src[q + 3]; break; } }
+      const o = (j * AW + i) * 4; if (src[o + 3]) continue;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const x = i + di, y = j + dj; if (x < 0 || y < 0 || x >= gw || y >= gh) continue; const q = (y * AW + x) * 4; if (src[q + 3]) { G[o] = src[q]; G[o + 1] = src[q + 1]; G[o + 2] = src[q + 2]; G[o + 3] = src[q + 3]; break; } }
     }
   }
   // facades
-  const AW = plan.atlasW, AH = plan.atlasH, A = new Uint16Array(AW * AH * 4), E = plan.edges, f = plan.fres; let nA = 0;
+  const E = plan.edges, f = plan.fres; let nA = 0;
   for (let e = 0; e < plan.nE; e++) {
     const R = plan.rect, u0 = R[e * 4], v0 = R[e * 4 + 1], w = R[e * 4 + 2], h = R[e * 4 + 3]; if (!w) continue;
     const ox = E[e * 8], oz = E[e * 8 + 1], ux = E[e * 8 + 2], uz = E[e * 8 + 3], nx = E[e * 8 + 4], nz = E[e * 8 + 5], len = E[e * 8 + 6], hg = E[e * 8 + 7];
@@ -177,5 +181,5 @@ export function bakeLM(job) {
       const o = ((v0 + b) * AW + u0 + a) * 4; A[o] = toHalf(r[0]); A[o + 1] = toHalf(r[1]); A[o + 2] = toHalf(r[2]); A[o + 3] = toHalf(1); nA++;
     }
   }
-  return { ground: G, atlas: A, texels: { ground: nG, facade: nA }, ms: Date.now() - t0 };
+  return { atlas: A, texels: { ground: nG, facade: nA }, ms: Date.now() - t0 };
 }

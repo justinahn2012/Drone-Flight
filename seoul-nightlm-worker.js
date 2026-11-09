@@ -3,5 +3,5 @@
 import { bakeLM } from './seoul-nightlm.js';
 self.onmessage = (ev) => {
   const r = bakeLM(ev.data);
-  self.postMessage(r, [r.ground.buffer, r.atlas.buffer]);
+  self.postMessage(r, [r.atlas.buffer]);
 };

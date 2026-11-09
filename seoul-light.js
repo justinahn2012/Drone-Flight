@@ -227,8 +227,9 @@ uniform vec3 uCitySkyGlow;         // haze colour with no local light (sky glow 
 uniform sampler2D uCityAO; uniform float uCityAOOn; uniform vec2 uCityAOScale;   // fpvcam's SSAO (contract C3)
 uniform vec4 uCityLM;              // P3 night lightmap: on, ground m/texel, facade m/texel, near (m)
 uniform vec4 uCityLMG;             // ground map x0, z0, texels w, h (the raster shares x0, z0 at 1 m)
-uniform vec4 uCityLMA;             // facade atlas w, h, raster w, h
-uniform highp sampler2D tCityLMG; uniform highp sampler2D tCityLMA; uniform highp usampler2D tCityLMR; uniform highp sampler2D tCityLME;
+uniform vec4 uCityLMA;             // atlas w, h (the ground map at its origin), raster w, h
+uniform vec4 uCityLMR;             // tCityL rows: edge table, raster
+uniform highp sampler2D tCityLM;
 bool cityLMOn = false;
 vec3 cityOct(vec2 e){ vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y)); if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * (step(0.0, v.xy) * 2.0 - 1.0); return normalize(v); }
 float cityStreet(vec3 D, vec3 f){ float c = -D.y; if (c <= 1e-4) return 0.0; float hl = length(D.xz), t = hl / c;
@@ -266,7 +267,7 @@ void cityOne(const in highp usampler2D tl, int idx, bool spec, bool lmSkip, vec3
   vec3 E = I * (fe * q * q * fl * uCityGain * F);
   vec3 lv = normalize((viewMatrix * vec4(l, 0.0)).xyz);
   if (spec) { IncidentLight il; il.direction = lv; il.color = E; il.visible = true;
-    if (dOff) { ReflectedLight t = ReflectedLight(vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0)); RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, t); reflectedLight.directSpecular += t.directSpecular; }
+    if (dOff) { ReflectedLight rlt = ReflectedLight(vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0)); RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, rlt); reflectedLight.directSpecular += rlt.directSpecular; }
     else RE_Direct(il, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); }
   else reflectedLight.directDiffuse += E * saturate(dot(geometryNormal, lv)) * BRDF_Lambert(material.diffuseColor);
 }
@@ -312,24 +313,26 @@ bool cityLightmap(vec3 wp, vec3 nW, out vec3 E){
   E = vec3(0.0);
   if (uCityLM.x < 0.5) return false;
   if (nW.y > 0.7 && wp.y < 0.6) {
-    vec4 t = texture(tCityLMG, (wp.xz - uCityLMG.xy) / uCityLM.y / uCityLMG.zw);
+    vec4 t = texture(tCityLM, (wp.xz - uCityLMG.xy) / uCityLM.y / uCityLMA.xy);
     if (t.a < 0.99) return false;
     E = t.rgb; return true;
   }
   if (abs(nW.y) > 0.35) return false;
   ivec2 rc = ivec2(floor(wp.xz - uCityLMG.xy));
   if (rc.x < 0 || rc.y < 0 || rc.x >= int(uCityLMA.z) || rc.y >= int(uCityLMA.w)) return false;
-  uvec2 ids = texelFetch(tCityLMR, rc, 0).xy;
+  int li = rc.y * int(uCityLMA.z) + rc.x, lt = li >> 1;
+  uvec4 rq = texelFetch(tCityL, ivec2(lt & 511, int(uCityLMR.y) + (lt >> 9)), 0);
+  uvec2 ids = (li & 1) == 0 ? rq.xy : rq.zw;
   for (int s = 0; s < 2; s++) {
     uint id = s == 0 ? ids.x : ids.y; if (id == 0u) continue;
-    int e = int(id) - 1; ivec2 b = ivec2((e & 255) * 2, e >> 8);
-    vec4 r0 = texelFetch(tCityLME, b, 0), r1 = texelFetch(tCityLME, b + ivec2(1, 0), 0);
+    int e = int(id) - 1; ivec2 b = ivec2((e & 255) * 2, int(uCityLMR.x) + (e >> 8));
+    vec4 r0 = uintBitsToFloat(texelFetch(tCityL, b, 0)), r1 = uintBitsToFloat(texelFetch(tCityL, b + ivec2(1, 0), 0));
     float sg = r1.z < 0.0 ? -1.0 : 1.0, len = abs(r1.z);
     vec2 n = sg * vec2(r0.w, -r0.z);
     if (dot(n, nW.xz) < 0.8) continue;
     vec2 d = wp.xz - r0.xy; if (abs(dot(d, n)) > uCityLM.w) continue;
     vec2 tc = vec2(clamp(dot(d, r0.zw), 0.0, len), clamp(wp.y, 0.0, r1.w));
-    vec4 tx = texture(tCityLMA, (r1.xy + 1.0 + tc / uCityLM.z) / uCityLMA.xy);
+    vec4 tx = texture(tCityLM, (r1.xy + 1.0 + tc / uCityLM.z) / uCityLMA.xy);
     if (tx.a < 0.99) return false;
     E = tx.rgb; return true;
   }
@@ -490,6 +493,12 @@ export function attach(world, emitters = [], ctx = {}) {
   const gw = Math.min(256, Math.ceil((x1 - x0) / cell)), gh = Math.min(256, Math.ceil((z1 - z0) / cell));
   const K4 = Math.max(1, Math.min(3, Q.K / 4)), K = K4 * 4, KD4 = Math.max(1, Math.min(2, Q.Kd / 4)), KD = KD4 * 4;
   const HF = heightField(ctx.layout, x0, z0, x0 + gw * cell, z0 + gh * cell, VOLUME.rasterM);
+  // P3 night lightmap: planned here because its lookup raster and edge table ride as extra rows of the static record
+  // texture (one texture unit for the whole lightmap). node (tests, tools): off unless ctx.lightmap === true.
+  const lm = { on: (typeof window === 'undefined' ? ctx.lightmap === true : ctx.lightmap !== false) && !!ctx.layout?.lots?.length, ready: false, ms: 0, texels: null, mode: 'off', worker: null };
+  const tP0 = now(), lmPlan = lm.on ? planLM(ctx.layout, HF, { x0, z0, x1: x0 + gw * cell, z1: z0 + gh * cell }) : null, lmPlanMs = now() - tP0;
+  const LMR0 = Math.max(1, Math.ceil(Math.max(1, stat.length) / LW)), LMER = lmPlan ? Math.ceil(lmPlan.nE / 256) : 0;
+  const LMR1 = LMR0 + LMER, LMRR = lmPlan ? Math.ceil(Math.ceil(lmPlan.rw * lmPlan.rh / 2) / 512) : 0;
   const YS = VOLUME.heights, NL = YS.length;
 
   // forward direction of a street lamp: e.forward, else toward the nearest street centreline
@@ -562,8 +571,8 @@ export function attach(world, emitters = [], ctx = {}) {
     u32[k + 4] = oct(m.n[0], m.n[1], m.n[2]); u32[k + 5] = h2(m.I[0], m.I[1]); u32[k + 6] = h2(m.I[2], m.range);
     u32[k + 7] = (m.ty | (ci << 2) | (hz << 16) | (dep << 22) | (Math.min(63, Math.round(m.omni * 63)) << 26)) >>> 0;
   }
-  const recTex = (n) => {
-    const w = LW * 2, h = Math.max(1, Math.ceil(n / LW));
+  const recTex = (n, extra = 0) => {
+    const w = LW * 2, h = Math.max(1, Math.ceil(n / LW)) + extra;
     const t = new THREE.DataTexture(new Uint32Array(w * h * 4), w, h, THREE.RGBAIntegerFormat, THREE.UnsignedIntType);
     t.internalFormat = 'RGBA32UI'; t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true;
     return t;
@@ -573,7 +582,17 @@ export function attach(world, emitters = [], ctx = {}) {
     t.internalFormat = 'RGBA16UI'; t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true;
     return t;
   };
-  const tL = recTex(Math.max(1, stat.length)), tLD = recTex(Math.max(1, Q.Nd));
+  const tL = recTex(Math.max(1, stat.length), LMER + LMRR), tLD = recTex(Math.max(1, Q.Nd));
+  if (lmPlan) {   // edge table (2 texels of float bits per edge, 256 per row) and the raster (2 cells per texel: id0, id1)
+    const u = tL.image.data, f = new Float32Array(u.buffer, u.byteOffset, u.length), E = lmPlan.edges;
+    for (let e = 0; e < lmPlan.nE; e++) {
+      const o = ((LMR0 + (e >> 8)) * 512 + (e & 255) * 2) * 4, ux = E[e * 8 + 2], uz = E[e * 8 + 3], sg = E[e * 8 + 4] * uz - E[e * 8 + 5] * ux > 0 ? 1 : -1;
+      f[o] = E[e * 8]; f[o + 1] = E[e * 8 + 1]; f[o + 2] = ux; f[o + 3] = uz;
+      f[o + 4] = lmPlan.rect[e * 4]; f[o + 5] = lmPlan.rect[e * 4 + 1]; f[o + 6] = E[e * 8 + 6] * sg; f[o + 7] = E[e * 8 + 7];
+    }
+    const R = lmPlan.raster, base = LMR1 * 512 * 4;
+    for (let li = 0; li < lmPlan.rw * lmPlan.rh; li++) { const o = base + (li >> 1) * 4 + (li & 1) * 2; u[o] = R[li * 2]; u[o + 1] = R[li * 2 + 1]; }
+  }
   const tG = gridTex(gw * K4, gh), tGD = gridTex(DW * KD4, DW);
   const tLC = new THREE.DataTexture(new Float32Array(LW * Math.max(1, Math.ceil(nAnim / LW)) * 4), LW, Math.max(1, Math.ceil(nAnim / LW)), THREE.RGBAFormat, THREE.FloatType);
   tLC.minFilter = tLC.magFilter = THREE.NearestFilter; tLC.generateMipmaps = false; tLC.needsUpdate = true;
@@ -770,37 +789,24 @@ export function attach(world, emitters = [], ctx = {}) {
   // seoul-nightlm.js bakes every static emitter (no K limit, heightfield-occluded) + the volume's indirect onto the
   // ground (0.5 m) and the exposed walls (0.5 m atlas). Browser: in a module Worker, so the level opens on the volume and
   // the lightmap fades in when it lands (~1-3 s); node / ctx.lightmapSync: in line. ctx.lightmap === false: off.
-  // node (tests, tools): off unless ctx.lightmap === true (the bake is seconds of CPU the suites don't need)
-  const lm = { on: (typeof window === 'undefined' ? ctx.lightmap === true : ctx.lightmap !== false) && !!ctx.layout?.lots?.length, ready: false, ms: 0, texels: null, mode: 'off', worker: null };
   const half4 = (w, h, data) => { const t = new THREE.DataTexture(data || new Uint16Array(w * h * 4), w, h, THREE.RGBAFormat, THREE.HalfFloatType);
     t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.generateMipmaps = false; t.needsUpdate = true; return t; };
-  let tLMG = half4(1, 1), tLMA = half4(1, 1), tLMR, tLME;
-  { const t = new THREE.DataTexture(new Uint16Array(2), 1, 1, THREE.RGIntegerFormat, THREE.UnsignedShortType); t.internalFormat = 'RG16UI'; t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true; tLMR = t; }
-  { const t = new THREE.DataTexture(new Float32Array(8), 2, 1, THREE.RGBAFormat, THREE.FloatType); t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true; tLME = t; }
-  const uLM = { value: new THREE.Vector4(0, NIGHT_LM.gres, NIGHT_LM.fres, NIGHT_LM.near) }, uLMG = { value: new THREE.Vector4() }, uLMA = { value: new THREE.Vector4(1, 1, 1, 1) };
+  let tLM = half4(1, 1);
+  const uLM = { value: new THREE.Vector4(0, NIGHT_LM.gres, NIGHT_LM.fres, NIGHT_LM.near) }, uLMG = { value: new THREE.Vector4() }, uLMA = { value: new THREE.Vector4(1, 1, 1, 1) }, uLMR = { value: new THREE.Vector4(LMR0, LMR1, 0, 0) };
   if (lm.on) {
-    const tP = now();
-    const plan = planLM(ctx.layout, HF, { x0, z0, x1: x0 + gw * cell, z1: z0 + gh * cell });
+    const plan = lmPlan;
     const cs = new Int32Array(NC + 1); for (let q = 0; q < pairs; q++) cs[pc[q] + 1]++; for (let c = 0; c < NC; c++) cs[c + 1] += cs[c];
     const fillc = cs.slice(0, NC), pe = new Int32Array(pairs), po = new Uint8Array(pairs);
     for (let q = 0; q < pairs; q++) { const o = fillc[pc[q]]++; pe[o] = pi[q]; po[o] = pb[q]; }
     const M = new Float32Array(stat.length * LM_MS);
     metas.forEach((m, i) => packMeta(m, M, i, i >= animBase || (m.flick?.hz > 0 && m.flick?.depth > 0) ? 1 : 0));   // screens and flicker stay per fragment
-    const job = { plan, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI };
-    // the lookup textures now (the raster and the edge table), the maps when the bake lands
-    tLMR.image = { data: plan.raster, width: plan.rw, height: plan.rh }; tLMR.needsUpdate = true;
-    { const ER = Math.max(1, Math.ceil(plan.nE / 256)), d = new Float32Array(512 * ER * 4), E = plan.edges;
-      for (let e = 0; e < plan.nE; e++) { const o = ((e >> 8) * 512 + (e & 255) * 2) * 4, ux = E[e * 8 + 2], uz = E[e * 8 + 3], nx = E[e * 8 + 4], nz = E[e * 8 + 5];
-        const sg = nx * uz - nz * ux > 0 ? 1 : -1;
-        d[o] = E[e * 8]; d[o + 1] = E[e * 8 + 1]; d[o + 2] = ux; d[o + 3] = uz; d[o + 4] = plan.rect[e * 4]; d[o + 5] = plan.rect[e * 4 + 1]; d[o + 6] = E[e * 8 + 6] * sg; d[o + 7] = E[e * 8 + 7]; }
-      tLME.image = { data: d, width: 512, height: ER }; tLME.needsUpdate = true; }
+    const job = { plan: { ...plan, raster: null }, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI };
     uLMG.value.set(plan.x0, plan.z0, plan.gw, plan.gh); uLMA.value.set(plan.atlasW, plan.atlasH, plan.rw, plan.rh);
-    lm.plan = { edges: plan.nE, atlas: [plan.atlasW, plan.atlasH], ground: [plan.gw, plan.gh], planMs: +(now() - tP).toFixed(0) };
+    lm.plan = { edges: plan.nE, atlas: [plan.atlasW, plan.atlasH], ground: [plan.gw, plan.gh], planMs: +lmPlanMs.toFixed(0) };
     const apply = (res) => {
-      if (!res?.ground || lm.disposed) return;
-      tLMG.dispose(); tLMA.dispose();
-      tLMG = half4(plan.gw, plan.gh, res.ground); tLMA = half4(plan.atlasW, plan.atlasH, res.atlas);
-      U.tCityLMG.value = tLMG; U.tCityLMA.value = tLMA; uLM.value.x = 1;
+      if (!res?.atlas || lm.disposed) return;
+      tLM.dispose(); tLM = half4(plan.atlasW, plan.atlasH, res.atlas); lm.data = res.atlas;
+      U.tCityLM.value = tLM; uLM.value.x = 1;
       lm.ready = true; lm.ms = res.ms; lm.texels = res.texels;
     };
     const IS_NODE = typeof window === 'undefined';
@@ -832,7 +838,7 @@ export function attach(world, emitters = [], ctx = {}) {
     uCitySkyGlow: { value: new THREE.Vector3(...NIGHT_SKY.horizon.map((v) => v * NS * 0.6)) },
     uCityAO: aoU?.uAO || { value: blackTex }, uCityAOOn: aoU?.uAOOn || { value: 0 }, uCityAOScale: aoU?.uAOScale || { value: new THREE.Vector2(1, 1) },
     uCityCar: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uCityCarS: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) },
-    uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, tCityLMG: { value: tLMG }, tCityLMA: { value: tLMA }, tCityLMR: { value: tLMR }, tCityLME: { value: tLME },
+    uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, uCityLMR: uLMR, tCityLM: { value: tLM },
     tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
@@ -1447,11 +1453,28 @@ export function attach(world, emitters = [], ctx = {}) {
       U.uCityDyn.value.w = P.light === 'low' ? Math.max(1, (L.K / 4) | 0) : 0; Q.refl = L.refl ?? Q0.refl; air.n = Math.min(Q0.air, L.air ?? Q0.air);
       qualityCap.current = name; return true; } };
   world.qualityCap = qualityCap;
+  // CPU mirror of cityLightmap (tests, diagnostics): lux at (x, y, z) on a face with world normal n, null = volume
+  function lightmapAt(x, y, z, nx = 0, ny = 1, nz = 0) {
+    if (!lm.ready || !lm.data) return null;
+    const P = lmPlan, D = lm.data, AW = P.atlasW, hf = THREE.DataUtils.fromHalfFloat;
+    const read = (u, v) => { const i = Math.floor(u), j = Math.floor(v), o = (j * AW + i) * 4; if (i < 0 || j < 0 || i >= AW || j >= P.atlasH || !hf(D[o + 3])) return null; return (LUMA[0] * hf(D[o]) + LUMA[1] * hf(D[o + 1]) + LUMA[2] * hf(D[o + 2])) / NS; };
+    if (ny > 0.7 && y < 0.6) return read((x - P.x0) / P.gres, (z - P.z0) / P.gres);
+    if (Math.abs(ny) > 0.35) return null;
+    const rx = Math.floor(x - P.x0), rz = Math.floor(z - P.z0); if (rx < 0 || rz < 0 || rx >= P.rw || rz >= P.rh) return null;
+    for (const id of [P.raster[(rz * P.rw + rx) * 2], P.raster[(rz * P.rw + rx) * 2 + 1]]) {
+      if (!id) continue; const e = id - 1, E = P.edges, ux = E[e * 8 + 2], uz = E[e * 8 + 3], enx = E[e * 8 + 4], enz = E[e * 8 + 5];
+      if (enx * nx + enz * nz < 0.8) continue;
+      const dx = x - E[e * 8], dz = z - E[e * 8 + 1]; if (Math.abs(dx * enx + dz * enz) > NIGHT_LM.near) continue;
+      const t = Math.max(0, Math.min(E[e * 8 + 6], dx * ux + dz * uz)), yy = Math.max(0, Math.min(E[e * 8 + 7], y));
+      return read(P.rect[e * 4] + 1 + t / P.fres - 0.5, P.rect[e * 4 + 1] + 1 + yy / P.fres - 0.5);
+    }
+    return null;
+  }
   const ctl = {
-    update, patchMaterial, qualityCap, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
+    update, patchMaterial, qualityCap, lightmapAt, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
     setWet(v) { U.uCityWet.value = v; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
     dispose() {
-      for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex, tLMR, tLME, U.tCityLMG.value, U.tCityLMA.value]) t.dispose();
+      for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex, U.tCityLM.value]) t.dispose();
       lm.disposed = true; lm.worker?.terminate();
       U.tCityMirror.value?.dispose?.();
       mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); quad.geometry.dispose();
