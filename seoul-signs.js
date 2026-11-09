@@ -19,7 +19,7 @@
 //   * Filter model: coloured light is white light through a filter, rgb / max(rgb) x white-equivalent nits (85 % dye peak);
 //     NITS is white-equivalent, so hue sets luminance. L3 records keep their contract (rgb Y = 1, nits = luminance), which
 //     is now hue-aware. Hero mix warm-heavy with pink / cyan / violet as accents. Sign light budget R/G 1.4, B/G 0.95.
-//   * Hot structure: channel / galva LED letters 1.0 at the stroke centre -> 0.45 at the edge; neon cos^2 across the tube
+//   * Hot structure: channel / galva LED letters 1.0 at the stroke centre (0.04 em in) -> 0.45 at the edge; neon cos^2 across the tube
 //     (core 3x the sleeve); bulbs 2 cm points (LEDs 1.2 cm) at 1800-2000 nits. Contract P3-B1: the scene target's alpha
 //     is 1 + w on those cores (w in [0, 1]) and 1 elsewhere, so A's camera can white-core true sources only.
 //   * Density: street-facing side walls of corner lots (as world-seoul finds them) get a wrapped fascia, a blade stack and
@@ -959,7 +959,7 @@ export function exportData(layout, opts = {}) {
     col: e.col.map((v) => +v.toFixed(2)), alb: e.alb.map((v) => +v.toFixed(3)), p: e.p.map((v) => +(+v).toFixed(4)) })));
   const signs = {
     version: SIGNS_VERSION, units: { length: 'm', luminance: 'cd/m^2', frame: 'x east, y up, z south' },
-    kinds: K, kindDoc: 'BOX light-box ground (diffuser: centre +20 %, edges -30 %, LED rows 0.12 m at grazing angles; p=[w,h,round]); PANEL flat (emits col, reflects alb); FILL MSDF glyph fill (p.x=1 LED channel letter: 0.45 + 0.55 smoothstep(0, 0.055 em, d) across the stroke, mean 0.78 when unresolved; p.x=2 script neon: (1 + 2 sin^2(pi/2 min(d / 0.028 em, 1))) / 3; p.z = mean coverage of the quad); TUBE neon tube on the glyph outline (p.x half width, em; (1 + 2 cos^2(pi/2 |dc| / hw)) / 3: core 3x the sleeve); DOTS exposed LEDs inside the glyph (p.x pitch, em); BULBS border strip (uv.x metres along; p=[pitch m, 0 static|1 chase|2 LED, width m]; points of radius 1.0 cm (LED 0.6 cm), filtered to the pixel footprint (a one-pixel tent carrying the disc energy when sub-pixel), several per pixel: mean pi (0.72 r)^2 / (pitch x width)); ROOM lit room behind window film (ceiling gradient; p.z=1 blinds). layer: draw order on the face plane (pull toward the eye 6e-4 x depth per layer); z: offset along the normal (m). Face frame: right = up x n. col is linear cd/m^2 under the filter model (rgb / max x white-equivalent nits). True-source cores (channel stroke centres, tube axes, bulb / LED / dot points) write scene alpha 1 + w (contract P3-B1).',
+    kinds: K, kindDoc: 'BOX light-box ground (diffuser: centre +20 %, edges -30 %, LED rows 0.12 m at grazing angles; p=[w,h,round]); PANEL flat (emits col, reflects alb); FILL MSDF glyph fill (p.x=1 LED channel letter: 0.45 + 0.55 smoothstep(0, 0.04 em, d) across the stroke, mean 0.78 when unresolved; p.x=2 script neon: (1 + 2 sin^2(pi/2 min(d / 0.028 em, 1))) / 3; p.z = mean coverage of the quad); TUBE neon tube on the glyph outline (p.x half width, em; (1 + 2 cos^2(pi/2 |dc| / hw)) / 3: core 3x the sleeve); DOTS exposed LEDs inside the glyph (p.x pitch, em); BULBS border strip (uv.x metres along; p=[pitch m, 0 static|1 chase|2 LED, width m]; points of radius 1.0 cm (LED 0.6 cm), filtered to the pixel footprint (a one-pixel tent carrying the disc energy when sub-pixel), several per pixel: mean pi (0.72 r)^2 / (pitch x width)); ROOM lit room behind window film (ceiling gradient; p.z=1 blinds). layer: draw order on the face plane (pull toward the eye 6e-4 x depth per layer); z: offset along the normal (m). Face frame: right = up x n. col is linear cd/m^2 under the filter model (rgb / max x white-equivalent nits). True-source cores (channel stroke centres, tube axes, bulb / LED / dot points) write scene alpha 1 + w (contract P3-B1).',
     msdf: { image: MSDF.image, meta: 'seoul/signs/msdf-meta.js', size: MSDF.size, pxPerEm: MSDF.px, range: MSDF.range, median: 'max(min(r,g),min(max(r,g),b)) - 0.5, x range px' },
     faces: faceRecs, designs: designList,
     housings: D.boxes.map((b) => ({ c: b.c, r: b.r, n: b.n, half: [+b.hw.toFixed(3), +b.hh.toFixed(3), +b.hd.toFixed(3)], albedo: b.col, noFront: b.noFront, collide: b.collide })),
@@ -1090,8 +1090,8 @@ const FACE_FRAG_BODY = /* glsl */`
             float e = sin(1.5707963 * clamp(dEm / 0.028, 0.0, 1.0)); e *= e;
             pr = mix(0.6, (1.0 + 2.0 * e) / 3.0, res); sgCore = mix(0.4, smoothstep(0.55, 0.9, e), res);
           } else if (vSK.y > 0.5) {  // LED channel letter: modules behind an acrylic face, 1.0 at the stroke centre -> 0.45 at the edge
-            float e = smoothstep(0.0, 0.055, dEm);
-            pr = mix(0.78, 0.45 + 0.55 * e, res); sgCore = mix(0.45, smoothstep(0.7, 0.95, e), res);
+            float e = smoothstep(0.0, 0.04, dEm);                                    // bold sign faces: stroke half-width 0.035-0.08 em
+            pr = mix(0.78, 0.45 + 0.55 * e, res); sgCore = mix(0.45, smoothstep(0.022, 0.038, dEm), res);
           }
           sgEm = vSCol * pr;
         } else {              // exposed LED dots inside the letter body
