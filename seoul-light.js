@@ -862,7 +862,7 @@ export function attach(world, emitters = [], ctx = {}) {
   cityLights(geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
   ${wet ? `float cityCC = cityContact(cityWorldPos(geometryPosition)); reflectedLight.directDiffuse *= mix(1.0, cityCC, 0.75); reflectedLight.directSpecular *= mix(1.0, cityCC, 0.75);` : 'float cityCC = 1.0;'}
   #if defined( RE_IndirectDiffuse )
-  irradiance += (cityLMOn ? cityLMv * (uCityGain * cityAOf()) : cityIrradiance(cityWorldPos(geometryPosition), cityNW)) * cityCC;
+  irradiance += (cityLMOn ? cityLMv * (uCityGain * mix(1.0, cityAOf(), 0.45)) : cityIrradiance(cityWorldPos(geometryPosition), cityNW)) * cityCC;   // the lightmap is mostly direct: SSAO at 45 %
   #endif`)
         .replace('#include <opaque_fragment>', `#include <opaque_fragment>\n  gl_FragColor.rgb = cityHaze(gl_FragColor.rgb, -vViewPosition);`);
       if (wet) {
