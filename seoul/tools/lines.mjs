@@ -261,7 +261,7 @@ run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value:
   const near = masts.filter((m) => m.d > 0).sort((a, b) => a.d - b.d)[0], far = masts.filter((m) => m.d < 0).sort((a, b) => b.d - a.d)[0];
   if (near && far) {
     // the arm runs from the head out to its pole (away from the road centre, ~5.5-6.5 m): the gate under its middle
-    const under = (m, sg) => { const dd = m.d + sg * 3.0; return g([mx + nx * dd + pa.tx * m.s, 4.3, mz + nz * dd + pa.tz * m.s], [-nx, 0, -nz], 2.4, 1.2, [pa.tx, 0, pa.tz]); };
+    const under = (m, sg) => { const dd = m.d + sg * 1.6;   // 1.6 m kerb-side of the heads: 0.9 m clear of their boxes, ~4-5 m short of the pole return g([mx + nx * dd + pa.tx * m.s, 4.3, mz + nz * dd + pa.tz * m.s], [-nx, 0, -nz], 2.4, 1.2, [pa.tx, 0, pa.tz]); };
     const A = fit(under(near, 1), 'CROSSING (near mast)'), B = fit(under(far, -1), 'CROSSING (far mast)'), L = dist3(A, B);
     add('CROSSING', 'THE *CROSSING*!', 1500, B, { pre: [A], within: within(L) });
     add('CROSSING', 'THE *CROSSING*!', 1500, neg(A), { pre: [neg(B)], within: within(L) });

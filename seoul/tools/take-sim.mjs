@@ -95,7 +95,8 @@ const ROUTES = {
   canyon: [['from', 'SCREEN CANYON', 0, 14], ['street', 'SCREEN CANYON', 0]],
   // [P3-F1] the re-cut lines
   red: [['from', 'RED ROAD', 0, 14], ['street', 'RED ROAD', 0]],
-  crossing: [['from', 'CROSSING', 0, 14], ['line', 'CROSSING', 0]],
+  crossing: [['from', 'CROSSING', 0, 6], ['line', 'CROSSING', 0]],
+  crossing1: [['from', 'CROSSING', 1, 6], ['line', 'CROSSING', 1]],
   queue: [['from', 'OVER THE QUEUE', 0, 10], ['line', 'OVER THE QUEUE', 0]],
   door: [['from', 'DOOR QUEUE', 0, 10], ['line', 'DOOR QUEUE', 0]],
   roofline: [['from', 'ROOFLINE', 0, 14], ['street', 'ROOFLINE', 0], ['line', 'ROOF SLOT', 0]],
