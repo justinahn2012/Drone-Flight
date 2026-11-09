@@ -139,6 +139,14 @@ export function lifeMovers(life) {
   const sim = life.sim, tr = sim?.traffic;
   const TS = tr && typeof tr.constructor === 'function' && typeof tr.step === 'function' && typeof tr.pose === 'function' ? tr.constructor : null;
   const peds = [];
+  // [integ7] G's phase-2 crowd: walkers are a pure function of the take clock (not collidable yet); the standing and
+  // seated people (chat clusters, smokers, queues, the bouncer, pocha tables) are crowd.statics ids into crowd.people
+  const cr = sim?.crowd;
+  if (cr && Array.isArray(cr.people) && Array.isArray(cr.statics)) for (const id of cr.statics) {
+    const a = cr.people[id]; if (!a || !Number.isFinite(a.x) || !Number.isFinite(a.z)) continue;
+    const s = Number.isFinite(a.scale) ? Math.max(0.85, Math.min(1.15, a.scale)) : 1;
+    peds.push({ id: 100000 + (a.id ?? peds.length), x: a.x, z: a.z, h: (a.pose === 3 /* P_SIT */ ? PED_SIT : PED_H) * s });
+  }
   for (const a of sim?.crowd?.agents || []) {
     if (a.mode !== M_STAND && a.mode !== M_SEAT) continue;
     if (!Number.isFinite(a.x) || !Number.isFinite(a.z)) continue;

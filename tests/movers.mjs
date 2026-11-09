@@ -76,23 +76,32 @@ const vehAt = (t, pred) => sim.boxesAt(t, []).map((b) => ({ ...b, v: sim.traffic
 // 4. a standing person: SCRAPE + HEADS!
 {
   // a standing person with a clear 4 m run-in at 1.2 m from some side, nobody else within 1 m
-  const ray = new THREE.Ray(); let q = null, dir = null;
+  // [integ7] try candidates in order until one isn't on a traffic lane (a car crashing the run says nothing about people)
+  const ray = new THREE.Ray(); let tried = 0, done = false;
   for (const p of M.src.peds) {
+    if (done || tried >= 25) break;
     if (p.h < 1.6 || M.src.peds.some((o) => o !== p && Math.hypot(o.x - p.x, o.z - p.z) < 1.0)) continue;
+    let dir = null;
     for (let k = 0; k < 8 && !dir; k++) { const a = k * Math.PI / 4, dx = Math.cos(a), dz = Math.sin(a);
       ray.origin.set(p.x - dx * 4, 1.2, p.z - dz * 4); ray.direction.set(dx, 0, dz);
-      if (!geo.bvh.raycastFirst(ray, THREE.DoubleSide, 0, 4.5) && !geo.bvh.closestPointToPoint(ray.origin, {}, 0, 0.6)) dir = [dx, dz]; }
-    if (dir) { q = p; break; }
-  }
-  if (!q) ok(false, 'a standing person to fly into');
-  else {
+      if (!geo.bvh.raycastFirst(ray, THREE.DoubleSide, 0, 4.5) && !((geo.bvh.closestPointToPoint(ray.origin, {}, 0, 0.6)?.distance ?? 1e9) < 0.6)) dir = [dx, dz]; }   // the threshold is an early-out, not a filter
+    if (!dir) continue;
+    // away from the traffic for the whole run (a bus sweeping the quad says nothing about people)
+    let nearCar = false;
+    for (let tt = 0; tt <= 3 && !nearCar; tt += 0.25) for (const bx of sim.boxesAt(tt, [])) if (Math.hypot(bx.c[0] - p.x, bx.c[2] - p.z) < 14) { nearCar = true; break; }
+    if (nearCar) continue;
+    tried++;
+    const q = p, mv = M.fork ? M.fork() : M;
     const d = new Drone('freestyle5'); d.reset(new THREE.Vector3(q.x - dir[0] * 3, 1.2, q.z - dir[1] * 3), Math.atan2(-dir[0], -dir[1]));
     const tk = new Take(); const ev = [];
-    const w = { ...world, movers: M, lines: [] };
+    const w = { ...world, movers: mv, lines: [] };
     for (let i = 0; i < 240 * 3 && !d.crashed; i++) { d.step(PHYS, { thr: 0.4, pitch: 0.18, roll: 0, yaw: 0, climb: 0 }, 'cine', w); ev.push(...tk.update(PHYS, d, w, { hands: true, moved: true, steer: true })); }
+    if (d.crashed && d.moverKind === 'vehicle') continue;
     const s = ev.find((e) => e.type === 'scrape' && e.heads);
-    ok(!d.crashed && d.moverKind === 'pedestrian' && !!s, `flying into a person (r ${PED_R} m): HEADS! scrape (impact ${s?.impact} m/s), no crash, ${ev.filter((e) => e.type === 'scrape').length} scrape event(s)`);
+    ok(!d.crashed && d.moverKind === 'pedestrian' && !!s, `flying into a person (r ${PED_R} m): HEADS! scrape (impact ${s?.impact} m/s), no crash, ${ev.filter((e) => e.type === 'scrape').length} scrape event(s) [candidate ${tried}]`);
+    done = true;
   }
+  if (!done) ok(false, `a standing person to fly into (${tried} candidates tried)`);
 }
 
 // 5. replay-exact with movers

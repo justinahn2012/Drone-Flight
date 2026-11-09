@@ -1269,8 +1269,11 @@ async function offlineAudio(C) {
 // the clip's sound, re-synthesised on an OfflineAudioContext along the output timeline (hits, crash, rooms, grass)
 function clipAudio(actx, C) {
   const a = new MotorAudio(); a.setCraft(drone.key); a.startOffline(actx);
+  let city = null; try { city = world.audio?.clip?.(actx, a) || null; } catch (e) { city = null; }   // [integ7] G: the level's city sound on HQ clips too
+  const cfw = new THREE.Vector3();
   for (let i = 0; i < C.f.length; i++) {
     const fr = C.f[i], at = C.ot[i];
+    if (city && fr.p && fr.q) { try { city.feed(fr.p, cfw.set(0, 0, -1).applyQuaternion(fr.q), ((fr.k || 0) + (fr.a || 0)) * PHYS, at); } catch (e) { city = null; } }
     if (i === 0 || C.seg[i] !== C.seg[i - 1]) a.snap();
     if (i > 0) { if (fr.hit) a.hit(fr.hit, at); if (fr.thud) a.thud(fr.thud, at); }
     a.update(fr.m, fr.s, fr.wash, fr.c, false, fr.ax, at);
