@@ -36,8 +36,13 @@ export const DRESS_MATS = {
   dr_tarp: { color: [1, 1, 1], rough: 0.75, vcol: true, emissive: true, double: true, albedo: [0.35, 0.14, 0.05] },   // lit from inside
   dr_glow: { color: [0.02, 0.02, 0.02], rough: 0.35, emissive: true, albedo: [0.02, 0.02, 0.02] },    // lit faces, tubes, doors
   dr_roadpaint: { color: [1, 1, 1], rough: 0.5, vcol: true, decal: true, noCol: true, albedo: [0.6, 0.6, 0.58] },   // wet via S3's name rule
-  dr_bark: { color: [0.11, 0.095, 0.08], rough: 0.92, albedo: [0.11, 0.095, 0.08] },
+  dr_bark: { color: [0.30, 0.27, 0.24], rough: 0.92, map: 'veg_bark_a.jpg', mapRepeat: [0.5, 1], albedo: [0.11, 0.095, 0.08] },   // [P3-E] bando's CC0 bark (left tile)
   dr_leaf: { color: [1, 1, 1], rough: 0.8, vcol: true, albedo: [0.42, 0.33, 0.06] },
+  // [P3-E art #4] ginkgo leaf cards: bando's V1 cluster tiles (CC0, tools/seoul-ginkgo-cards.py) as a luminance map, the
+  // vertex colour = albedo / 0.5 (gold to yellow-green per card), alpha-tested, crown-mass normals on both faces
+  dr_leafcard: { color: [1, 1, 1], rough: 0.78, vcol: true, map: 'seoul/dressing/ginkgo_cards.png', alphaTest: 0.42, double: true, cardNormals: true, noCol: true, albedo: [0.42, 0.31, 0.05] },
+  // [P3-E] clear vinyl (pocha fronts) and printed awning fabric
+  dr_vinyl: { color: [0.32, 0.30, 0.28], rough: 0.12, transparent: true, opacity: 0.22, double: true, noCol: true, albedo: [0.05, 0.05, 0.05] },
 };
 // S1/C keys this module writes into (attribute layout: position, normal, uv)
 const C_KEYS = new Set(['concrete', 'tile', 'walk', 'metal', 'white', 'dark', 'pole', 'brick', 'plaster']);
@@ -50,6 +55,26 @@ export function material(key, renderer) {
   if (m.transparent) { mat.transparent = true; mat.opacity = m.opacity ?? 0.5; mat.depthWrite = false; }
   if (m.double) mat.side = THREE.DoubleSide;
   if (m.decal) { mat.polygonOffset = true; mat.polygonOffsetFactor = -3; mat.polygonOffsetUnits = -3; }
+  if (m.map) {   // [P3-E] textured keys (ginkgo cards, bark): files next to this module's repo root
+    mat.map = texOf(m.map, renderer, m.mapRepeat); mat.color.setRGB(...m.color);
+    if (m.alphaTest) { mat.alphaTest = m.alphaTest; mat.side = THREE.DoubleSide; }
+  }
+  if (m.cardNormals) {
+    // leaf cards keep their crown-mass normal on both faces (three flips it on back faces), and alpha holds up in the mips
+    // (bando V1's alpha boost) so far crowns do not thin out to twigs
+    const prev = mat.onBeforeCompile;
+    mat.onBeforeCompile = (sh, r) => {
+      prev?.(sh, r);
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace(/normal \*= faceDirection;/g, '').replace(/bitangent \*= faceDirection;|tangent \*= faceDirection;/g, ''))
+        .replace('#include <alphatest_fragment>', `#ifdef USE_MAP
+  { vec2 tx = vMapUv * vec2(textureSize(map, 0)); diffuseColor.a *= 1.0 + 0.3 * clamp(0.5 * log2(min(dot(dFdx(tx), dFdx(tx)), dot(dFdy(tx), dFdy(tx)))), 0.0, 3.0); }
+#endif
+#include <alphatest_fragment>`);
+    };
+    mat.customProgramCacheKey = () => 'seoul:dr-card';
+    mat.polygonOffset = true; mat.polygonOffsetFactor = -1; mat.polygonOffsetUnits = -1;   // fallen-leaf cards lie on the pavement
+  }
   if (m.emissive) {
     mat.emissive = new THREE.Color(0, 0, 0);
     mat.onBeforeCompile = (sh) => {
@@ -60,6 +85,15 @@ export function material(key, renderer) {
   }
   mat.name = 'seoul:' + key;
   return mat;
+}
+
+const TEX = new Map();
+function texOf(file, renderer, rep) {
+  if (TEX.has(file)) return TEX.get(file);
+  const t = new THREE.TextureLoader().load(new URL('./' + file, import.meta.url).href);
+  t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = renderer?.capabilities ? Math.min(8, renderer.capabilities.getMaxAnisotropy()) : 4;
+  if (rep) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rep[0], rep[1]); }
+  TEX.set(file, t); return t;
 }
 
 // ---------------------------------------------------------------------------------------------------------- helpers
@@ -93,9 +127,10 @@ class FBuf {
 }
 class Acc {
   constructor(spec) { this.p = new FBuf(); this.n = new FBuf(); this.uv = new FBuf(); this.e = spec.emissive ? new FBuf() : null; this.c = spec.vcol ? new FBuf() : null; }
-  tri(a, b, c, ua, ub, uc, ea, eb, ec, col) {
+  tri(a, b, c, ua, ub, uc, ea, eb, ec, col, nOv) {
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+    if (nOv) { nx = nOv[0]; ny = nOv[1]; nz = nOv[2]; }   // [P3-E] shading normal override (leaf cards: the crown-mass normal)
     const P = this.p, N = this.n, U = this.uv; P.need(9); N.need(9); U.need(6);
     P.p3(a[0], a[1], a[2]); P.p3(b[0], b[1], b[2]); P.p3(c[0], c[1], c[2]); N.p3(nx, ny, nz); N.p3(nx, ny, nz); N.p3(nx, ny, nz); U.p2(ua[0], ua[1]); U.p2(ub[0], ub[1]); U.p2(uc[0], uc[1]);
     if (this.e) { const A = ea || Z3, B = eb || A, C = ec || A, E = this.e; E.need(9); E.p3(A[0], A[1], A[2]); E.p3(B[0], B[1], B[2]); E.p3(C[0], C[1], C[2]); }
@@ -187,11 +222,11 @@ export function geometry(layout, opts = {}) {
   const facts = { tris: 0, colTris: 0, items: 0, rejectedByGates: 0, scooters: 0, tents: 0, trees: 0, awnings: 0, cablesExtra: 0, drops: 0, signals: 0, crossings: 0, plates: 0, doors: 0, b1: 0, stairs2f: 0 };
 
   // ---------------- kit state: material key, colour (vcol keys), emission (emissive keys), collidable
-  const S = { key: 'concrete', c: [0.5, 0.5, 0.5], em: null, col: true };
-  const set = (key, o = {}) => { S.key = key; S.c = o.c || S.c; S.em = o.em ?? null; S.col = o.col ?? !specOf(key).noCol; return S; };
+  const S = { key: 'concrete', c: [0.5, 0.5, 0.5], em: null, col: true, n: null };
+  const set = (key, o = {}) => { S.key = key; S.c = o.c || S.c; S.em = o.em ?? null; S.col = o.col ?? !specOf(key).noCol; S.n = o.n || null; return S; };
   const uvDef = [[0, 0], [1, 0], [1, 1], [0, 1]];
   function tri(a, b, c, ua = [0, 0], ub = [1, 0], uc = [1, 1], e) {
-    A(S.key).tri(a, b, c, ua, ub, uc, e ? e[0] : S.em, e ? e[1] : S.em, e ? e[2] : S.em, S.c);
+    A(S.key).tri(a, b, c, ua, ub, uc, e ? e[0] : S.em, e ? e[1] : S.em, e ? e[2] : S.em, S.c, S.n);
     if (S.col) { col.need(9); col.p3(a[0], a[1], a[2]); col.p3(b[0], b[1], b[2]); col.p3(c[0], c[1], c[2]); }
   }
   // quad p0..p3 facing nrm (winding fixed), uv per corner, optional per-corner emission
@@ -738,9 +773,73 @@ export function geometry(layout, opts = {}) {
   }
 
   lap('crossings');
-  // ---- trees: ginkgos on the main roads' pavements (Nov: half gold), tree pits with grates
+  // ---- trees: ginkgos on the main roads' pavements (Nov: half gold), tree pits with grates.
+  // [P3-E art #4 / graphics #2] a real street ginkgo instead of polyhedra: a straight leader, pruned clear to ~3 m, ascending
+  // limbs in a loose spiral (excurrent, columnar-conical, 8-12 m), leaf-card clusters (bando V1's CC0 tiles, two crossed
+  // cards each, crown-mass normals, inner cards darker), November colour per tree (gold to yellow-green, the outer and
+  // upper leaves first) and fallen leaves on the pavement. Leaves do not collide; the trunk and the limbs do.
+  // Placement keeps phase 2's stream (R) so every tree stands where it stood; the shape has its own stream per tree.
   {
     const R = rng('trees' + seed);
+    const GOLD = [1.04, 0.74, 0.07], YEL = [0.92, 0.82, 0.16], GRN = [0.36, 0.5, 0.1], BROWN = [0.55, 0.36, 0.08];
+    const mixc = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+    const card = (c, s, yaw, tilt, n, col, tile) => {   // two crossed cards, centre c, size s, crown normal n
+      const u0 = (tile % 4) / 4, u1 = u0 + 0.25, vt = 1 - Math.floor(tile / 4) * 0.5, vb = vt - 0.5;
+      const uv = [[u0, vb], [u1, vb], [u1, vt], [u0, vt]];
+      set('dr_leafcard', { c: col, n });
+      for (const k of [0, 1]) {
+        const a = yaw + k * Math.PI / 2, dx = Math.cos(a) * s / 2, dz = Math.sin(a) * s / 2, ty = Math.sin(tilt * (k ? -1 : 1)) * s / 2, hy = Math.cos(tilt) * s / 2;
+        const ox = -Math.sin(a) * ty, oz = Math.cos(a) * ty;
+        quad([c[0] - dx - ox, c[1] - hy, c[2] - dz - oz], [c[0] + dx - ox, c[1] - hy, c[2] + dz - oz], [c[0] + dx + ox, c[1] + hy, c[2] + dz + oz], [c[0] - dx + ox, c[1] + hy, c[2] - dz + oz], [-Math.sin(a), 0, Math.cos(a)], uv);
+      }
+    };
+    const ginkgo = (x, z, tx, tz, H, Rt) => {
+      const F = frameH([x, 0, z], tx, tz);
+      set('dr_steel'); boxMM(F, -0.62, 0, -0.62, 0.62, 0.02, 0.62, ['ny']);                 // cast grate
+      set('dr_steel'); for (const e of [-0.62, 0.62]) boxMM(F, e - 0.02, 0, -0.64, e + 0.02, 0.05, 0.64, ['ny']);
+      const turn = clamp(0.35 + Rt() * 0.75, 0, 1), bare = Rt() < 0.12, yB = 2.6 + Rt() * 0.7;   // crown base (pruned for buses)
+      const lean = [(Rt() - 0.5) * 0.18, (Rt() - 0.5) * 0.18], ax = (y) => [x + lean[0] * y / H, y, z + lean[1] * y / H];
+      const Rmax = (bare ? 1.4 : 1.7) + Rt() * 0.8, Rof = (y) => { const t = clamp((y - yB) / (H - yB), 0, 1); return Rmax * Math.max(0.12, Math.sin(Math.min(1, t * 1.6 + 0.15) * Math.PI * 0.5) * (1 - t ** 1.6)); };
+      // trunk (bark), straight leader to the top
+      set('dr_bark');
+      { const n = 6; for (let i = 0; i < n; i++) { const y0 = H * 0.92 * i / n, y1 = H * 0.92 * (i + 1) / n, r0 = lerp(0.17, 0.035, i / n), r1 = lerp(0.17, 0.035, (i + 1) / n), p0 = ax(y0), p1 = ax(y1);
+        for (let k = 0; k < 7; k++) { const a0 = k / 7 * TAU, a1 = (k + 1) / 7 * TAU, P = (p, r, a) => [p[0] + Math.cos(a) * r, p[1], p[2] + Math.sin(a) * r];
+          quad(P(p0, r0, a0), P(p0, r0, a1), P(p1, r1, a1), P(p1, r1, a0), [Math.cos((a0 + a1) / 2), 0, Math.sin((a0 + a1) / 2)], [[k / 7, y0 / 1.2], [(k + 1) / 7, y0 / 1.2], [(k + 1) / 7, y1 / 1.2], [k / 7, y1 / 1.2]]); } } }
+      // limbs: a loose spiral of ascending branches, shorter toward the top; leaf clusters along each
+      const nB = bare ? 9 : 11 + Math.floor(Rt() * 4), clusters = [];
+      let az = Rt() * TAU;
+      for (let i = 0; i < nB; i++) {
+        const t = (i + Rt() * 0.6) / nB, y = lerp(yB, H - 1.0, t), base = ax(y), L = Rof(y + 0.6) * (0.85 + Rt() * 0.3) + 0.3, up = lerp(0.85, 1.25, t) + (Rt() - 0.5) * 0.25;   // up: elevation (rad)
+        az += 2.4 + (Rt() - 0.5) * 0.5;
+        const dir = [Math.cos(az) * Math.cos(up), Math.sin(up), Math.sin(az) * Math.cos(up)], tip = [base[0] + dir[0] * L, base[1] + dir[1] * L, base[2] + dir[2] * L];
+        const mid = [base[0] + dir[0] * L * 0.5 + Math.cos(az) * 0.08, base[1] + dir[1] * L * 0.5 - 0.05, base[2] + dir[2] * L * 0.5 + Math.sin(az) * 0.08];
+        const r = lerp(0.055, 0.025, t);
+        set('dr_bark', { col: r > 0.03 }); tube([base, mid, tip], r, 3);
+        if (!bare) { const nc = 2 + Math.round(L * 1.4); for (let j = 0; j < nc; j++) { const f = 0.35 + 0.65 * (j + Rt() * 0.5) / nc; clusters.push([base[0] + dir[0] * L * f + (Rt() - 0.5) * 0.5, base[1] + dir[1] * L * f + (Rt() - 0.3) * 0.5, base[2] + dir[2] * L * f + (Rt() - 0.5) * 0.5]); } }
+        else if (Rt() < 0.5) clusters.push(tip);
+      }
+      // the leader's own clusters, up to the spire, and a fill of the crown envelope (no hollow cone)
+      const nFill = bare ? 4 : 26 + Math.floor(Rt() * 10);
+      for (let i = 0; i < nFill; i++) { const y = lerp(yB + 0.4, H - 0.2, Math.sqrt(Rt())), rr = Rof(y) * Math.sqrt(Rt()) * 0.9, a = Rt() * TAU, p = ax(y); clusters.push([p[0] + Math.cos(a) * rr, y, p[2] + Math.sin(a) * rr]); }
+      for (const c of clusters) {
+        const p = ax(c[1]), dx = c[0] - p[0], dz = c[2] - p[2], rr = Math.hypot(dx, dz), R1 = Math.max(0.3, Rof(c[1])), out = clamp(rr / R1, 0, 1.2);
+        const hT = clamp((c[1] - yB) / (H - yB), 0, 1), n = v3.norm([dx / R1, 0.45 + 0.4 * hT, dz / R1]);
+        const ao = 0.5 + 0.5 * Math.min(1, out) * (0.8 + 0.2 * hT);                       // inner cards sit in the crown's shade
+        const g = clamp(turn + (out - 0.6) * 0.35 + (hT - 0.5) * 0.25 + (Rt() - 0.5) * 0.35, 0, 1);
+        const col = (bare ? mixc(GOLD, BROWN, Rt() * 0.6) : g < 0.35 ? mixc(GRN, YEL, g / 0.35) : mixc(YEL, GOLD, (g - 0.35) / 0.65)).map((v) => v * ao * (0.85 + Rt() * 0.3));
+        card(c, (bare ? 0.7 : 0.95) + Rt() * 0.45, Rt() * Math.PI, (Rt() - 0.5) * 0.8, n, col, Math.floor(Rt() * 8));
+      }
+      // fallen leaves: flat cards on the pavement round the pit (more under a bare tree), off the carriageway
+      const nF = bare ? 12 : Math.round(3 + turn * 6);
+      for (let i = 0; i < nF; i++) {
+        const a = Rt() * TAU, d = 0.5 + Rt() * (bare ? 2.6 : 1.9), fx = x + Math.cos(a) * d, fz = z + Math.sin(a) * d;
+        if (M.ribbonD(fx, fz, true) < 0.2 || M.lotAt(fx, fz)) continue;
+        const s2 = 0.45 + Rt() * 0.4, yw = Rt() * TAU, cx = Math.cos(yw) * s2 / 2, cz = Math.sin(yw) * s2 / 2, y = 0.004 + i * 0.0004, tile = Math.floor(Rt() * 8);
+        const u0 = (tile % 4) / 4, vt = 1 - Math.floor(tile / 4) * 0.5;
+        set('dr_leafcard', { c: mixc(GOLD, BROWN, Rt() * 0.5).map((v) => v * 0.8), n: [0, 1, 0] });
+        quad([fx - cx + cz, y, fz - cz - cx], [fx + cx + cz, y, fz + cz - cx], [fx + cx - cz, y, fz + cz + cx], [fx - cx - cz, y, fz - cz + cx], [0, 1, 0], [[u0, vt - 0.5], [u0 + 0.25, vt - 0.5], [u0 + 0.25, vt], [u0, vt]]);
+      }
+    };
     for (const st of mainStreets) {
       if (st.width < 9) continue;
       for (const sd of [-1, 1]) {
@@ -751,21 +850,9 @@ export function geometry(layout, opts = {}) {
           if (!inCore(x, z) || M.ribbonD(x, z) < 0.8 || !M.lotClear(x, z, 1.7) || !occFree(x, z, 1.2)) continue;
           // pavement must be >= 3 m deep here (else no trees: Seoul plants only where the walk is wide enough)
           if (M.freeRay(x, z, nx, nz, 3.2) < 2.2) continue;
-          item(() => {
-            const H = 7.5 + R() * 3.5, F = frameH([x, 0, z], q.tx, q.tz), lean = (R() - 0.5) * 0.25;
-            set('dr_steel'); boxMM(F, -0.62, 0, -0.62, 0.62, 0.02, 0.62, ['ny']);                 // grate
-            set('dr_bark'); cyl(F, [0, H * 0.32, 0], 'y', 0.14, H * 0.64, 7, 0.08);
-            tube([[x, H * 0.4, z], [x + nx * 0.9 + lean, H * 0.62, z + nz * 0.9], [x + nx * 1.2, H * 0.78, z + nz * 1.2]], 0.05, 3);
-            tube([[x, H * 0.45, z], [x - nx * 0.8, H * 0.68, z - nz * 0.8 + lean]], 0.045, 3);
-            // conical-columnar crown of clumps; colour: gold to yellow-green, a few nearly bare
-            const bare = R() < 0.15, nC = bare ? 4 : 7;
-            for (let k = 0; k < nC; k++) {
-              const t = k / nC, y = lerp(3.2, H - 0.6, t + R() * 0.08), rr = lerp(1.7, 0.7, t) * (bare ? 0.6 : 1) * (0.8 + R() * 0.4), a = R() * TAU, off2 = rr * 0.45;
-              const g = R(); set('dr_leaf', { c: bare ? [0.12, 0.1, 0.06] : g < 0.55 ? [0.62, 0.46, 0.05] : g < 0.85 ? [0.5, 0.42, 0.07] : [0.28, 0.32, 0.08] });
-              blob([x + Math.cos(a) * off2, y, z + Math.sin(a) * off2], rr, rr * 0.8, rr, R, 0, 0.25);
-            }
-            occAdd(x, z, 1.1); facts.trees++;
-          }, { margin: 0.4 });
+          const H = 7.5 + R() * 3.5; R(); const bare2 = R() < 0.15; for (let k = 0; k < (bare2 ? 4 : 7) * 16; k++) R();   // phase 2's draws (H, lean, bare, 4 + 12 per blob): placement stays put
+          const Rt = rng('ginkgo' + seed + ':' + x.toFixed(2) + ':' + z.toFixed(2));
+          item(() => { ginkgo(x, z, q.tx, q.tz, H + 1.2, Rt); occAdd(x, z, 1.1); facts.trees++; }, { margin: 0.4 });
         }
       }
     }
@@ -871,26 +958,58 @@ export function geometry(layout, opts = {}) {
       }, { margin: 0.35 })) { occAdd(x, z, 1.2); n++; facts.carts = n; }
     }
   }
-  // tent: frame F (x along the kerb, +z away from it, toward the customers), tarp box with a ridge, the vinyl front (+z) lit
+  // tent: frame F (x along the kerb, +z away from it, toward the customers).
+  // [P3-E art #4 / graphics #2] a pocha that reads as a pocha, not a cream box: a #ff7a1a-family tarp glowing from one bare
+  // bulb inside (per-vertex: 90-110 nits luminance round the bulb, 40-60 on the walls, darker toward the ground), sewn
+  // panels (dark seams where the steel frame shows through), the roof sagging between the rafters, a clear vinyl front with
+  // its roll at the top, the lit inside seen through it (a steel table, green bottles, stools), stools and crates outside.
   function tent(F, xo, w, d, R, idx) {
-    const eave = 2.15, ridge = 2.7, hz = d / 2, hx = w / 2 - 0.05;
-    const tarp = [srgb(0xe8541c), srgb(0xd9401a), srgb(0xf06a1f), srgb(0xc93a2a)][idx % 4];
-    const glow = (k) => NI([1.0, 0.56, 0.24], k);
-    // walls: lit tarp (translucent: the lamp inside shows through), the front (road side) and the side facing the walk are clear vinyl
-    set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: glow(70) });
-    boxMM(F, xo - hx, 0.02, -hz, xo + hx, eave, -hz + 0.02);                      // back (kerb / facade side)
-    for (const s of [-1, 1]) boxMM(F, xo + s * hx - 0.01, 0.02, -hz, xo + s * hx + 0.01, eave, hz);
-    set('dr_tarp', { c: [0.2, 0.2, 0.2], em: glow(115) });
-    boxMM(F, xo - hx, 0.35, hz - 0.02, xo + hx, eave - 0.25, hz);                // vinyl front, lit interior behind it
-    set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: glow(60) });
-    boxMM(F, xo - hx, eave - 0.25, hz - 0.02, xo + hx, eave, hz);
-    // roof: two pitches to the ridge
-    for (const s of [-1, 1]) { const a = W(F, xo - hx - 0.08, eave + 0.02, s * (hz + 0.1)), b = W(F, xo + hx + 0.08, eave + 0.02, s * (hz + 0.1)), c = W(F, xo + hx + 0.08, ridge, 0), dd = W(F, xo - hx - 0.08, ridge, 0);
-      const nU = v3.norm(v3.cross(v3.sub(b, a), v3.sub(dd, a))), up = nU[1] > 0 ? nU : v3.mul(nU, -1);
-      set('dr_tarp', { c: tarp.map((v) => v * 0.7), em: glow(45) }); quad(a, b, c, dd, up); quad(a, dd, c, b, v3.mul(up, -1)); }
-    for (const s of [-1, 1]) { const p0 = W(F, xo + s * (hx + 0.08), eave + 0.02, -hz - 0.1), p1 = W(F, xo + s * (hx + 0.08), eave + 0.02, hz + 0.1), p2 = W(F, xo + s * (hx + 0.08), ridge, 0); set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: glow(55) }); tri(p0, p1, p2); tri(p0, p2, p1); }
+    const eave = 2.1, ridge = 2.62, hz = d / 2, hx = w / 2 - 0.05;
+    const tarp = [srgb(0xff7a1a), srgb(0xf0641a), srgb(0xe8541c), srgb(0xff8a24)][idx % 4];
+    const lumOf = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], Nb = 300 * (0.353 / lumOf(tarp)) ** 0.5;
+    const bulb = W(F, xo, 1.95, -0.1);
+    const emAt = (p) => { const dd = Math.hypot(p[0] - bulb[0], p[1] - bulb[1], p[2] - bulb[2]); const k = (0.32 + 0.78 / (1 + (dd / 0.8) ** 2)) * (0.62 + 0.38 * clamp(p[1] / eave, 0, 1)); return NI(tarp, Nb * k); };
+    // a bilinear patch, nu x nv cells, per-vertex glow, optional sag (m) toward -nrm
+    const patch = (P, nu, nv, nrm, sag = 0, kE = 1, col = tarp.map((v) => v * 0.55)) => {
+      const at = (u, v) => { const q = [0, 1, 2].map((i) => lerp(lerp(P[0][i], P[1][i], u), lerp(P[3][i], P[2][i], u), v)); if (sag) { const sg = sag * Math.sin(Math.PI * u) * Math.sin(Math.PI * v); q[0] -= nrm[0] * sg; q[1] -= nrm[1] * sg; q[2] -= nrm[2] * sg; } return q; };
+      set('dr_tarp', { c: col });
+      for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+        const q = [at(i / nu, j / nv), at((i + 1) / nu, j / nv), at((i + 1) / nu, (j + 1) / nv), at(i / nu, (j + 1) / nv)];
+        quad(q[0], q[1], q[2], q[3], nrm, uvDef, q.map((v) => emAt(v).map((e) => e * kE)));
+      }
+    };
+    const seam = (a, b, out) => { set('dr_tarp', { c: tarp.map((v) => v * 0.3), em: NI(tarp, Nb * 0.12) }); const t = v3.norm(v3.sub(b, a)), sd = v3.mul(v3.norm(v3.cross(t, out)), 0.025), o = v3.mul(out, 0.008);
+      quad(v3.add(v3.add(a, sd), o), v3.add(v3.sub(a, sd), o), v3.add(v3.sub(b, sd), o), v3.add(v3.add(b, sd), o), out); };
+    const L = (x, y, z) => W(F, xo + x, y, z), N = (x, y, z) => D(F, x, y, z);
+    // walls: the back (kerb side) and both ends, tarp; seams where the posts and a mid rail stand
+    patch([L(-hx, 0.02, -hz), L(hx, 0.02, -hz), L(hx, eave, -hz), L(-hx, eave, -hz)], 4, 3, N(0, 0, -1));
+    for (const sx of [-1, 1]) patch([L(sx * hx, 0.02, hz), L(sx * hx, 0.02, -hz), L(sx * hx, eave, -hz), L(sx * hx, eave, hz)].map((p, i, A) => (sx > 0 ? p : A[[1, 0, 3, 2][i]])), 3, 3, N(sx, 0, 0));
+    for (const sx of [-1, 0, 1]) seam(L(sx * hx * 0.999, 0.02, -hz - 0.002), L(sx * hx * 0.999, eave, -hz - 0.002), N(0, 0, -1));
+    seam(L(-hx, 1.05, -hz - 0.002), L(hx, 1.05, -hz - 0.002), N(0, 0, -1));
+    for (const sx of [-1, 1]) { seam(L(sx * (hx + 0.002), 0.02, 0), L(sx * (hx + 0.002), eave + 0.25, 0), N(sx, 0, 0)); seam(L(sx * (hx + 0.002), 1.05, -hz), L(sx * (hx + 0.002), 1.05, hz), N(sx, 0, 0)); }
+    // gables (tarp triangles over the ends) and the roof: two pitches sagging between three rafters
+    for (const sx of [-1, 1]) { set('dr_tarp', { c: tarp.map((v) => v * 0.55) }); const p0 = L(sx * (hx + 0.06), eave, -hz - 0.08), p1 = L(sx * (hx + 0.06), eave, hz + 0.08), p2 = L(sx * (hx + 0.06), ridge, 0);
+      tri(p0, p1, p2, [0, 0], [1, 0], [0.5, 1], [emAt(p0), emAt(p1), emAt(p2)]); tri(p0, p2, p1, [0, 0], [0.5, 1], [1, 0], [emAt(p0), emAt(p2), emAt(p1)]); }
+    for (const sz of [-1, 1]) {
+      const e0 = L(-hx - 0.08, eave, sz * (hz + 0.1)), e1 = L(hx + 0.08, eave, sz * (hz + 0.1)), r1 = L(hx + 0.08, ridge, 0), r0 = L(-hx - 0.08, ridge, 0);
+      const up = v3.norm(v3.cross(v3.sub(e1, e0), v3.sub(r0, e0))), nU = up[1] > 0 ? up : v3.mul(up, -1);
+      for (const half of [0, 1]) { const u0 = half * 0.5, u1 = u0 + 0.5, P = (u, v) => [0, 1, 2].map((i) => lerp(lerp(e0[i], e1[i], u), lerp(r0[i], r1[i], u), v));
+        patch([P(u0, 0), P(u1, 0), P(u1, 1), P(u0, 1)], 3, 3, nU, 0.07, 1.1, tarp.map((v) => v * 0.62)); }
+      for (const u of [0, 0.5, 1]) seam(v3.add([0, 1, 2].map((i) => lerp(e0[i], e1[i], u)), v3.mul(nU, 0.004)), v3.add([0, 1, 2].map((i) => lerp(r0[i], r1[i], u)), v3.mul(nU, 0.004)), nU);
+    }
+    // the front: a tarp valance (the lettering band), the clear vinyl, its roll; the inside lit behind it
+    patch([L(-hx, eave - 0.27, hz), L(hx, eave - 0.27, hz), L(hx, eave, hz), L(-hx, eave, hz)], 3, 1, N(0, 0, 1), 0, 1.05);
+    set('dr_vinyl', { col: true }); quad(L(-hx, 0.3, hz - 0.01), L(hx, 0.3, hz - 0.01), L(hx, eave - 0.36, hz - 0.01), L(-hx, eave - 0.36, hz - 0.01), N(0, 0, 1));
+    set('dr_prop', { c: [0.5, 0.48, 0.44], col: false }); cyl(F, [xo, eave - 0.32, hz - 0.03], 'x', 0.045, 2 * hx - 0.1, 8);
+    set('dr_steel'); for (const sx of [-1, 1]) for (const sz of [-1, 1]) boxMM(F, xo + sx * hx - 0.025, 0, sz * hz - 0.025, xo + sx * hx + 0.025, eave, sz * hz + 0.025, ['ny']);   // the frame's corner posts
+    // inside: a round steel table, green soju bottles, stools; the bare bulb on its cord
+    set('dr_galv'); cyl(F, [xo - 0.2, 0.7, 0.1], 'y', 0.42, 0.04, 12); cyl(F, [xo - 0.2, 0.35, 0.1], 'y', 0.04, 0.66, 6, 0.04, false);
+    set('dr_prop', { c: srgb(0x1f8a3a), col: false }); for (let k = 0; k < 3; k++) cyl(F, [xo - 0.35 + k * 0.13, 0.82, 0.05 + (k % 2) * 0.12], 'y', 0.032, 0.2, 6);
+    for (const [sx, sc] of [[-0.75, 0x2f6fd6], [0.35, 0xd23a2a], [-0.2, 0x2f6fd6]]) { set('dr_prop', { c: srgb(sc) }); boxMM(F, xo + sx - 0.15, 0, (sx > 0 ? -0.55 : 0.6) - 0.15, xo + sx + 0.15, 0.43, (sx > 0 ? -0.55 : 0.6) + 0.15); }
+    set('dark'); boxMM(F, xo - 0.006, 1.98, -0.106, xo + 0.006, ridge - 0.02, -0.094);
+    set('dr_glow', { em: NI(srgb(0xffc27a), 1500), col: false }); blob(bulb, 0.045, 0.055, 0.045, R, 0, 0.05);
     // tarp lettering band on the front (runtime label)
-    labels.push({ id: 'tent:' + idx + ':' + xo, kind: 'tent', pos: r3(W(F, xo, eave - 0.125, hz + 0.004)), normal: r3(D(F, 0, 0, 1)), right: r3(D(F, 1, 0, 0)), w: 2 * hx - 0.2, h: 0.23, nits: 60,
+    labels.push({ id: 'tent:' + idx + ':' + xo, kind: 'tent', pos: r3(W(F, xo, eave - 0.135, hz + 0.004)), normal: r3(D(F, 0, 0, 1)), right: r3(D(F, 1, 0, 0)), w: 2 * hx - 0.2, h: 0.23, nits: 60,
       lines: [['포장마차', '닭발 · 오뎅', '소주 · 맥주', '꼼장어', '실내포차'][idx % 5]] });
     // stools and a table just outside, a crate of empties
     set('dr_prop', { c: srgb(0x2f6fd6) }); boxMM(F, xo - 0.7, 0, hz + 0.3, xo - 0.4, 0.43, hz + 0.6);
