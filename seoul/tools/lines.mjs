@@ -488,6 +488,24 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
   const last = (nm) => lines.find((x) => x.name === nm && x.pre);
   connect('TO THE BAR ALLEY', last('HONGIK-RO'), first('BAR ALLEY'));
   connect('TO HONGIK-RO', last('SCREEN CANYON'), first('HONGIK-RO'));
+  // over the roofs (SIGN STACK's top -> the nearer end of the ROOFLINE chain: 68 m, a bank in 4 of 6 long sims): a gate
+  // every ~30 m on the straight line, 0.6-2.6 m over the deck below it (a roof: the lowest of five rays, >= 8 m), else skipped
+  const hop = (label, from, to) => {
+    if (!from || !to) { report.push(`  (${label}: no line to connect)`); return; }
+    const A = from.c, B = to.c, L = Math.hypot(B[0] - A[0], B[2] - A[2]), n = Math.floor((L - 15) / 30), dir = [(B[0] - A[0]) / L, 0, (B[2] - A[2]) / L];
+    let k = 0;
+    for (let i = 1; i <= n; i++) {
+      const f = i / (n + 1), x = A[0] + (B[0] - A[0]) * f, z = A[2] + (B[2] - A[2]) * f; let dk = Infinity;
+      for (const o of [-2, -1, 0, 1, 2]) { ray.origin.set(x - dir[2] * o, 60, z + dir[0] * o); ray.direction.set(0, -1, 0); const h = bvh.raycastFirst(ray, THREE.DoubleSide, 0, 60); dk = Math.min(dk, h ? 60 - h.distance : 0); }
+      if (dk < 8) continue;
+      const G = g([x, dk + 1.6, z], dir, 3.0, 2.0, [-dir[2], 0, dir[0]]); if (!clearOf(G).ok) continue;
+      k++; add(`${label} ${k}`, label.replace(/ (\S+)$/, ' *$1*'), 500, G, { two: true, micro: true, connector: true });
+    }
+    report.push(`  (${label}: ${L.toFixed(0)} m over the roofs, ${k} connector micros)`);
+  };
+  { const S = lines.find((x) => x.name === 'SIGN STACK'), R = lines.find((x) => x.name === 'ROOFLINE' && x.pre);
+    const ends = R ? [R.pre[0], R] : [], to = S && ends.sort((a, b) => dist3(a, S) - dist3(b, S))[0];
+    hop('TO THE ROOFLINE', S, to); }
 }
 
 // ---- [P2-F1 design #2] set pieces (stream E's seoul-dressing.js, contract P2-1): lines coded against E's setPieces ids.
