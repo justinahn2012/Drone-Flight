@@ -102,9 +102,9 @@ jobs:
           path: browser-out/
           retention-days: 14
 
-  browser-seoul:
+  browser-seoul:   # SwiftShader renders Seoul slowly: ~35 min on a shared 2-core box (?perf ~9 min, 3 stills), so 60
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
