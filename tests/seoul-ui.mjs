@@ -1,10 +1,14 @@
 // F2: the per-level UI data in levels.json (ux #3, ui #1 / #6) and the Seoul UI assets. node tests/seoul-ui.mjs
 // - every level's UI keys have the right shape; the assets they name exist (stills: size, 16:9, the backdrop <= 180 KB)
-// - Seoul's lineNames match seoul/lines.json's named lines (world order), so the menu before a load shows the real list
+// - [P3] one source for line copy: Seoul's line list is seoul/lines.json (levels.json `lines`); levels.json `lineCopy`
+//   has a hint and a listed group for every named line there and nothing else; {w} is the only hint token; the first
+//   instruction is the take start's hint (no firstTip to drift); loadSteps name every build step, in both scripts
+// - [P3] the identity stills were committed after the last change to the look (world-seoul.js, seoul-signs.js, fpvcam.js)
 // - tips use <b> and the {bankT} / {cut} tokens only; the OSM credit is on Seoul's foot line (ODbL)
 // - every hangul the UI can show (levels.json strings, the layout's street / landmark `ko` names for the captions'
 //   place line) is in the UI font (seoul/ui/glyphs.txt, written by tools/seoul-ui-assets.py)
 import { readFileSync, existsSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,7 +31,7 @@ console.log('levels.json UI keys');
 const strings = [];
 for (const L of levels) {
   const tag = L.id;
-  for (const k of ['subtitle', 'kicker', 'firstTip', 'foot', 'backdropPos']) if (k in L) { ok(typeof L[k] === 'string' && L[k].length > 0, `${tag}.${k} is a string`); strings.push(L[k]); }
+  for (const k of ['subtitle', 'kicker', 'firstTip', 'foot', 'backdropPos', 'lines']) if (k in L) { ok(typeof L[k] === 'string' && L[k].length > 0, `${tag}.${k} is a string`); strings.push(L[k]); }
   for (const k of ['thumb', 'backdrop']) if (L[k]) {
     const p = join(ROOT, L[k]); ok(existsSync(p), `${tag}.${k} ${L[k]} exists`);
     if (existsSync(p) && /\.jpe?g$/i.test(p)) {
@@ -58,14 +62,36 @@ console.log('Seoul');
 const S = levels.find((l) => l.id === 'seoul-hongdae');
 ok(!!S, 'seoul-hongdae is in levels.json');
 if (S) {
-  for (const k of ['subtitle', 'thumb', 'backdrop', 'kicker', 'firstTip', 'tips', 'lineNames', 'foot']) ok(k in S, `seoul has ${k}`);
+  for (const k of ['subtitle', 'thumb', 'backdrop', 'kicker', 'tips', 'lines', 'lineCopy', 'lineGroups', 'loadSteps', 'foot']) ok(k in S, `seoul has ${k}`);
+  ok(!('lineNames' in S) && !('firstTip' in S), 'seoul keeps no second line list (lineNames) or first tip (firstTip): lines.json is the source');
   ok(/OpenStreetMap/.test(S.foot || ''), 'seoul foot credits OpenStreetMap (ODbL)');
-  const lines = JSON.parse(readFileSync(join(ROOT, 'seoul', 'lines.json'), 'utf8')).lines || [];
-  const named = [...new Set(lines.filter((l) => l.name && !l.micro && !(typeof l.pts === 'number' && l.pts > 0 && l.pts < 1000)).map((l) => l.name))];
-  const ln = (S.lineNames || []).map((x) => (typeof x === 'string' ? x : x.name));
-  const missing = named.filter((n) => !ln.includes(n)), extra = ln.filter((n) => !named.includes(n));
-  ok(!missing.length && !extra.length, `lineNames = lines.json named lines (${ln.length}/${named.length})${missing.length ? ' missing ' + missing.join(', ') : ''}${extra.length ? ' extra ' + extra.join(', ') : ''}`);
-  ok(JSON.stringify(ln) === JSON.stringify(named) || missing.length || extra.length, 'lineNames in world order');
+  ok(S.lines === 'seoul/lines.json' && existsSync(join(ROOT, S.lines)), 'seoul.lines names seoul/lines.json');
+  const LJ = JSON.parse(readFileSync(join(ROOT, 'seoul', 'lines.json'), 'utf8')), lines = LJ.lines || [];
+  const isMicro = (l) => !!l.micro || (typeof l.pts === 'number' && l.pts > 0 && l.pts < 1000);
+  const named = [...new Set(lines.filter((l) => l.name && !isMicro(l) && !l.carve).map((l) => l.name))];
+  const copy = S.lineCopy || {}, groups = new Set((S.lineGroups || []).map((g) => Array.isArray(g) && g[0]));
+  ok(Array.isArray(S.lineGroups) && S.lineGroups.every((g) => Array.isArray(g) && g.length === 2 && typeof g[1] === 'string'), 'seoul.lineGroups are [id, LABEL] pairs');
+  const noCopy = named.filter((n) => !copy[n]?.hint && !lines.find((l) => l.name === n && l.hint)), stale = Object.keys(copy).filter((n) => !named.includes(n));
+  ok(!noCopy.length, `every named line in lines.json has a hint (${named.length - noCopy.length}/${named.length})${noCopy.length ? ': missing ' + noCopy.join(', ') : ''}`);
+  ok(!stale.length, `lineCopy names only lines.json lines${stale.length ? ': stale ' + stale.join(', ') : ''}`);
+  ok(Object.values(copy).every((c) => groups.has(c.group)), 'every lineCopy group is in lineGroups');
+  for (const [n, c] of Object.entries(copy)) { strings.push(c.hint); ok(!/\{(?!w\})/.test(c.hint) && !/[<>]/.test(c.hint), `${n} hint: plain text, {w} only`); }
+  ok(named.length >= 18, `lines.json has ${named.length} named lines (the grid is laid out for 18)`);
+  const tip = LJ.takeStart?.hint?.text || LJ.startPoints?.[0]?.hint?.text || '';
+  ok(!!tip, `the first instruction comes from lines.json takeStart.hint: "${tip}"`);
+  ok(LJ.tuning && +LJ.tuning.bankT > 0 && Array.isArray(LJ.tuning.stars), `lines.json tuning gives the copy its numbers (bankT ${LJ.tuning?.bankT} s, stars ${LJ.tuning?.stars})`);
+  // build steps: every prog(f, 'Hongdae: step') in world-seoul.js has a bilingual label (C / D may add steps: warn only)
+  const steps = [...readFileSync(join(ROOT, 'world-seoul.js'), 'utf8').matchAll(/prog\([\d.]+,\s*'([^']+)'\)/g)].map((m) => m[1].replace(/^[^:]*:\s*/, '').trim().toLowerCase());
+  const ls = S.loadSteps || {}; for (const v of Object.values(ls)) strings.push(v);
+  ok(Object.values(ls).every((v) => /[가-힣]/.test(v) && /[A-Z]/.test(v)), 'loadSteps are bilingual ("간판 · SIGNS")');
+  const unl = steps.filter((k) => !(k in ls));
+  if (unl.length) console.log(`  warn build steps without a label (shown blank): ${unl.join(', ')}`); else ok(steps.length > 0, `every build step (${steps.length}) has a label`);
+  // the stills: committed after the last commit that changed the look (git; skipped outside a git checkout)
+  const ct = (f) => { try { return +execFileSync('git', ['log', '-1', '--format=%ct', '--', f], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || 0; } catch (e) { return -1; } };
+  const still = Math.min(ct(S.backdrop), ct(S.thumb)), look = Math.max(...['world-seoul.js', 'seoul-signs.js', 'fpvcam.js'].map(ct));
+  if (still < 0 || look < 0) console.log('  skip stills freshness (no git)');
+  else ok(still >= look, `identity stills are newer than the look (stills ${new Date(still * 1e3).toISOString().slice(0, 16)}, look ${new Date(look * 1e3).toISOString().slice(0, 16)})` +
+    (still >= look ? '' : ': re-shoot, python3 tools/seoul-ui-assets.py --backdrop STILL --thumb STILL'));
 }
 
 console.log('UI font coverage');

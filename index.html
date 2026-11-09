@@ -122,6 +122,8 @@ body.nohud.cutting #osd .o:not(.cc),body.portrait.cutting #osd .o:not(.cc){displ
 /* [F2] ux #2: a line's start gate crossed -> the top-centre OSD reads "HONGIK-RO · 0:18" until its end gate (blinks < 5 s) */
 #oNext.armed .d{opacity:1}
 #oNext .d.low{animation:blink .5s steps(2) infinite}
+/* [F2] P3 ui #4: the target is bracketed on screen: the bracket's label names it, the guide keeps its arrow (+ countdown) */
+#oNext.bk #oNextN,#oNext.bk:not(.armed) .d{display:none}
 #oThr{display:none;width:10px;background:rgba(0,0,0,.35);height:clamp(90px,34vh,150px);border:1.5px solid #fff;box-shadow:0 0 0 1px #000,inset 0 0 0 1px #000;position:absolute}
 #oThr i{position:absolute;left:0;right:0;bottom:0;background:#fff}
 #oThr u{position:absolute;left:-6px;right:-6px;height:2px;background:var(--acc);box-shadow:0 0 0 1px #000}
@@ -185,6 +187,13 @@ body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 /* warnings: Betaflight-style blinking centre text */
 #warn{position:absolute;left:50%;top:30%;transform:translateX(-50%);font:600 16px var(--mono);letter-spacing:.1em;color:#fff;text-shadow:var(--key);opacity:0;white-space:nowrap}
 #warn.show{opacity:1;animation:blink .5s steps(2) infinite}
+/* [F2] P3 ui #3: HEADS! (a person hit) in the caption face: hot pink, the 12-way stroke, held 0.9 s, over the caption zone */
+#heads{position:absolute;left:50%;top:22%;transform:translateX(-50%);text-align:center;opacity:0;pointer-events:none;white-space:nowrap}
+#heads b{display:block;font:900 clamp(30px,min(8.4vh,8vw),54px)/1 var(--cap);color:#ff3d9a;text-shadow:var(--stroke);letter-spacing:.01em}
+#heads small{display:block;margin-top:5px;font:600 calc(var(--cell)*.92) var(--mono);letter-spacing:.06em;color:#fff;text-shadow:var(--stroke6)}
+#heads.show{animation:headsA 1.25s cubic-bezier(.2,.8,.2,1) forwards}
+@keyframes headsA{0%{opacity:0;transform:translateX(-50%) scale(1.3)}8%{opacity:1;transform:translateX(-50%) scale(1)}80%{opacity:1;transform:translateX(-50%) scale(1)}100%{opacity:0;transform:translateX(-50%) scale(.96)}}
+@media (prefers-reduced-motion:reduce){#heads.show{animation-timing-function:steps(1,end)}}
 /* info toasts: keyline OSD text, no box (UI #1) */
 #toast{position:absolute;left:50%;top:calc(17% + var(--st));transform:translate(-50%,-6px);padding:0 12px;background:none;text-shadow:var(--key);
   font:600 15px/1.4 var(--mono);letter-spacing:.06em;color:#fff;opacity:0;transition:opacity .2s,transform .2s;max-width:86%;text-align:center}   /* [F2] ui #4: 15 px (13 px was unreadable over fascia) */
@@ -236,6 +245,9 @@ body.coaching:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 /* gold PERFECT (C12: every line CLEAN, no scrapes) beside CUT. */
 #bTitle .perf{display:inline-block;margin-left:12px;padding:3px 7px 2px;border-radius:4px;vertical-align:7px;background:linear-gradient(#ffd75a,#d9a514);
   color:#1a1300;font:700 13px/1 var(--mono);letter-spacing:.14em;text-shadow:none;box-shadow:0 0 0 1px rgba(0,0,0,.4)}
+/* [F2] P3 ui #3: what the crash hit, set like PERFECT: a hot-pink tag after CRASHED ("HIT A BUS") */
+#bTitle .by{display:inline-block;margin-left:12px;padding:3px 7px 2px;border-radius:4px;vertical-align:7px;background:#ff3d9a;
+  color:#1a0010;font:700 13px/1 var(--mono);letter-spacing:.14em;text-shadow:none;box-shadow:0 0 0 1px rgba(0,0,0,.4);white-space:nowrap}
 .stats{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px 12px;margin-top:12px;font:600 15px var(--mono);font-feature-settings:"tnum"}
 .stats span{color:#c6c3bc;font-size:12px;letter-spacing:.08em;align-self:center}
 .stats b{font-weight:600;color:#fff;text-align:right;white-space:nowrap}
@@ -257,7 +269,7 @@ body.coaching:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 body.sumup #osd .o:not(.tl){opacity:.25}
 body.sumup .float{display:none}
 /* chain / caption / warning sit where the card is: gone at once (no fade bleeding through the scrim) */
-body.sumup #live,body.sumup #pop,body.sumup #warn{visibility:hidden;transition:none}
+body.sumup #live,body.sumup #pop,body.sumup #warn,body.sumup #heads{visibility:hidden;transition:none}
 #crashBar{display:flex;gap:10px;margin-top:14px}
 #crashBar .pill{flex:1;pointer-events:auto;-webkit-backdrop-filter:none;backdrop-filter:none}
 #crashBar .pill:not(.hot){background:rgba(255,255,255,.08)}
@@ -275,10 +287,10 @@ body.sumup #live,body.sumup #pop,body.sumup #warn{visibility:hidden;transition:n
 #recBar .prog i{display:block;height:100%;width:0;background:#fff}
 #recCancel{min-height:44px;padding:0 16px;border-radius:999px;background:rgba(255,255,255,.14);font:600 13px var(--mono);letter-spacing:.08em}
 body.replaying #recBar{display:flex}
-body.replaying #osd, body.replaying #pop, body.replaying #live, body.replaying #warn, body.replaying #ghost,
+body.replaying #osd, body.replaying #pop, body.replaying #live, body.replaying #warn, body.replaying #heads, body.replaying #ghost,
 body.replaying #btnMenu, body.replaying #btnReset, body.replaying #btnClip, body.replaying .float{display:none}
 /* the clip modal is opaque to the OSD (ui #1: the dimmed LQ / HALL RUN arrow showed through it) */
-body.clipopen #osd,body.clipopen #live,body.clipopen #pop,body.clipopen #btnMenu,body.clipopen #btnReset,body.clipopen #btnClip{visibility:hidden}
+body.clipopen #osd,body.clipopen #live,body.clipopen #pop,body.clipopen #heads,body.clipopen #btnMenu,body.clipopen #btnReset,body.clipopen #btnClip{visibility:hidden}
 /* HQ render with the modal closed: the chip reopens it */
 body.hqbg #recT{cursor:pointer;text-decoration:underline;text-underline-offset:3px}
 body.hqbg #recBar{min-height:44px}
@@ -357,6 +369,14 @@ body.paused .lede,body.paused .a2hs{display:none}
 #starts button{color:var(--ink)}
 #starts button.on{color:#000}
 .lines{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:6px}
+/* [F2] P3 ui #2: the level's groups (STREETS, SET PIECES, GAPS & ROOFS) under 11 px mono heads with their own count */
+.lines .lg{grid-column:1/-1;display:flex;align-items:baseline;gap:8px;margin:6px 0 -1px;font:600 11px/1.2 var(--mono);letter-spacing:.16em;color:#a29f99}
+.lines .lg:first-child{margin-top:0}
+.lines .lg i{font-style:normal;color:#6f6c67;letter-spacing:.08em}
+.lines.scroll{overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding-bottom:10px;
+  -webkit-mask-image:linear-gradient(#000 calc(100% - 22px),transparent);mask-image:linear-gradient(#000 calc(100% - 22px),transparent)}
+.world .meta{display:block;margin-top:6px;font:600 11px/1.3 var(--mono);letter-spacing:.14em;color:#c6c3bc}
+.world .meta:empty{display:none}
 .ln{position:relative;min-height:46px;padding:7px 10px 7px 32px;border-radius:9px;background:rgba(17,19,22,.82);border:1px solid var(--line)}
 .ln svg{position:absolute;left:10px;top:10px;width:14px;height:14px}
 .ln svg rect{fill:none;stroke:#55575d;stroke-width:1.5}
@@ -449,7 +469,18 @@ body.dev .dev{display:revert!important}
   .ln{min-height:40px;padding:6px 8px 6px 30px}
   .ln svg{top:8px}
   .ln:not(.on) small{display:none}   /* unflown: the name only (the hint is on the portrait menu and the crash card; NEXT: border + badge) */
-  .ln b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}   /* one line per name: rows stay 46 px, 3 rows clear the bar */
+  /* [F2] P3 ui #2 / ux #3: 18 lines: six across at 844-932 px, 13 px names on up to two lines (no "STATION STAI…"), NEXT as a
+     corner tick; the grid scrolls inside itself above the bar (main.js fitLines) */
+  .lines{grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:5px}
+  .ln{min-height:38px;padding:5px 7px 5px 26px;display:flex;flex-direction:column;justify-content:center}
+  .ln svg{left:7px;top:50%;margin-top:-6px;width:12px;height:12px}
+  .ln b{font-size:13px;line-height:1.12;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+  .ln.on small{font-size:10px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ln.next b::after{content:none}
+  .ln.next::after{content:"NEXT";position:absolute;right:-1px;top:-1px;padding:1px 4px;border-radius:0 8px 0 5px;background:var(--accBadge);color:var(--accInk);font:600 8px/1.3 var(--mono);letter-spacing:.08em}
+  .wrap{padding-bottom:calc(78px + var(--sb))}   /* bar height + 16 px: the end of the scroll clears the sticky FLY bar */
+  .cols>.lvl+div{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:16px;grid-auto-flow:column;grid-template-rows:auto auto auto}
+  .hint{font-size:14px;line-height:1.35}
   #startSec .hint{display:none}
   body.paused .brand h1{font-size:clamp(36px,10vh,44px)}
   body.paused .sec{margin:10px 0 6px}
@@ -561,6 +592,7 @@ body.dev .dev{display:revert!important}
       <div id="live"><span id="liveT"><span id="liveK">FLOW</span><em id="liveX"></em> · <span id="liveU"></span></span><i id="drain"></i></div>
       <div id="pop"><div class="cap"></div><div class="place" lang="ko"></div><div class="sub"></div></div>
       <div id="warn"></div>
+      <div id="heads" aria-live="polite"><b>HEADS!</b><small></small></div>
       <div id="toast"></div>
       <div id="recBar" class="ui"><b></b><span id="recT">REPLAY 0:00 / 0:00</span><span class="prog"><i id="recP"></i></span><button id="recCancel" class="ui">CANCEL</button></div>
       <div id="banner" class="hidden"><div class="card ui">
