@@ -959,7 +959,8 @@ export function attach(world, emitters = [], ctx = {}) {
     const sig = U.uCityHaze.value.x; air.mat.uniforms.uSigma.value = sig;
     if (air.frame++ % air.every === 0) {   // re-pick the brightest sources every other frame
       let n = 0;
-      if (cam) _fw.set(0, 0, -1).applyQuaternion(cam.quaternion); else _fw.set(0, 0, 0);
+      const cq = cam?.isQuaternion ? cam : cam?.quaternion;   // world-seoul passes the camera quaternion; tests may pass a camera
+      if (cq) _fw.set(0, 0, -1).applyQuaternion(cq); else _fw.set(0, 0, 0);
       const cand = air.cand;
       for (let ii = 0; ii < cand.length; ii++) {
         const i = cand[ii], kd = airKind[i]; let I = airI[i], px, py, pz;
@@ -968,7 +969,7 @@ export function attach(world, emitters = [], ctx = {}) {
         const dx = px - camPos.x, dy = py - camPos.y, dz = pz - camPos.z, d2 = dx * dx + dy * dy + dz * dz;
         if (d2 > 140 * 140 || d2 < 0.09) continue;
         const d = Math.sqrt(d2);
-        if (cam && dx * _fw.x + dy * _fw.y + dz * _fw.z < -0.3 * d) continue;
+        if (cq && dx * _fw.x + dy * _fw.y + dz * _fw.z < -0.3 * d) continue;
         const key = I * (1 - sig * d) / d;
         if (n < 64) { airIdx[n] = i; airKey[n] = key; n++; }
         else { let mi = 0; for (let j = 1; j < 64; j++) if (airKey[j] < airKey[mi]) mi = j; if (key > airKey[mi]) { airIdx[mi] = i; airKey[mi] = key; } }
