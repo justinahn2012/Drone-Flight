@@ -10,6 +10,10 @@
 // Usage (repo root; needs `node tools/export-world.mjs --out exports` first):
 //   node tests/browser.mjs [--exports exports] [--out browser-out] [--update] [--frames 3] [--size 480x270]
 // --update rewrites tests/golden.json from this run (do it after an intentional look change; the commit shows it).
+// [P2 H] --level seoul-hongdae (native #3): the same job on another level of levels.json, loaded with ?level=ID. Exports
+// default to exports/<ID> (node tools/export-world.mjs --level ID --out exports/<ID>); coverage applies that world.json
+// (Seoul: city meshes, signs, screens, crowd, traffic, sky, steam... a mesh class with no export entry fails); ?perf runs
+// the level's own segments (perf-levels.js); no graffiti check; stills from LEVEL_SHOTS against tests/golden-<ID>.json.
 // Env: CHROME=/path/to/chrome (else Playwright's own Chromium: npx playwright install chromium),
 //      ONETAKE_PH_DIR=dir of Poly Haven files (else fetched from dl.polyhaven.org), ONETAKE_TIMEOUT=s (default 900).
 import { createServer } from 'node:http';
@@ -20,19 +24,29 @@ import { chromium } from 'playwright';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const a = process.argv.slice(2), opt = (k, d) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : d; };
-const EXPORTS = resolve(ROOT, opt('--exports', 'exports')), OUT = resolve(ROOT, opt('--out', 'browser-out'));
+const LEVEL = opt('--level', 'bando'), BANDO = LEVEL === 'bando';
+const EXPORTS = resolve(ROOT, opt('--exports', BANDO ? 'exports' : `exports/${LEVEL}`)), OUT = resolve(ROOT, opt('--out', BANDO ? 'browser-out' : `browser-out-${LEVEL}`));
 const UPDATE = a.includes('--update'), FRAMES = +opt('--frames', 1), [W, H] = opt('--size', '320x180').split('x').map(Number);
 const TIMEOUT = 1000 * +(process.env.ONETAKE_TIMEOUT || 900), PH_DIR = process.env.ONETAKE_PH_DIR;
-const GOLDEN = join(ROOT, 'tests', 'golden.json');
+const GOLDEN = join(ROOT, 'tests', BANDO ? 'golden.json' : `golden-${LEVEL}.json`);
 // smoke.py poses: tp(x, y, z, yawDeg, pitchDeg) and a velocity held for the 10 settle frames
 const SHOTS = {
   spawn: ['o.tp(0,1.3,118,0,(4)-o.drone.c.camTilt)', [0, 0, -5]],
   hall: ['o.tp(10,2.4,22.2,-90,(-4)-o.drone.c.camTilt)', [10, 0, 0]],
   chimney: ['o.tp(-8,38,-22,0,-88)', [0, -12, 0]],
 };
+// [P2 H] Seoul: seoulsnap's shot set (walking street, club street, Exit 9), acro, exposure from the night look
+const LEVEL_SHOTS = {
+  'seoul-hongdae': {
+    walk0: ['o.tp(-36,3,-23,0,(4)-o.drone.c.camTilt)', [0, 0, -3]],
+    club90: ['o.tp(63.7,3,129.6,90,(4)-o.drone.c.camTilt)', [-3, 0, 0]],
+    station: ['o.tp(31.8,8,-309,0,(0)-o.drone.c.camTilt)', [0, 0, -3]],
+  },
+};
+const SHOT_SET = BANDO ? SHOTS : LEVEL_SHOTS[LEVEL] || {};
 const ALLOW = [/favicon\.ico/];   // console errors that are not failures
 
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.bin': 'application/octet-stream', '.otil': 'application/octet-stream', '.css': 'text/css', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
+const MIME = { '.ktx2': 'image/ktx2', '.woff2': 'font/woff2', '.glb': 'model/gltf-binary', '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.bin': 'application/octet-stream', '.otil': 'application/octet-stream', '.css': 'text/css', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
 const serveFile = (res, f) => { res.writeHead(200, { 'content-type': MIME[extname(f)] || 'application/octet-stream', 'cache-control': 'no-store' }); res.end(readFileSync(f)); };
 const server = createServer((req, res) => {
   const u = decodeURIComponent(req.url.split('?')[0]);
@@ -69,10 +83,10 @@ try {
     if (/fonts\.(googleapis|gstatic)\.com/.test(u)) return route.fulfill({ status: 200, body: '', contentType: 'text/css' });
     return route.continue();
   });
-  await page.addInitScript(() => localStorage.setItem('onetake.settings', JSON.stringify({ world: 'yard', quality: 'auto', v: 3, mode: 'cine', hud: 'off' })));
+  await page.addInitScript((world) => localStorage.setItem('onetake.settings', JSON.stringify({ world, quality: 'auto', v: 3, mode: 'cine', hud: 'off' })), BANDO ? 'yard' : LEVEL);
 
   // ---- 1 + 2. load with ?perf, run the segments
-  await page.goto(`${BASE}/index.html?perf=${FRAMES}&soak=0`);
+  await page.goto(`${BASE}/index.html?perf=${FRAMES}&soak=0${BANDO ? '' : `&level=${encodeURIComponent(LEVEL)}`}`);
   const ready = await page.waitForFunction(() => window.__onetake?.perfReady === true || /failed/.test(document.getElementById('perfProbe')?.textContent || ''), null, { timeout: TIMEOUT, polling: 1000 }).then(() => true, () => false);
   const probeText = await page.evaluate(() => document.getElementById('perfProbe')?.textContent || '(no probe overlay)');
   if (!ready || !(await page.evaluate(() => window.__onetake?.perfReady === true))) {
@@ -80,9 +94,11 @@ try {
     throw new Error('load failed');
   }
   ok(await page.evaluate(() => window.__onetake.state === 'fly' || window.__onetake.state === 'crash'), `world loaded, flying (${sec()})`);
+  if (!BANDO) ok(await page.evaluate(() => window.__onetake.levels?.loaded) === LEVEL, `level ${LEVEL} is the loaded world`);
   const perf = await page.evaluate(() => window.__onetake.perfRun(0));
   const segOk = perf.scales.length === 2 && perf.scales.every((s) => perf.segments.every((n) => Number.isFinite(s.seg[n]?.p90) && Number.isFinite(s.seg[n]?.gpuP50)));
-  ok(segOk && perf.segments.length === 4, `?perf segments ${perf.segments.join(', ')} at ${perf.scales.map((s) => s.scale).join(' / ')} (${sec()}); hover ${JSON.stringify(perf.hover)}`);
+  ok(segOk && (BANDO ? perf.segments.length === 4 : perf.segments.length >= 3 && !perf.segments.includes('hover')), `?perf segments ${perf.segments.join(', ')} at ${perf.scales.map((s) => s.scale).join(' / ')} (${sec()}); ` +
+    (BANDO ? `hover ${JSON.stringify(perf.hover)}` : `world.update p50 ${perf.segments.map((n) => `${n} ${perf.scales[0].seg[n]?.updP50?.toFixed(1)}`).join(', ')} ms`));
   writeFileSync(join(OUT, 'perf.json'), JSON.stringify(perf, null, 1));
 
   // ---- 3. coverage
@@ -98,13 +114,13 @@ try {
     if (cov.pending.length) console.log(`::warning::coverage pending (exporter waits on a contract): ${cov.pending.join(', ')} (${cov.pendingMeshes} meshes)`);
   }
 
-  // ---- 4. graffiti from the worker
-  const gu = await page.evaluate(async () => { const s = window.__onetake.world?.stats || window.__bandoStats || {}; for (let i = 0; i < 60 && !(s.graffitiUpload?.path && s.graffitiUpload.path !== 'pending'); i++) await new Promise((r) => setTimeout(r, 500)); return s.graffitiUpload || null; });
-  ok(gu?.path === 'worker', `graffiti atlas drawn in the Worker, uploaded in strips: ${JSON.stringify(gu)}`);
+  // ---- 4. graffiti from the worker (bando only)
+  if (BANDO) { const gu = await page.evaluate(async () => { const s = window.__onetake.world?.stats || window.__bandoStats || {}; for (let i = 0; i < 60 && !(s.graffitiUpload?.path && s.graffitiUpload.path !== 'pending'); i++) await new Promise((r) => setTimeout(r, 500)); return s.graffitiUpload || null; });
+  ok(gu?.path === 'worker', `graffiti atlas drawn in the Worker, uploaded in strips: ${JSON.stringify(gu)}`); }
 
   // ---- 5. golden stills
   const golden = existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, 'utf8')) : { shots: {} }, now = {};
-  for (const [name, [tp, vel]] of Object.entries(SHOTS)) {
+  for (const [name, [tp, vel]] of Object.entries(SHOT_SET)) {
     const r = await page.evaluate(async ({ tp, vel }) => {
       const o = window.__onetake; o.S.mode = 'acro'; o.applySettings(); o.fpv.setQualityRange?.(1, 1); o.fpv.scale = 1; o.controls.thr = 0.39;
       new Function('o', tp)(o);

@@ -16,6 +16,9 @@
 // Results: the overlay, window.__onetake.perf, and the console line "perf {json}".
 // A scale "fits 60 Hz" when every segment's p90 is under 14.2 ms (16.7 ms minus 15 % headroom).
 // URL options: ?perf=N, &soak=S (seconds; default 180 for N >= 60, else 0), &seg=cruise,hover (a subset).
+// [P2 H] Other levels (?level=seoul-hongdae&perf): once the level loads, its segments from perf-levels.js replace the
+// bando ones (Seoul: walk, canyon, club, high), and every segment also reports world.update() alone (upd p50 / p90:
+// the level's per-frame CPU work: lights, signs, life), split out of cpu.
 const SCALES = [1.0, 1.2], WARM = 30, BUDGET = 14.2, TAIL = 30;
 const q = (a, p) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 const f1 = (v) => (Number.isFinite(v) ? v.toFixed(1) : '-');
@@ -68,7 +71,7 @@ const SEGMENTS = {
 export function perfProbe(o, frames = 120) {
   const params = new URLSearchParams(location.search);
   const soakS = Math.max(0, +(params.get('soak') ?? (frames >= 60 ? 180 : 0)) || 0);
-  const segs = (params.get('seg') || Object.keys(SEGMENTS).join(',')).split(',').filter((s) => SEGMENTS[s]);
+  let segs = (params.get('seg') || Object.keys(SEGMENTS).join(',')).split(',').filter((s) => SEGMENTS[s]);
   const box = document.createElement('div');
   box.id = 'perfProbe';
   box.style.cssText = 'position:fixed;left:8px;right:8px;top:calc(8px + env(safe-area-inset-top));z-index:99999;padding:10px 12px;max-height:calc(100% - 16px);overflow:auto;' +
@@ -98,27 +101,31 @@ export function perfProbe(o, frames = 120) {
       d.pos.set(x, y, z); d.prev.copy(d.pos); d.vel.set(vx, vy, vz); d.crashed = false;
       d.q.setFromAxisAngle(UP, yaw).multiply(qp.setFromAxisAngle(RX, (pitch - tilt) * DEG)); d.prevQ?.copy(d.q); d.heading = yaw;
     };
-    const frame = () => { const t0 = performance.now(); o.step(1000 / 60, 1, false); const t1 = performance.now(); sync(); const t2 = performance.now(); return [t2 - t0, t1 - t0]; };
-    const stats = (tot, cpu) => {
+    // [P2 H] world.update() timed on its own (wrapped for the run, restored in finally)
+    const w = o.world, upd0 = w?.update; let updMs = 0; const UPD = [];
+    if (typeof upd0 === 'function') w.update = function (...args) { const t = performance.now(); try { return upd0.apply(this, args); } finally { updMs += performance.now() - t; } };
+    const frame = () => { updMs = 0; const t0 = performance.now(); o.step(1000 / 60, 1, false); const t1 = performance.now(); sync(); const t2 = performance.now(); UPD.push(updMs); return [t2 - t0, t1 - t0]; };
+    const stats = (tot, cpu, upd = []) => {
       const gpu = tot.map((v, i) => v - cpu[i]);
-      return { p50: q(tot, 0.5), p90: q(tot, 0.9), mean: tot.reduce((a, b) => a + b, 0) / Math.max(1, tot.length), max: Math.max(...tot), cpuP50: q(cpu, 0.5), gpuP50: q(gpu, 0.5), gpuP90: q(gpu, 0.9), n: tot.length };
+      return { p50: q(tot, 0.5), p90: q(tot, 0.9), mean: tot.reduce((a, b) => a + b, 0) / Math.max(1, tot.length), max: Math.max(...tot), cpuP50: q(cpu, 0.5), gpuP50: q(gpu, 0.5), gpuP90: q(gpu, 0.9), n: tot.length,
+        ...(upd.length ? { updP50: q(upd, 0.5), updP90: q(upd, 0.9) } : {}) };
     };
-    const res = { frames, warm, segments: segs, scales: [], out: [fpv.outW, fpv.outH], dpr: devicePixelRatio, quality: S.quality, msaa: fpv.samples | 0, ua: navigator.userAgent, hover: null, soak: null };
+    const res = { frames, warm, segments: segs, level: o.world?.level || 'bando', scales: [], out: [fpv.outW, fpv.outH], dpr: devicePixelRatio, quality: S.quality, msaa: fpv.samples | 0, ua: navigator.userAgent, hover: null, soak: null };
     try {
       for (const s of SCALES) {
         const row = { scale: s, px: [Math.round(fpv.outW * s), Math.round(fpv.outH * s)], seg: {} };
         for (const name of segs) {
           const seg = SEGMENTS[name]; seg.setup?.(o);
           if (name === 'hover') res.hover = seg.at ? { x: +seg.at.x.toFixed(1), y: +seg.at.y.toFixed(1), z: +seg.at.z.toFixed(1), crownH: +seg.at.h.toFixed(1) } : 'no crown found: fixed point';
-          const tot = [], cpu = [];
+          const tot = [], cpu = [], upd = [];
           for (let i = 0; i < warm + frames; i++) {
             await raf();
             fpv.scale = s; place(seg, i / 60, i === 0);
             const [a, b] = frame();
-            if (i >= warm) { tot.push(a); cpu.push(b); }
+            if (i >= warm) { tot.push(a); cpu.push(b); if (upd0) upd.push(UPD[UPD.length - 1]); }
             if (i % 10 === 0) say(`PERF · ${s.toFixed(1)}× · ${name} · ${i < warm ? 'warm-up' : `frame ${i - warm}/${frames}`}`);
           }
-          row.seg[name] = stats(tot, cpu);
+          row.seg[name] = stats(tot, cpu, upd);
         }
         const all = Object.values(row.seg);
         row.p90 = Math.max(...all.map((x) => x.p90)); row.worst = Object.keys(row.seg).find((k) => row.seg[k].p90 === row.p90);
@@ -138,6 +145,7 @@ export function perfProbe(o, frames = 120) {
         res.soak.throttle = +(res.soak.last30.p90 / res.soak.first30.p90).toFixed(2);
       }
     } finally {
+      if (typeof upd0 === 'function') w.update = upd0;
       delete fpv.frameTiming;
       S.mode = saved.mode; S.fps = saved.fps; o.applySettings();
     }
@@ -150,7 +158,7 @@ export function perfProbe(o, frames = 120) {
     const lines = ['PERF · ms per frame (CPU+GPU synced; gpu ≈ total − cpu)'];
     for (const x of res.scales) {
       lines.push(`${x.scale.toFixed(1)}×  ${x.px[0]}×${x.px[1]}  ${x.p90 <= BUDGET ? 'fits 60 Hz' : `over budget (${x.worst})`}`);
-      for (const [n, v] of Object.entries(x.seg)) lines.push(`  ${n.padEnd(6)} p50 ${f1(v.p50).padStart(5)}  p90 ${f1(v.p90).padStart(5)}  cpu ${f1(v.cpuP50)}  gpu ${f1(v.gpuP50)}`);
+      for (const [n, v] of Object.entries(x.seg)) lines.push(`  ${n.padEnd(6)} p50 ${f1(v.p50).padStart(5)}  p90 ${f1(v.p90).padStart(5)}  cpu ${f1(v.cpuP50)}  gpu ${f1(v.gpuP50)}` + (v.updP50 != null ? `  upd ${f1(v.updP50)}/${f1(v.updP90)}` : ''));
     }
     if (res.soak) lines.push(`SOAK ${res.soak.seconds} s · ${res.soak.frames} frames · 1.0×`, `  first 30 s p50 ${f1(res.soak.first30.p50)}  p90 ${f1(res.soak.first30.p90)}`,
       `  last 30 s  p50 ${f1(res.soak.last30.p50)}  p90 ${f1(res.soak.last30.p90)}  gpu ${f1(res.soak.last30.gpuP50)}  (×${res.soak.throttle})`);
@@ -169,6 +177,13 @@ export function perfProbe(o, frames = 120) {
   (async () => {
     await o.startFlight(true);
     while (o.state !== 'fly' && o.state !== 'crash') await new Promise((r) => setTimeout(r, 250));
+    // [P2 H] a level other than bando brings its own segments (perf-levels.js), unless ?seg= picked bando ones
+    if (o.world?.level && o.world.level !== 'bando') {
+      try {
+        const ls = await (await import('./perf-levels.js')).levelSegments(o);
+        if (ls) { for (const k of Object.keys(SEGMENTS)) delete SEGMENTS[k]; Object.assign(SEGMENTS, ls); segs = (params.get('seg') || Object.keys(ls).join(',')).split(',').filter((s) => SEGMENTS[s]); if (!segs.length) segs = Object.keys(ls); }
+      } catch (e) { console.warn('perf: level segments', e); }
+    }
     o.step(1000 / 60, 1, false);
     const n = SCALES.length * segs.length * (warm + frames);
     say(`PERF · ready. Hold the phone the way you fly, then tap RUN.\n${segs.join(', ')} × ${SCALES.length} scales × (${warm} + ${frames}) frames, about ${Math.ceil(n / 40)} s` +

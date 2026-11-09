@@ -2,3 +2,5 @@ node_modules
 ci/node_modules
 exports/
 browser-out/
+export/
+browser-out-*/

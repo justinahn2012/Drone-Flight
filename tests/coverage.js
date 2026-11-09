@@ -8,10 +8,14 @@
 //   match.mesh 'world.glb'  a plain Mesh whose vertex count and bounds equal a world.json meshes[] row
 //   match.program RE         material.customProgramCacheKey() matches
 //   match.name RE            object.name matches;  match.parent RE: the parent's name matches
+//   match.ancestor RE        [P2 H] some ancestor's name matches (a level's partner group: seoul-signs, seoul-life...)
 //   match.instanced          must be (true) / must not be (false) an InstancedMesh
 //   requires 'a.b.c'         a path in worldJson that must be truthy (e.g. instances.veg.count), else the match is
 //                            `pending` when the target says status 'pending', otherwise uncovered
 // Also reported: world.glb rows no scene mesh draws (`undrawnExports`, also a failure).
+// [P2 H] worldJson.coverageObjects (e.g. ['Mesh', 'Points', 'Line']) widens what is checked beyond meshes, so a level's
+// Points (steam) or line renderers (cables) need an entry too. Absent (bando): meshes only, as before.
+// Runs in node as well (tools/export-world.mjs applies it to the headless Seoul scene).
 export function coverage(scene, world) {
   const rules = world.coverage || [], rows = world.meshes || [];
   const get = (path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), world);
@@ -26,8 +30,11 @@ export function coverage(scene, world) {
   };
   const progOf = (m) => { const mt = Array.isArray(m.material) ? m.material[0] : m.material; try { return mt?.customProgramCacheKey?.() || ''; } catch (e) { return ''; } };
   const out = { meshes: 0, byRule: {}, uncovered: [], pending: [], drawnRows: new Set() };
+  const objs = world.coverageObjects || ['Mesh'];
+  const counts = (m) => (m.isMesh && objs.includes('Mesh')) || (m.isPoints && objs.includes('Points')) || (m.isLine && objs.includes('Line'));
+  const ancestorIs = (m, re) => { for (let p = m.parent; p; p = p.parent) if (re.test(p.name || '')) return true; return false; };
   scene.traverse((m) => {
-    if (!m.isMesh) return;
+    if (!counts(m)) return;
     out.meshes++;
     let hit = null, why = null;
     for (const r of rules) {
@@ -35,6 +42,7 @@ export function coverage(scene, world) {
       if (M.instanced !== undefined && !!m.isInstancedMesh !== M.instanced) continue;
       if (M.name && !new RegExp(M.name).test(m.name || '')) continue;
       if (M.parent && !new RegExp(M.parent).test(m.parent?.name || '')) continue;
+      if (M.ancestor && !ancestorIs(m, new RegExp(M.ancestor))) continue;
       if (M.program && !new RegExp(M.program).test(progOf(m))) continue;
       if (M.mesh === 'world.glb') { const row = rowOf(m); if (!row) continue; out.drawnRows.add(row.name); }
       if (r.requires && !get(r.requires)) {
@@ -44,7 +52,7 @@ export function coverage(scene, world) {
       }
       hit = r; break;
     }
-    const desc = { name: m.name || '', type: m.isInstancedMesh ? 'InstancedMesh' : 'Mesh', vertices: m.geometry?.attributes?.position?.count ?? 0, program: progOf(m), parent: m.parent?.name || '', visible: m.visible };
+    const desc = { name: m.name || '', type: m.isInstancedMesh ? 'InstancedMesh' : m.isPoints ? 'Points' : m.isLine ? 'Line' : 'Mesh', vertices: m.geometry?.attributes?.position?.count ?? 0, program: progOf(m), parent: m.parent?.name || '', visible: m.visible };
     if (!hit) out.uncovered.push(desc);
     else if (why === 'pending') { out.pending.push({ rule: hit.id, ...desc }); out.byRule[hit.id] = (out.byRule[hit.id] || 0) + 1; }
     else if (why) out.uncovered.push({ ...desc, rule: hit.id, why });

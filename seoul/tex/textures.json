@@ -1,0 +1,552 @@
+{
+ "format": "onetake.textures/1",
+ "generator": "tools/export-seoul-data.mjs --vendor-textures",
+ "license": "CC0 1.0: Poly Haven (polyhaven.com), see seoul/tex/LICENSE.txt",
+ "orientation": "rows are stored Y-flipped relative to the source JPG (isYFlip), so sampling the KTX2 at uv with no flip (three: KTX2Loader, flipY false; Metal: top-left origin) gives exactly what three TextureLoader (flipY true) gives for the JPG. Do not flip again.",
+ "sampling": "repeat wrap, trilinear, anisotropy <= 8; site UVs are world metres: uv / SEOUL_MATS[mat].tile",
+ "transcode": "Basis ETC1S (diffuse, sRGB) and UASTC + zstd (normal maps, linear, OpenGL +Y green, basisu normal-map preset) -> ASTC 4x4 on iOS, BC7 / ETC2 elsewhere.",
+ "files": {
+  "asphalt_02_diff.ktx2": {
+   "id": "asphalt_02",
+   "map": "diff",
+   "mats": [
+    "road"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/asphalt_02/asphalt_02_diff_1k.jpg",
+   "sourceSha256": "1aa5ce99f58a625c71d48cfc3e68b65ca85ccb00f39e045c0a928608a0ea25ed",
+   "sourceBytes": 731707,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 257488,
+   "sha256": "70b6fb1753f5d8814e9ad04e37c16523d603b13c0017274dbbc347455b55dbf3",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "asphalt_02_nor_gl.ktx2": {
+   "id": "asphalt_02",
+   "map": "nor_gl",
+   "mats": [
+    "road"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/asphalt_02/asphalt_02_nor_gl_1k.jpg",
+   "sourceSha256": "42a1c381b53204e83a982db2864479a30bc127bbdeebb1006f8ee51bff099df3",
+   "sourceBytes": 1240122,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 1180090,
+   "sha256": "d0e49f1d299b83869e1feb1419a3df734d02ba3c246edd83df98384905b66496",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "beige_wall_001_diff.ktx2": {
+   "id": "beige_wall_001",
+   "map": "diff",
+   "mats": [
+    "plaster"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/beige_wall_001/beige_wall_001_diff_1k.jpg",
+   "sourceSha256": "72104704d0b9bd3713c5f6238971252b63eccf6e61263059c674caa8f3d0fa6d",
+   "sourceBytes": 33074,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 22031,
+   "sha256": "f62f7792532f36a33c3f049358bc0021a85f19be261485baf904c272231d4d44",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "beige_wall_001_nor_gl.ktx2": {
+   "id": "beige_wall_001",
+   "map": "nor_gl",
+   "mats": [
+    "plaster"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/beige_wall_001/beige_wall_001_nor_gl_1k.jpg",
+   "sourceSha256": "cec747be50f91da0693986080b6f59ef868d53cb2ab7d577982165ece63ed75e",
+   "sourceBytes": 153434,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 517532,
+   "sha256": "3b09c5e818b19c4cc16dc0ca63455c2f90cc2b4d86c923ad940077334098b570",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "blue_metal_plate_diff.ktx2": {
+   "id": "blue_metal_plate",
+   "map": "diff",
+   "mats": [
+    "metal",
+    "shutter"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_metal_plate/blue_metal_plate_diff_1k.jpg",
+   "sourceSha256": "a0162bffce47d4a35613a12af22571b28c18412dc5805cbb69eac343554ef750",
+   "sourceBytes": 395923,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 153781,
+   "sha256": "e5dbe558a12add89c54938725fafc19741fb400cb7db9730af6ecadd39e126d4",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "blue_metal_plate_nor_gl.ktx2": {
+   "id": "blue_metal_plate",
+   "map": "nor_gl",
+   "mats": [
+    "shutter"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_metal_plate/blue_metal_plate_nor_gl_1k.jpg",
+   "sourceSha256": "970f0273c9e2e3b4fc8338bfd58a28c413b70ac4d1734d9dc8a136724bde56e6",
+   "sourceBytes": 238025,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 451402,
+   "sha256": "d5eadd14bf56a3ce5f06c3ec854d874af2a3b49520cac843e3ee00b435058539",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "brick_pavement_02_diff.ktx2": {
+   "id": "brick_pavement_02",
+   "map": "diff",
+   "mats": [
+    "plaza"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/brick_pavement_02/brick_pavement_02_diff_1k.jpg",
+   "sourceSha256": "fa1ce4c6da38bc75e488557420a03cb94e696c651075d36a7363cdc61c1b3944",
+   "sourceBytes": 961154,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 250789,
+   "sha256": "0bf24d68aa8bdd3763ecd90f48e953a021b0dde488c42262438b4c36b6908b95",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "brick_pavement_02_nor_gl.ktx2": {
+   "id": "brick_pavement_02",
+   "map": "nor_gl",
+   "mats": [
+    "plaza"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/brick_pavement_02/brick_pavement_02_nor_gl_1k.jpg",
+   "sourceSha256": "b254abe7a04223339c59bfe3ba0a3eea865b61de8b2561ed56620db2190675e1",
+   "sourceBytes": 1050532,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 1104727,
+   "sha256": "3c204723abaf1eb35c171290c518a1b324d8650af5d7c35569fde2d887b8c5c6",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "brown_brick_02_diff.ktx2": {
+   "id": "brown_brick_02",
+   "map": "diff",
+   "mats": [
+    "brick"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/brown_brick_02/brown_brick_02_diff_1k.jpg",
+   "sourceSha256": "d769443de69cc16482d25a8a1777b1fa826ada8b4175c7c29d7abb08a91f8ac2",
+   "sourceBytes": 425513,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 291559,
+   "sha256": "020e601324338fbfe9795bdb51341c7dd51203a173297a7526546330bc788d1e",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "brown_brick_02_nor_gl.ktx2": {
+   "id": "brown_brick_02",
+   "map": "nor_gl",
+   "mats": [
+    "brick"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/brown_brick_02/brown_brick_02_nor_gl_1k.jpg",
+   "sourceSha256": "c4ca57e17a7ebfa27b561b126a6579e90b09a852c94ffa83a0b68d4ed62b46af",
+   "sourceBytes": 226347,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 889057,
+   "sha256": "8db93c9aaee5abdf1eaa83347cee8d32372d72b8f07bd2f1cc5430833c45e775",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "concrete_floor_02_diff.ktx2": {
+   "id": "concrete_floor_02",
+   "map": "diff",
+   "mats": [
+    "roof"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_floor_02/concrete_floor_02_diff_1k.jpg",
+   "sourceSha256": "6db84a6d87dc50508b9d134d6fbd2b7e876b8081a5f43a118a249ca18de73af5",
+   "sourceBytes": 776097,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 262478,
+   "sha256": "f7fe01e7ff0f998710a33588396472369b0e73eac752cff8c807e829678e0990",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "concrete_floor_02_nor_gl.ktx2": {
+   "id": "concrete_floor_02",
+   "map": "nor_gl",
+   "mats": [
+    "roof"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_floor_02/concrete_floor_02_nor_gl_1k.jpg",
+   "sourceSha256": "fcda391b57a816d646ae15544688be53790478da5cd48dbe514b3c6901415e61",
+   "sourceBytes": 192757,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 689740,
+   "sha256": "37aac685c815b19688e2ce4194b9e3174828a5d7bc9e4a3921f600ea6e2a6cd8",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "concrete_pavers_02_diff.ktx2": {
+   "id": "concrete_pavers_02",
+   "map": "diff",
+   "mats": [
+    "walk"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_pavers_02/concrete_pavers_02_diff_1k.jpg",
+   "sourceSha256": "483c284c13153b8a8d010dbc58b4e52e65ad2525ddc69b3daf8722c70731730f",
+   "sourceBytes": 699805,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 231030,
+   "sha256": "b84ef880a633ffc027deeba2944897051e96a483b79c13623901d0911734e382",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "concrete_pavers_02_nor_gl.ktx2": {
+   "id": "concrete_pavers_02",
+   "map": "nor_gl",
+   "mats": [
+    "walk"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_pavers_02/concrete_pavers_02_nor_gl_1k.jpg",
+   "sourceSha256": "54eeb307a2f028134382b5e02d4d66b3272d10b8531e6f2b0d59fc466f560d67",
+   "sourceBytes": 704346,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 663363,
+   "sha256": "6f1d979914c15e748ea74ad111a04c92976d2fa9d1295f1cd89dbac7924eb99e",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "concrete_tile_facade_diff.ktx2": {
+   "id": "concrete_tile_facade",
+   "map": "diff",
+   "mats": [
+    "tile"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_tile_facade/concrete_tile_facade_diff_1k.jpg",
+   "sourceSha256": "5ee9dbcaf3351b3d8193a5bd9e024adb484a078a60acf90eb240f7aaae1b53cd",
+   "sourceBytes": 625160,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 210734,
+   "sha256": "816eb515cb7e364427e46e15a1e44c7b1d0dab472439a2082759aee3ba522f6e",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "concrete_tile_facade_nor_gl.ktx2": {
+   "id": "concrete_tile_facade",
+   "map": "nor_gl",
+   "mats": [
+    "tile"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_tile_facade/concrete_tile_facade_nor_gl_1k.jpg",
+   "sourceSha256": "a11ac18036dac0a5a548552a3d859ddec778d4f1eb82e051b5169379125fd987",
+   "sourceBytes": 936569,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 732839,
+   "sha256": "90678e1b6811ffac06c8e34f3684fb6b9918d47cd0de462e10af761f46506095",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "concrete_wall_008_diff.ktx2": {
+   "id": "concrete_wall_008",
+   "map": "diff",
+   "mats": [
+    "concrete"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_wall_008/concrete_wall_008_diff_1k.jpg",
+   "sourceSha256": "a203166d280d3cfc6a91bbc9ffdae406eb9555b4a4f658cd92619063eb17c147",
+   "sourceBytes": 623051,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 215681,
+   "sha256": "08ee93dd1121212363b2921fddd3c98d39ab1b6c96a03b9e2fd1967db5b8d68d",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "concrete_wall_008_nor_gl.ktx2": {
+   "id": "concrete_wall_008",
+   "map": "nor_gl",
+   "mats": [
+    "concrete"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_wall_008/concrete_wall_008_nor_gl_1k.jpg",
+   "sourceSha256": "83cd3fa2c7cbf4c81402386065daf8fa6f72e1f1f77e02ccb1eedb28496909ae",
+   "sourceBytes": 511519,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 409016,
+   "sha256": "3af56d7189e5f6aeab513e3fdc2d1d20717892b636c24ae86d0df51c353d0901",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  }
+ },
+ "bytes": 8533337
+}
