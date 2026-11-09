@@ -388,14 +388,14 @@ export function geometry(layout, opts = {}) {
       for (const sd of [-1, 1]) boxMM(F, 0.0, yR0 - 0.05, sd * (hwT - 0.35) - 0.025, Lh, yR0 - 0.02, sd * (hwT - 0.35) + 0.025, ['py']);
       // the sign: station name band + yellow exit number tile on the front fascia (faces -x, toward people walking in)
       const sn = D(F, -1, 0, 0);
-      set('dr_glow', { em: NI([0.92, 0.96, 1.0], 160), col: false });
+      set('dr_glow', { em: NI([0.92, 0.96, 1.0], 110), col: false });
       quad(W(F, -0.425, yR0 + 0.02, -zE + 0.05), W(F, -0.425, yR0 + 0.02, zE - 0.75), W(F, -0.425, yR0 + 0.33, zE - 0.75), W(F, -0.425, yR0 + 0.33, -zE + 0.05), sn);
       set('dr_glow', { em: NI(srgb(0xffc20e), 180), col: false });
       quad(W(F, -0.425, yR0 + 0.0, zE - 0.7), W(F, -0.425, yR0 + 0.0, zE - 0.05), W(F, -0.425, yR0 + 0.35, zE - 0.05), W(F, -0.425, yR0 + 0.35, zE - 0.7), sn);
-      labels.push({ id: 'exit' + ex.n + ':name', kind: 'station', pos: r3(W(F, -0.43, yR0 + 0.175, (-zE + 0.05 + zE - 0.75) / 2)), normal: r3(sn), right: r3(D(F, 0, 0, -1)), w: 2 * zE - 0.8, h: 0.31, nits: 160, lines: ['홍대입구', 'Hongik Univ.'], badges: ['2', 'K', 'A'] });
+      labels.push({ id: 'exit' + ex.n + ':name', kind: 'station', pos: r3(W(F, -0.43, yR0 + 0.175, (-zE + 0.05 + zE - 0.75) / 2)), normal: r3(sn), right: r3(D(F, 0, 0, -1)), w: 2 * zE - 0.8, h: 0.31, nits: 110, lines: ['홍대입구', 'Hongik Univ.'], badges: ['2', 'K', 'A'] });
       labels.push({ id: 'exit' + ex.n + ':num', kind: 'exitnum', pos: r3(W(F, -0.43, yR0 + 0.175, zE - 0.375)), normal: r3(sn), right: r3(D(F, 0, 0, -1)), w: 0.65, h: 0.35, nits: 180, lines: [ex.n] });
       emit({ id: 'dress:exit' + ex.n + ':canopy', kind: 'store', pos: W(F, Lh / 2, yR0 - 0.1, 0), normal: [0, -1, 0], w: 2.4, h: Math.max(1, Lh - 0.6), rgb: [1.0, 0.95, 0.88], nits: 140, range: 10 });
-      emit({ id: 'dress:exit' + ex.n + ':sign', kind: 'lightbox', pos: W(F, -0.45, yR0 + 0.18, 0), normal: sn, w: 2 * zE, h: 0.35, rgb: [0.95, 0.95, 0.9], nits: 160 });
+      emit({ id: 'dress:exit' + ex.n + ':sign', kind: 'lightbox', pos: W(F, -0.45, yR0 + 0.18, 0), normal: sn, w: 2 * zE, h: 0.35, rgb: [0.95, 0.95, 0.9], nits: 120 });
       emit({ id: 'dress:exit' + ex.n + ':stair', kind: 'store', pos: W(F, st.xL - 0.5, -0.45, 0), normal: [0, -1, 0], w: 1.0, h: 3.0, rgb: [0.92, 0.98, 1.0], nits: 220, range: 5.5 });
       occRect(F, -1.2, Lh + 0.4, -hwT, hwT, 0.2);
       if (ex.deep) {
