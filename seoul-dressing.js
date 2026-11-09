@@ -152,7 +152,7 @@ function gatesOf(lineData) {
   const out = [];
   const basis = (G) => { const n = v3.norm(G.n); let u = G.u ? G.u.slice() : Math.abs(n[1]) > 0.9 ? [1, 0, 0] : v3.cross([0, 1, 0], n); const d = v3.dot(u, n); u = v3.norm([u[0] - n[0] * d, u[1] - n[1] * d, u[2] - n[2] * d]); return { n, u, v: v3.cross(n, u) }; };
   for (const l of lineData?.lines || []) {
-    if (l.carve || !l.c) continue;
+    if (l.carve || !l.c || l.piece) continue;   // set-piece lines are E's own gates (registered by the pieces themselves)
     out.push({ name: l.name, c: l.c, w: l.w, h: l.h, two: !!l.two, micro: !!l.micro, pre: false, line: l, ...basis(l) });
     for (const p of l.pre || []) out.push({ name: l.name, c: p.c, w: p.w, h: p.h, pre: true, line: l, ...basis(p) });
   }
@@ -358,6 +358,8 @@ export function geometry(layout, opts = {}) {
   const toLayout = (rx, ry) => { const o = layout.origin || { lat: 37.5532, lon: 126.9224 }; return [rx + (126.9230 - o.lon) * 111320 * Math.cos(o.lat * Math.PI / 180), -(ry + (37.5540 - o.lat) * 110574)]; };
   const EXITS = [{ n: '9', ref: [-7, 225], deep: true, flip: -1 }, { n: '1', ref: [-28, 252], flip: 1 }, { n: '2', ref: [78, 349], flip: -1 }, { n: '8', ref: [99, 319], flip: 1 }];
   const yanghwa = mainStreets.filter((s) => s.ko === '양화로');
+  // the station-front crossing of Yanghwa-ro, between exits 9 and 1 (from the layout, not from lines.json)
+  const stationX = (() => { const a = toLayout(...EXITS[0].ref), b = toLayout(...EXITS[1].ref); return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; })();
   for (const ex of EXITS) {
     const target = toLayout(...ex.ref);
     const road = yanghwa.map((s) => ({ s, p: M.project(s, target[0], target[1]) })).sort((a, b) => a.p.dist - b.p.dist)[0];
@@ -400,13 +402,13 @@ export function geometry(layout, opts = {}) {
       occRect(F, -1.2, Lh + 0.4, -hwT, hwT, 0.2);
       if (ex.deep) {
         // the set piece: from the canopy mouth down flight 1 to the first landing (headroom 2.7 m there)
-        const pre = { c: r3(W(F, -0.9, 1.45, 0)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.5, h: 1.7 };
-        const gate = { c: r3(W(F, st.x1 + 1.6, st.y1 + 1.15, 0)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.4, h: 1.6 };
+        const pre = { c: r3(W(F, -0.9, 1.45, 0)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.4, h: 1.8 };
+        const gate = { c: r3(W(F, st.x1 + 1.6, st.y1 + 1.26, 0)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.3, h: 1.8 };
         setPieces.push({ id: 'station-stairs', kind: 'stairs', name: 'STATION STAIRS', exit: ex.n, pos: r3(W(F, Lh / 2, 0, 0)), dir: r3(D(F, 1, 0, 0)), gates: { pre, gate },
           landing: { y: +st.y1.toFixed(2), headroom: +(-0.35 - st.y1).toFixed(2) }, note: 'dive under the canopy, down 18 steps (3.06 m) to the first landing; flip and climb out' });
       }
       setPieces.push({ id: 'exit-' + ex.n, kind: 'exit', name: 'EXIT ' + ex.n, pos: r3(W(F, Lh / 2, 0, 0)), dir: r3(D(F, 1, 0, 0)), mouth: r3(W(F, -0.8, 1.4, 0)) });
-    }, { noGate: false, margin: 0.3 });
+    }, { noGate: true });
   }
 
   lap('exits');
@@ -427,10 +429,9 @@ export function geometry(layout, opts = {}) {
       // stay clear of the exit stairs and THE CROSSING: slide toward the screens (SW) when the island would sit on them
       const ctr = (s) => { const q = M.at(a, s), pb2 = M.project(b, q.x, q.z), dAB = pb2.dist, off = (dAB - a.width / 2 - b.width / 2) / 2 + a.width / 2, sx = pb2.side;
         const nx = -q.tz, nz = q.tx, sgn = Math.sign((pb2.px - q.x) * nx + (pb2.pz - q.z) * nz) || 1; return { x: q.x + nx * off * sgn, z: q.z + nz * off * sgn, tx: q.tx, tz: q.tz, gap: dAB - a.width / 2 - b.width / 2, sx }; };
-      const isl = { L: 40, w: 3.0, h: 0.18 }, can = { L: 24, w: 3.8, y: 2.9 };
+      const isl = { L: 40, w: 3.0, h: 0.18 }, can = { L: 24, w: 3.8, y: 3.3 };
       // keep the island's noses off THE CROSSING's zebra (a refuge would be cut there; ours simply stops short)
-      const crg = gates.find((g) => g.name === 'CROSSING');
-      if (crg) { const pc = M.project(a, crg.c[0], crg.c[2]), gap = isl.L / 2 + 5; if (Math.abs(pc.s - sMid) < gap) sMid = pc.s + Math.sign(sMid - pc.s || 1) * gap; }
+      { const pc = M.project(a, stationX[0], stationX[1]), gap = isl.L / 2 + 5; if (Math.abs(pc.s - sMid) < gap) sMid = pc.s + Math.sign(sMid - pc.s || 1) * gap; }
       let c = ctr(sMid);
       const F = frameH([c.x, 0, c.z], c.tx, c.tz);
       item(() => {
@@ -467,11 +468,12 @@ export function geometry(layout, opts = {}) {
         emit({ id: 'dress:busstop:canopy', kind: 'store', pos: W(F, 0, can.y - 0.1, 0), normal: [0, -1, 0], w: can.w - 0.6, h: can.L - 1, rgb: [1.0, 0.96, 0.9], nits: 60, range: 12 });
         occRect(F, -isl.L / 2, isl.L / 2, -isl.w / 2, isl.w / 2);
         // the set piece: along the canopy's side over the platform, the bus lane beside it
-        const mk = (sd) => ({ pre: { c: r3(W(F, -can.L / 2 - 0.5, 1.95, sd * 1.15)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 1.6, h: 1.3 }, gate: { c: r3(W(F, can.L / 2 + 0.5, 1.95, sd * 1.15)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 1.6, h: 1.3 } });
+        // 2.2 x 1.8 m, 0.5 m off the spine (ad panels 0.16), 0.5 m under the roof, half over the bus lane
+        const mk = (sd) => ({ pre: { c: r3(W(F, -can.L / 2 - 0.5, 2.0, sd * 1.6)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.2, h: 1.8 }, gate: { c: r3(W(F, can.L / 2 + 0.5, 2.0, sd * 1.6)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.2, h: 1.8 } });
         setPieces.push({ id: 'bus-shelter', kind: 'shelter', name: 'BUS SHELTER', pos: r3([c.x, 0, c.z]), dir: r3(D(F, 1, 0, 0)), island: { L: isl.L, w: isl.w, h: isl.h }, canopy: can,
           medianGap: +c.gap.toFixed(2), gates: { left: mk(-1), right: mk(1) }, busStops: [r3([sa.x, 0, sa.z]), r3([sb.x, 0, sb.z])],
-          note: 'thread the shelter under its 2.9 m roof, between the spine and the bus lane; G: stop buses beside the island and offset their lanes by half the island width along it' });
-      }, { margin: 0.3 });
+          note: 'thread the shelter under its 3.3 m roof, between the spine and the bus lane; G: stop buses beside the island and offset their lanes by half the island width along it' });
+      }, { noGate: true });
     }
   }
 
@@ -480,14 +482,13 @@ export function geometry(layout, opts = {}) {
   {
     const walks = M.streets.filter((s) => s.kind === 'walking');
     let best = null;
-    const nearGate = (x, z, r) => gates.some((g) => Math.hypot(g.c[0] - x, g.c[2] - z) < r);
     const offOthers = (st, x, z) => M.streets.every((o) => o === st || M.project(o, x, z).dist > o.width / 2 + 9);   // not at a junction
     for (const st of walks) for (let s = 12; s < st.len - 12; s += 2) {
       const q = M.at(st, s), nx = -q.tz, nz = q.tx;
       if (!offOthers(st, q.x, q.z)) continue;
       const fl = M.freeRay(q.x, q.z, nx, nz, 25), fr = M.freeRay(q.x, q.z, -nx, -nz, 25);
       const span = Math.min(fl, 20) + Math.min(fr, 20);
-      if (!isFinite(span) || nearGate(q.x, q.z, 14)) continue;
+      if (!isFinite(span)) continue;
       const score = span + (st.id === 's065' ? 2 : 0) - Math.abs(s - st.len / 2) * 0.02;
       if (!best || score > best.score) best = { st, s, q, fl, fr, score, nx, nz };
     }
@@ -502,7 +503,7 @@ export function geometry(layout, opts = {}) {
         set('dr_prop', { c: [0.03, 0.03, 0.035] }); boxMM(F, -3.2, 0, zback - sd * 2.6, 3.2, 0.32, zback - sd * 0.15);
         set('dr_glow', { em: NI([1.0, 0.75, 0.45], 300), col: false }); boxMM(F, -3.2, 0.24, zback - sd * 2.61 - 0.01, 3.2, 0.27, zback - sd * 2.6 + 0.01);
         // truss columns + roof (white membrane deck, mono-pitch: 2.6 m clear at the street edge, 3.1 m at the back)
-        set('dr_galv'); for (const x of [-len / 2 + 0.2, 0, len / 2 - 0.2]) for (const z of [zin * 0.92, zback * 0.92]) { const yt = z === zin * 0.92 ? 2.6 : 3.1; boxMM(F, x - 0.1, 0, z - 0.1, x + 0.1, yt, z + 0.1); }
+        set('dr_galv'); for (const z of [zin * 0.92, zback * 0.92]) for (const x of z === zin * 0.92 ? [-len / 2 + 0.2, len / 2 - 0.2] : [-len / 2 + 0.2, 0, len / 2 - 0.2]) { const yt = z === zin * 0.92 ? 2.6 : 3.1; boxMM(F, x - 0.1, 0, z - 0.1, x + 0.1, yt, z + 0.1); }   // the street edge is a 9 m truss: no middle post
         set('dr_steel'); for (const z of [zin * 0.92, zback * 0.92]) { const yt = z === zin * 0.92 ? 2.6 : 3.1; boxMM(F, -len / 2, yt, z - 0.12, len / 2, yt + 0.25, z + 0.12); }
         for (const x of [-len / 2 + 0.2, 0, len / 2 - 0.2]) { const a = W(F, x, 2.72, zin * 0.92), b = W(F, x, 3.22, zback * 0.92); tube([a, b], 0.06, 4); }
         set('white');
@@ -532,46 +533,55 @@ export function geometry(layout, opts = {}) {
         emit({ id: 'dress:stage:panel', kind: 'lightbox', pos: W(F, -1.9, 2.1, zback - sd * 0.65), normal: D(F, 0.4, -0.3, -sd), w: 0.5, h: 0.3, rgb: [1.0, 0.92, 0.82], nits: 1500, range: 10 });
         emit({ id: 'dress:stage:sign', kind: 'lightbox', pos: W(F, 0, 2.47, zback - sd * 0.08), normal: D(F, 0, 0, -sd), w: 3.2, h: 0.55, rgb: [0.95, 0.35, 0.45], nits: 140 });
         occRect(F, -len / 2, len / 2, -dep / 2, dep / 2);
-        const yG = 2.18, gz = zin * 0.45;   // over the audience, under the roof's low edge (2.6 m), inside the festoon line
+        const yG = 1.4, gz = zin * (1.2 / (dep / 2));   // 0.5-2.3 m over the audience, 0.3 m under the 2.6 m edge, inside the festoon line
         setPieces.push({ id: 'under-the-stage', kind: 'stage', name: 'UNDER THE STAGE', street: best.st.id, pos: r3([cx, 0, cz]), dir: r3(D(F, 1, 0, 0)), roof: { low: 2.6, high: 3.1 },
           crowdRing: { c: r3(W(F, 0, 0, zin * 0.9)), r: 3.2 },
-          gates: { pre: { c: r3(W(F, -len / 2 - 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.4, h: 0.7 }, gate: { c: r3(W(F, len / 2 + 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.4, h: 0.7 } },
+          gates: { pre: { c: r3(W(F, -len / 2 - 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.2, h: 1.8 }, gate: { c: r3(W(F, len / 2 + 0.6, yG, gz)), n: r3(D(F, 1, 0, 0)), u: r3(D(F, 0, 0, 1)), w: 2.2, h: 1.8 } },
           note: 'over the busking crowd (heads to 1.8 m) and under the canopy edge (2.6 m); G: a crowd ring at crowdRing' });
-      }, { margin: 0.3 });
+      }, { noGate: true });
     }
   }
 
   lap('stage');
-  // ---- 4. CABLE THREAD: low service drops across Hongik-ro 3-gil (lowest points 4.0-4.6 m), two of them framed as windows
+  // ---- 4. CABLE THREAD: low service drops across Hongik-ro 3-gil (lowest points 4.0-4.6 m), and two windows to thread:
+  // a low drop with a crossing line 2.85 m above it, the window fitted 0.3 m inside both (>= 2.2 x 1.8 m). Placed from the
+  // layout alone (the first 84 m of the street from Wausan-ro 21-gil), clear of C's poles and cables (opts.poles / cables).
   {
     const st = M.streets.find((s) => s.ko === '홍익로3길') || M.streets.find((s) => /Hongik-ro 3-gil/.test(s.name || ''));
     if (st) {
-      const lat = gates.filter((g) => g.name === 'CABLE LATTICE');
-      const ss = lat.map((g) => M.project(st, g.c[0], g.c[2])).filter((p) => p.dist < 6).map((p) => p.s);
-      let s0 = ss.length >= 2 ? Math.min(...ss) : st.len * 0.3, s1 = ss.length >= 2 ? Math.max(...ss) : st.len * 0.65;
+      const s0 = 6, s1 = Math.min(st.len - 6, 84);
       const R = rng('thread' + seed); const drops = [], windows = [];
       const cat = (d, n = 12) => { const pts = []; for (let i = 0; i <= n; i++) { const t = i / n; pts.push([lerp(d.a[0], d.b[0], t), lerp(d.a[1], d.b[1], t) - 4 * d.sag * t * (1 - t), lerp(d.a[2], d.b[2], t)]); } return pts; };
-      for (let s = s0 + 5 + R() * 2; s < s1 - 4; s += 5 + R() * 4) {
-        if (ss.some((g) => Math.abs(g - s) < 2.5)) continue;
+      const others = [...(opts.cables || []).filter((c) => c.pts?.length > 1).map((c) => ({ pts: c.pts, r: c.r ?? 0.03 })), ...cables];
+      const pole = (x, z, r) => (opts.poles || []).some((p) => Math.hypot(p.x - x, p.z - z) < r);
+      // distance from a point to any polyline already standing (C's and E's cables)
+      const cabD = (p) => { let d = Infinity; for (const c of others) for (let i = 0; i + 1 < c.pts.length; i++) { const A2 = c.pts[i], B2 = c.pts[i + 1]; if (Math.abs(A2[0] - p[0]) > 8 && Math.abs(B2[0] - p[0]) > 8) continue;
+        const vx = B2[0] - A2[0], vy = B2[1] - A2[1], vz = B2[2] - A2[2], l2 = vx * vx + vy * vy + vz * vz || 1e-9, t = clamp(((p[0] - A2[0]) * vx + (p[1] - A2[1]) * vy + (p[2] - A2[2]) * vz) / l2, 0, 1);
+        d = Math.min(d, Math.hypot(p[0] - A2[0] - vx * t, p[1] - A2[1] - vy * t, p[2] - A2[2] - vz * t) - c.r); } return d; };
+      let k = 0, lastWin = -1e9;
+      for (let s = s0 + 5 + R() * 2; s < s1 - 4; s += 5 + R() * 4, k++) {
         const q = M.at(st, s), nx = -q.tz, nz = q.tx;
         const dl = M.freeRay(q.x, q.z, nx, nz, 9), dr = M.freeRay(q.x, q.z, -nx, -nz, 9);
         if (!isFinite(dl) || !isFinite(dr)) continue;
-        const win = drops.length % 3 === 2 && dl + dr > 3.6, skew = win ? 0 : (R() - 0.5) * 2.4;
+        const wantWin = windows.length < 2 && k >= 1 && (!windows.length || s - lastWin >= 15) && dl + dr > 3.4 && !pole(q.x, q.z, 2.5);
+        const skew = wantWin ? 0 : (R() - 0.5) * 2.4;
         const a = [q.x + nx * (dl - 0.06) - q.tx * skew / 2, 4.75 + R() * 0.55, q.z + nz * (dl - 0.06) - q.tz * skew / 2];
         const b = [q.x - nx * (dr - 0.06) + q.tx * skew / 2, 4.7 + R() * 0.55, q.z - nz * (dr - 0.06) + q.tz * skew / 2];
-        const low = 4.0 + R() * 0.6, sag = Math.max(0.15, (a[1] + b[1]) / 2 - low);
-        const d0 = { a, b, sag, r: 0.011 + R() * 0.012, pair: !win && R() < 0.5 };
-        drops.push(d0);
-        // every third: a high span 1.2-1.4 m above the low drop -> a window to thread (the gate is fitted to the real cable heights)
-        if (win) {
-          const up = 1.2 + R() * 0.2, d1 = { a: [a[0], a[1] + up + sag * 0.3, a[2]], b: [b[0], b[1] + up + sag * 0.3, b[2]], sag: 0.12, r: 0.018, pair: false }; drops.push(d1);
-          const P0 = cat(d0, 40), P1 = cat(d1, 40), w = Math.min(2.4, dl + dr - 1.6);
+        const low = wantWin ? 4.0 + R() * 0.15 : 4.0 + R() * 0.6, sag = Math.max(0.15, (a[1] + b[1]) / 2 - low);
+        const d0 = { a, b, sag, r: 0.011 + R() * 0.012, pair: !wantWin && R() < 0.5 };
+        if (wantWin) {
+          // the crossing line above: lowest point 2.85 m over the drop's; the window between them, 0.3 m clear of both
+          const up = 2.85, d1 = { a: [a[0], low + up + 0.35, a[2]], b: [b[0], low + up + 0.35, b[2]], sag: 0.3, r: 0.02, pair: false };
+          const P0 = cat(d0, 40), P1 = cat(d1, 40), uC = (dl - dr) / 2, w = Math.min(2.6, dl + dr - 1.4);
           const yAt = (P, u) => { let best = null; for (const p of P) { const uu = (p[0] - q.x) * nx + (p[2] - q.z) * nz; if (!best || Math.abs(uu - u) < Math.abs(best[0] - u)) best = [uu, p[1]]; } return best[1]; };
-          const uC = (dl - dr) / 2; let lo = -Infinity, hi = Infinity;
-          for (let k = 0; k <= 8; k++) { const u = uC + (k / 8 - 0.5) * w; lo = Math.max(lo, yAt(P0, u) + d0.r); hi = Math.min(hi, yAt(P1, u) - d1.r); }
-          const gb = lo + 0.3, gt = hi - 0.3;
-          if (gt - gb > 0.4) windows.push({ c: r3([q.x + nx * uC, (gb + gt) / 2, q.z + nz * uC]), n: r3([q.tx, 0, q.tz]), u: r3([nx, 0, nz]), w: +w.toFixed(2), h: +(gt - gb).toFixed(2) });
+          let lo = -Infinity, hi = Infinity; for (let j = 0; j <= 8; j++) { const u = uC + (j / 8 - 0.5) * w; lo = Math.max(lo, yAt(P0, u) + d0.r); hi = Math.min(hi, yAt(P1, u) - d1.r); }
+          const gb = lo + 0.33, gt = hi - 0.33, G = { c: r3([q.x + nx * uC, (gb + gt) / 2, q.z + nz * uC]), n: r3([q.tx, 0, q.tz]), u: r3([nx, 0, nz]), w: +w.toFixed(2), h: +(gt - gb).toFixed(2) };
+          // the window's samples must stay 0.35 m off every other cable already up (C's spans and drops)
+          let okC = G.w >= 2.2 && G.h >= 1.8;
+          if (okC) for (let i = 0; i <= 6 && okC; i++) for (let j = 0; j <= 4; j++) { const p = [G.c[0] + nx * (i / 6 - 0.5) * G.w, G.c[1] + (j / 4 - 0.5) * G.h, G.c[2] + nz * (i / 6 - 0.5) * G.w]; if (cabD(p) < 0.35) { okC = false; break; } }
+          if (okC) { drops.push(d0, d1); windows.push(G); lastWin = s; continue; }
         }
+        drops.push(d0);
       }
       set('dark');
       for (const d of drops) {
@@ -579,23 +589,21 @@ export function geometry(layout, opts = {}) {
         if (!polyGateOK(pts, 0.35)) { facts.rejectedByGates++; continue; }
         tube(pts, d.r, 4); cables.push({ pts: pts.map(r3), r: d.r });
         if (d.pair) { const p2 = pts.map((p) => [p[0], p[1] - 0.07, p[2]]); tube(p2, d.r * 0.8, 3); cables.push({ pts: p2.map(r3), r: d.r * 0.8 }); }
-        // wall brackets at both ends
-        for (const e of [d.a, d.b]) boxMM(FW, e[0] - 0.05, e[1] - 0.06, e[2] - 0.05, e[0] + 0.05, e[1] + 0.06, e[2] + 0.05);
+        for (const e of [d.a, d.b]) boxMM(FW, e[0] - 0.05, e[1] - 0.06, e[2] - 0.05, e[0] + 0.05, e[1] + 0.06, e[2] + 0.05);   // wall brackets
         facts.drops++;
       }
       setPieces.push({ id: 'cable-thread', kind: 'cables', name: 'CABLE THREAD', street: st.id, s: [+s0.toFixed(1), +s1.toFixed(1)], drops: drops.length, low: [4.0, 4.6], gates: { windows },
-        note: 'low drops across Hongik-ro 3-gil between the CABLE LATTICE gates; windows = a low drop with a span 1.2-1.4 m above it, gate fitted 0.3 m inside the cables' });
+        note: 'low drops across Hongik-ro 3-gil; windows = a low drop with a crossing line 2.85 m above it, the gate 0.33 m inside both (>= 2.2 x 1.8)' });
     }
   }
-
   lap('thread');
   // ---- 5. ROOFLINE: a 3.5 m slot between a rooftop stair house and a water tank, on the longest run of similar roofs
   // parallel to lines.json's ROOFLINE (which flies over the walking street at 23.8 m): F1 re-cuts the line along this run.
   {
-    const rl = gates.filter((g) => g.name === 'ROOFLINE');
+    // the search axis: phase 1's ROOFLINE, fixed off the walking-street hero (layout only, so lines.mjs and runtime agree)
     let a = null, b = null;
-    if (rl.length >= 2) { a = rl.find((g) => g.pre)?.c || rl[0].c; b = rl.find((g) => !g.pre)?.c || rl[1].c; }
-    else if (layout.hero) { const h = layout.hero.find((x) => x.id === 'walking-street'); if (h) { a = [h.pos[0] - 14, 0, h.pos[2] + 45]; b = [h.pos[0] + 7, 0, h.pos[2] - 19]; } }
+    const hw = (layout.hero || []).find((x) => x.id === 'walking-street');
+    if (hw) { a = [hw.pos[0] - 13.58, 0, hw.pos[2] + 45.45]; b = [hw.pos[0] + 7.27, 0, hw.pos[2] - 19.03]; }
     if (a && b) {
       const dx = b[0] - a[0], dz = b[2] - a[2], L = Math.hypot(dx, dz), tx = dx / L, tz = dz / L, nx = -tz, nz = tx;
       const roofItems = [];
@@ -617,12 +625,15 @@ export function geometry(layout, opts = {}) {
         const mid = (run.s0 + run.s1) / 2, cands = [];
         for (let s = run.s0 + 6; s <= run.s1 - 6; s += 0.5) {
           const x = a[0] + tx * s + nx * run.o, z = a[2] + tz * s + nz * run.o, l = M.lotAt(x, z); if (!l) continue;
-          const H = l.floors * l.floorH, half = 1.75;
-          const sh = [x + nx * (half + 1.25), z + nz * (half + 1.25)], tk = [x - nx * (half + 1.0), z - nz * (half + 1.0)];
+          const H = l.floors * l.floorH, half = 1.8;
+          const sh = [x + nx * (half + 1.25), z + nz * (half + 1.25)], tk = [x - nx * (half + 0.95), z - nz * (half + 0.95)];
           const inside = (px, pz, r) => pip(px, pz, l.footprint) && polyD(px, pz, l.footprint) > r;
           if (!inside(sh[0], sh[1], 1.9) || !inside(tk[0], tk[1], 1.5) || !inside(x, z, 0.5)) continue;
-          if (roofItems.some((r) => Math.hypot(r.x - sh[0], r.z - sh[1]) < 3.0 || Math.hypot(r.x - tk[0], r.z - tk[1]) < 2.5 || segD(r.x, r.z, x - tx * 5, z - tz * 5, x + tx * 5, z + tz * 5) < 2.4)) continue;
-          cands.push({ s, x, z, l, H, sh, tk, run, score: -Math.abs(s - mid) });
+          if (roofItems.some((r) => Math.hypot(r.x - sh[0], r.z - sh[1]) < 3.0 || Math.hypot(r.x - tk[0], r.z - tk[1]) < 2.5 || segD(r.x, r.z, x - tx * 9, z - tz * 9, x + tx * 5, z + tz * 5) < 2.6)) continue;
+          // the pre-gate: 7 m back along the run on the same roof, 2 m inside its parapets
+          const px = x - tx * 7, pz = z - tz * 7;
+          if (!inside(px, pz, 2.0) || !inside(x - tx * 3.5, z - tz * 3.5, 1.9)) continue;
+          cands.push({ s, x, z, l, H, sh, tk, run, px, pz, score: -Math.abs(s - mid) });
         }
         cands.sort((p, q) => q.score - p.score);
         if (cands[0]) { c = cands[0]; break; }
@@ -638,11 +649,11 @@ export function geometry(layout, opts = {}) {
         set('metal'); boxMM(F2, -1.0, 0, -1.0, 1.0, 0.5, 1.0);
         set('white'); cyl(F2, [0, 1.45, 0], 'y', 0.95, 1.9, 12);
         set('dr_galv'); tube([W(F2, 0.95, 0.6, 0), W(F2, 1.4, 0.6, 0), W(F2, 1.4, 0.05, 0)], 0.03, 4);
-        const run = c.run, p0 = [a[0] + tx * run.s0 + nx * run.o, a[2] + tz * run.s0 + nz * run.o], l0 = M.lotAt(p0[0] + tx, p0[1] + tz);
-        const gate = { c: r3([c.x, H + 1.5, c.z]), n: r3([tx, 0, tz]), u: r3([nx, 0, nz]), w: 2.9, h: 1.7 };
-        const pre = { c: r3([p0[0] + tx * 1.5, (l0 ? l0.floors * l0.floorH : H) + 2.0, p0[1] + tz * 1.5]), n: r3([tx, 0, tz]), u: r3([nx, 0, nz]), w: 4, h: 2.5 };
+        const run = c.run;
+        const gate = { c: r3([c.x, H + 1.5, c.z]), n: r3([tx, 0, tz]), u: r3([nx, 0, nz]), w: 2.9, h: 1.8 };
+        const pre = { c: r3([c.px, H + 1.5, c.pz]), n: r3([tx, 0, tz]), u: r3([nx, 0, nz]), w: 2.9, h: 1.8 };
         setPieces.push({ id: 'roofline-slot', kind: 'roof', name: 'ROOFLINE', lot: c.l.id, pos: r3([c.x, H, c.z]), roof: +H.toFixed(2), dir: r3([tx, 0, tz]), run: { offset: run.o, length: run.s1 - run.s0, lots: run.lots.size },
-          gates: { pre, gate }, note: 'a 3.5 m slot between a stair house (2.8 m) and a water tank (2.4 m) on a run of similar roofs; parapets 0.9 m' });
+          gates: { pre, gate }, note: 'a 3.6 m slot between a stair house (2.8 m) and a water tank (2.4 m); pre-gate 7 m back on the same roof, 0.6-2.4 m over it' });
       }, { noGate: true });
     }
   }
@@ -679,7 +690,7 @@ export function geometry(layout, opts = {}) {
   {
     let net = null; try { net = typeof LIFE.buildNetwork === 'function' ? LIFE.buildNetwork(layout) : null; } catch (e) { net = null; }
     const list = (net?.crossings || []).map((c) => ({ x: c.x, z: c.z, cw: c.cw || 5, half: c.halfSpan, st: M.byId.get(c.main.id), kind: c.kind, axis: c.axis, offset: c.offset, ow: c.main.ow || 0, carHalf: c.main.carHalf ?? c.main.width / 2, id: c.id }));
-    const cr = gates.find((g) => g.name === 'CROSSING');
+    const cr = { c: [stationX[0], 0, stationX[1]] };
     if (cr) {   // THE CROSSING: zebras over both Yanghwa-ro carriageways at the station (static: walk red)
       for (const st of yanghwa) { const p = M.project(st, cr.c[0], cr.c[2]); if (p.dist < st.width / 2 + 12 && !list.some((c) => Math.hypot(c.x - p.px, c.z - p.pz) < 14)) list.push({ x: p.px, z: p.pz, cw: 6, half: st.width / 2 + 0.6, st, kind: 'S', ow: 1, carHalf: st.width / 2, id: 'S' + st.id, offset: 0, axis: 0 }); }
     }

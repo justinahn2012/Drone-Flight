@@ -55,7 +55,7 @@ for (const f of geo.funnels) ok(f.r > 0 && f.rIn > 0.5 && (f.dir === 'up' ? f.to
 ok(geo.startPoints.length >= 3 && geo.startPoints.every((s) => !bvh.closestPointToPoint(new THREE.Vector3(...s.pos), cp, 0, 0.8) || cp.distance >= 0.8), 'start points clear');
 
 // 4. take: fly each line with a pre-gate straight through pre -> main (kinematic), expect a 'line' event of that name
-{ const world = { lines: geo.lines, skimBvh: geo.skimBvh, funnels: geo.funnels };
+{ const world = { lines: geo.lines, skimBvh: geo.skimBvh, funnels: geo.funnels, setPieces: geo.setPieces };   // set-piece lines fly only with their pieces
   const scored = new Set();
   for (const l of geo.lines) {
     if (l.carve || !l.pre || scored.has(l.name)) continue;

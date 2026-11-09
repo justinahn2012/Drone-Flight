@@ -330,9 +330,9 @@ function pieceMoves(sp) {   // -> [{pre: rect | null, gate: rect}]
   if (Array.isArray(G.windows) && G.windows.length) { const w = G.windows.map(rect).filter(Boolean); return w.length > 1 ? [{ pre: w[0], gate: w[w.length - 1] }] : w.length ? [{ pre: null, gate: w[0] }] : []; }
   return Object.values(G).filter((v) => v && v.gate).map((v) => ({ pre: rect(v.pre), gate: rect(v.gate) }));
 }
-{ let D = null; try { const m = await import('../../seoul-dressing.js'); D = m.seoulDressing || m.default || m; } catch (e) {}
-  let pieces = [];
-  try { pieces = (D?.geometry ? D.geometry(layout, { seed: 11, lines: lineDataPrev, lotInfo: geo.lotInfo })?.setPieces : null) || []; } catch (e) { report.push(`  (seoul-dressing.geometry threw: ${e.message})`); }
+{ // the pieces of THIS build (the collider every gate here is checked against): E places them from the layout alone, so the
+  // runtime build (with lines.json) has the same pieces. Their gates are E's, sized >= 2.2 x 1.8 and 0.3 m clear: add() keeps them.
+  const pieces = geo.setPieces || [];
   const made = [];
   for (const sp of pieces) {
     const L = SET_LINES[sp.id]; if (!L) continue;
