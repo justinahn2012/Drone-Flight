@@ -2,7 +2,7 @@
 // budgets (agents, vehicles, step cost), sanity (no NaN, vehicles never overlap in a lane, crossers obey the light).
 //   node tests/seoul-life.mjs [layout.json]
 import { readFileSync, existsSync } from 'fs';
-import { LifeSim, LIFE, crossPhase, K_WALK, K_STAND, K_QUEUE, K_CROSS, exportData } from '../seoul-life.js';
+import { LifeSim, LIFE, crossPhase, K_WALK, K_STAND, K_QUEUE, K_CROSS, exportData, buskSitesFrom, crowdObstacles } from '../seoul-life.js';
 const arg = process.argv[2];
 const cands = [arg, 'seoul/layout.json', 'seoul/layout.provisional.json', 'tests/seoul-life-layout.json'].filter(Boolean);
 const file = cands.find((f) => existsSync(f)); const layout = JSON.parse(readFileSync(file, 'utf8'));
@@ -70,6 +70,22 @@ ok(nan === 0, 'no NaN'); ok(overlap === 0, `no bumper overlaps (${overlap})`);
     const d19 = (cn['와우산로19길'] || 0) / S / (ar['와우산로19길'] || 1);
     ok(!ar['와우산로19길'] || d19 > 0.25, `Wausan-ro 19-gil (club street) ${d19.toFixed(3)} p/m2 (P2: 0.07-0.11, target 0.3)`);
     ok(!ex || (Math.max(...burst) >= 30 && Math.min(...burst) < Math.max(...burst) * 0.5), `exit 9: walkers within 12 m swing ${Math.min(...burst)}-${Math.max(...burst)} as trains arrive (P2: ~0.02 p/m2, flat)`); }
+}
+// life #5/#6 (P3): E's set pieces and dressing discs (a snapshot of seoul-dressing's output for the integ7 layout)
+if (existsSync('tests/seoul-life-dressing.json') && file === 'seoul/layout.json') {
+  const D = JSON.parse(readFileSync('tests/seoul-life-dressing.json', 'utf8')), st = D.setPieces.find((p) => p.kind === 'stage'), c = st.crowdRing.c;
+  const phys = crowdObstacles(D.obstacles, buskSitesFrom(D.setPieces)).filter((o) => o[2] < 1.7);
+  const res = [];
+  for (const opt of [{}, { setPieces: D.setPieces, obstacles: D.obstacles }]) {
+    const C = new LifeSim(layout, { seed: 7, ...opt }).crowd; let tot = 0, ins = 0, ring = 0;
+    C.evaluate(200, null, { avoid: false }); for (const b of C.busk) for (const i of b.aud) if (C.VIS[i] && Math.hypot(C.X[i] - c[0], C.Z[i] - c[2]) < 6) ring++;
+    for (const cam of [{ x: -36, z: -23 }, { x: c[0], z: c[2] }]) for (let t = 100; t < 130; t += 0.5) { C.evaluate(t, cam);
+      for (let i = 0; i < C.people.length; i++) { if (!C.VIS[i] || C.people[i].kind !== K_WALK || Math.hypot(C.X[i] - cam.x, C.Z[i] - cam.z) > 25) continue; tot++;
+        for (const o of phys) if (Math.abs(C.X[i] - o[0]) < 2 && Math.abs(C.Z[i] - o[1]) < 2 && Math.hypot(C.X[i] - o[0], C.Z[i] - o[1]) < o[2]) { ins++; break; } } }
+    res.push({ ring, inside: 100 * ins / tot, rings: C.busk.length });
+  }
+  ok(res[1].ring >= 30 && res[0].ring === 0 && res[1].rings >= 3, `UNDER THE STAGE busks: ${res[1].ring} in the crowd round crowdRing.c (P2: ${res[0].ring}); ${res[1].rings} rings (the Playground kept)`);
+  ok(res[1].inside < 1.2 && res[1].inside < res[0].inside * 0.5, `walkers inside E's carts, tents, stalls and parked scooters within 25 m: ${res[1].inside.toFixed(2)} % (without the discs ${res[0].inside.toFixed(2)} %)`);
 }
 // crossers only on the road during walk
 let bad = 0, onRoad = 0; const s2 = new LifeSim(layout, { seed: 3 });

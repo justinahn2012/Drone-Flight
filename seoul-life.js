@@ -558,9 +558,51 @@ const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
 // how much door traffic a frontage makes (people in and out per unit of frontage), by use
 const DOOR_W = { conv: 3, cafe: 2, restaurant: 2, bar: 2, karaoke: 2, pc: 1.5, shop: 1.5, pocha: 1.2, motel: 0.5, hotel: 0.8, office: 0.3, club: 0.6 };
 
+// ---- busking sites from E's set pieces (life #5, P3). UNDER THE STAGE (seoul-dressing.js): a 9 x 5.6 m canopy against the
+// building line, `dir` along the street, the deck (0.32 m) on the building side, `crowdRing.c` 2.52 m street-side of `pos`.
+// The crew dances on the deck 1.4 m off the back wall facing the street; the crowd stands in an arc 2.2-5 m in front, its
+// mass on crowdRing.c. Returns { sites, deck } (deck: [x, z, r] discs for the walkers to go round).
+export function buskSitesFrom(pieces = []) {
+  const sites = [], deck = [], keep = [];
+  for (const p of pieces || []) {
+    if (!p || !p.pos || !/busk|stage/i.test((p.kind || '') + ' ' + (p.id || ''))) continue;
+    const c = p.crowdRing?.c;
+    if (c) {
+      let sx = c[0] - p.pos[0], sz = c[2] - p.pos[2]; const l = Math.hypot(sx, sz) || 1; sx /= l; sz /= l;   // toward the street
+      const px = p.pos[0] - sx * 1.4, pz = p.pos[2] - sz * 1.4, ax = p.dir ? p.dir[0] : -sz, az = p.dir ? p.dir[2] : sx;
+      sites.push({ pos: [px, 0, pz], yaw: Math.atan2(sx, sz), kind: 'dance', n: p.n ?? 56, arc: 0.9, r0: 2.6, y0: (p.deck ?? 0.32), piece: p.id, ring: { c: [c[0], c[2]], r: p.crowdRing.r ?? 3.2 } });
+      for (let u = -3; u <= 3.01; u += 1.5) deck.push([p.pos[0] - sx * 1.5 + ax * u, p.pos[2] - sz * 1.5 + az * u, 0.75]);
+      keep.push({ x: p.pos[0], z: p.pos[2], ax, az, sx, sz, hx: 4.9, hz: 3.0 });
+    } else sites.push({ pos: p.pos, yaw: p.yaw ?? 0, kind: p.busk || 'dance', n: p.n, piece: p.id });
+  }
+  return { sites, deck, areas: keep };
+}
+function mergeBuskSites(pieces, defaults) {
+  const out = pieces.slice();
+  defaults.forEach((d, i) => {
+    if (out.some((p) => Math.hypot(p.pos[0] - d.pos[0], p.pos[2] - d.pos[2]) < 30)) return;
+    out.push(pieces.length && i === 0 ? { ...d, kind: 'acoustic', n: 34 } : d);   // with E's dance stage, the default stage spot goes acoustic
+  });
+  return out;
+}
+// E's obstacle discs as the crowd sees them: inside a set-piece canopy only its deck counts (E's occupancy discs fill the
+// whole footprint so nothing else gets dressed there; the crowd stands under it)
+export function crowdObstacles(obstacles, bs) {
+  const out = [];
+  for (const o of obstacles || []) {
+    if (!o || !(o[2] > 0)) continue;
+    if (bs && bs.areas.some((A) => { const dx = o[0] - A.x, dz = o[1] - A.z; return Math.abs(dx * A.ax + dz * A.az) < A.hx && Math.abs(dx * A.sx + dz * A.sz) < A.hz; })) continue;
+    out.push(o);
+  }
+  if (bs) out.push(...bs.deck);
+  return out;
+}
+
 export class CrowdSim {
-  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null } = {}) {
+  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null } = {}) {
     this.net = net; this.layout = layout; this.seed = seed >>> 0; this.density = density; this.maxAgents = maxAgents;
+    // E's dressing discs [[x, z, r]] (life #6: carts, tents, stalls, parked scooters): walkers sidestep them, nobody stands in one
+    this.dress = (obstacles || []).filter((o) => o && o[2] > 0 && o[2] < 1.7);
     // walkways
     this.ways = [];
     for (const st of net.streets) {
@@ -742,6 +784,7 @@ export class CrowdSim {
       }
       if (R.next() > 0.85) return;
       const u = 0.2 + 0.6 * R.next(), gx = a[0] + fx * u + nx * (1.0 + R.next() * 0.8), gz = a[1] + fz * u + nz * (1.0 + R.next() * 0.8);
+      if (this.inDress(gx, gz, 0.4 + 0.1 * n)) return;   // (life #6) not inside E's cart / tent / stall
       const smokers = n === 1 && R.next() < 0.5;
       for (let q = 0; q < n; q++) {
         const ang = (q / n) * 6.283 + R.next() * 0.5, r = n > 1 ? 0.42 + 0.1 * n : 0;
@@ -752,16 +795,21 @@ export class CrowdSim {
     });
     // ---- busking rings (art #4 / life #5): the Walking Street stage and the Playground, unless the dressing gives sites
     this.busk = [];
-    const siteList = (this.sites && this.sites.length ? this.sites : this.defaultBuskSites(layout));
+    // (life #5, P3) E's UNDER THE STAGE canopy comes first (its crew on the deck, the crowd massed on crowdRing.c), merged
+    // with the defaults: a default ring within 30 m of a set-piece ring is dropped, the rest stay (the Playground)
+    const siteList = mergeBuskSites(this.sites || [], this.defaultBuskSites(layout));
+    this.buskSites = siteList;
     siteList.forEach((s, si) => {
-      const b = { id: si, x: s.pos[0], z: s.pos[2], yaw: s.yaw ?? 0, kind: s.kind || (si ? 'acoustic' : 'dance'), song: 170 + 30 * hu(this.seed, si, 5), off: 97 * hu(this.seed, si, 6), perf: [], aud: [] };
+      const b = { id: si, x: s.pos[0], z: s.pos[2], yaw: s.yaw ?? 0, kind: s.kind || (si ? 'acoustic' : 'dance'), song: 170 + 30 * hu(this.seed, si, 5), off: 97 * hu(this.seed, si, 6), perf: [], aud: [], piece: s.piece || null, ring: s.ring || null };
       const fwx = Math.sin(b.yaw), fwz = Math.cos(b.yaw), rtx = fwz, rtz = -fwx;
       const np = b.kind === 'dance' ? 3 : 1 + (R.next() < 0.5 ? 1 : 0);
-      for (let j = 0; j < np; j++) { const p = this.newPerson(R, K_PERF, b.kind === 'dance' ? R.next() < 0.6 : true); const lat = (j - (np - 1) / 2) * 1.1; p.x = b.x + rtx * lat - fwx * (j === 1 ? 0.5 : 0); p.z = b.z + rtz * lat - fwz * (j === 1 ? 0.5 : 0); p.yaw = b.yaw; p.busk = si; p.pose = b.kind === 'dance' ? P_DANCE : P_SING; b.perf.push(p.id); this.statics.push(p.id); }
+      for (let j = 0; j < np; j++) { const p = this.newPerson(R, K_PERF, b.kind === 'dance' ? R.next() < 0.6 : true); const lat = (j - (np - 1) / 2) * 1.1; p.x = b.x + rtx * lat - fwx * (j === 1 ? 0.5 : 0); p.z = b.z + rtz * lat - fwz * (j === 1 ? 0.5 : 0); p.y0 = s.y0 || 0; p.yaw = b.yaw; p.busk = si; p.pose = b.kind === 'dance' ? P_DANCE : P_SING; b.perf.push(p.id); this.statics.push(p.id); }
       const na = Math.round((s.n ?? (b.kind === 'dance' ? 50 : 30)) * Math.min(1, this.density));
       for (let j = 0; j < na; j++) {
-        const row = Math.floor(R.next() * R.next() * 3), r = 2.6 + row * 0.75 + R.next() * 0.35, th = (R.next() - 0.5) * 2 * (s.arc ?? 1.95);
-        const p = this.newPerson(R, K_BUSK); p.x = b.x + (fwx * Math.cos(th) + rtx * Math.sin(th)) * r; p.z = b.z + (fwz * Math.cos(th) + rtz * Math.sin(th)) * r;
+        const row = Math.floor(R.next() * R.next() * 3), r = (s.r0 ?? 2.6) + row * 0.75 + R.next() * 0.35, th = (R.next() - 0.5) * 2 * (s.arc ?? 1.95);
+        const ax = b.x + (fwx * Math.cos(th) + rtx * Math.sin(th)) * r, az = b.z + (fwz * Math.cos(th) + rtz * Math.sin(th)) * r;
+        if (this.inDress(ax, az, 0.3)) continue;
+        const p = this.newPerson(R, K_BUSK); p.x = ax; p.z = az;
         p.yaw = Math.atan2(b.x - p.x, b.z - p.z) + (R.next() - 0.5) * 0.3; p.busk = si; p.film = R.next() < 0.4; p.pose = p.film ? P_FILM : R.next() < 0.6 ? P_IDLE : P_TALK;
         p.Pa = 90 + R.next() * 150; p.pa = R.next(); p.out = [(p.x - b.x) / r, (p.z - b.z) / r]; b.aud.push(p.id); this.statics.push(p.id);
       }
@@ -784,8 +832,10 @@ export class CrowdSim {
     for (const i of this.statics) { const p = this.people[i]; if (p.kind === K_STAND || p.kind === K_SEAT || p.kind === K_BUSK || p.kind === K_DOOR || p.kind === K_PERF) addObst(p.x, p.z, 0.32); }
     for (const q of this.queues) for (let j = 0; j < q.Q; j += 2) { const r = j / 2; addObst(q.door[0] + q.t[0] * (0.9 + 0.75 * r) + q.n[0] * 0.72, q.door[1] + q.t[1] * (0.9 + 0.75 * r) + q.n[1] * 0.72, 0.6); }
     for (const l of this.lots) for (const t of l._tables || []) if (!t.stool) addObst(t[0], t[1], 1.0);
+    for (const o of this.dress) addObst(o[0], o[1], o[2]);
     for (const w of this.ways) w.obst.sort((p, q) => p[0] - q[0]);
   }
+  inDress(x, z, pad = 0) { for (const o of this.dress) { const dx = x - o[0], dz = z - o[1], r = o[2] + pad; if (dx * dx + dz * dz < r * r) return true; } return false; }
   defaultBuskSites(layout) {
     const out = [], o = {};
     const walk = this.ways.filter((w) => w.kind === 'walking').sort((a, b) => b.area - a.area)[0];
@@ -1113,10 +1163,12 @@ export function lookFor(R, male) {
 }
 
 export class LifeSim {
-  constructor(layout, { seed = 1, density = 1, maxAgents, sites } = {}) {
+  // setPieces / obstacles: E's (world-seoul ctx); sites: explicit busking sites (override the set pieces')
+  constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles } = {}) {
     this.net = buildNetwork(layout);
     this.traffic = new TrafficSim(this.net, { seed });
-    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites });
+    const bs = buskSitesFrom(setPieces);
+    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null) });
     this.t = 0; this.snaps = new Map();
   }
   reset() { this.traffic.reset(); this.t = 0; }
@@ -1656,8 +1708,10 @@ function buildFill(net, layout, emitters, cell = 4) {
 export function build(layout, ctx = {}) {
   const seed = ctx.seed ?? 7, q = ctx.quality || 'auto';
   const maxAgents = ctx.maxAgents ?? (q === 'low' ? Math.round(LIFE.maxAgents * 0.5) : LIFE.maxAgents);
-  const pieces = (ctx.setPieces || []).filter((p) => /busk|stage/i.test((p.kind || '') + ' ' + (p.id || '')) && p.pos);
-  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, sites: pieces.length ? pieces.map((p, i) => ({ pos: p.pos, yaw: p.yaw ?? 0, kind: i ? 'acoustic' : 'dance', n: p.n })) : null });
+  // E's set pieces and dressing discs (contract P3-G1/C: world-seoul passes ctx.setPieces = geo.setPieces and ctx.obstacles =
+  // geo.dressingOut.obstacles; ctx.dressing (E's geometry output) is read too). Absent: the default rings, no discs.
+  const setPieces = ctx.setPieces ?? ctx.dressing?.setPieces ?? null, obstacles = ctx.obstacles ?? ctx.dressing?.obstacles ?? null;
+  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles });
   const crowd = sim.crowd, traffic = sim.traffic;
   const group = new THREE.Group(); group.name = 'seoul-life';
   const nit = { value: ctx.nitScale ?? LIFE.nitScale };
@@ -1801,7 +1855,7 @@ export function build(layout, ctx = {}) {
       } else ATT[i] = Math.max(0, ATT[i] - dt * 2);
       LY[i] += (ty - LY[i]) * kL; LP[i] += (tp - LP[i]) * kL;
       const o = k * 4, L = look[i];
-      T.iPos.array[o] = x; T.iPos.array[o + 1] = groundAt(x, z); T.iPos.array[o + 2] = z; T.iPos.array[o + 3] = yaw;
+      T.iPos.array[o] = x; T.iPos.array[o + 1] = groundAt(x, z) + (a.y0 || 0); T.iPos.array[o + 2] = z; T.iPos.array[o + 3] = yaw;
       T.iAnim.array[o] = crowd.PH[i]; T.iAnim.array[o + 1] = crowd.WALK[i]; T.iAnim.array[o + 2] = pose; T.iAnim.array[o + 3] = a.scale;
       T.iTop.array.set(L.top, o); T.iTop.array[o + 3] = a.look.coat;
       T.iBot.array.set(L.bot, o); T.iBot.array[o + 3] = a.look.bag;
@@ -1862,8 +1916,8 @@ export function build(layout, ctx = {}) {
 // Everything a native port needs to rebuild both sims bit-for-bit from the same layout: constants, vehicle classes,
 // signal timing, the lane graph (stops, successors, entries), walkways with their junction links, doors and portals,
 // the crowd's static set-up (people, units, queues, busk rings), and the seeds. Hashes let CI check parity.
-export function exportData(layout, { seed = 7, density = 1, maxAgents } = {}) {
-  const sim = new LifeSim(layout, { seed, density, maxAgents }), T = sim.traffic, C = sim.crowd, r3 = (v) => Math.round(v * 1000) / 1000;
+export function exportData(layout, { seed = 7, density = 1, maxAgents, setPieces, obstacles } = {}) {
+  const sim = new LifeSim(layout, { seed, density, maxAgents, setPieces, obstacles }), T = sim.traffic, C = sim.crowd, r3 = (v) => Math.round(v * 1000) / 1000;
   const laneId = (l) => l && l.id;
   sim.advanceTo(90); const h90 = sim.hash();
   return {
