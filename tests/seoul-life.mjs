@@ -54,8 +54,22 @@ ok(nan === 0, 'no NaN'); ok(overlap === 0, `no bumper overlaps (${overlap})`);
   C.evaluate(150, null, { avoid: false }); const wi = C.people.findIndex((p) => p.kind === K_WALK && C.VIS[p.id]);
   ok(!!a.hitPeople([C.X[wi], 1.0, C.Z[wi]], 0.15, 150) && !a.hitPeople([C.X[wi], 4, C.Z[wi]], 0.15, 150), 'pedestrian soft collider: hit at chest height, miss overhead');
   // cost
-  const c0 = process.cpuUsage(); for (let k = 0; k < 120; k++) C.evaluate(300 + k / 30, cam); const c1 = process.cpuUsage(c0), ms = (c1.user + c1.system) / 1000 / 120;
-  ok(ms < 6, `crowd evaluate ${ms.toFixed(2)} ms CPU per frame (${C.people.length} people, staggered past 60 m)`);
+  // steady state (P3): a seek regenerates every unit's trip once; that is costed on its own, then 120 frames at 30 fps
+  const camF = { x: cam.x, z: cam.z, fx: 0, fz: -1 };
+  const k0 = process.cpuUsage(); C.evaluate(300, camF); const k1 = process.cpuUsage(k0);
+  for (let k = 1; k < 30; k++) C.evaluate(300 + k / 30, camF);
+  const c0 = process.cpuUsage(); for (let k = 0; k < 120; k++) C.evaluate(301 + k / 30, camF); const c1 = process.cpuUsage(c0), ms = (c1.user + c1.system) / 1000 / 120;
+  ok(ms < 6, `crowd evaluate ${ms.toFixed(2)} ms CPU per frame (${C.people.length} people, staggered past 60 m and behind the camera; a seek costs ${((k1.user + k1.system) / 1000).toFixed(0)} ms once)`);
+  // life #4 (P3): the hero club street (Wausan-ro 19-gil) and exit 9 trains
+  { const ar = {}, cn = {}; let S = 0; const ex = C.exitPortal, burst = [];
+    for (const w of C.ways) { const k = w.street.ko || w.street.id; ar[k] = (ar[k] || 0) + w.area; }
+    for (let t = 60; t < 420; t += 5) { C.evaluate(t, null, { avoid: false }); S++; let e = 0;
+      for (let i = 0; i < C.people.length; i++) { if (!C.VIS[i]) continue; if (C.WAY[i] >= 0) { const k = C.ways[C.WAY[i]].street.ko || C.ways[C.WAY[i]].street.id; cn[k] = (cn[k] || 0) + 1; }
+        if (ex && C.people[i].kind === K_WALK && Math.hypot(C.X[i] - ex.x, C.Z[i] - ex.z) < 12) e++; }
+      burst.push(e); }
+    const d19 = (cn['와우산로19길'] || 0) / S / (ar['와우산로19길'] || 1);
+    ok(!ar['와우산로19길'] || d19 > 0.25, `Wausan-ro 19-gil (club street) ${d19.toFixed(3)} p/m2 (P2: 0.07-0.11, target 0.3)`);
+    ok(!ex || (Math.max(...burst) >= 30 && Math.min(...burst) < Math.max(...burst) * 0.5), `exit 9: walkers within 12 m swing ${Math.min(...burst)}-${Math.max(...burst)} as trains arrive (P2: ~0.02 p/m2, flat)`); }
 }
 // crossers only on the road during walk
 let bad = 0, onRoad = 0; const s2 = new LifeSim(layout, { seed: 3 });
