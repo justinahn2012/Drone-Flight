@@ -134,6 +134,15 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(V.visible(25, 0, -45, 0.5), 'beside the block, in view: drawn');
   C.dispose();
 }
+// 7c P3 perf #4/#6: the Seoul render-scale cap and the live phone preset
+{
+  const w = world(), C = attach(w, [{ id: 'st', pos: [10, 1.5, -5], normal: [0, 0, 1], w: 3, h: 3, nits: 80, kind: 'store' }], { layout: flat, steam: false, cull: false });
+  ok(w.qualityCap && w.qualityCap.max === 1.0 && w.qualityCap.presets.phone.msaa === 2, 'world.qualityCap: max 1.0, phone preset MSAA 2');
+  ok(C.qualityCap.apply('phone') && C.uniforms.uCityDyn.value.w === 1 && C.qualityCap.current === 'phone', 'phone preset: 4 static lights per cell, live');
+  C.update(0.1, { x: 0, y: 2, z: 0 }); ok(C.uniforms.uCityDyn.value.w === 1, 'update keeps the live K limit');
+  ok(C.qualityCap.apply('auto') && C.uniforms.uCityDyn.value.w === 0, 'auto restores K');
+  C.dispose();
+}
 // 8 the real block (signs + C's emitters), when the partner modules are present
 {
   const R = new URL('..', import.meta.url).pathname;

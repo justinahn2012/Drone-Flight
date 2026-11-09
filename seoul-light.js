@@ -85,6 +85,9 @@ export function emitterRadiance(e, out = [0, 0, 0], nitScale = NITS) {
   return out;
 }
 
+// P3 perf #4/#6: Seoul's render-scale cap and the phone preset (contract for main.js: applySettings caps
+// fpv.setQualityRange(q.min, min(q.max, world.qualityCap.max)) and takes msaa from the preset; perf.js &preset=phone).
+export const SEOUL_QUALITY = { auto: { max: 1.0, msaa: 4, crowd: 'auto', light: 'auto' }, phone: { max: 0.9, msaa: 2, crowd: 'low', light: 'low' } };
 const QUALITY = {
   low:  { K: 4,  Kd: 4, Nd: 32, refl: 0.2,  steam: 60,  air: 8 },
   auto: { K: 8,  Kd: 4, Nd: 64, refl: 0.25, steam: 120, air: 16 },
@@ -214,7 +217,7 @@ uniform highp sampler3D tCityIrrA; // volume: ambient rgb, haze fluence
 uniform highp sampler3D tCityIrrB; // volume: L1 direction / ambient luminance, sky openness
 uniform vec4 uCityGrid;            // x0, z0, 1/cell, cell
 uniform vec4 uCityDim;             // gw, gh, K/4, KD/4
-uniform vec4 uCityDyn;             // window origin cell x, z, window size, -
+uniform vec4 uCityDyn;             // window origin cell x, z, window size, live static K/4 limit (0 = all; P3 phone preset)
 uniform float uCityTime;
 uniform float uCityGain;
 uniform float uCityIrrGain;
@@ -262,8 +265,8 @@ void cityLights(vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir
   vec2 cg = (wp.xz - uCityGrid.xy) * uCityGrid.z;
   if (cg.x < 0.0 || cg.y < 0.0 || cg.x >= uCityDim.x || cg.y >= uCityDim.y) return;
   ivec2 ci = ivec2(cg);
-  int ks = int(uCityDim.z), kd = int(uCityDim.w), rank = 0;
-  for (int s = 0; s < 3; s++) { if (s >= ks) break;
+  int ks = int(uCityDim.z), kd = int(uCityDim.w), rank = 0, kl = uCityDyn.w > 0.5 ? int(uCityDyn.w) : ks;
+  for (int s = 0; s < 3; s++) { if (s >= kl) break;
     uvec4 ids = texelFetch(tCityG, ivec2(ci.x * ks + s, ci.y), 0);
     for (int j = 0; j < 4; j++) { uint id = ids[j]; if (id == 65535u) break;
       cityOne(tCityL, int(id), rank < 4, wp, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight); rank++; }
@@ -1205,7 +1208,7 @@ export function attach(world, emitters = [], ctx = {}) {
       for (let a = 0; a < nd; a++) { let bi = a; for (let b = a + 1; b < nc; b++) if (movKey[b] > movKey[bi]) bi = b; if (bi !== a) { const tk = movKey[a]; movKey[a] = movKey[bi]; movKey[bi] = tk; const to = movOrd[a]; movOrd[a] = movOrd[bi]; movOrd[bi] = to; } }
       // window origin: the camera's cell minus half the window
       const ox = Math.floor((cp.x - x0) / cell) - (DW >> 1), oz = Math.floor((cp.z - z0) / cell) - (DW >> 1);
-      U.uCityDyn.value.set(ox, oz, DW, 0);
+      U.uCityDyn.value.set(ox, oz, DW, U.uCityDyn.value.w);
       dN.fill(0); const gd = tGD.image.data; gd.fill(NONE);
       let poolR = 0;
       for (let a = 0; a < nd; a++) {
@@ -1334,8 +1337,15 @@ export function attach(world, emitters = [], ctx = {}) {
     const Ev = ev(k0) * (1 - u) + ev(k1) * u;
     return { direct: Ed / NS, volume: Ev / NS, lights: n, ...(list ? { list } : {}) };
   }
+  // P3 perf #4/#6: the cap and presets (world.qualityCap); apply() switches the light's live knobs (static K, mirror
+  // resolution, airlight count) without a rebuild
+  const Q0 = { ...Q }, qualityCap = { ...SEOUL_QUALITY.auto, presets: SEOUL_QUALITY, gpuMs: 12, current: 'auto',
+    apply(name) { const P = SEOUL_QUALITY[name]; if (!P) return false; const L = QUALITY[P.light] || Q0;
+      U.uCityDyn.value.w = P.light === 'low' ? Math.max(1, (L.K / 4) | 0) : 0; Q.refl = L.refl ?? Q0.refl; air.n = Math.min(Q0.air, L.air ?? Q0.air);
+      qualityCap.current = name; return true; } };
+  world.qualityCap = qualityCap;
   const ctl = {
-    update, patchMaterial, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
+    update, patchMaterial, qualityCap, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
     setWet(v) { U.uCityWet.value = v; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
     dispose() {
       for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex]) t.dispose();
