@@ -116,7 +116,7 @@ const vehAt = (t, pred) => sim.boxesAt(t, []).map((b) => ({ ...b, v: sim.traffic
     const drive = pilot(100 + s), log = new InputLog({ seed: d.seed, world: worldHash(world), craft: d.key, mode: 'cine', hz: 240, start: d.snapshot(), meta: { test: 'movers' } });
     const inp = {};
     for (let i = 0; i < 240 * 25 && !(d.crashed && d.crashT > 1); i++) { quantize(drive(i), inp); log.record(inp, 'cine', d); d.step(PHYS, inp, 'cine', world); }
-    if (d.moverN > 0 && log.ticks > 240 * 4) rec = { log, final: JSON.stringify(d.snapshot()), moverN: d.moverN, crashBy: d.crashBy, s };
+    if (d.moverN > 0 && log.ticks > 240 * 1) rec = /* [P3-G1] >= 1 s: with junction boxes a taxi passes the X9 start at 1.4 s in every heading */ { log, final: JSON.stringify(d.snapshot()), moverN: d.moverN, crashBy: d.crashBy, s };
   }
   ok(!!rec, `a flight that meets the traffic (seed ${rec?.s}: ${rec?.moverN} mover contact(s), crashBy ${rec?.crashBy})`);
   if (rec) {

@@ -555,7 +555,8 @@ export class TrafficSim {
   }
   pathClear(a, b, v, node) {
     const P = this.mvPath(a, b), o = this._pc || (this._pc = {});
-    const ins = node.inLanes || (node.inLanes = this.lanes.filter((m) => m.end && m.end.bid === node.bid && !m.internal));
+    const IL = this._inL || (this._inL = new Map());   // per sim: the net (and its nodes) is shared with seoul-movers' private sims
+    let ins = IL.get(node.bid); if (!ins) IL.set(node.bid, (ins = this.lanes.filter((m) => m.end && m.end.bid === node.bid && !m.internal)));
     for (const m of ins) {
       if (m.idx === a || !m.veh.length) continue;
       for (const q of m.veh) {
