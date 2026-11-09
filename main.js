@@ -2281,10 +2281,11 @@ function renderProgress() {
   const G = levelOf(progLevel)?.lineGroups, D = dataFor(progLevel);
   if (Array.isArray(G) && G.length && D) {
     const grp = new Map(D.names.map((x) => [x.name, x.group])), ids = new Set(G.map((g) => g[0]));
-    $('lnGrid').innerHTML = G.map(([id, label]) => {
-      const ls = L.filter((l) => grp.get(l.name) === id);
-      return ls.length ? `<div class="lg"><span>${esc(label)}</span><i>${ls.filter((l) => l.flown).length}/${ls.length}</i></div>` + ls.map(cell).join('') : '';
-    }).join('') + L.filter((l) => !ids.has(grp.get(l.name))).map(cell).join('');
+    const rest = L.filter((l) => !ids.has(grp.get(l.name)));
+    $('lnGrid').innerHTML = [...G, ['', '']].map(([id, label]) => {
+      const ls = id ? L.filter((l) => grp.get(l.name) === id) : rest;
+      return ls.length ? `<section class="lgrp">${label ? `<div class="lg"><span>${esc(label)}</span><i>${ls.filter((l) => l.flown).length}/${ls.length}</i></div>` : ''}<div class="lgg">${ls.map(cell).join('')}</div></section>` : '';
+    }).join('');
     $('lnGrid').classList.add('grouped');
   } else { $('lnGrid').innerHTML = L.map(cell).join(''); $('lnGrid').classList.remove('grouped'); }
   fitLines();
