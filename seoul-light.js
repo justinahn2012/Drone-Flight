@@ -358,25 +358,30 @@ export function splitCells(g, cell = 96, minTris = 12000) {
   // dedupe: compare each corner with the corners of the previous two emitted triangles
   const names = Object.keys(g.attributes), attrs = names.map((n) => g.getAttribute(n));
   const sizes = attrs.map((a) => a.itemSize), stride = sizes.reduce((s, v) => s + v, 0);
-  const vert = new Float32Array(nT * 3 * stride), arrs = attrs.map((a) => a.array), nA = attrs.length;
-  const index = new Uint32Array(nT * 3); let nV = 0;
+  const arrs = attrs.map((a) => a.array), nA = attrs.length;
+  // P3: compared in the source arrays (no nT x 3 x stride staging buffer); output keeps each attribute's array type
+  const srcOf = new Int32Array(nT * 3), index = new Uint32Array(nT * 3); let nV = 0;
+  const same = (va, vb) => { if (va === vb) return true; for (let a = 0; a < nA; a++) { const A = arrs[a], s = sizes[a], x = va * s, y = vb * s; for (let c = 0; c < s; c++) if (A[x + c] !== A[y + c]) return false; } return true; };
   const recent = new Int32Array(6).fill(-1); let rp = 0;
+  // P3: the dedupe restarts at every cell, so each cell's vertices are one contiguous range [vS, vE) (BatchedMesh parts)
+  const vS = new Int32Array(nK), vE = new Int32Array(nK); let curK = -1;
   for (let o = 0; o < nT; o++) {
     const t = order[o];
+    if (key[t] !== curK) { if (curK >= 0) vE[curK] = nV; curK = key[t]; vS[curK] = nV; recent.fill(-1); }
     for (let k = 0; k < 3; k++) {
-      const v = idx ? idx.getX(t * 3 + k) : t * 3 + k, w = nV * stride;
-      { let q = w; for (let a = 0; a < nA; a++) { const A = arrs[a], s = sizes[a], b = v * s; for (let c = 0; c < s; c++) vert[q++] = A[b + c]; } }
+      const v = idx ? idx.getX(t * 3 + k) : t * 3 + k;
       let found = -1;
-      for (let r = 0; r < 6 && found < 0; r++) { const c = recent[r]; if (c < 0) continue; const b = c * stride; let q = 0; while (q < stride && vert[b + q] === vert[w + q]) q++; if (q === stride) found = c; }
-      if (found < 0) found = nV++;
+      for (let r = 0; r < 6 && found < 0; r++) { const c = recent[r]; if (c >= 0 && same(srcOf[c], v)) found = c; }
+      if (found < 0) { found = nV++; srcOf[found] = v; }
       index[o * 3 + k] = found; recent[rp] = found; rp = (rp + 1) % 6;
     }
   }
-  const shared = {}; let off = 0;
+  if (curK >= 0) vE[curK] = nV;
+  const shared = {};
   names.forEach((n, a) => {
-    const s = sizes[a], arr = new Float32Array(nV * s);
-    for (let v = 0; v < nV; v++) for (let k = 0; k < s; k++) arr[v * s + k] = vert[v * stride + off + k];
-    shared[n] = new THREE.BufferAttribute(arr, s, attrs[a].normalized); off += s;
+    const sz = sizes[a], A = arrs[a], arr = new A.constructor(nV * sz);
+    for (let v = 0; v < nV; v++) { const b = srcOf[v] * sz, o = v * sz; for (let k = 0; k < sz; k++) arr[o + k] = A[b + k]; }
+    shared[n] = new THREE.BufferAttribute(arr, sz, attrs[a].normalized);
   });
   const ix = new THREE.BufferAttribute(nV > 65535 ? index : new Uint16Array(index), 1);
   const out = [];
@@ -389,9 +394,30 @@ export function splitCells(g, cell = 96, minTris = 12000) {
     for (let q = s * 3; q < e * 3; q++) { const v = index[q] * 3, X = p[v], Y = p[v + 1], Z = p[v + 2]; if (X < a0) a0 = X; if (X > b0) b0 = X; if (Y < a1) a1 = Y; if (Y > b1) b1 = Y; if (Z < a2) a2 = Z; if (Z > b2) b2 = Z; }
     const bb = new THREE.Box3(new THREE.Vector3(a0, a1, a2), new THREE.Vector3(b0, b1, b2));
     geo.boundingBox = bb; geo.boundingSphere = bb.getBoundingSphere(new THREE.Sphere());
-    out.push({ geometry: geo, cell: [(k % W) + x0, Math.floor(k / W) + z0], tris: e - s });
+    out.push({ geometry: geo, cell: [(k % W) + x0, Math.floor(k / W) + z0], tris: e - s, i0: s * 3, v0: vS[k], v1: vE[k], box: bb, sphere: geo.boundingSphere });
   }
-  return { parts: out, vertices: nV, srcVertices: idx ? pos.count : nT * 3, tris: nT };
+  return { parts: out, vertices: nV, srcVertices: idx ? pos.count : nT * 3, tris: nT, attributes: shared, index };
+}
+
+// P3 perf #1: one THREE.BatchedMesh per material: every cell is an instance, culled per instance and drawn with
+// WEBGL_multi_draw (one draw call per material however many cells are in view; three loops drawElements without it).
+// Cells are identity-matrix instances of their own geometry (a contiguous vertex range of splitCells' shared buffers).
+export function batchCells(sp, material) {
+  const A = sp.attributes, idx = sp.index, P = sp.parts;
+  const bm = new THREE.BatchedMesh(P.length, sp.vertices, sp.tris * 3, material);
+  const ids = [];
+  for (const p of P) {
+    const g = new THREE.BufferGeometry();
+    for (const [n, a] of Object.entries(A)) g.setAttribute(n, new THREE.BufferAttribute(a.array.subarray(p.v0 * a.itemSize, p.v1 * a.itemSize), a.itemSize, a.normalized));
+    const n = p.tris * 3, ia = (p.v1 - p.v0) > 65535 ? new Uint32Array(n) : new Uint16Array(n);
+    for (let i = 0; i < n; i++) ia[i] = idx[p.i0 + i] - p.v0;
+    g.setIndex(new THREE.BufferAttribute(ia, 1));
+    const gid = bm.addGeometry(g); ids.push(bm.addInstance(gid));
+    bm.getBoundingBoxAt(gid, new THREE.Box3()); bm.getBoundingSphereAt(gid, new THREE.Sphere());   // cached before the arrays go
+  }
+  bm.computeBoundingBox(); bm.computeBoundingSphere();
+  bm.userData.cellSpheres = P.map((p) => p.sphere); bm.userData.cellTris = P.map((p) => p.tris); bm.userData.instanceIds = ids;
+  return bm;
 }
 
 // ------------------------------------------------------------------------------------------------- build
@@ -756,48 +782,71 @@ export function attach(world, emitters = [], ctx = {}) {
   }
 
   // ------------------------------------------------------------------------------------- city culling (perf #3)
-  const cull = { on: ctx.cull !== false && !!scene, cell: ctx.cullCell || 96, meshes: 0, from: 0, vertsBefore: 0, vertsAfter: 0, col: 0, ms: 0, freed: 0 };
+  // P3 perf #1: each material's cells are one BatchedMesh (ctx.batch === false: one Mesh per cell, the P2 path)
+  const batch = ctx.batch !== false && !!THREE.BatchedMesh;
+  const cull = { on: ctx.cull !== false && !!scene, batch, cell: ctx.cullCell || (batch ? 64 : 96), colCell: ctx.colCell || 64, meshes: 0, from: 0, vertsBefore: 0, vertsAfter: 0, col: 0, ms: 0, freed: 0, batches: [] };
+  const freeOnUpload = (g) => { if (!renderer || ctx.freeArrays === false) return; for (const a of [...Object.values(g.attributes), g.index]) if (a && !a.onUploadCallback?.__d) { const f = function () { this.array = new this.array.constructor(0); cull.freed += 1; }; f.__d = 1; a.onUpload(f); } };
+  let colBatch = null;
   if (cull.on) {
     const tc0 = now(), olds = [];
     for (const o of [...scene.children]) {
-      if (!o.isMesh || o.isInstancedMesh || !/^seoul:/.test(o.name || '') || !o.geometry?.getAttribute?.('position')) continue;
+      if (!o.isMesh || o.isInstancedMesh || o.isBatchedMesh || !/^seoul:/.test(o.name || '') || !o.geometry?.getAttribute?.('position')) continue;
       if (o.geometry.groups?.length > 1 || Array.isArray(o.material)) continue;
-      const sp = splitCells(o.geometry, cull.cell); if (!sp) continue;
-      if (renderer && ctx.freeArrays !== false && sp.parts.length) {   // perf #4: drop the CPU copy once the GPU has it
-        const g0 = sp.parts[0].geometry; for (const a of [...Object.values(g0.attributes), g0.index]) a?.onUpload?.(function () { this.array = new this.array.constructor(0); cull.freed += 1; });
-      }
+      const ts = now(), sp = splitCells(o.geometry, cull.cell); cull.tSplit = (cull.tSplit || 0) + now() - ts; if (!sp) continue;
       cull.from++; cull.vertsBefore += sp.srcVertices; cull.vertsAfter += sp.vertices;
-      for (const p of sp.parts) {
-        const m = new THREE.Mesh(p.geometry, o.material);
-        m.name = o.name; m.userData = { ...o.userData, seoulKey: o.name.slice(6), cell: p.cell }; m.receiveShadow = o.receiveShadow; m.castShadow = o.castShadow;
-        m.matrixAutoUpdate = false; m.renderOrder = o.renderOrder; m.updateMatrix(); m.updateMatrixWorld(true);
-        scene.add(m); cull.meshes++;
+      const ud = { ...o.userData, seoulKey: o.name.slice(6) };
+      if (batch) {
+        const tb = now(), bm = batchCells(sp, o.material); cull.tBatch = (cull.tBatch || 0) + now() - tb;
+        bm.name = o.name; bm.userData = { ...ud, ...bm.userData, cells: sp.parts.length };
+        bm.receiveShadow = o.receiveShadow; bm.castShadow = o.castShadow; bm.renderOrder = o.renderOrder;
+        if (o.frustumCulled === false) { bm.frustumCulled = false; bm.perObjectFrustumCulled = false; }
+        bm.matrixAutoUpdate = false; bm.updateMatrix(); bm.updateMatrixWorld(true);
+        freeOnUpload(bm.geometry);   // perf #4: the CPU copy goes once the GPU has it (bounds are cached)
+        scene.add(bm); cull.meshes += sp.parts.length; cull.batches.push(bm);
+      } else {
+        if (sp.parts.length) freeOnUpload(sp.parts[0].geometry);
+        for (const p of sp.parts) {
+          const m = new THREE.Mesh(p.geometry, o.material);
+          m.name = o.name; m.userData = { ...ud, cell: p.cell }; m.receiveShadow = o.receiveShadow; m.castShadow = o.castShadow;
+          m.matrixAutoUpdate = false; m.renderOrder = o.renderOrder; m.updateMatrix(); m.updateMatrixWorld(true);
+          if (o.frustumCulled === false) m.frustumCulled = false;
+          scene.add(m); cull.meshes++;
+        }
       }
       olds.push(o);
     }
     for (const o of olds) { scene.remove(o); o.geometry.dispose(); }
-    marks.split = +(now() - tc0).toFixed(0);
-    // the collider for fpvcam's depth pass and the mirror: cells (shared positions, a cell-sorted index)
+    marks.split = +(now() - tc0).toFixed(0); marks.splitCells = +(cull.tSplit || 0).toFixed(0); marks.batch = +(cull.tBatch || 0).toFixed(0);
+    // the collider for fpvcam's depth pass and the mirror: cells (P3: one BatchedMesh, one draw; else a Mesh per cell)
     const cs = world.colliderScene;
-    const cm = cs?.children?.find((c) => c.isMesh && c.geometry?.getAttribute('position'));
+    const cm = cs?.children?.find((c) => c.isMesh && !c.isBatchedMesh && c.geometry?.getAttribute('position'));
     if (cm) {
-      const g = cm.geometry, pos = g.getAttribute('position'), idx = g.index, nT = (idx ? idx.count : pos.count) / 3, P = pos.array;
-      const vi = (t, k) => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
-      const keyOf = new Map(), keys = new Int32Array(nT);
-      for (let t = 0; t < nT; t++) { const a = vi(t, 0) * 3, b = vi(t, 1) * 3, c = vi(t, 2) * 3; const kx = Math.floor((P[a] + P[b] + P[c]) / 3 / 64), kz = Math.floor((P[a + 2] + P[b + 2] + P[c + 2]) / 3 / 64); const k = kx * 4096 + kz; if (!keyOf.has(k)) keyOf.set(k, keyOf.size); keys[t] = keyOf.get(k); }
-      const nk = keyOf.size, cnt = new Int32Array(nk + 1); for (let t = 0; t < nT; t++) cnt[keys[t] + 1]++; for (let k = 0; k < nk; k++) cnt[k + 1] += cnt[k];
-      const fillc = cnt.slice(0, nk), ix = new Uint32Array(nT * 3);
-      for (let t = 0; t < nT; t++) { const o = fillc[keys[t]]++; ix[o * 3] = vi(t, 0); ix[o * 3 + 1] = vi(t, 1); ix[o * 3 + 2] = vi(t, 2); }
-      const ia = new THREE.BufferAttribute(ix, 1), v3 = new THREE.Vector3();
-      cs.remove(cm);
-      for (let k = 0; k < nk; k++) {
-        const s = cnt[k], e = cnt[k + 1]; if (e <= s) continue;
-        const geo = new THREE.BufferGeometry(); geo.setAttribute('position', pos); geo.setIndex(ia); geo.setDrawRange(s * 3, (e - s) * 3);
-        let a0 = Infinity, a1 = Infinity, a2 = Infinity, b0 = -Infinity, b1 = -Infinity, b2 = -Infinity;
-        for (let q = s * 3; q < e * 3; q++) { const v = ix[q] * 3, X = P[v], Y = P[v + 1], Z = P[v + 2]; if (X < a0) a0 = X; if (X > b0) b0 = X; if (Y < a1) a1 = Y; if (Y > b1) b1 = Y; if (Z < a2) a2 = Z; if (Z > b2) b2 = Z; }
-        const bb = new THREE.Box3(new THREE.Vector3(a0, a1, a2), new THREE.Vector3(b0, b1, b2));
-        geo.boundingBox = bb; geo.boundingSphere = bb.getBoundingSphere(new THREE.Sphere());
-        const m = new THREE.Mesh(geo, cm.material); m.name = 'seoul:col'; m.matrixAutoUpdate = false; m.userData.colCell = true; cs.add(m); cull.col++;
+      const g = cm.geometry;
+      if (batch) {
+        const g0 = new THREE.BufferGeometry(); g0.setAttribute('position', g.getAttribute('position')); if (g.index) g0.setIndex(g.index);
+        const sp = splitCells(g0, cull.colCell, 0);
+        colBatch = batchCells(sp, cm.material); colBatch.name = 'seoul:col'; colBatch.userData.colCell = true; colBatch.matrixAutoUpdate = false;
+        freeOnUpload(colBatch.geometry);
+        cs.remove(cm); cs.add(colBatch); cull.col = sp.parts.length;
+      } else {
+        const pos = g.getAttribute('position'), idx = g.index, nT = (idx ? idx.count : pos.count) / 3, P = pos.array;
+        const vi = (t, k) => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
+        const keyOf = new Map(), keys = new Int32Array(nT), cc = cull.colCell;
+        for (let t = 0; t < nT; t++) { const a = vi(t, 0) * 3, b = vi(t, 1) * 3, c = vi(t, 2) * 3; const kx = Math.floor((P[a] + P[b] + P[c]) / 3 / cc), kz = Math.floor((P[a + 2] + P[b + 2] + P[c + 2]) / 3 / cc); const k = kx * 4096 + kz; if (!keyOf.has(k)) keyOf.set(k, keyOf.size); keys[t] = keyOf.get(k); }
+        const nk = keyOf.size, cnt = new Int32Array(nk + 1); for (let t = 0; t < nT; t++) cnt[keys[t] + 1]++; for (let k = 0; k < nk; k++) cnt[k + 1] += cnt[k];
+        const fillc = cnt.slice(0, nk), ix = new Uint32Array(nT * 3);
+        for (let t = 0; t < nT; t++) { const o = fillc[keys[t]]++; ix[o * 3] = vi(t, 0); ix[o * 3 + 1] = vi(t, 1); ix[o * 3 + 2] = vi(t, 2); }
+        const ia = new THREE.BufferAttribute(ix, 1);
+        cs.remove(cm);
+        for (let k = 0; k < nk; k++) {
+          const s = cnt[k], e = cnt[k + 1]; if (e <= s) continue;
+          const geo = new THREE.BufferGeometry(); geo.setAttribute('position', pos); geo.setIndex(ia); geo.setDrawRange(s * 3, (e - s) * 3);
+          let a0 = Infinity, a1 = Infinity, a2 = Infinity, b0 = -Infinity, b1 = -Infinity, b2 = -Infinity;
+          for (let q = s * 3; q < e * 3; q++) { const v = ix[q] * 3, X = P[v], Y = P[v + 1], Z = P[v + 2]; if (X < a0) a0 = X; if (X > b0) b0 = X; if (Y < a1) a1 = Y; if (Y > b1) b1 = Y; if (Z < a2) a2 = Z; if (Z > b2) b2 = Z; }
+          const bb = new THREE.Box3(new THREE.Vector3(a0, a1, a2), new THREE.Vector3(b0, b1, b2));
+          geo.boundingBox = bb; geo.boundingSphere = bb.getBoundingSphere(new THREE.Sphere());
+          const m = new THREE.Mesh(geo, cm.material); m.name = 'seoul:col'; m.matrixAutoUpdate = false; m.userData.colCell = true; cs.add(m); cull.col++;
+        }
       }
     }
     cull.ms = +(now() - tc0).toFixed(0);
@@ -907,11 +956,16 @@ export function attach(world, emitters = [], ctx = {}) {
     if (occ) {
       // occluders within occR m only (perf #3): the collider cells farther away are hidden for this pass
       _cp.setFromMatrixPosition(cam.matrixWorld); hidden.length = 0;
-      for (const m of occ.children) if (m.userData.colCell && m.visible && m.geometry.boundingSphere && m.geometry.boundingSphere.center.distanceTo(_cp) - m.geometry.boundingSphere.radius > mirror.occR) { m.visible = false; hidden.push(m); }
+      for (const m of occ.children) {
+        if (m.isBatchedMesh && m.userData.colCell) {   // P3: hide the far cells (instances) of the batched collider
+          const S = m.userData.cellSpheres, I = m.userData.instanceIds;
+          for (let i = 0; i < S.length; i++) if (S[i].center.distanceTo(_cp) - S[i].radius > mirror.occR) { m.setVisibleAt(I[i], false); hidden.push([m, I[i]]); }
+        } else if (m.userData.colCell && m.visible && m.geometry.boundingSphere && m.geometry.boundingSphere.center.distanceTo(_cp) - m.geometry.boundingSphere.radius > mirror.occR) { m.visible = false; hidden.push(m); }
+      }
       const lc = r.localClippingEnabled; r.localClippingEnabled = true;
       r.clear(true, true, false); occ.overrideMaterial = occMat; r.autoClear = false; r.render(occ, mc); occ.overrideMaterial = null;
       r.localClippingEnabled = lc;
-      for (const m of hidden) m.visible = true;
+      for (const h of hidden) { if (Array.isArray(h)) h[0].setVisibleAt(h[1], true); else h.visible = true; }
     }
     r.render(mirror.scene, mc);
     _v.set(0, 0, -20).applyMatrix4(cam.matrixWorld); _v.y = mirror.y;
@@ -1217,7 +1271,7 @@ export function attach(world, emitters = [], ctx = {}) {
     emitters: all.length, static: still.length, animated: nAnim, moving: nMov, dynamicSlots: Q.Nd, grid: [gw, gh, cell], K, Kd: KD,
     binMs: +binMs.toFixed(1), volMs: +volMs.toFixed(1), attachMs: 0, pairs, occludedPairs: occl,
     cells: cellsUsed, mean: +(used / Math.max(1, cellsUsed)).toFixed(2), full, volume: volStat,
-    materials: nMat, wetMaterials: nWet, mirror: mirror.on, cull: { meshes: cull.meshes, from: cull.from, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
+    materials: nMat, wetMaterials: nWet, mirror: mirror.on, cull: { meshes: cull.meshes, from: cull.from, batched: cull.batch ? cull.batches.length : 0, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
     pools: !!pool.mesh, airlight: air.n, airCap: air.cap, airCapped: air.capped, update: uStats, marks,
   };
   function exportData() {   // native #2: the model (exportParams) + this level's grid and baked volume
@@ -1255,6 +1309,7 @@ export function attach(world, emitters = [], ctx = {}) {
       if (air.mesh) { air.g.dispose(); air.mat.dispose(); scene.remove(air.mesh); }
       if (pool.mesh) pool.mesh.material.dispose();
       scene.remove(sky); mirror.on = false;
+      for (const bm of cull.batches) bm.dispose?.(); colBatch?.dispose?.();
     },
   };
   // the world had no dispose(): chain ours in (main.js calls world.dispose on a level switch; the city textures leaked)
