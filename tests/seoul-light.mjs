@@ -5,7 +5,7 @@
 // non-negative and fills interior probes; 7 splitCells keeps every triangle; 8 the real block: attach + update budget.
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY } from '../seoul-light.js';
+import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY, VOLUME, wallPacks } from '../seoul-light.js';
 
 let pass = 0, fail = 0;
 const ok = (c, msg) => { if (c) pass++; else { fail++; console.log('FAIL', msg); } };
@@ -51,7 +51,8 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(west.lights >= 1 && west.direct > 1, `lit in front of the wall: ${west.direct.toFixed(1)} lux`);
   // (the P3 sky is ~0.64 lux on an open up-face: the light's share behind the block must stay under 0.5 lux on top of it)
   const skyLux = Math.PI * 0.5 * [NIGHT_SKY.zenith, NIGHT_SKY.horizon].reduce((s, c) => s + 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], 0);
-  ok(east.lights === 0 && east.volume < 0.5 + skyLux, `nothing behind the block: ${east.lights} lights, volume ${east.volume.toFixed(2)} lux (sky ${skyLux.toFixed(2)})`);
+  // (P4: plus the isotropic urban floor, VOLUME.cityLux, which no block shadows)
+  ok(east.lights === 0 && east.volume < 0.5 + skyLux + VOLUME.cityLux[0], `nothing behind the block: ${east.lights} lights, volume ${east.volume.toFixed(2)} lux (sky ${skyLux.toFixed(2)}, floor ${VOLUME.cityLux[0]})`);
   ok(C.stats.occludedPairs > 0, 'occluded pairs counted');
   const HF = C.heightField; ok(HF.occ(-3, 3, 0, 14, 0, [0.5, 4, 60]) === 0b011, 'heightfield: blocked at 0.5 and 4 m, clear at 60 m');
   C.dispose();
@@ -162,6 +163,22 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(!('tCityLMR' in C.uniforms) && C.uniforms.tCityLM && C.uniforms.uCityLMR.value.y > C.uniforms.uCityLMR.value.x, 'lightmap = one sampler (lookup rows in tCityL)');
   C.dispose();
 }
+// 7e P4 lighting #1/#2: the fascia spill (a downward Lambert lobe, `spill` x the face flux, 2 record bits), the light
+// box edge lobe (omni 0.15) and the urban ambient floor
+{
+  const box = (spill) => ({ id: 'L1:fascia0', pos: [0, 3.3, 0.15], normal: [0, 0, 1], w: 4, h: 1, nits: 100, kind: 'lightbox', rgb: [1, 1, 1], ...(spill != null ? { spill } : {}) });
+  const flux = (C) => { let f = 0; for (let x = -12; x < 12; x += 0.25) for (let z = 0.1; z < 12; z += 0.25) { const p = C.probe(x + 0.125, 0.0, z + 0.125); if (p) f += p.direct * 0.0625; } return f; };
+  const C0 = attach(world(), [box(0)], { layout: flat, steam: false, airlight: false, cull: false });
+  const C1 = attach(world(), [box()], { layout: flat, steam: false, airlight: false, cull: false });
+  const f0 = flux(C0), f1 = flux(C1), face = 100 * Math.PI * 4;   // lm: L pi A
+  console.log(`fascia spill: ground flux ${f0.toFixed(0)} -> ${f1.toFixed(0)} lm (face ${face.toFixed(0)} lm)`);
+  ok(f1 - f0 > 0.17 * face && f1 - f0 < 0.27 * face, `spill puts ~0.2 of the face flux on the ground in front (${((f1 - f0) / face).toFixed(3)})`);
+  const u = C1.uniforms.tCityL.value.image.data; ok(((u[7] >>> 14) & 3) === 3 && Math.abs((u[7] >>> 26) / 63 - 0.15) < 0.01, 'record carries spill 0.3 and omni 0.15');
+  const nearWall = C1.probe(0, 4.3, 0.05, 0, 0, 1).direct, nearWall0 = attach(world(), [{ ...box(0), omni: 0 }], { layout: flat, steam: false, airlight: false, cull: false }).probe(0, 4.3, 0.05, 0, 0, 1).direct;
+  ok(nearWall > nearWall0 + 1, `edge lobe lights the wall above the box: ${nearWall0.toFixed(1)} -> ${nearWall.toFixed(1)} lux`);
+  ok(C1.probe(30, 12, 30).volume >= VOLUME.cityLux[4] * 0.9, 'urban floor on an open face at 12 m');
+  C0.dispose(); C1.dispose();
+}
 // 8 the real block (signs + C's emitters), when the partner modules are present
 {
   const R = new URL('..', import.meta.url).pathname;
@@ -173,6 +190,10 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
     try { const S = await import('../seoul-signs.js'); const s = await S.seoulSigns.build(layout, { layout, nitScale: 0.1, lotInfo: geo.lotInfo, seed: 11, loadFonts: false, streetById: new Map(layout.streets.map((x) => [x.id, x])), lotById: new Map(layout.lots.map((l) => [l.id, l])) }); em = em.concat(s.emitters); } catch (e) { console.log('signs skipped:', e.message); }
     const scene = new THREE.Scene(); for (const [k, g] of Object.entries(geo.merged)) scene.add(Object.assign(new THREE.Mesh(g, new THREE.MeshStandardMaterial()), { name: 'seoul:' + k }));
     const w = { scene };
+    // P4 lighting #2: wall packs over corner faces and shuttered fronts, clear of the 2F windows
+    const packs = wallPacks(geo.lotInfo, em);
+    let hitWin = 0; for (const p of packs) for (const i of geo.lotInfo.values()) for (const wd of i.windows || []) if (wd.f === 1 && Math.abs(wd.c[1] - p.pos[1]) < wd.h / 2 && Math.hypot(wd.c[0] - p.pos[0], wd.c[2] - p.pos[2]) < wd.w / 2 + 0.2) hitWin++;
+    console.log(`wall packs: ${packs.length}`); ok(packs.length > 60 && hitWin === 0, `wall packs placed (${packs.length}), none over a 2F window (${hitWin})`);
     const C = attach(w, em, { layout, steam: false, nitScale: 0.1 });
     const st = C.stats;
     console.log(`block: ${st.emitters} emitters, attach ${st.attachMs} ms (bin ${st.binMs}, volume ${st.volMs}, cull ${st.cull.ms}), K ${st.K}, ${st.pairs} pairs (${st.occludedPairs} occluded), cells ${st.cells} (full ${st.full}), volume ${JSON.stringify(st.volume)}, world ${st.cull.vertsBefore} -> ${st.cull.vertsAfter} verts in ${st.cull.meshes} meshes`);

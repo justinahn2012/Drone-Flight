@@ -42,7 +42,7 @@ export function packMeta(m, out, i, skip = 0) {
   const o = i * MS;
   out[o] = m.x; out[o + 1] = m.y; out[o + 2] = m.z; out[o + 3] = m.A; out[o + 4] = m.omni;
   out[o + 5] = m.n[0]; out[o + 6] = m.n[1]; out[o + 7] = m.n[2]; out[o + 8] = m.I[0]; out[o + 9] = m.I[1]; out[o + 10] = m.I[2];
-  out[o + 11] = m.range; out[o + 12] = m.ty; out[o + 13] = m.hl; out[o + 14] = m.a; out[o + 15] = m.tx; out[o + 16] = m.ty_; out[o + 17] = m.tz; out[o + 18] = skip;
+  out[o + 11] = m.range; out[o + 12] = m.ty; out[o + 13] = m.hl; out[o + 14] = m.a; out[o + 15] = m.tx; out[o + 16] = m.ty_; out[o + 17] = m.tz; out[o + 18] = skip; out[o + 19] = m.down || 0;   // P4: down spill
 }
 // irradiance factor (I x this = E on a face toward the light) at p, direction to the light in L (same as seoul-light kAt)
 export function kAtP(M, i, px, py, pz, L) {
@@ -54,7 +54,7 @@ export function kAtP(M, i, px, py, pz, L) {
   const d = Math.sqrt(d2), ux = lx / d, uy = ly / d, uz = lz / d; L[0] = ux; L[1] = uy; L[2] = uz;
   const ty0 = M[o + 12], n0 = M[o + 5], n1 = M[o + 6], n2 = M[o + 7];
   let fe;
-  if (ty0 === 0) { const om = M[o + 4], ce = -(ux * n0 + uy * n1 + uz * n2); fe = Math.max(ce, 0) * (1 - om) + (0.55 + 0.45 * ce) * om; }
+  if (ty0 === 0) { const om = M[o + 4], ce = -(ux * n0 + uy * n1 + uz * n2); fe = Math.max(ce, 0) * (1 - om) + (0.55 + 0.45 * ce) * om + M[o + 19] * Math.max(0.857 * uy + 0.515 * ce, 0); }
   else if (ty0 === 1) fe = lobeStreet(-ux, -uy, -uz, n0, n2);
   else fe = lobeBeam(-ux, -uy, -uz, n0, n2);
   if (fe <= 0) return 0;
