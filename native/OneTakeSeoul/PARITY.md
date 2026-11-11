@@ -35,7 +35,8 @@ Swift BVH, and keep each triangle's vertex order. Ties between equal hit distanc
    meshes. Materials come from world.json `materials` and the KTX2 maps (tex/; transcode Basis to ASTC 4x4). Match the
    browser's stills, retro 0 grade, at the CI poses (tests/golden-seoul-hongdae.json) within the golden tolerances.
 2. **Light:** emitters.json + light.json. Records, grid and volume come from light/*.bin; the lightmap comes from
-   light/lightmap.bin (RGBA16F, alpha = valid; keyed by `layoutSha256`). Use clustered lights in compute with no K cap.
+   light/night-lm.bin, the game's own file (RGB9E5 planes, gzip; keyed by `key` = lmKey over emitters, layout and the light
+   model, with `layoutSha256` beside it; [P5 D] one lightmap, one key). Use clustered lights in compute with no K cap.
    EDR output keeps sign cores above 1000 nits.
 3. **Signs:** signs.glb + signs.bin + signs/msdf.png. Draw the 5 batched groups and the sign tiles from an indirect
    command buffer, culled on the GPU.

@@ -2,7 +2,7 @@
 // tools/bakelm-night.mjs: Neon Seoul's shipped night lightmap (P4 stream D, perf #3). One command, from the repo root:
 //
 //   node tools/bakelm.mjs --night          (or node tools/bakelm-night.mjs)   ~20-40 s
-//   options: --out FILE (default seoul/light/night-lm.bin)   --check (only report whether the committed file is current)
+//   options: --out FILE (default seoul/light/night-lm.bin)   --check (only report whether the committed file is current; exit 1 if stale)
 //
 // Builds the level headless exactly as the game does (world-seoul.js buildSeoul: geometry, signs, life, dressing; the
 // light's own wall packs), bakes the night lightmap in line (seoul-light.js attach, lightmapSync), packs it RGB9E5 and
@@ -48,8 +48,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const { file, header } = await bakeNight();
   if (argv.includes('--check')) {
     const cur = fs.existsSync(out) ? N.lmFileHeader(fs.readFileSync(out)) : null;
-    console.log(cur?.header?.key === header.key ? `current: ${path.relative(ROOT, out)} matches (${header.key})` : `STALE: ${path.relative(ROOT, out)} has ${cur?.header?.key || 'nothing'}, this build ${header.key}`);
-    process.exit(0);
+    const fresh = cur?.header?.key === header.key;
+    console.log(fresh ? `current: ${path.relative(ROOT, out)} matches (${header.key})` : `FAIL STALE: ${path.relative(ROOT, out)} has ${cur?.header?.key || 'nothing'}, this build ${header.key}: run node tools/bakelm.mjs --night`);
+    process.exit(fresh ? 0 : 1);   // [P5 D] CI: a stale map fails
   }
   fs.mkdirSync(path.dirname(out), { recursive: true }); fs.writeFileSync(out, file);
   console.log(`wrote ${path.relative(ROOT, out)}`);

@@ -1098,7 +1098,7 @@ function interiorTexture() {
     t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.flipY = false; t.anisotropy = 4; t.name = 'seoul:interiors'; t.needsUpdate = true;
     t.onUpdate = () => { if (t.image) t.image.data = null; };   // perf #4: the GPU holds it; drop the 25 MB CPU copy
-    A.data = null;   // [P5-D] perf #1: interiorJob's result held a second reference to those 25 MB for the session
+    if (!IS_NODE) A.data = null;   // [P5-D] perf #1: interiorJob's result held a second reference to those 25 MB for the session (node: A is seoul-interiors' cached atlas, which the export reads)
     INTERIOR_UNIFORMS.uSeoulNorm.value = Array.from({ length: 16 }, (_, i) => (i === NEAR.people || i === NEAR.bar ? 1 : 1 / Math.max(0.05, A.mean[i])));   // [P4-C] 9 is a room (lobby)
     INTERIOR_UNIFORMS.tSeoulInt.value = t;
     return t;

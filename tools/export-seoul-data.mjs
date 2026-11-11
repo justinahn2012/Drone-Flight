@@ -501,23 +501,26 @@ async function contentFiles(root, files, assetMap) {
   return out;
 }
 
-/** The night lightmap the browser bakes in a Worker (D's seoul-nightlm.js), baked here in line: its RGBA16F atlas as
- *  light/lightmap.bin; the lookup raster and edge table already ride in light/records.bin (extra rows). Keyed by the
- *  layout's sha256 so a port can tell a stale map. A lightmap D ships in the repo (seoul/light/lightmap.*) is copied instead. */
+/** [P5 D, native #2] One lightmap, one key: the export ships the file the game fetches (seoul/light/night-lm.bin, written
+ *  by `node tools/bakelm.mjs --night`) byte for byte as light/night-lm.bin, when its key matches this build's (lmKey over the
+ *  emitters, the layout and the light model; layoutSha256 rides beside it). A stale or missing file is a warning (the
+ *  export --strict fails), never a second, differently baked map. (Phase 4 baked its own RGBA16F light/lightmap.bin here.) */
 async function lightmapFile(root, ctl, files, layoutSha) {
-  for (const f of ['seoul/light/lightmap.bin', 'seoul/light/lightmap.json']) if (existsSync(join(root, f))) files[f.replace('seoul/', '')] = readFileSync(join(root, f));
-  if (files['light/lightmap.bin'] && existsSync(join(root, 'seoul/light/lightmap.json'))) return { file: 'light/lightmap.bin', meta: 'light/lightmap.json', source: 'seoul/light (D, shipped)', layoutSha256: layoutSha };
-  const st = ctl?.stats?.lightmap, tex = ctl?.uniforms?.tCityLM?.value, U = ctl?.uniforms || {};
-  if (!st?.ready || !tex?.image?.data || tex.image.width < 2) return { status: 'pending', note: `the headless bake did not land (mode ${st?.mode ?? 'none'})` };
-  const im = tex.image, d = im.data, bytes = new Uint8Array(d.buffer, d.byteOffset, d.byteLength).slice();
-  const pk = packBin(files, 'light/lightmap.bin', bytes, 8);
+  const N = await import(pathToFileURL(join(root, 'seoul-nightlm.js')).href), rel = N.NIGHT_LM.file.replace(/^\.\//, ''), f = join(root, rel);
+  const st = ctl?.stats?.lightmap, U = ctl?.uniforms || {};
+  if (!st?.key) return { status: 'pending', note: `no lightmap key from the headless attach (mode ${st?.mode ?? 'none'})` };
+  if (!existsSync(f)) return { status: 'missing', note: `${rel} is missing: run node tools/bakelm.mjs --night` };
+  const buf = readFileSync(f), F = N.lmFileHeader(buf);
+  if (!F || F.header.key !== st.key) return { status: 'stale', note: `${rel} has key ${F?.header?.key ?? 'none'}, this build ${st.key}: run node tools/bakelm.mjs --night` };
+  files['light/night-lm.bin'] = buf;
   const v4 = (k) => (U[k]?.value?.toArray ? U[k].value.toArray().map((x) => +x.toFixed(6)) : null);
-  return { file: 'light/lightmap.bin', format: 'RGBA16F (IEEE half, little-endian), rows bottom-up as a GL DataTexture (row 0 = v 0)', width: im.width, height: im.height, bytes: bytes.byteLength,
-    content: 'scene-linear irradiance x NITS (rgb) and alpha = valid; static emitters (no K limit, heightfield-occluded) + the volume\'s indirect part (seoul-nightlm.js)',
+  return { file: 'light/night-lm.bin', key: st.key, layoutSha256: layoutSha, width: F.header.w, height: F.header.h, bytes: buf.length, sha256: sha256(buf),
+    format: "'NLM2' | u32 header length | header JSON {key, w, h, version, enc, texels, ...} | gzip of the texels as 4 byte planes, each delta-coded along its rows (seoul-nightlm.js lmFile / lmUnplanes); texels RGB9E5 (GL RGB9_E5, 4 bytes), rows bottom-up as a GL DataTexture (row 0 = v 0)",
+    content: 'scene-linear irradiance x NITS (rgb); static emitters (no K limit, heightfield-occluded) + the volume\'s indirect part (seoul-nightlm.js bakeLM); invalid texels dilated from their neighbours',
     uniforms: { uCityLM: v4('uCityLM'), uCityLMG: v4('uCityLMG'), uCityLMA: v4('uCityLMA'), uCityLMR: v4('uCityLMR') },
     lookup: 'the ground map sits at the atlas origin (uCityLMG: x0, z0, gw, gh); wall rects pack round it (uCityLMA: atlas w, h, raster w, h); the 1 m raster of the two nearest exposed edges and the edge table are rows uCityLMR.x.. of light/records.bin (seoul-light.js CITY_HEAD cityLM)',
-    plan: st.edges != null ? { edges: st.edges, atlas: st.atlas, ground: st.ground } : null, texels: st.texels, NIGHT_LM: (await import(pathToFileURL(join(root, 'seoul-nightlm.js')).href)).NIGHT_LM ?? null,
-    layoutSha256: layoutSha, source: 'baked headless at export (seoul-light attach with ctx.lightmap: the browser\'s Worker job, in line)', ...pk };
+    plan: st.edges != null ? { edges: st.edges, atlas: st.atlas, ground: st.ground } : null, texels: F.header.texels, NIGHT_LM: N.NIGHT_LM,
+    source: `${rel} (D: node tools/bakelm.mjs --night), byte for byte: the file the game fetches` };
 }
 
 /** Asset coverage (native #2): every file a Seoul runtime module (or the level's levels.json entry) names that exists in
@@ -581,7 +584,7 @@ export const SEOUL_RUNTIME_ONLY = {
   headlightPools: 'additive pools under each vehicle head lamp (life)',
   steam: 'steam puffs (Points), count QUALITY[q].steam (light)',
   airlight: 'closed-form single-scatter airlight sprites (one instanced quad) round the AIRLIGHT.n brightest emitters in view, re-picked every 3 frames (light)',
-  light: 'the clustered light grid is binned at load from emitters.json (light.json rules); the night lightmap ships baked (light/lightmap.bin, light.json lightmap)',
+  light: 'the clustered light grid is binned at load from emitters.json (light.json rules); the night lightmap ships baked (light/night-lm.bin: the game\'s own file, keyed; light.json lightmap)',
 };
 
 export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = console.log, note = log, warn = log, meshopt = null } = {}) {
