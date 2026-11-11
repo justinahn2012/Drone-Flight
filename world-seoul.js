@@ -90,6 +90,8 @@ const TENANT = { bar: { room: [3], nits: [6, 12], cct: 2700 }, karaoke: { room: 
 // [P5-C] lighting #5 (station2's office floors read amber): a tower's office floor is a 4500-5000 K LED panel grid at 40-60
 // nits as the street sees it (a lit open-plan floor is the brightest window in the city; P4 gave it the 15-25 of a low office)
 const TOWER_OFFICE = { room: [8], nits: [40, 60], cct: 4750 };
+// station2's two 8F hotels were 3000 K top to bottom: a business hotel's rooms are LED-lit at 4000-4500 K on 60 % of its floors
+const TOWER_HOTEL = { room: [12, 11], nits: [10, 18], cct: 4250 };
 // a black body's colour, normalised to luminance 1 (Tanner Helland's fit; 2700-6500 K is all we use)
 export function cctRGB(K) {
   const t = K / 100; let r, g, b;
@@ -498,7 +500,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
         if (W.stair) { lit = R() < 0.6; o = { nits: [8, 15], cct: 6000 }; room = ROOM.stair; }
         else if (W.small) { lit = R() < 0.3; o = TENANT.home; room = R() < 0.5 ? ROOM.home : ROOM.study; if (R() < 0.5) fr = FRONT.frosted; }
         else {
-          o = TENANT[T?.use] || TENANT.home; if (tall && o === TENANT.office) o = TOWER_OFFICE; room = o.room[Math.floor(R() * o.room.length)]; lit = !!T?.lit && R() < 0.9;
+          o = TENANT[T?.use] || TENANT.home; if (tall && o === TENANT.office) o = TOWER_OFFICE; else if (tall && o === TENANT.hotel && hash(l.id + ':ht' + W.f) < 0.6) o = TOWER_HOTEL; room = o.room[Math.floor(R() * o.room.length)]; lit = !!T?.lit && R() < 0.9;
           const r = R();
           if (lit && r < 0.15) fr = FRONT.blinds;                                       // a lit floor with this blind down
           else if (o === TENANT.home) fr = r < 0.5 ? FRONT.curtain : r < 0.65 ? FRONT.blinds : 0;
@@ -530,7 +532,10 @@ export function buildSeoulGeometry(layout, opts = {}) {
             wallDecal(a, t2, n2, s - ww / 2, s + ww / 2, Math.max(0.2, W.y0 - 0.07 - len), W.y0 - 0.07, 0.72 - age * 0.12, 1.0); }
           // [P5-C] art #2 / graphics #1: every other sill weeps too (its own stream): ragged streaks under both ends and the middle
           if (!dripped && (front || streetSide) && W.f <= 6) { const R5 = rng(l.id + ':sd' + i + ':' + W.f + ':' + W.s.toFixed(1));
-            for (const e of [-0.42, 0.42]) if (R5() < 0.75) drip(a, t2, n2, W.s + e * W.w, 0.12 + R5() * 0.22, W.y0 - 0.075, 0.35 + R5() * (0.6 + age * 1.8), 0.9 - age * 0.12, R5); }
+            for (const e of [-0.42, 0.42]) if (R5() < 0.75) drip(a, t2, n2, W.s + e * W.w, 0.12 + R5() * 0.22, W.y0 - 0.075, 0.35 + R5() * (0.6 + age * 1.8), 0.82 - age * 0.12, R5); }
+        } else if (!W.stair && !W.small && (front || streetSide) && W.f <= 6 && W.y0 - W.f * l.floorH > 0.3) {   // [P5-C] ribbon / band glass: the frame's bottom rail weeps
+          const R5 = rng(l.id + ':rd' + i + ':' + W.f + ':' + W.s.toFixed(1));
+          if (R5() < 0.7) drip(a, t2, n2, W.s + (R5() - 0.5) * W.w * 0.8, 0.15 + R5() * 0.3, W.y0 - 0.02, 0.3 + R5() * (0.5 + age * 1.5), 0.84 - age * 0.12, R5);
         }
         // AC units: side and back walls by a window, or high on older fronts (the real Seoul pattern), with a rust streak
         // [P3-C] art #2: ~1 unit per 2 windows on side and rear walls (phase 2's 30 % from R, the rest from R2)
@@ -1136,13 +1141,13 @@ float seoulGrime(vec2 uv) {
     if (sgH(ci + 31.7) < 0.11) {
       vec2 lo = vec2(sgH(ci + 3.1), sgH(ci + 5.3)) * 0.35, hi = 1.0 - vec2(sgH(ci + 7.9), sgH(ci + 9.4)) * 0.35, fw = fwidth(pc) + 1e-4;
       float m = smoothstep(lo.x - fw.x, lo.x + fw.x, cf.x) * smoothstep(lo.y - fw.y, lo.y + fw.y, cf.y) * (1.0 - smoothstep(hi.x - fw.x, hi.x + fw.x, cf.x)) * (1.0 - smoothstep(hi.y - fw.y, hi.y + fw.y, cf.y));
-      float tone = sgH(ci + 13.3) < 0.55 ? 0.84 : 1.1;
+      float tone = sgH(ci + 13.3) < 0.55 ? 0.78 : 1.12;
       k *= mix(1.0, tone, m); sgGR += m * (tone > 1.0 ? -0.1 : 0.06);
     }
     float tide = 0.4 + 0.5 * sgN(vec2(uv.x * 1.3, 1.7)), g = 1.0 - smoothstep(0.0, tide, sWY);
     k *= 1.0 - 0.32 * g * (0.55 + 0.45 * sgN(uv * vec2(9.0, 14.0)));
     sgGR += 0.12 * g;
-    k *= 0.9 + 0.2 * sgN(uv * vec2(3.1, 2.3) + 11.0);
+    k *= (0.84 + 0.32 * sgN(uv * vec2(3.1, 2.3) + 11.0)) * (0.9 + 0.2 * sgN(uv * vec2(11.0, 7.0) + 5.0));
   }
   return k;
 }
