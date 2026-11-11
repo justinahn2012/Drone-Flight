@@ -276,6 +276,29 @@ export class TrafficSim {
       ln.stops.sort((a, b) => a.s - b.s);
       ln.busStops = ln.bus && ln.len > 70 ? [ln.len * 0.45] : [];
     }
+    // ---- BUS SHELTER islands (design #2, P3: a bus filled the shelter gates 42 % of the time; the bus lane ran through the
+    // island). Beside an island the lanes of each carriageway fan out (smoothly over 18 m): the bus lane's side 1.5 m off the
+    // island edge, each next lane >= 2.3 m on, so the gates under the canopy (0.5-2.7 m off the axis) stay clear; buses
+    // dwell beside the island. ln.shel = { sc, half, d } (lane s at the island centre, half length, lat offset)
+    for (const sh of net.shelters || []) {
+      const [px, , pz] = sh.pos, dx = sh.dir[0], dz = sh.dir[2], ux = dz, uz = -dx, half = sh.island.L / 2, edge = sh.island.w / 2;
+      const groups = new Map();
+      for (const ln of this.lanes) {
+        if (ln.shared) continue; let best = null;
+        for (let s = 0; s <= ln.len; s += 1) { ln.base.at(this.toBase(ln, s), o); const x = o.x + o.nx * ln.lat, z = o.z + o.nz * ln.lat, a = (x - px) * dx + (z - pz) * dz, u = (x - px) * ux + (z - pz) * uz; if (Math.abs(a) < half && Math.abs(u) < 14 && (!best || Math.abs(a) < Math.abs(best.a))) best = { s, a, u, nx: o.nx, nz: o.nz }; }
+        if (!best) continue;
+        const key = ln.street.id + ':' + ln.dir + ':' + Math.sign(best.u); let g = groups.get(key); if (!g) groups.set(key, (g = [])); g.push({ ln, ...best });
+      }
+      for (const g of groups.values()) {
+        g.sort((a, b) => Math.abs(a.u) - Math.abs(b.u)); let need = edge + 1.5 + 1.25;
+        for (const e of g) {
+          const du = Math.max(0, need - Math.abs(e.u)), sgn = Math.sign(e.u) * Math.sign(e.nx * ux + e.nz * uz) || 1;   // lat units -> outward
+          if (du > 0.01) e.ln.shel = { sc: e.s, half, d: sgn * du };
+          need = Math.abs(e.u) + du + 2.3;
+          if (e.ln.bus && du > 0.01) e.ln.busStops = [Math.min(e.ln.len - 30, Math.max(30, e.s + 2))];
+        }
+      }
+    }
     // successors: lanes of the other streets that start where this one ends, grouped by approach (street + dir)
     for (const ln of this.lanes) {
       ln.succ = []; ln.pred = 0;
@@ -665,9 +688,14 @@ export class TrafficSim {
         lat += ln.dir * 0.25 * 4 * u * (1 - Math.abs(u));
       }
     }
+    if (ln.shel) {   // fanning out round a BUS SHELTER island
+      const a = Math.abs(s - ln.shel.sc), R = 18, h = ln.shel.half;
+      if (a < h + R) { const u = a < h ? 1 : 1 - (a - h) / R, f = u * u * (3 - 2 * u); lat += ln.shel.d * f;
+        if (a > h) { const df = 6 * u * (1 - u) / R * (s > ln.shel.sc ? -1 : 1); dlat += ln.shel.d * df; } }
+    }
     if (v.lcN > -1e8) {   // easing out of a lane change: offset and the yaw that goes with it
       const n = this.n - 1 + (v.jumped ? 1 : alpha), o0 = this.lcOffset(v, n);
-      if (o0) { lat += o0; dlat = (this.lcOffset(v, n + 1) - o0) * LIFE.trafficHz / Math.max(1, v.v); }
+      if (o0) { lat += o0; dlat += (this.lcOffset(v, n + 1) - o0) * LIFE.trafficHz / Math.max(1, v.v); }
     }
     let x = P.x + P.nx * lat, z = P.z + P.nz * lat, hx = P.tx * ln.dir + P.nx * dlat, hz = P.tz * ln.dir + P.nz * dlat;
     if (dlat) { const l = Math.hypot(hx, hz) || 1; hx /= l; hz /= l; }
@@ -1313,6 +1341,8 @@ export class LifeSim {
   // setPieces / obstacles: E's (world-seoul ctx); sites: explicit busking sites (override the set pieces')
   constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles } = {}) {
     this.net = buildNetwork(layout);
+    // E's median BUS SHELTER islands (design #2, P3): the traffic gives them room (see TrafficSim: shelter offsets)
+    this.net.shelters = (setPieces || []).filter((p) => p && p.kind === 'shelter' && p.pos && p.dir && p.island);
     this.traffic = new TrafficSim(this.net, { seed });
     const bs = buskSitesFrom(setPieces);
     this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null) });
@@ -1486,18 +1516,17 @@ function buildHumanGeo(lod) {
   const g = new THREE.InstancedBufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
-  g.setAttribute('bone', new THREE.Float32BufferAttribute(B, 1));
-  g.setAttribute('region', new THREE.Float32BufferAttribute(G, 1));
+  const bd = new Float32Array(B.length * 4); for (let i = 0; i < B.length; i++) { bd[i * 4] = B[i]; bd[i * 4 + 1] = B[i]; bd[i * 4 + 3] = G[i]; }
+  g.setAttribute('bdat', new THREE.Float32BufferAttribute(bd, 4));
   g.setAttribute('grp', new THREE.Float32BufferAttribute(S, 1));
   g.setIndex(I);
   return g;
 }
 
 const HUMAN_VS = /* glsl */`
-attribute float bone;
-attribute float bone2;  // second bone and its weight (P3: Rocketbox avatars blend two bones; the procedural body has bw = 0)
-attribute float bw;
-attribute float region;
+// bone, second bone, its weight x 255, region (P3: one vec4, so the 9 instance vec4s still fit in 16 attributes; Rocketbox
+// avatars blend two bones, the procedural body has weight 0)
+attribute vec4 bdat;
 attribute float grp;
 attribute vec2 auv;     // atlas uv (textured avatars)
 attribute vec4 iPos;    // x, y, z, yaw
@@ -1566,6 +1595,7 @@ vec3 rig(vec3 p, inout vec3 nrm, float b, float restY) {
 }
 `;
 const HUMAN_ANIM = /* glsl */`
+  float bone = bdat.x, bone2 = bdat.y, bw = bdat.z / 255.0, region = bdat.w;
   float ph = iAnim.x, wa = iAnim.y, poseI = floor(iAnim.z + 0.5), hs = iAnim.w * uJC.z;
   float acc = iLook.z, seed = iLook.w, T = uTime + seed * 37.0, tex = uJC.w;
   float scarf = mod(acc, 2.0), backpack = mod(floor(acc / 2.0), 2.0), pocket = mod(floor(acc / 8.0), 2.0);
@@ -2045,9 +2075,7 @@ export function build(layout, ctx = {}) {
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(bin, L.pos, L.verts * 3), 3));
     g.setAttribute('normal', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(new Int8Array(bin, L.nrm, L.verts * 4), 4), 3, 0, true));
     g.setAttribute('auv', new THREE.BufferAttribute(new Float32Array(bin, L.uv, L.verts * 2), 2));
-    const bb = new THREE.InterleavedBuffer(new Uint8Array(bin, L.bone, L.verts * 4), 4);
-    g.setAttribute('bone', new THREE.InterleavedBufferAttribute(bb, 1, 0, false)); g.setAttribute('bone2', new THREE.InterleavedBufferAttribute(bb, 1, 1, false));
-    g.setAttribute('bw', new THREE.InterleavedBufferAttribute(bb, 1, 2, true)); g.setAttribute('region', new THREE.InterleavedBufferAttribute(bb, 1, 3, false));
+    g.setAttribute('bdat', new THREE.BufferAttribute(new Uint8Array(bin, L.bone, L.verts * 4), 4, false));
     g.setIndex(new THREE.BufferAttribute(new Uint16Array(bin, L.index, L.tris * 3), 1));
     return g;
   };

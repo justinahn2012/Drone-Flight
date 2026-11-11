@@ -87,6 +87,18 @@ if (existsSync('tests/seoul-life-dressing.json') && file === 'seoul/layout.json'
   ok(res[1].ring >= 30 && res[0].ring === 0 && res[1].rings >= 3, `UNDER THE STAGE busks: ${res[1].ring} in the crowd round crowdRing.c (P2: ${res[0].ring}); ${res[1].rings} rings (the Playground kept)`);
   ok(res[1].inside < 1.2 && res[1].inside < res[0].inside * 0.5, `walkers inside E's carts, tents, stalls and parked scooters within 25 m: ${res[1].inside.toFixed(2)} % (without the discs ${res[0].inside.toFixed(2)} %)`);
 }
+// design #2 (P3): no vehicle in the BUS SHELTER corridors (pre gate -> gate under the canopy, 2.2 m wide, 1.1-2.9 m up)
+if (existsSync('tests/seoul-life-dressing.json') && file === 'seoul/layout.json') {
+  const D = JSON.parse(readFileSync('tests/seoul-life-dressing.json', 'utf8')), sh = D.setPieces.find((p) => p.kind === 'shelter');
+  const corr = Object.values(sh.gates).map((g) => { const c = [(g.pre.c[0] + g.gate.c[0]) / 2, (g.pre.c[2] + g.gate.c[2]) / 2]; return { c, n: [g.pre.n[0], g.pre.n[2]], u: [g.pre.u[0], g.pre.u[2]], hl: Math.hypot(g.gate.c[0] - g.pre.c[0], g.gate.c[2] - g.pre.c[2]) / 2 + 0.3, hw: g.pre.w / 2, y0: g.pre.c[1] - g.pre.h / 2 }; });
+  const hits = (b, k) => { if (b.c[1] + b.half[1] < k.y0) return false;   // SAT, 2-D: vehicle OBB vs corridor rectangle
+    const A = [[b.h[0], b.h[1]], [b.h[1], -b.h[0]]], ah = [b.half[2], b.half[0]], B = [k.n, k.u], bh = [k.hl, k.hw], d = [k.c[0] - b.c[0], k.c[1] - b.c[2]];
+    for (const ax of [...A, ...B]) { const ra = ah[0] * Math.abs(ax[0] * A[0][0] + ax[1] * A[0][1]) + ah[1] * Math.abs(ax[0] * A[1][0] + ax[1] * A[1][1]), rb = bh[0] * Math.abs(ax[0] * B[0][0] + ax[1] * B[0][1]) + bh[1] * Math.abs(ax[0] * B[1][0] + ax[1] * B[1][1]); if (Math.abs(d[0] * ax[0] + d[1] * ax[1]) > ra + rb) return false; }
+    return true; };
+  const occ = (opt) => { const S = new LifeSim(layout, { seed: 11, ...opt }); let n = 0, S2 = 0; for (let t = 1; t <= 600; t += 0.5) { S2++; if (S.boxesAt(t).some((b) => corr.some((k) => hits(b, k)))) n++; } return n / S2; };
+  const before = occ({}), after = occ({ setPieces: D.setPieces });
+  ok(after === 0, `BUS SHELTER corridors clear of traffic: ${(100 * after).toFixed(1)} % of 600 s blocked (lanes not fanned out round the island: ${(100 * before).toFixed(1)} %)`);
+}
 // crossers only on the road during walk
 let bad = 0, onRoad = 0; const s2 = new LifeSim(layout, { seed: 3 });
 for (let t = 0; t < 140; t += 0.5) { s2.crowd.evaluate(t, null, { avoid: false }); for (const g of s2.crowd.people) { if (g.kind !== K_CROSS || !s2.crowd.VIS[g.id]) continue; const c = g.cross, P = c.main.path.at(c.sc, {}); const off = (s2.crowd.X[g.id] - P.x) * P.nx + (s2.crowd.Z[g.id] - P.z) * P.nz; if (Math.abs(off) < 0.5 * c.halfSpan) { onRoad++; if (crossPhase(c, t).car === 'G') bad++; } } }
