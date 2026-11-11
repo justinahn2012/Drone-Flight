@@ -26,7 +26,7 @@ const AVATARS = [
   ['Business_Male_01', 'm'], ['Male_Adult_03', 'm'], ['Male_Adult_04', 'm'], ['Male_Adult_18', 'm'],
   ['Business_Female_04', 'f'], ['Female_Adult_07', 'f'], ['Female_Adult_09', 'f'], ['Female_Adult_13', 'f'],
 ];
-const LODS = [{ name: 'near', tris: 3400 }, { name: 'mid', tris: 760 }];
+const LODS = [{ name: 'near', tris: 3400 }, { name: 'lod1', tris: 1700 }, { name: 'mid', tris: 760 }];   // (P4 perf #2: lod1 for 8-18 m)
 
 const myBone = (n) => {
   if (/L_Thigh/.test(n)) return 2; if (/L_Calf/.test(n)) return 3; if (/L_Foot|L_Toe/.test(n)) return 13;

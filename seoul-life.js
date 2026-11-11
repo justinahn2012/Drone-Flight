@@ -39,7 +39,9 @@ export const LIFE = {
   // road vehicles at reset: bumper gaps of roadGap[0] + U * roadGap[1] m per lane (P4: 20 + U 40; P3 10 + U 30 packed the
   // widened carriageways past what the junctions pass)
   roadGap: [20, 40],
-  warm: 75, maxAgents: 15500, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 2500,
+  // (P4 perf #2: people were 0.8-1.34 M main-pass triangles) the 3.4k avatar LOD only within nearR0, a 1.7k LOD to nearR;
+  // 1500 drawn on auto, 900 on the phone preset (crowd 'low'); the velocity pass sees only the near tiers
+  warm: 75, maxAgents: 15500, nearR0: 6, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 1500, maxDrawnLow: 900,
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
   phoneShare: 0.18,            // walkers looking at a phone
   sidewalk: (w) => Math.max(3, Math.min(6, w * 0.15)),
@@ -232,6 +234,13 @@ export function buildNetwork(layout) {
   // green split per junction group: lanes approaching on each axis (one-way pieces count whole, two-way half)
   { const lanes = new Map(); for (const c of [...crossings, ...signals]) if (c.kind === 'X') { const L = lanes.get(c.root) || [0, 0]; L[c.axis] += Math.max(1, Math.round((c.main.ow ? 2 : 1) * c.main.carHalf / LIFE.laneW)); lanes.set(c.root, L); }
     for (const c of [...crossings, ...signals]) if (c.kind === 'X') { const L = lanes.get(c.root); c.g0 = Math.max(20, Math.min(40, Math.round(60 * L[0] / (L[0] + L[1] || 1)))); } }
+  // (P4, life #4) where a crosswalk's kerb is the next carriageway (Yanghwa-ro's two halves), its crowd waits past that one too
+  // and crosses both in one go (P3 stood them on the other carriageway, between its crosswalk and stop line); and a junction's
+  // split gives them the walk (and its clearance) to do it at 1.4 m/s
+  for (const c of crossings) { const P = c.main.path.at(c.sc, {}); c.ext = [-1, 1].map((sd) => { let e = 0; while (e < 30) { const off = sd * (c.halfSpan + e + 0.6), q = offRoad(mains, P.x + P.nx * off, P.z + P.nz * off, 0.4, c.main); if (q.moved === 0) break; e += 0.5; } return e; }); }
+  { const need = new Map();
+    for (const c of crossings) if (c.kind === 'X') { const sp = 2 * c.halfSpan + c.ext[0] + c.ext[1], nd = need.get(c.root) || [0, 0]; nd[c.axis] = Math.max(nd[c.axis], Math.ceil(sp / 1.4) - 1); need.set(c.root, nd); }   // (walk + the 3 s amber and 2 s all-red after it, 1 s spare)
+    for (const c of [...crossings, ...signals]) if (c.kind === 'X' && need.has(c.root)) { const nd = need.get(c.root); c.g0 = Math.max(nd[1], Math.min(60 - nd[0], c.g0)); } }
   for (const m of mains) for (const o of streets) {   // mid-block: a walking or club street meets a road
     if (o.kind !== 'walking' && o.kind !== 'club') continue;
     const hits = pathCross(m.path, o.path).map(([sm]) => sm);
@@ -802,7 +811,7 @@ export class TrafficSim {
 //   cross     crowds that bunch at the kerb and surge over the crosswalk on the walk phase, cycle by cycle
 // Walkers sidestep each other and standing people (static discs) near the camera only (< 45 m), statelessly: the offset
 // is a smooth function of who is where at t, so it never pops. Hit tests use the un-avoided positions (camera-free).
-export const P_WALK = 0, P_PHONE = 1, P_IDLE = 2, P_SIT = 3, P_TALK = 4, P_SMOKE = 5, P_FILM = 6, P_DANCE = 7, P_SING = 8, P_CLAP = 9;
+export const P_WALK = 0, P_PHONE = 1, P_IDLE = 2, P_SIT = 3, P_TALK = 4, P_SMOKE = 5, P_FILM = 6, P_DANCE = 7, P_SING = 8, P_CLAP = 9, P_FLINCH = 10;
 export const K_WALK = 0, K_STAND = 1, K_QUEUE = 2, K_SEAT = 3, K_CROSS = 4, K_BUSK = 5, K_PERF = 6, K_DOOR = 7;
 export function h32(a, b = 0, c = 0) {
   let h = (Math.imul(a | 0, 0x9E3779B1) ^ Math.imul((b | 0) + 0x7f4a7c15, 0x85EBCA77) ^ Math.imul((c | 0) + 0x165667b1, 0xC2B2AE3D)) >>> 0;
@@ -868,6 +877,18 @@ export function crowdObstacles(obstacles, bs) {
   return out;
 }
 
+// (P4, life #4) a point pushed off every main carriageway to its kerb + margin -> [x, z] with .moved (m); skip: a road it may stand next to
+export function offRoad(mains, x, z, margin = 0.5, skip = null) {
+  let moved = 0;
+  for (const m of mains) {
+    if (m === skip) continue; const pr = m.path.project(x, z), lim = m.carHalf + margin;
+    if (pr.dist >= lim || pr.s <= 0.5 || pr.s >= m.path.len - 0.5) continue;
+    const o = m.path.at(pr.s, {}), sg = pr.d >= 0 ? 1 : -1, nx2 = o.x + o.nx * sg * lim, nz2 = o.z + o.nz * sg * lim;
+    moved += Math.hypot(nx2 - x, nz2 - z); x = nx2; z = nz2;
+  }
+  const out = [x, z]; out.moved = moved; return out;
+}
+
 export class CrowdSim {
   constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null } = {}) {
     this.net = net; this.layout = layout; this.seed = seed >>> 0; this.density = density; this.maxAgents = maxAgents;
@@ -923,6 +944,9 @@ export class CrowdSim {
     this.events = [];   // door in/out near the camera since the last evaluate (sound: shop chimes)
     this.t = -1; this.n = 0;
   }
+  // (P4, life #4) a standing spot pushed off every carriageway to its kerb + margin (deterministic: no extra draws).
+  // -> [x, z] with .moved = how far it went (skip: a road it may stand next to)
+  offRoad(x, z, margin = 0.5, skip = null) { return offRoad(this.net.mains, x, z, margin, skip); }
   // ---- portals: shop doors (by use), the exit 9 stair mouth, map-edge walkway ends
   buildDoors(layout) {
     const o = {}, byStreet = new Map();
@@ -1018,7 +1042,7 @@ export class CrowdSim {
       }
       for (let q = 0; q < 24; q++) {
         const a = R.next() * 6.283, r = 2.5 + R.next() * 6.5, p = this.newPerson(R, K_STAND);
-        p.x = ex.x + pcos(a) * r; p.z = ex.z + psin(a) * r; p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
+        [p.x, p.z] = this.offRoad(ex.x + pcos(a) * r, ex.z + psin(a) * r); p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
         this.statics.push(p.id);
       }
     }
@@ -1053,7 +1077,7 @@ export class CrowdSim {
         return;
       }
       if (R.next() > 0.85) return;
-      const u = 0.2 + 0.6 * R.next(), gx = a[0] + fx * u + nx * (1.0 + R.next() * 0.8), gz = a[1] + fz * u + nz * (1.0 + R.next() * 0.8);
+      const u = 0.2 + 0.6 * R.next(), [gx, gz] = this.offRoad(a[0] + fx * u + nx * (1.0 + R.next() * 0.8), a[1] + fz * u + nz * (1.0 + R.next() * 0.8), 1.0);
       if (this.inDress(gx, gz, 0.4 + 0.1 * n)) return;   // (life #6) not inside E's cart / tent / stall
       const smokers = n === 1 && R.next() < 0.5;
       for (let q = 0; q < n; q++) {
@@ -1090,6 +1114,8 @@ export class CrowdSim {
       const n = Math.round((c.kind === 'T' ? 30 : 14) * this.density);
       for (let q = 0; q < n; q++) { const p = this.newPerson(R, K_CROSS); p.cross = c; p.cside = q % 2 ? 1 : -1; p.v = 1.25 + R.next() * 0.35; this.statics.push(p.id); }
     });
+    // the slowest walkers speed up to make a long crossing inside its walk phase
+    for (const i of this.statics) { const p = this.people[i]; if (p.kind !== K_CROSS) continue; const c = p.cross, ph = crossPhase(c, 0), sp = 2 * c.halfSpan + (c.ext ? c.ext[0] + c.ext[1] : 0); p.v = Math.max(p.v, sp / Math.max(1, ph.wlen + 4)); }
     // static disc obstacles per walkway (standing, queues, busk audience, tables) for walker avoidance
     for (const w of this.ways) w.obst = [];
     const addObst = (x, z, r) => {
@@ -1268,20 +1294,20 @@ export class CrowdSim {
     }
     if (p.kind === K_CROSS) {
       const c = p.cross, Pd = LIFE.signal.period, ph = crossPhase(c, t), m = Math.floor((t + c.offset) / Pd), side = p.cside * (m & 1 ? -1 : 1);
-      const span = 2 * c.halfSpan, cu = (hu(p.id, m, 1) - 0.5) * (c.cw - 0.8), cw = 0.3 + hu(p.id, m, 2) * 2.2;
+      const hsp = (sd) => c.halfSpan + (c.ext ? c.ext[sd > 0 ? 1 : 0] : 0), span = hsp(1) + hsp(-1), cu = (hu(p.id, m, 1) - 0.5) * (c.cw - 0.8), cw = 0.3 + hu(p.id, m, 2) * 2.2;
       const delay = Math.min(0.3 + hu(p.id, m, 3) * hu(p.id, m, 4) * 4, Math.max(0, ph.wlen - span / p.v - 0.5));
       const P = c.main.path.at(c.sc, this._cp || (this._cp = {}));
       const at = (off, u) => [P.x + P.nx * off + P.tx * u, P.z + P.nz * off + P.tz * u];
       const w0 = ph.w0 + delay, w1 = w0 + span / p.v, tc = ph.tc;
       let x, z, yaw, walk = 0;
-      if (tc >= w0 && tc < w1) { const g = (tc - w0) / (w1 - w0), off = side * c.halfSpan * (1 - 2 * g); [x, z] = at(off, cu); yaw = Math.atan2(-P.nx * side, -P.nz * side); walk = 1; A.PH[i] = ((tc - w0) * p.v / 1.45 + p.ph0) % 1; }
+      if (tc >= w0 && tc < w1) { const g = (tc - w0) / (w1 - w0), off = side * hsp(side) * (1 - g) - side * hsp(-side) * g; [x, z] = at(off, cu); yaw = Math.atan2(-P.nx * side, -P.nz * side); walk = 1; A.PH[i] = ((tc - w0) * p.v / 1.45 + p.ph0) % 1; }
       else {
         // waiting on this cycle's side; right after arriving (previous cycle) they drift to the new waiting spot
         const wside = tc >= w1 ? -side : side, mm = tc >= w1 ? m + 1 : m, wcu = tc >= w1 ? (hu(p.id, mm, 1) - 0.5) * (c.cw - 0.8) : cu, wcw = tc >= w1 ? 0.3 + hu(p.id, mm, 2) * 2.2 : cw;
         const tArr = tc >= w1 ? tc - w1 : tc + Pd - (ph.w0 + Math.min(0.3 + hu(p.id, m - 1, 3) * hu(p.id, m - 1, 4) * 4, Math.max(0, ph.wlen - span / p.v - 0.5)) + span / p.v);
         const prevCu = tc >= w1 ? cu : (hu(p.id, m - 1, 1) - 0.5) * (c.cw - 0.8);
         const g = smooth(tArr / 3);
-        const a = at(wside * c.halfSpan, prevCu), b = at(wside * (c.halfSpan + wcw), wcu);
+        const a = at(wside * hsp(wside), prevCu), b = at(wside * (hsp(wside) + wcw), wcu);
         x = a[0] + (b[0] - a[0]) * g; z = a[1] + (b[1] - a[1]) * g; walk = g < 1 ? 0.6 : 0;
         yaw = Math.atan2(-P.nx * wside, -P.nz * wside) + (hu(p.id, mm, 5) - 0.5) * 0.6; if (walk) A.PH[i] = (tArr * 0.8 + p.ph0) % 1;
       }
@@ -1696,7 +1722,7 @@ const HUMAN_ANIM = /* glsl */`
   float acc = iLook.z, seed = iLook.w, T = uTime + seed * 37.0, tex = uJC.w;
   float scarf = mod(acc, 2.0), backpack = mod(floor(acc / 2.0), 2.0), pocket = mod(floor(acc / 8.0), 2.0);
   float sitP = float(poseI == 3.0), phoneP = float(poseI == 1.0), talkP = float(poseI == 4.0), smokeP = float(poseI == 5.0);
-  float filmP = float(poseI == 6.0), danceP = float(poseI == 7.0), singP = float(poseI == 8.0), clapP = float(poseI == 9.0);
+  float filmP = float(poseI == 6.0), danceP = float(poseI == 7.0), singP = float(poseI == 8.0), clapP = float(poseI == 9.0), flinchP = float(poseI == 10.0);
   float style = floor(iWear.w + 0.5), coat = floor(iTop.w + 0.5);
   vec3 p = position, nrm = normal;
   // ---- what this person doesn't have
@@ -1761,6 +1787,9 @@ const HUMAN_ANIM = /* glsl */`
   float du = fract(T / 14.0 + seed * 1.7), drink = sitP * smoothstep(0.0, 0.06, du) * (1.0 - smoothstep(0.16, 0.22, du));
   hipL = mix(hipL, 1.45, sitP); hipR = mix(hipR, 1.35, sitP); knL = mix(knL, 1.5, sitP); knR = mix(knR, 1.4, sitP); anL *= 1.0 - sitP; anR *= 1.0 - sitP;
   sL = mix(sL, 0.5, sitP); sR = mix(sR, mix(0.55 + 0.25 * phoneP, 0.7, drink), sitP); eL = mix(eL, 1.1, sitP); eR = mix(eR, mix(1.3, 2.2, drink), sitP); headP -= 0.12 * drink;
+  // flinch (P4, life #4): a drone at head height within 2.5 m: forearms up in front of the face, head back and away
+  sL = mix(sL, 0.95, flinchP); sR = mix(sR, 0.95, flinchP); eL = mix(eL, 1.9, flinchP); eR = mix(eR, 1.9, flinchP);
+  abL = mix(abL, -0.28, flinchP); abR = mix(abR, -0.28, flinchP); headP -= 0.22 * flinchP; knL += 0.12 * flinchP; knR += 0.12 * flinchP;
   // look-at (CPU-side: people turn their heads to the drone, filmers aim up)
   headY += iLook.x; headP += iLook.y;
   // ---- skeleton: each vertex's bone (and, on an avatar, its second bone blended by weight bw)
@@ -2136,7 +2165,8 @@ function buildFill(net, layout, emitters, cell = 4) {
 
 // ================================================================ build (contract L2)
 export function build(layout, ctx = {}) {
-  const seed = ctx.seed ?? 7, q = ctx.quality || 'auto';
+  const pq = typeof location !== 'undefined' && /[?&]preset=phone/.test(location.search || '') ? 'low' : null;   // (P4) ?preset=phone too
+  const seed = ctx.seed ?? 7, q = pq || ctx.quality || 'auto';
   const maxAgents = ctx.maxAgents ?? (q === 'low' ? Math.round(LIFE.maxAgents * 0.5) : LIFE.maxAgents);
   // E's set pieces and dressing discs (contract P3-G1/C: world-seoul passes ctx.setPieces = geo.setPieces and ctx.obstacles =
   // geo.dressingOut.obstacles; ctx.dressing (E's geometry output) is read too). Absent: the default rings, no discs.
@@ -2206,23 +2236,32 @@ export function build(layout, ctx = {}) {
     return g;
   };
   // people.json + people.bin (+ atlases): build the avatar tiers. data = { meta, bin, atlas?, hair? } (node tests pass it)
+  const avatarOf = (a, list) => {   // a person's own avatar, stable (hash of the id), weighted by avatars.w
+    let tot = 0; for (const i of list) tot += avatars.w ? avatars.w[i] : 1;
+    let u = (((a.id * 2654435761) >>> 7) / 33554432) * tot; for (const i of list) { u -= avatars.w ? avatars.w[i] : 1; if (u < 0) return i; } return list[list.length - 1];
+  };
   function attachAvatars(data) {
     const { meta, bin } = data; const nA = meta.avatars.length;
     avatars.mats = meta.avatars.map((av) => {
       const j = av.joints, J = [new THREE.Vector4(j.hipX, j.hipY, j.kneeY, j.ankleY), new THREE.Vector4(j.shX, j.shY, j.elY, j.neckY), new THREE.Vector4(j.kneeZ, j.elZ, 1.712 / j.top, 1)];
       return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean, data.aux || zero, av.meanScalp);
     });
-    avatars.tiers = [0, 1].map((lod) => meta.avatars.map((av, ai) => {
-      const L = av.lods[lod], g = avatarGeo(bin, L), cap = lod ? Math.ceil(LIFE.maxMid * 0.5) : Math.ceil(LIFE.maxNear * 0.5), A = instAttrs(g, cap);
-      const m = new THREE.Mesh(g, avatars.mats[ai]); m.frustumCulled = false; m.name = `crowd-${lod ? 'mid' : 'near'}-${av.name}`; group.add(m);
-      return { g, A, cap, mesh: m, tris: L.tris, n: 0 };
+    // tiers: [near, (lod1,) mid]; people.json from before P4 has no lod1 (then 0 near, 1 mid)
+    const nL = Math.min(3, meta.avatars[0].lods.length); avatars.nL = nL;
+    avatars.tiers = Array.from({ length: nL }, (_, lod) => meta.avatars.map((av, ai) => {
+      const mid = lod === nL - 1, L = av.lods[lod], g = avatarGeo(bin, L), cap = mid ? Math.ceil(LIFE.maxMid * 0.5) : Math.ceil(LIFE.maxNear * (nL === 3 && lod === 0 ? 0.3 : 0.5)), A = instAttrs(g, cap);
+      const m = new THREE.Mesh(g, avatars.mats[ai]); m.frustumCulled = false; m.name = `crowd-${mid ? 'mid' : L.name || 'near'}-${av.name}`; group.add(m);
+      return { g, A, cap, mesh: m, tris: L.tris, n: 0, near: !mid };
     }));
     avatars.male = meta.avatars.map((av, i) => (av.sex === 'm' ? i : -1)).filter((i) => i >= 0);
     avatars.female = meta.avatars.map((av, i) => (av.sex === 'f' ? i : -1)).filter((i) => i >= 0);
+    // (P4, life #5 / art #3: suits on 2 of 8 bodies put a quarter of Hongdae's Friday crowd in business wear) suit avatars
+    // are picked a tenth as often (~3 % of people); the rest share evenly
+    avatars.w = meta.avatars.map((av) => (/^Business/i.test(av.name) ? 0.1 : 1));
     avatars.n = nA; avatars.ready = true; avatars.patched = false;
-    for (const L of avatars.tiers) for (const t of L) motionMeshes.push(t.mesh);   // (the same array scene.userData.motionMeshes spreads: re-list)
+    for (const L of avatars.tiers) for (const t of L) if (t.near) motionMeshes.push(t.mesh);   // (the same array scene.userData.motionMeshes spreads: re-list; near tiers only, P4 perf #2)
     if (ctx.scene?.userData) ctx.scene.userData.motionMeshes = [...(ctx.scene.userData.motionMeshes || []).filter((m) => !motionMeshes.includes(m)), ...motionMeshes];
-    stats.avatars = nA; stats.trisNear = avatars.tiers[0][0].tris; stats.trisMid = avatars.tiers[1][0].tris;
+    stats.avatars = nA; stats.trisNear = avatars.tiers[0][0].tris; stats.trisMid = avatars.tiers[nL - 1][0].tris; stats.trisLod1 = nL === 3 ? avatars.tiers[1][0].tris : null;
   }
   // ---- contact shadows (lighting #6, P3): a soft dark footprint under every near and mid person (multiplied into what is
   // already on the ground; walkers' a little longer along their heading), so crowds stand on the street instead of floating
@@ -2249,6 +2288,10 @@ export function build(layout, ctx = {}) {
   const umbOf = people.map((a, i) => (rain && a.kind !== K_SEAT && a.kind !== K_PERF && ((i * 2654435761) >>> 0) % 100 < 62 ? 1 : 0));   // ~60% under umbrellas in rain
   // look-at state (render side only): head yaw/pitch toward the drone, attention time (phones come up after ~1.2 s)
   const LY = new Float32Array(NP), LP = new Float32Array(NP), ATT = new Float32Array(NP);
+  // (P4, life #4) reaction to a low drone, render side only (the soft colliders stay where the sim puts people): RX 0-1 how
+  // startled, LAG m a walker has fallen behind its sim position (slowed to 0.4x, then catches up), SX sidestep (m, signed
+  // across the heading), FL s of flinch left
+  const RX = new Float32Array(NP), LAG = new Float32Array(NP), SX = new Float32Array(NP), FL = new Float32Array(NP);
   const filmer = people.map((a) => a.kind !== K_WALK && a.kind !== K_SEAT && a.kind !== K_PERF && seedOf[a.id] < 0.3);
 
   // ---- pocha furniture (plastic tables + stools), only if the site doesn't provide it
@@ -2282,7 +2325,7 @@ export function build(layout, ctx = {}) {
     vByType[ty] = { im, st, vel, env, cap, n: list.length };
   }
   // contract P2-A1: list the vehicle meshes for A's object blur (world.motionMeshes / scene.userData.motionMeshes)
-  const motionMeshes = [...Object.values(vByType).map((B) => B.im), ...tiers.map((t) => t.mesh)];
+  const motionMeshes = [...Object.values(vByType).map((B) => B.im), tiers[0].mesh];   // (P4 perf #2: the mid and far crowd move < 1 px per frame at 18+ m; no velocity proxies)
   group.userData.motionMeshes = motionMeshes;
   if (ctx.scene?.userData) ctx.scene.userData.motionMeshes = [...(ctx.scene.userData.motionMeshes || []), ...motionMeshes];
   const poolG = new THREE.InstancedBufferGeometry().copy(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2));
@@ -2359,19 +2402,32 @@ export function build(layout, ctx = {}) {
       ab[i] = b;
     }
     near.doors = crowd.events;
-    let cut = 17, acc = 0; for (let b = 0; b <= 17; b++) { acc += hist[b]; if (acc > LIFE.maxDrawn) { cut = b - 1; break; } }
+    // the phone preset (seoul-light's qualityCap, crowd 'low') draws fewer, live
+    const capP = ctx.scene?.userData?.seoulLight?.qualityCap, low = q === 'low' || (capP && capP.presets?.[capP.current]?.crowd === 'low'), maxD = low ? LIFE.maxDrawnLow : LIFE.maxDrawn;
+    let cut = 17, acc = 0; for (let b = 0; b <= 17; b++) { acc += hist[b]; if (acc > maxD) { cut = b - 1; break; } }
     const kL = 1 - Math.exp(-dt * 4);
     for (let i = 0; i < NP; i++) {
       if (ab[i] > cut) { ATT[i] = 0; continue; }
-      const a = people[i], x = X[i], z = Z[i];
+      const a = people[i];
+      // ---- reaction (life #4): within 2.5 m of a drone flying under 2.5 m: walkers slow to 0.4x and sidestep 0.5 m away
+      // from it, everyone near flinches for 0.4 s on the first moment; eased in 0.15 s, out over ~1 s
+      { const rx = X[i] - camP.x, rz = Z[i] - camP.z, near = camH < 2.5 && camH > -0.5 && rx * rx + rz * rz < 6.25 && a.kind !== K_PERF && a.kind !== K_SEAT;
+        const r0 = RX[i], tgt = near ? 1 : 0; RX[i] += (tgt - r0) * (1 - Math.exp(-dt * (near ? 7 : 1.2)));
+        if (near && r0 < 0.05 && dt > 0) FL[i] = 0.4; else if (FL[i] > 0) FL[i] = Math.max(0, FL[i] - dt);
+        if (a.kind === K_WALK) {
+          const sp = crowd.WALK[i] * crowd.units[a.unit].v; LAG[i] = Math.max(0, Math.min(3, LAG[i] + (sp * 0.6 * RX[i] - (RX[i] < 0.2 ? LAG[i] * 0.6 : 0)) * dt));
+          const hy = crowd.YAW[i], hx = Math.sin(hy), hz = Math.cos(hy), side = (rx * hz - rz * hx) >= 0 ? 1 : -1;   // the side away from the drone
+          if (near && Math.abs(SX[i]) < 0.01) SX[i] = side * 1e-3; SX[i] += ((near ? Math.sign(SX[i] || side) * 0.5 : 0) - SX[i]) * (1 - Math.exp(-dt * (near ? 6 : 1.5)));
+        } else { LAG[i] *= Math.exp(-dt); SX[i] *= Math.exp(-dt * 1.5); } }
+      const hy0 = crowd.YAW[i], x = X[i] - Math.sin(hy0) * LAG[i] + Math.cos(hy0) * SX[i], z = Z[i] - Math.cos(hy0) * LAG[i] - Math.sin(hy0) * SX[i];
       const dx = x - camP.x, dz = z - camP.z, h2 = dx * dx + dz * dz, d2 = h2 + camH * camH * 0.25;
       let T, k;
-      let lod = d2 < nr2 && nN < tiers[0].cap ? 0 : d2 < mr2 && nM < tiers[1].cap ? 1 : nN + nM + nF < LIFE.maxDrawn ? 2 : -1;
+      let lod = d2 < nr2 && nN < tiers[0].cap ? 0 : d2 < mr2 && nM < tiers[1].cap ? 1 : nN + nM + nF < maxD ? 2 : -1;
       if (lod < 0) continue;
       if (lod === 0) nN++; else if (lod === 1) nM++; else nF++;
       let AT = null;
       if (lod < 2 && avatars.ready) {   // the person's own avatar (by sex, then a hash), unless that avatar's buffer is full
-        const list = a.male ? avatars.male : avatars.female, av = list[((a.id * 2654435761) >>> 7) % list.length]; AT = avatars.tiers[lod][av];
+        const list = a.male ? avatars.male : avatars.female, av = avatarOf(a, list), al = lod === 0 ? (avatars.nL === 3 && d2 >= LIFE.nearR0 * LIFE.nearR0 ? 1 : 0) : avatars.nL - 1; AT = avatars.tiers[al][av];
         if (AT.n >= AT.cap) AT = null;
       }
       if (!AT) AT = tiers[lod];
@@ -2392,16 +2448,17 @@ export function build(layout, ctx = {}) {
         if (filmer[i] && ATT[i] > 1.2 && crowd.WALK[i] < 0.3) { pose = P_FILM; tp -= 0.05; }
       } else ATT[i] = Math.max(0, ATT[i] - dt * 2);
       LY[i] += (ty - LY[i]) * kL; LP[i] += (tp - LP[i]) * kL;
+      if (FL[i] > 0 && a.kind !== K_PERF) pose = P_FLINCH;
       const o = k * 4, L = look[i];
       T.iPos.array[o] = x; T.iPos.array[o + 1] = groundAt(x, z) + (a.y0 || 0); T.iPos.array[o + 2] = z; T.iPos.array[o + 3] = yaw;
-      T.iAnim.array[o] = crowd.PH[i]; T.iAnim.array[o + 1] = crowd.WALK[i]; T.iAnim.array[o + 2] = pose; T.iAnim.array[o + 3] = a.scale;
+      T.iAnim.array[o] = crowd.PH[i]; T.iAnim.array[o + 1] = crowd.WALK[i] * (1 - 0.6 * RX[i]); T.iAnim.array[o + 2] = pose; T.iAnim.array[o + 3] = a.scale;
       T.iTop.array.set(L.top, o); T.iTop.array[o + 3] = a.look.coat;
       T.iBot.array.set(L.bot, o); T.iBot.array[o + 3] = a.look.bag;
       T.iHair.array.set(L.hair, o); T.iHair.array[o + 3] = a.wide;
       T.iSkin.array.set(L.skin, o); T.iSkin.array[o + 3] = umbOf[i];
       T.iWear.array.set(L.wear, o); T.iWear.array[o + 3] = a.look.style;
       T.iLook.array[o] = LY[i]; T.iLook.array[o + 1] = LP[i]; T.iLook.array[o + 2] = accOf[i]; T.iLook.array[o + 3] = seedOf[i];
-      { const sp = crowd.WALK[i] * (walker ? crowd.units[a.unit].v : 1.25), ov = k * 3; T.instanceVelocity.array[ov] = Math.sin(yaw) * sp; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = Math.cos(yaw) * sp; }
+      { const sp = crowd.WALK[i] * (walker ? crowd.units[a.unit].v : 1.25) * (1 - 0.6 * RX[i]), ov = k * 3; T.instanceVelocity.array[ov] = Math.sin(yaw) * sp; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = Math.cos(yaw) * sp; }
       fill.at(x, z, tmpF); T.iFill.array[o] = tmpF[0]; T.iFill.array[o + 1] = tmpF[1]; T.iFill.array[o + 2] = tmpF[2]; T.iFill.array[o + 3] = tmpF[3];
     }
     let avTris = 0;

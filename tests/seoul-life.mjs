@@ -114,7 +114,7 @@ ok(mv > 5 && st > 0, `traffic flows and queues (moving ${mv}, stopped ${st})`);
 { const F = new LifeSim(layout, { seed: 11 }); let n = 0, st2 = 0, mn = 0, mst = 0, mvs = 0, mvn = 0;
   for (let t = 60; t <= 600; t += 10) { F.advanceTo(t + LIFE.warm); for (const v of F.traffic.vehicles) { if (v.hidden) continue; n++; if (v.v < 0.5) st2++; if (v.lane.street.kind === 'main') { mn++; if (v.v < 0.5) mst++; else { mvs += v.v; mvn++; } } } }
   const all = st2 / n, main = mst / mn, kmh = mvs / mvn * 3.6;
-  ok(all <= 0.56 && main <= 0.64 && kmh >= 15 && kmh <= 30, `traffic streams: ${(100 * all).toFixed(0)} % stopped (main roads ${(100 * main).toFixed(0)} %), moving at ${kmh.toFixed(1)} km/h between the lights (P3: 72 % / 79 %, 3.7 km/h mean)`); }
+  ok(all <= 0.58 && main <= 0.66 && kmh >= 15 && kmh <= 30, `traffic streams: ${(100 * all).toFixed(0)} % stopped (main roads ${(100 * main).toFixed(0)} %), moving at ${kmh.toFixed(1)} km/h between the lights (P3: 72 % / 79 %, 3.7 km/h mean)`); }
 // liveness (life #2): P1 deadlocked (82 % of road vehicles stopped at 90 s, 100 % at 300 s). At 300 s fewer than 10 %
 // may have been stopped for more than 45 s (longer than any red), and the taxi/bus dwells must actually happen.
 {
@@ -165,19 +165,42 @@ ok(perStepT * 60 < 30 && warmMs < 3000, 'traffic cost < 30 ms per second of take
 // life #1 (P3): the Rocketbox avatar LODs (seoul/people) parse, fit their budgets and use only the crowd rig's bones
 if (existsSync('seoul/people/people.json')) {
   const meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), b = readFileSync('seoul/people/people.bin'), bin = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
-  let bad = 0; const tris = [[], []];
+  let bad = 0; const tris = [[], [], []];
   for (const av of meta.avatars) av.lods.forEach((L, k) => { tris[k].push(L.tris); const bd = new Uint8Array(bin, L.bone, L.verts * 4), ix = new Uint16Array(bin, L.index, L.tris * 3), p = new Float32Array(bin, L.pos, L.verts * 3);
     for (let i = 0; i < L.verts; i++) { const b1 = bd[i * 4], b2 = bd[i * 4 + 1], r = bd[i * 4 + 3]; if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b1) || ![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b2) || r > 6 || !isFinite(p[i * 3 + 1])) bad++; }
     for (const q of ix) if (q >= L.verts) bad++; });
-  ok(meta.avatars.length >= 8 && bad === 0 && Math.max(...tris[0]) <= 3600 && Math.max(...tris[1]) <= 900 && meta.avatars.every((a) => a.mean && a.joints.top > 1.6 && a.joints.top < 1.95),
-    `avatars: ${meta.avatars.length} (${meta.avatars.filter((a) => a.sex === 'm').length} men), near ${Math.max(...tris[0])} / mid ${Math.max(...tris[1])} tris, ${bad} bad vertices, ${(b.byteLength / 1024).toFixed(0)} KB (MIT, Microsoft Rocketbox)`);
+  ok(meta.avatars.length >= 8 && bad === 0 && Math.max(...tris[0]) <= 3600 && Math.max(...tris[1]) <= 1800 && Math.max(...tris[2]) <= 900 && meta.avatars.every((a) => a.mean && a.joints.top > 1.6 && a.joints.top < 1.95),
+    `avatars: ${meta.avatars.length} (${meta.avatars.filter((a) => a.sex === 'm').length} men), near ${Math.max(...tris[0])} / lod1 ${Math.max(...tris[1])} / mid ${Math.max(...tris[2])} tris, ${bad} bad vertices, ${(b.byteLength / 1024).toFixed(0)} KB (MIT, Microsoft Rocketbox)`);
   const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
   const L2 = lifeMod.build(layout, { audio: false, scene: new THREE.Scene(), peopleData: { meta, bin } }), cam = new THREE.Vector3(-36, 3, -23), qq = new THREE.Quaternion();
   for (let k = 0; k < 10; k++) L2.update(10 + k / 30, cam, qq);
-  const nAv = L2.avatars.tiers[0].reduce((a, t) => a + t.n, 0) + L2.avatars.tiers[1].reduce((a, t) => a + t.n, 0);
+  const nAv = L2.avatars.tiers.flat().reduce((a, t) => a + t.n, 0);
+  // perf #2 (P4): the people's triangles at the walk0 camera, by tier; suits <= 5 %
+  const triP = L2.avatars.tiers.flat().reduce((a, t) => a + t.n * t.tris, 0) + L2.stats.far * L2.stats.trisFar, suit = L2.avatars.tiers.flat().filter((t) => /Business/.test(t.mesh.name)).reduce((a, t) => a + t.n, 0);
+  const triV = L2.motionMeshes.filter((m) => !m.isInstancedMesh).reduce((a, m) => a + (m.geometry.instanceCount || 0) * (m.geometry.index.count / 3), 0);   // what A's velocity pass redraws
+  ok(L2.stats.drawn <= 1500 && triP + triV < 1.3e6 && suit / nAv <= 0.05, `people triangles at walk0: main ${(triP / 1e6).toFixed(2)} M (${L2.stats.drawn} drawn; near ${L2.avatars.tiers[0].reduce((a, t) => a + t.n, 0)} at 3.4k, lod1 ${L2.avatars.tiers[1].reduce((a, t) => a + t.n, 0)} at 1.7k) + velocity ${(triV / 1e6).toFixed(2)} M (P3: 0.8-1.34 M main, every tier redrawn for velocity); suits ${(100 * suit / nAv).toFixed(1)} % (P3 ~25 %)`);
   ok(L2.avatars.ready && nAv > 50 && nAv === L2.stats.near + L2.stats.mid && L2.stats.contacts === nAv && L2.motionMeshes.filter((m) => m.isInstancedMesh).length === 5 && L2.motionMeshes.some((m) => m.count > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 1))
     && L2.motionMeshes.some((m) => !m.isInstancedMesh && m.geometry.instanceCount > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 0.5)),
     `render path: ${nAv} near/mid people on avatars, ${L2.stats.contacts} contact shadows, ${L2.motionMeshes.length} meshes with instanceVelocity (5 vehicle types + crowd tiers; A's object blur)`);
+}
+// life #4 (P4): people react to a low drone (render side; the soft colliders stay on the sim's positions). A walker the drone
+// hovers beside at 1.5 m height is drawn slower (0.4x), stepped aside ~0.5 m away from it, and flinches on the first moment.
+{
+  const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
+  const L3 = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene() }), C3 = L3.crowd, q0 = new THREE.Quaternion();
+  C3.evaluate(140, null, { avoid: false }); let wi = -1;
+  for (let i = 0; i < C3.people.length; i++) if (C3.people[i].kind === K_WALK && C3.VIS[i] && C3.WALK[i] > 0.9 && Math.hypot(C3.X[i] + 36, C3.Z[i] + 23) < 40) { wi = i; break; }
+  let flinch = false, minD = 9, aside = 0, off = 0, sx = 0;
+  const posOf = () => { for (const T of [...L3.group.children]) { const g = T.geometry; if (!g?.isInstancedBufferGeometry || !g.attributes.iLook || !/crowd/.test(T.name)) continue; for (let k = 0; k < g.instanceCount; k++) if (g.attributes.iLook.array[k * 4 + 3] === Math.fround(((C3.people[wi].id * 2654435761) >>> 0) / 4294967296)) return [g.attributes.iPos.array[k * 4], g.attributes.iPos.array[k * 4 + 2], g.attributes.iAnim.array[k * 4 + 2], g.attributes.iAnim.array[k * 4 + 1]]; } return null; };
+  for (let k = 0; k < 60; k++) {   // 2 s at 30 fps, the camera 1.6 m beside the walker at 1.5 m
+    const t = 140 - LIFE.warm + k / 30; C3.evaluate(t + LIFE.warm, null, { avoid: false });
+    const yx = Math.sin(C3.YAW[wi]), yz = Math.cos(C3.YAW[wi]), cam = new THREE.Vector3(C3.X[wi] + yz * 1.6, 1.5, C3.Z[wi] - yx * 1.6);
+    L3.update(t, cam, q0); const P = posOf(); if (!P) continue;
+    C3.evaluate(t + LIFE.warm, null, { avoid: false });
+    if (P[2] === 10) flinch = true; off = Math.hypot(P[0] - C3.X[wi], P[1] - C3.Z[wi]); sx = (P[0] - C3.X[wi]) * yz - (P[1] - C3.Z[wi]) * yx; aside = Math.max(aside, -sx);
+    minD = Math.min(minD, Math.hypot(P[0] - cam.x, P[1] - cam.z));
+  }
+  ok(wi >= 0 && flinch && aside > 0.3 && off < 3.5, `a low drone 1.6 m off a walker: flinch ${flinch}, stepped ${aside.toFixed(2)} m away, drawn ${off.toFixed(2)} m from its collider (P3: walked into the lens at 1.65 m)`);
 }
 // life #2 (P4): vehicles right side out. P3's box() wound every face against its normal and the loft was wound inward (98 % of
 // a car's body faced in: a close taxi showed its far panel's inside, buses were hollow). Per primitive: >= 95 % of each part's
