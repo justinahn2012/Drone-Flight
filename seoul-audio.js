@@ -40,7 +40,7 @@ export const SND = {
   // one-shots and loops, RMS at 1 m (calibrated buffers): shop doorway speaker, club door, busking PA, horn, ...
   music: 81, club: 91, busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 82, shout: 88, talk: 74, yelp: 92, heel: 72, step: 60,
   applause: 92, cheer: 88, guide: 84, tick: 72, queue: 80, staff: 86, exit: 80, draught: 72,
-  glaugh: 86, name: 92, phone: 74, beep: 88,   // P4 (sound #3): a group's laughter, a name called, a phone's K-pop, a scooter's horn
+  glaugh: 84, name: 92, phone: 74, beep: 88,   // P4 (sound #3): a group's laughter, a name called, a phone's K-pop, a scooter's horn
   pools: { engine: 6, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1, queue: 2, exit: 1 },
   poolsLow: { engine: 3, bus: 1, scooter: 1, music: 2, club: 1, busk: 1, neon: 0, sizzle: 1, queue: 1, exit: 1 },
   // event pacing (sound #6): horns from the nearest 100 m of road, ~1 per 25 s where traffic is; guide within 60 m
@@ -857,8 +857,12 @@ export function createSeoulAudio(layout, life, opts = {}) {
       // its horn at the people in its way (once per scooter per ~8 s, more where the crowd is denser).
       if (g.ctxv.crowdN > 40 && cam.y < 12 && nearList.length) {
         const C = life.crowd, d2 = (i) => (C.X[i] - cam.x) ** 2 + (C.Z[i] - cam.z) ** 2, hh = (a, b) => ((Math.imul(a, 2654435761) ^ Math.imul(b + 1, 40503)) >>> 0) / 4294967296;
-        // a pick in [lo, hi) m: the nearest of three seeded draws (a group close by, as a hover over a crowd hears them)
-        const within = (lo, hi, u) => { const L = nearList.filter((i) => d2(i) >= lo * lo && d2(i) < hi * hi); if (!L.length) return -1; let b = L[Math.floor(u * L.length)]; for (const v of [(u * 7.31) % 1, (u * 13.7) % 1]) { const j = L[Math.floor(v * L.length)]; if (d2(j) < d2(b)) b = j; } return b; };
+        // a pick in [lo, hi) m: one of the four nearest there in the open (seeded; not someone behind a shop wall), so a
+        // hover hears its neighbours, not a lottery
+        const within = (lo, hi, u) => {
+          const L = nearList.filter((i) => d2(i) >= lo * lo && d2(i) < hi * hi).sort((x, y) => d2(x) - d2(y)), n = Math.min(6, L.length), k0 = Math.floor(u * Math.min(4, n));
+          for (let q = 0; q < n; q++) { const i = L[(k0 + q) % n]; if (!occl(cam.x, cam.y, cam.z, C.X[i], 1.55, C.Z[i])) return i; } return -1;
+        };
         const crossed = (per, jit, salt) => { const w = Math.floor(t / per), at0 = w * per + jit * hh(w, salt); return at0 > t - dtF && at0 <= t ? w : null; };
         // (not within 20 m of a club door: there the door cycle, the queue's chatter and the staff calls are the breath)
         let w; const door = sites.queue.some((q) => (q.x - cam.x) ** 2 + (q.z - cam.z) ** 2 < 400);
