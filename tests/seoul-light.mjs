@@ -119,6 +119,9 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(bm.isBatchedMesh && bm.instanceCount === sp.parts.length && bm.geometry.index.count >= tris * 3, `one BatchedMesh, ${bm.instanceCount} cell instances`);
   { const sph = new THREE.Sphere(); bm.getBoundingSphereAt(0, sph); ok(Math.abs(sph.radius - sp.parts[0].sphere.radius) < 1, 'instance bounds match the cell'); }
   bm.dispose();
+  // P4 perf #5: int8 x 4 normals in the GPU batches (12 -> 4 bytes a vertex)
+  { const bq = batchCells(sp, new THREE.MeshBasicMaterial(), { qNormal: true }), nq = bq.geometry.getAttribute('normal');
+    ok(nq.array instanceof Int8Array && nq.itemSize === 4 && nq.normalized && Math.abs(nq.getY(0) - 1) < 0.01 && bq.geometry.getAttribute('position').count === bm.geometry.getAttribute('position').count, 'quantised normals: int8 x 4, normalized, up = (0, 1, 0)'); bq.dispose(); }
   const hf = heightField({ lots: [{ footprint: [[0, 0], [4, 0], [4, 4], [0, 4]], floors: 1, floorH: 3 }] }, -10, -10, 10, 10, 2);
   ok(hf.at(2, 2) > 3 && hf.at(-5, -5) === 0, 'heightfield raster');
 }

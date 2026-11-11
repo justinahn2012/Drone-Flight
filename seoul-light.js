@@ -35,6 +35,11 @@
 // haze by street kind, airlight halos <= 3 m, none within 4 m of the lens, channel-capped at 2x a street lamp; the
 // volume at 8 layers; night lightmaps (seoul-nightlm.js, a Worker); one BatchedMesh per material for the city and one
 // for the collider (draw calls); a visibility API for G1's crowd culling; world.qualityCap (scale 1.0, phone preset).
+// P4 (stream D): fascia boxes spill light down-and-out (record bits), light boxes get a 0.15 edge lobe, an urban ambient
+// floor in the volume (VOLUME.cityLux), 2700 K wall packs over corner faces and shuttered fronts (wallPacks), damp pavers
+// (C's ground layers 1-2) and glossy wet surfaces, airlight from 2 m at a quarter of its energy, the detail normal tilts
+// the baked light (graphics #5), the night lightmap is shipped (seoul/light/night-lm.bin, keyed) and stored RGB9E5, and
+// the GPU batches carry int8 normals (perf #5).
 //
 // Contract for C (world-seoul.js): call attach() after the world's materials exist and before warm-up; ctx.layout (lots
 // with floors/floorH, streets) feeds the heightfield. Materials opt out with material.userData.cityLight === false; ground
@@ -459,8 +464,17 @@ export function splitCells(g, cell = 96, minTris = 12000) {
 // P3 perf #1: one THREE.BatchedMesh per material: every cell is an instance, culled per instance and drawn with
 // WEBGL_multi_draw (one draw call per material however many cells are in view; three loops drawElements without it).
 // Cells are identity-matrix instances of their own geometry (a contiguous vertex range of splitCells' shared buffers).
-export function batchCells(sp, material) {
-  const A = sp.attributes, idx = sp.index, P = sp.parts;
+// P4 perf #5 (opt.qNormal): normals as 4 x int8, normalized (4 bytes a vertex, was 12; the 4th byte pads the stride to
+// 4 for Metal; a vec3 attribute reads the first three): <= 0.45 deg off, invisible on the rough city materials.
+export function quantizeNormals(attr) {
+  if (!attr || attr.itemSize !== 3 || !(attr.array instanceof Float32Array)) return attr;
+  const n = attr.count, a = attr.array, q = new Int8Array(n * 4);
+  for (let i = 0; i < n; i++) { const x = a[i * 3], y = a[i * 3 + 1], z = a[i * 3 + 2], l = Math.hypot(x, y, z) || 1; q[i * 4] = Math.round(x / l * 127); q[i * 4 + 1] = Math.round(y / l * 127); q[i * 4 + 2] = Math.round(z / l * 127); }
+  return new THREE.BufferAttribute(q, 4, true);
+}
+export function batchCells(sp, material, opt = {}) {
+  const A = { ...sp.attributes }, idx = sp.index, P = sp.parts;
+  if (opt.qNormal && A.normal) A.normal = quantizeNormals(A.normal);
   const bm = new THREE.BatchedMesh(P.length, sp.vertices, sp.tris * 3, material);
   const ids = [];
   for (const p of P) {
@@ -903,15 +917,18 @@ export function attach(world, emitters = [], ctx = {}) {
     uLMG.value.set(plan.x0, plan.z0, plan.gw, plan.gh); uLMA.value.set(plan.atlasW, plan.atlasH, plan.rw, plan.rh);
     lm.plan = { edges: plan.nE, atlas: [plan.atlasW, plan.atlasH], ground: [plan.gw, plan.gh], planMs: +lmPlanMs.toFixed(0) };
     lm.size = [plan.atlasW, plan.atlasH];
+    const IS_NODE = typeof window === 'undefined';
     const apply = (res) => {   // res: { data: RGB9E5 Uint32Array (atlasW x atlasH), texels, ms, valid? }
       if (!res?.data || lm.disposed || res.data.length !== plan.atlasW * plan.atlasH) return false;
       tLM.dispose(); tLM = rgb9(plan.atlasW, plan.atlasH, res.data); lm.data = res.data; lm.valid = res.valid || null;
+      // P4 perf #5: in the browser the CPU copy (14 MB) goes once the GPU has it (lightmapAt then answers null);
+      // node and ctx.keepLightmapData keep it (tests, the bake tool)
+      if (renderer && !IS_NODE && ctx.keepLightmapData !== true) { const t = tLM; t.onUpdate = () => { t.image.data = null; t.onUpdate = null; if (lm.data === res.data) { lm.data = null; lm.valid = null; } }; }
       U.tCityLM.value = tLM; uLM.value.x = 1;
       lm.ready = true; lm.ms = res.ms; lm.texels = res.texels; job = null; lm.settle(true);
       return true;
     };
     const fail = (mode, why) => { if (lm.ready || lm.disposed) return; lm.mode = mode; console.warn(`[D] night lightmap: ${why}; the volume stays`); job = null; lm.settle(false); };
-    const IS_NODE = typeof window === 'undefined';
     lm.apply = apply;
     function startWorker(why) {
       if (lm.disposed || lm.ready || !job) return;
@@ -984,6 +1001,11 @@ export function attach(world, emitters = [], ctx = {}) {
         .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>
   vec3 cityNW = normalize(transpose(mat3(viewMatrix)) * geometryNormal), cityLMv;
   cityLMOn = cityLightmap(cityWorldPos(geometryPosition), cityNW, cityLMv);
+  // P4 (graphics #5, detail in the darks): the lightmap is irradiance on the flat face; the normal and detail maps tilt
+  // it by the volume's L1 gradient (E(n) / E(n0), clamped), so pavers, brick and render keep their relief where only
+  // baked light falls
+  if (cityLMOn) { vec3 cb = texture(tCityIrrB, cityVolUVW(cityWorldPos(geometryPosition))).xyz, cn0 = normalize(transpose(mat3(viewMatrix)) * nonPerturbedNormal);
+    cityLMv *= clamp(max(0.0, 1.0 + dot(cb, cityNW)) / max(0.3, 1.0 + dot(cb, cn0)), 0.4, 1.6); }
   ${wet ? 'material.roughness = mix(mix(material.roughness, max(0.3, material.roughness * 0.6), smoothstep(0.0, 0.35, cityWet)), 0.12, cityPud / max(uCityWet, 1e-3));   // P4: wet = glossy (film 0.3-0.4, puddles 0.12)' : ''}
   cityLights(geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
   ${wet ? `float cityCC = cityContact(cityWorldPos(geometryPosition)); reflectedLight.directDiffuse *= mix(1.0, cityCC, 0.75); reflectedLight.directSpecular *= mix(1.0, cityCC, 0.75);` : 'float cityCC = 1.0;'}
@@ -1031,7 +1053,9 @@ export function attach(world, emitters = [], ctx = {}) {
       cull.from++; cull.vertsBefore += sp.srcVertices; cull.vertsAfter += sp.vertices;
       const ud = { ...o.userData, seoulKey: o.name.slice(6) };
       if (batch) {
-        const tb = now(), bm = batchCells(sp, o.material); cull.tBatch = (cull.tBatch || 0) + now() - tb;
+        const qN = !!renderer && ctx.quantize !== false && !/glass|lamp|glow/.test(o.name);   // P4 perf #5 (the GPU path only: node exports keep floats)
+        const tb = now(), bm = batchCells(sp, o.material, { qNormal: qN }); cull.tBatch = (cull.tBatch || 0) + now() - tb;
+        if (qN && sp.attributes.normal) cull.normalBytesSaved = (cull.normalBytesSaved || 0) + sp.vertices * 8;
         bm.name = o.name; bm.userData = { ...ud, ...bm.userData, cells: sp.parts.length };
         bm.receiveShadow = o.receiveShadow; bm.castShadow = o.castShadow; bm.renderOrder = o.renderOrder;
         if (o.frustumCulled === false) { bm.frustumCulled = false; bm.perObjectFrustumCulled = false; }
@@ -1548,7 +1572,7 @@ export function attach(world, emitters = [], ctx = {}) {
     emitters: all.length, static: still.length, animated: nAnim, moving: nMov, dynamicSlots: Q.Nd, grid: [gw, gh, cell], K, Kd: KD,
     binMs: +binMs.toFixed(1), volMs: +volMs.toFixed(1), attachMs: 0, pairs, occludedPairs: occl,
     cells: cellsUsed, mean: +(used / Math.max(1, cellsUsed)).toFixed(2), full, volume: volStat,
-    materials: nMat, wetMaterials: nWet, mirror: mirror.on, wallPacks: packs.length, cull: { meshes: cull.meshes, from: cull.from, batched: cull.batch ? cull.batches.length : 0, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
+    materials: nMat, wetMaterials: nWet, mirror: mirror.on, wallPacks: packs.length, cull: { normalMBSaved: +((cull.normalBytesSaved || 0) / 1048576).toFixed(1), meshes: cull.meshes, from: cull.from, batched: cull.batch ? cull.batches.length : 0, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
     get lightmap() { return { mode: lm.mode, ready: lm.ready, ms: lm.ms, texels: lm.texels, key: lm.key, keyMs: lm.keyMs, ...(lm.fileKey ? { fileKey: lm.fileKey } : {}), ...(lm.fileMiss ? { fileMiss: lm.fileMiss } : {}), ...(lm.why ? { why: lm.why } : {}), format: 'RGB9E5', gpuMB: lm.size ? +(lm.size[0] * lm.size[1] * 4 / 1048576).toFixed(1) : 0, ...(lm.plan || {}) }; },
     pools: !!pool.mesh, airlight: air.n, airCap: air.cap, airCapped: air.capped, update: uStats, marks,
   };
@@ -1631,14 +1655,16 @@ export function attach(world, emitters = [], ctx = {}) {
 export function exportParams() {
   const OM = omega();
   return {
-    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, VOLUME, HEADLIGHT, QUALITY, cell: 4, window: DW, eMin: E_MIN,
+    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
     lobes: {
-      lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni); ce = dot(lamp->point, normal)' },
+      lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni) + spill max(0.857 (-D.y) + 0.515 ce, 0); ce = dot(lamp->point D, normal); spill = record bits 14-15 x 0.1 (P4: a fascia box\'s soffit light, a Lambert lobe 31 deg out from straight down)' },
       street: { id: 1, omega: OM.street, f: 'min(1/cos^3, 30) x (1 - smoothstep(0.8 tc, 1.15 tc, tan)); tc = 3.1 along the road, 1.75 forward, 0.7 back', flux: 'lumens' },
       beam: { id: 2, omega: OM.beam, f: 'exp(-(th/0.42)^2) exp(-((tv+0.035)/sv)^2) (1 - smoothstep(-0.02, 0.015, tv)); sv 0.05 up, 0.16 down', flux: 'beam.lumens (1400) x min(1, nits/20000)' },
     },
     geometry: 'point: E = I fe / (d^2 + A/pi); line (long faces, |w-h| > 0.5 m): representative point, E = I fe (atan((a-x)/r) + atan((a+x)/r)) / (2 a r), r^2 = perp^2 + hs^2/pi',
-    record: '2 x RGBA32UI: [pos.xyz f32, half(area, signed half length)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe 2 | colour idx 14 | flicker hz x4 6 | depth x15 4 | omni x63 6]',
+    record: '2 x RGBA32UI: [pos.xyz f32, half(area, signed half length)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe 2 | colour idx 12 | spill x10 2 | flicker hz x4 6 | depth x15 4 | omni x63 6]',
+    lightmap: 'P4: night lightmap atlas RGB9E5 (seoul/light/night-lm.bin: NLM2 header + gzip of 4 byte planes, row-delta; key = lmKey over the bake inputs); ground map at the atlas origin (gres m), wall rects per exposed footprint edge (fres m); lookup raster + edge table in tCityL rows uCityLMR',
+    volumeFloor: 'P4: VOLUME.cityLux (lux per layer, isotropic, colour VOLUME.cityRGB) is added to every probe (the urban ambient floor)',
     volume: 'probes at cell centres x VOLUME.heights; A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + haze extinction factor (x HAZE.density, by street kind); E(n) = A.rgb max(0, 1 + B.n) x SSAO',
     glsl: CITY_HEAD,
   };
