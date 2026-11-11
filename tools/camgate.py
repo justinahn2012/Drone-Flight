@@ -15,7 +15,9 @@ Gate (hero streets; exit 1 if any fails):
   ground      median luma of the shot's ground box (GROUND below) >= 40
   sky         median luma of the darkest half of the top quarter  <= 30 (near black; colour #4 wants 12-25)
   p50         [P5-A, panel-4 colour bug] frame median luma            35 .. 50 (refs' median 44; A, C and D each lifted the
-              image in phase 4 and nobody re-fit: walk0 68, club90 57). A hard [exposure] row.
+              image in phase 4 and nobody re-fit: walk0 68, club90 57). A hard [exposure] row on the canyon shots
+              (P50_SHOTS); station / station2 / high are open-sky frames whose p50 tracks the sky radiance (D's NIGHT_SKY,
+              p5/A-to-D-sky.md): reported, not gated, until the sky lands.
 Colour rows [P3 H, panel-2 colour #6], gated on hero shots; every FAIL line is tagged [exposure] or [colour] (CI's
 ci/known-failures.json tolerates the [colour] rows until stream A lands the neutral base):
   neutral     mean R-G and B-G (8-bit codes) of the fill: luma 12..140, bright saturated sources excluded
@@ -37,6 +39,7 @@ GROUND = {'walk0': [0.40, 0.70, 0.88, 1.0], 'walk180': [0.35, 0.65, 0.88, 1.0], 
           'station': [0.00, 0.45, 0.86, 1.0], 'station2': [0.30, 0.70, 0.88, 1.0], 'w21': [0.35, 0.65, 0.86, 1.0]}
 GATE = dict(clip=3.0, blob=5.0, ev=(-4.0, 1.5), ground=40.0, sky=30.0, p50=(35.0, 50.0))
 COLOUR = dict(rg=10.0, bg=8.0, roomsat=0.55, warm=(45.0, 65.0), white=(2.0, 5.0))
+P50_SHOTS = {'walk0', 'walk180', 'club90', 'club270', 'w21'}   # [P5-A] canyon frames: the p50 band is binding here
 SIGN_FRAMES = {'walk0', 'walk180', 'club90', 'club270', 'w21'}   # frames where signs dominate (colour #3's white-core target)
 LUMA = np.array([0.2126, 0.7152, 0.0722])
 
@@ -108,7 +111,7 @@ def main():
             if o['ev'] is not None and not (GATE['ev'][0] <= o['ev'] <= GATE['ev'][1]): X(f'{name}: EV {o["ev"]:+.2f} outside {GATE["ev"]}')
             if o.get('ground') is not None and o['ground'] < GATE['ground']: X(f'{name}: ground p50 {o["ground"]:.0f} < {GATE["ground"]:.0f}')
             if o['sky'] > GATE['sky']: X(f'{name}: sky {o["sky"]:.0f} > {GATE["sky"]:.0f}')
-            if not (GATE['p50'][0] <= o['p50'] <= GATE['p50'][1]): X(f'{name}: frame p50 {o["p50"]:.0f} outside {GATE["p50"][0]:.0f}-{GATE["p50"][1]:.0f}')
+            if base in P50_SHOTS and not (GATE['p50'][0] <= o['p50'] <= GATE['p50'][1]): X(f'{name}: frame p50 {o["p50"]:.0f} outside {GATE["p50"][0]:.0f}-{GATE["p50"][1]:.0f}')
             if o.get('roomsat') is not None and o['roomsat'] > COLOUR['roomsat']: C(f'{name}: room saturation {o["roomsat"]:.2f} > {COLOUR["roomsat"]}')
             if o.get('warm') is not None and not (COLOUR['warm'][0] <= o['warm'] <= COLOUR['warm'][1]): C(f'{name}: warm share {o["warm"]:.0f} % outside {COLOUR["warm"]}')
             if base in SIGN_FRAMES and not (COLOUR['white'][0] <= o['white'] <= COLOUR['white'][1]): C(f'{name}: white area {o["white"]:.1f} % outside {COLOUR["white"]}')

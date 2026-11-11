@@ -3,7 +3,7 @@
   "generator": "tools/camera-profile.mjs",
   "source": {
     "fpvcam.js": {
-      "sha256": "b031e81c4a9936d173073a96655841b6bff65553ad1618488d37147b1415deeb"
+      "sha256": "ef788c2428df4295100dc1bb3dc8978edfb715fc5cf9ca0f56f480e005a9bd9a"
     },
     "main.js": {
       "sha256": "d9688e4a3087ff5419fe27cca62d9be3596501c607689d1f0046095df96f3bef"
@@ -439,7 +439,7 @@
             "coreSrc": [35,55],
             "coreW": [0.05,0.35],
             "coreXtalkSrc": 0.4,
-            "coreEvSrc": [-4.5,-1],
+            "coreEvSrc": [-5.2,-1.6],
             "retroShadow": [230,0.06],
             "retroVibGate": [40,100],
             "mag": 0.07,
@@ -940,7 +940,7 @@
             "coreSrc": [35,55],
             "coreW": [0.05,0.35],
             "coreXtalkSrc": 0.4,
-            "coreEvSrc": [-4.5,-1],
+            "coreEvSrc": [-5.2,-1.6],
             "retroShadow": [230,0.06],
             "retroVibGate": [40,100],
             "mag": 0.07,
@@ -1441,7 +1441,7 @@
             "coreSrc": [35,55],
             "coreW": [0.05,0.35],
             "coreXtalkSrc": 0.4,
-            "coreEvSrc": [-4.5,-1],
+            "coreEvSrc": [-5.2,-1.6],
             "retroShadow": [230,0.06],
             "retroVibGate": [40,100],
             "mag": 0.07,
@@ -1648,7 +1648,7 @@
       "coreSrc": [35,55],
       "coreW": [0.05,0.35],
       "coreXtalkSrc": 0.4,
-      "coreEvSrc": [-4.5,-1],
+      "coreEvSrc": [-5.2,-1.6],
       "retroShadow": [230,0.06],
       "retroVibGate": [40,100],
       "mag": 0.07,

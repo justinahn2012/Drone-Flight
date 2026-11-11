@@ -93,7 +93,7 @@ ok(/const GHOST_FS/.test(src) && !/uGhostT/.test(C.FINAL_FS), 'ghosts come from 
 
 // --- 5. [P4-A] phase-4 night camera: stop recovered, source-tinted middle lobe, magenta window + amber gate, NaN guard, mover dilation
 ok(N.evBias === -2.05 && N.toe === 0.035, 'P5 colour #1 / exposure re-fit: evBias -2.05, toe 0.035');
-ok(N.coreEvSrc[0] === -4.5 && N.coreEvSrc[1] === -1, 'P4 colour #4: true-source ramp [-4.5, -1]');
+ok(N.coreEvSrc[0] === -5.2 && N.coreEvSrc[1] === -1.6, 'P4 colour #4 / P5 re-fit: true-source ramp [-5.2, -1.6]');
 ok(Array.isArray(N.haloM) && N.haloM[0] >= 0.035 && N.haloM[0] <= 0.045 && N.haloM[1] > 0 && N.haloMTint.every((v) => v === 1), 'P4 colour #4 / P5 colour #5: middle lobe 3.5-4.5 %, source-tinted');
 ok(/uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(C.NIGHT_FINAL_BODY ?? '') || /uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(pp(C.FINAL_FS, { NIGHT: 1 })), 'P4: FINAL adds the middle lobe after eCore');
 ok(!/tHaloM|uMagEv/.test(pp(C.FINAL_FS, {})), 'P4: bando FINAL has no middle lobe or magenta window');

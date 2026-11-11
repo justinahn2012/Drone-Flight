@@ -997,12 +997,14 @@ export const GRADES = {
   //   evBias -1.5 -> -2.05 and aeArea [0.8, 0.5, 0.3, 0.2] -> [0.5, 0.75, 0.45, 0.2] (lit glass and light walls from 5 nits
   //   count as area sources at 75 %, so a frame of bright shopfronts no longer opens the iris): converged frame p50 walk0
   //   76 -> 49, club90 58 -> 36, club270 56 -> 39, w21 64 -> 45 (refs' median 44); clip walk0 2.2 -> 0.3 %.
+  //   coreEvSrc [-4.5, -1] -> [-5.2, -1.6]: the true-source ramp follows the stop down (~0.6 EV), so letters still white-core
+  //   (walk0 white area 1.4 -> 1.7 %) without bleaching the coloured faces (bright-saturated 5.4 %).
   night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.05, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.035,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     haloM: [0.04, 1.6, 2], haloMTint: [1, 1, 1], haloW: [0.01, 2.2, 3],
     ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
-    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-4.5, -1], retroShadow: [230, 0.06], retroVibGate: [40, 100],
+    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-5.2, -1.6], retroShadow: [230, 0.06], retroVibGate: [40, 100],
     mag: 0.07, magC: 0.04, magEv: [0.7, 1.6, 3.2, 4.2], grain: 0, grainEv: [0, 0], grainPx: 2,
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
     codec: [0.4, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
