@@ -47,7 +47,9 @@ export const COLOR_CATS = ['white', 'red', 'blue', 'ygo', 'pink', 'cyan', 'viole
 export const CENSUS =  [0.45, 0.20, 0.15, 0.12, 0.04, 0.03, 0.01];
 // Phase 3 (colour #1): the hero mix is the real Hongdae mix pushed toward warm (red, orange, amber, yellow) with pink, cyan
 // and violet as accents, not a magenta field. Reference stills: 78 % of bright saturated pixels are warm, 4 % violet/magenta.
-export const SHIPPED = [0.38, 0.12, 0.07, 0.24, 0.08, 0.07, 0.04];
+// Phase 5 (colour #3): red and orange carry 55 % of the saturated signs (refs' saturated-bright hue census: red 24 %, orange 42 %;
+// phase 4 shipped ~35 % and read white / pink / violet): red 0.12 -> 0.20, ygo leans orange/amber, blue, pink, cyan, violet trimmed.
+export const SHIPPED = [0.38, 0.20, 0.06, 0.22, 0.06, 0.05, 0.03];
 export const NEON_SHARE = [0.04, 0.15];        // neon-tube share of nightlife-able signs at push 0 / 1
 // default push by street kind; street.neonPush overrides. Phase 2 (colour #2): club/walking 1.0 -> 0.6, main 0.6 -> 0.4
 export const PUSH_BY_KIND = { club: 0.6, walking: 0.6, main: 0.4, alley: 0.4 };
@@ -65,7 +67,7 @@ const HEX = {
 // Phase 4 (colour #2): white light boxes read white (75 %), not khaki: warm white is #fff2dc on a quarter of them
 const CAT_HUES = {
   white: [['white', 0.75], ['warm', 0.25]], red: [['red', 1]], blue: [['blue', 1]],
-  ygo: [['yellow', 0.35], ['orange', 0.25], ['amber', 0.15], ['green', 0.25]], pink: [['pink', 0.6], ['magenta', 0.4]],
+  ygo: [['yellow', 0.15], ['orange', 0.45], ['amber', 0.25], ['green', 0.15]], pink: [['pink', 0.6], ['magenta', 0.4]],
   cyan: [['cyan', 0.65], ['teal', 0.35]], violet: [['violet', 1]],
 };
 export const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
@@ -84,7 +86,9 @@ export const NITS = {
   boxLetters: [110, 220], boxLettersColour: [100, 200],   // light-box letters: the brightest part of a box face (100-220)
   // Phase 4 (colour #3): a coloured light-box face is the letters' own diffuser behind a dyed film, so its dominant channel
   // runs at 75-90 % of the letters (phase 3's 25-35 % made muddy grounds: half Hongdae's saturated area)
-  ground: [0.75, 0.9],                                     // lit coloured box face, white-equivalent share of the letters
+  // Phase 5 (colour #3): x0.6 (0.45-0.54): at the phase-4 stop the 75-90 % faces sat over the shoulder and went cream; a dyed
+  // face sits ~0.8 stop under its letters so its colour survives the exposure (the letters keep their level; red/amber x1.4)
+  ground: [0.45, 0.54],                                    // lit coloured box face, white-equivalent share of the letters
   inverse: [250, 400],                                     // colour #2: white light-box face (it clips); film letters on it
   hot: 1.4,                                                // colour #3: red / orange / amber LED letters' drive
   channel: [700, 1400], channelColour: [600, 1100],        // LED channel letters / galva LED letters (cores; white modules drive hardest)
@@ -826,10 +830,16 @@ export function designFace(s, w, h) {
 // ---------------------------------------------------------------------------------------------------------------
 // palettes (sRGB hex) for screen programs; invented campaigns only. c0/c1 are grounds (never near-white: a screen at
 // 180-350 nits must not read as a white plate), c2 is the accent; text is white.
+// [P5-A] colour bug (station screen read magenta-violet, mean (109,76,125)): the grounds' sRGB chroma is capped at
+// SCREEN_CHROMA (max - min <= 0.6 max, hue and max kept) and the second violet/magenta palette became a red-yellow food ad.
+export const SCREEN_CHROMA = 0.6;
+const capChroma = (h) => { const c = new THREE.Color(h), a = [c.r, c.g, c.b].map((v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055)), M = Math.max(...a), m = Math.min(...a);
+  const k = M > 0 && (M - m) / M > SCREEN_CHROMA ? SCREEN_CHROMA * M / (M - m) : 1;
+  return a.map((v) => M - (M - v) * k).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); };
 const SCREEN_PALETTES = [
   ['#1b6dff', '#21e6ff', '#ffffff'], ['#ff2fa0', '#7a2cff', '#ffd2f0'], ['#0b0b18', '#ff3cbe', '#2be8ff'], ['#ffb21a', '#ff3a1a', '#fff2c0'],
   ['#12c86a', '#d8ff3a', '#ffffff'], ['#0a1440', '#3a7bff', '#ffffff'], ['#ff6a3c', '#ffd23a', '#2a0a3a'], ['#00b4d8', '#ff4f9a', '#fafafa'],
-  ['#ff2a4a', '#1a1a2a', '#e8e8f0'], ['#5a1aff', '#ff2ad2', '#ffffff'],
+  ['#ff2a4a', '#1a1a2a', '#e8e8f0'], ['#e8402a', '#f2c230', '#ffffff'],
 ];
 // program ids (keep in sync with the GLSL below)
 export const PROG = { GRADIENT: 0, STAGE: 1, EVENT: 2, BUBBLES: 3, GRIDGAME: 4, CLOCK: 5, WIPE: 6, PSA: 7 };
@@ -843,7 +853,7 @@ function makePlaylist(seed, kind) {
   const pool = kind === 'small' ? [0, 3, 6, 5, 2] : [0, 1, 2, 3, 4, 5, 6, 7];
   for (let i = 0; i < n; i++) {
     let p = pick(r, pool); let guard = 0; while (used.has(p) && guard++ < 10) p = pick(r, pool); used.add(p);
-    const pal = SCREEN_PALETTES[Math.floor(r.next() * SCREEN_PALETTES.length)].map(srgb);
+    const pal = SCREEN_PALETTES[Math.floor(r.next() * SCREEN_PALETTES.length)].map((h, k) => (k < 2 ? capChroma(h) : srgb(h)));
     const tx = pick(r, PROG_TEXT[p]);
     list.push({ prog: p, dur: p === PROG.CLOCK ? 5 : range(r, 6, 10), pal, text: tx, seed: r.next() * 100 });
   }

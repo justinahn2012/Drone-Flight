@@ -102,8 +102,8 @@ for (const s of S.filter((x) => x.lit && x.type !== 'banner' && x.style !== 'scr
   const groundLum = Math.max(0, ...D.els.filter((e) => !e.glyph && !e.bulb && e.layer === 0).map((e) => mx(e.col)));
   const bulbLum = Math.max(0, ...D.els.filter((e) => e.bulb).map((e) => mx(e.col)));
   let good = true;
-  if (s.design === 'flex' && s.hue === 'yellow') good = glyphLum <= 220 && inR(groundLum, [100 * 0.75 * 0.85, 220 * 0.9]);   // film letters; clear cut-outs on a band
-  else if (s.design === 'flex') { const k = groundLum / glyphLum; ratios.push(k); good = k >= 0.75 * 0.85 - 1e-3 && k <= 0.9 + 1e-3 && inR(glyphLum, [100 * 0.85, 220]); }
+  if (s.design === 'flex' && s.hue === 'yellow') good = glyphLum <= 220 && inR(groundLum, [100 * NITS.ground[0] * 0.85, 220 * NITS.ground[1]]);   // film letters; clear cut-outs on a band
+  else if (s.design === 'flex') { const k = groundLum / glyphLum; ratios.push(k); good = k >= NITS.ground[0] * 0.85 - 1e-3 && k <= NITS.ground[1] + 1e-3 && inR(glyphLum, [100 * 0.85, 220]); }
   else if (s.design === 'inverse') good = inR(groundLum, [NITS.inverse[0] * 0.95, NITS.inverse[1]]) && glyphLum <= groundLum * 1.05;   // clear cut-outs on its band run at the face
   else if (s.design === 'film') good = groundLum === 0 && inR(glyphLum, [5 * 0.8 * 0.85 - 1e-3, 25 * 1.15 + 1e-3]);
   else if (s.design === 'blackflex') good = groundLum <= 0.35 * glyphLum && inR(glyphLum, [100 * 0.85, 220]);
@@ -115,12 +115,14 @@ for (const s of S.filter((x) => x.lit && x.type !== 'banner' && x.style !== 'scr
   if (bulbLum && !inR(bulbLum, [1800 * 0.85, 2000])) good = false;
   if (good) hier++; else if (hierBad.length < 4) hierBad.push(`${s.id} ${s.design} g${glyphLum.toFixed(0)} b${groundLum.toFixed(0)}`);
 }
-ok(hierBad.length === 0, `luminance hierarchy (letters 600-2000 / box letters 100-220, coloured face 75-90 %, inverse face 250-400, vinyl x0.3, bulbs 600-2000): ${hier} ok ${hierBad.join('; ')}`);
+ok(hierBad.length === 0, `luminance hierarchy (letters 600-2000 / box letters 100-220, coloured face 45-54 % (P5 colour #3), inverse face 250-400, vinyl x0.3, bulbs 600-2000): ${hier} ok ${hierBad.join('; ')}`);
 { // lighting #1 / colour #1: filter model (blue at 1000 white-equivalent has luminance ~120-141, not 1000) and a neutral-warm budget
   const blue = filt([0.013, 0.093, 1.0]); ok(Math.abs(mx(blue) - 0.85) < 0.01 && lum(blue) < 0.14, `filter model: blue luminance ${lum(blue).toFixed(3)} of its white-equivalent`);
   const DD = buildData(layout, { seed: 11, ...LI }); const Bg = [0, 0, 0];
   for (const e of DD.emitters) { if (e.screenKind) continue; const k = e.nits * e.w * e.h / (lum(e.rgb) || 1); for (let i = 0; i < 3; i++) Bg[i] += e.rgb[i] * k; }
-  const rg = Bg[0] / Bg[1], bg = Bg[2] / Bg[1]; ok(rg >= 1.1 && rg <= 1.6 && bg >= 0.7 && bg <= 1.05, `sign light budget neutral-warm: R/G ${rg.toFixed(2)}, B/G ${bg.toFixed(2)} (phase 2: 2.72, 2.57)`); }
+  // [P5-A] colour #3 dims the coloured faces x0.6, so white boxes carry the budget: its B/G ceiling is white's own (#f7f9ff
+  // is B/G 1.056 linear) plus 0.025, still far from phase 2's magenta (2.57)
+  const rg = Bg[0] / Bg[1], bg = Bg[2] / Bg[1]; ok(rg >= 1.1 && rg <= 1.6 && bg >= 0.7 && bg <= 1.08, `sign light budget neutral-warm: R/G ${rg.toFixed(2)}, B/G ${bg.toFixed(2)} (phase 2: 2.72, 2.57)`); }
 ok(ratios.length > 50, `flex grounds at ${ratios.length ? Math.min(...ratios).toFixed(2) : '-'}-${ratios.length ? Math.max(...ratios).toFixed(2) : '-'} of their letters`);
 
 // --- screens: 180-350 nits, content mean ~0.3 of peak (never a white plate) ---

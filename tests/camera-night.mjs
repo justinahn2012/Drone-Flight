@@ -63,7 +63,7 @@ let prev = -1, mono = true; for (let ev = -8; ev <= 8; ev += 0.25) { const c0 = 
 ok(mono, 'tone monotonic');
 const want = { '-2': [45, 65], '0': [112, 135], '2': [180, 200], '4': [220, 235], '6': [240, 250], '7.5': [254, 255.1] };
 for (const [ev, [lo, hi]] of Object.entries(want)) { const c0 = code(+ev); ok(c0 >= lo && c0 <= hi, `code at ${ev} EV = ${c0.toFixed(1)} not in [${lo}, ${hi}]`); }
-ok(N.aeReject <= 0.01 && N.aeArea[1] === 0.5, 'AE: 1 % reject, area sources at 50 %');
+ok(N.aeReject <= 0.01 && N.aeArea[1] === 0.75 && N.aeArea[0] === 0.5, 'AE: 1 % reject, area sources (>= 5 nits) at 75 % (P5 re-fit)');
 
 // --- 3. profile
 const cam = new M.FPVCamera(null); cam.hdr = true; cam._applyGrade(M.GRADES.hdr);
@@ -92,15 +92,20 @@ ok(/const GHOST_FS/.test(src) && !/uGhostT/.test(C.FINAL_FS), 'ghosts come from 
 }
 
 // --- 5. [P4-A] phase-4 night camera: stop recovered, source-tinted middle lobe, magenta window + amber gate, NaN guard, mover dilation
-ok(N.evBias === -1.5 && N.toe === 0.035, 'P4 colour #1: evBias -1.5, toe 0.035');
-ok(N.coreEvSrc[0] === -4.5 && N.coreEvSrc[1] === -1, 'P4 colour #4: true-source ramp [-4.5, -1]');
-ok(Array.isArray(N.haloM) && N.haloM[0] >= 0.02 && N.haloM[0] <= 0.03 && N.haloM[1] > 0 && N.haloMTint.every((v) => v === 1), 'P4 colour #4: middle lobe 2-3 %, source-tinted');
+ok(N.evBias === -2.05 && N.toe === 0.035, 'P5 colour #1 / exposure re-fit: evBias -2.05, toe 0.035');
+ok(N.coreEvSrc[0] === -5.2 && N.coreEvSrc[1] === -1.6, 'P4 colour #4 / P5 re-fit: true-source ramp [-5.2, -1.6]');
+ok(Array.isArray(N.haloM) && N.haloM[0] >= 0.035 && N.haloM[0] <= 0.045 && N.haloM[1] > 0 && N.haloMTint.every((v) => v === 1), 'P4 colour #4 / P5 colour #5: middle lobe 3.5-4.5 %, source-tinted');
 ok(/uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(C.NIGHT_FINAL_BODY ?? '') || /uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(pp(C.FINAL_FS, { NIGHT: 1 })), 'P4: FINAL adds the middle lobe after eCore');
 ok(!/tHaloM|uMagEv/.test(pp(C.FINAL_FS, {})), 'P4: bando FINAL has no middle lobe or magenta window');
 ok(N.mag === 0.07 && N.magEv.length === 4 && N.magEv[3] > N.magEv[2] && /uMagEv/.test(C.NIGHT_FINAL_BODY) && /h0/.test(C.NIGHT_FINAL_BODY), 'P4 colour #5: magenta x2, window to the rims, amber gated');
 ok(/1\.0e5\)\) c = vec4\(0\.0, 0\.0, 0\.0, 1\.0\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })), 'P4: night blur taps drop NaN/Inf radiance');
 ok(/for \(int dy = -1; dy <= 1; dy\+\+\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })) && /min\(12\.0, uMaxS\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })), 'P4 FPV bug: mover velocity 3x3 dilation, >= 12 taps on movers');
 { const pn4 = cam.profile({ w: 1920, h: 1080 }); ok(pn4.night && pn4.night.psf.mid.energy === N.haloM[0] && JSON.stringify(pn4.night.retro.magenta.ev) === JSON.stringify(N.magEv), 'P4: profile carries the middle lobe and the magenta window'); }
+
+// --- 6. [P5-A] phase-5 night camera: the second wide lobe
+ok(Array.isArray(N.haloW) && N.haloW[0] >= 0.005 && N.haloW[0] <= 0.015 && N.haloW[1] >= 1.5 && N.haloW[2] >= 2, 'P5 colour #5: a ~1 % wide lobe, sigma ~100 px');
+ok(/uHaloW > 0\.0\) e \+= texture\(tHaloW/.test(pp(C.FINAL_FS, { NIGHT: 1 })) && /uniform sampler2D tHaloW/.test(C.NIGHT_FINAL_HEAD) && !/tHaloW/.test(pp(C.FINAL_FS, {})), 'P5: night FINAL adds the wide lobe; bando FINAL does not');
+{ const pn5 = cam.profile({ w: 1920, h: 1080 }); ok(pn5.night.psf.mid2 && pn5.night.psf.mid2.energy === N.haloW[0], 'P5: profile carries the wide lobe'); }
 
 console.log(`camera-night tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

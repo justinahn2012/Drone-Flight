@@ -3,10 +3,10 @@
   "generator": "tools/camera-profile.mjs",
   "source": {
     "fpvcam.js": {
-      "sha256": "08ec59eed9f2cce9dad206a91eec610fbf24bd6b5026923f8d3be1ab6644349e"
+      "sha256": "ef788c2428df4295100dc1bb3dc8978edfb715fc5cf9ca0f56f480e005a9bd9a"
     },
     "main.js": {
-      "sha256": "b4fa9daa9b3043ad764e001a2e301295b2382c9eaca01dccbcb828f9fe3ba2fb"
+      "sha256": "d9688e4a3087ff5419fe27cca62d9be3596501c607689d1f0046095df96f3bef"
     },
     "profileFn": true
   },
@@ -390,7 +390,7 @@
             "retroCA": 0,
             "wb": [1,1,0.96],
             "wbShade": null,
-            "evBias": -1.5,
+            "evBias": -2.05,
             "lift": 0.02,
             "clipEv": 7.5,
             "con": 1.2,
@@ -412,8 +412,9 @@
             "halo": 0.013,
             "haloR": 1.4,
             "haloTint": [1,0.75,0.6],
-            "haloM": [0.025,1.4,1],
+            "haloM": [0.04,1.6,2],
             "haloMTint": [1,1,1],
+            "haloW": [0.01,2.2,3],
             "ghosts": [
               [
                 -0.55,
@@ -438,7 +439,7 @@
             "coreSrc": [35,55],
             "coreW": [0.05,0.35],
             "coreXtalkSrc": 0.4,
-            "coreEvSrc": [-4.5,-1],
+            "coreEvSrc": [-5.2,-1.6],
             "retroShadow": [230,0.06],
             "retroVibGate": [40,100],
             "mag": 0.07,
@@ -475,7 +476,7 @@
             "invTone": 0,
             "ae": [0.25,0.8,0.7,0.15],
             "aeReject": 0.01,
-            "aeArea": [0.8,0.5,0.3,0.2],
+            "aeArea": [0.5,0.75,0.45,0.2],
             "aeMatrix": [0.45,0.5],
             "shutter": 0.01666667,
             "readout": 0.011
@@ -890,7 +891,7 @@
             "retroCA": 0,
             "wb": [1,1,0.96],
             "wbShade": null,
-            "evBias": -1.5,
+            "evBias": -2.05,
             "lift": 0.02,
             "clipEv": 7.5,
             "con": 1.2,
@@ -912,8 +913,9 @@
             "halo": 0.013,
             "haloR": 1.4,
             "haloTint": [1,0.75,0.6],
-            "haloM": [0.025,1.4,1],
+            "haloM": [0.04,1.6,2],
             "haloMTint": [1,1,1],
+            "haloW": [0.01,2.2,3],
             "ghosts": [
               [
                 -0.55,
@@ -938,7 +940,7 @@
             "coreSrc": [35,55],
             "coreW": [0.05,0.35],
             "coreXtalkSrc": 0.4,
-            "coreEvSrc": [-4.5,-1],
+            "coreEvSrc": [-5.2,-1.6],
             "retroShadow": [230,0.06],
             "retroVibGate": [40,100],
             "mag": 0.07,
@@ -975,7 +977,7 @@
             "invTone": 0,
             "ae": [0.25,0.8,0.7,0.15],
             "aeReject": 0.01,
-            "aeArea": [0.8,0.5,0.3,0.2],
+            "aeArea": [0.5,0.75,0.45,0.2],
             "aeMatrix": [0.45,0.5],
             "shutter": 0.01666667,
             "readout": 0.011
@@ -1390,7 +1392,7 @@
             "retroCA": 0,
             "wb": [1,1,0.96],
             "wbShade": null,
-            "evBias": -1.5,
+            "evBias": -2.05,
             "lift": 0.02,
             "clipEv": 7.5,
             "con": 1.2,
@@ -1412,8 +1414,9 @@
             "halo": 0.013,
             "haloR": 1.4,
             "haloTint": [1,0.75,0.6],
-            "haloM": [0.025,1.4,1],
+            "haloM": [0.04,1.6,2],
             "haloMTint": [1,1,1],
+            "haloW": [0.01,2.2,3],
             "ghosts": [
               [
                 -0.55,
@@ -1438,7 +1441,7 @@
             "coreSrc": [35,55],
             "coreW": [0.05,0.35],
             "coreXtalkSrc": 0.4,
-            "coreEvSrc": [-4.5,-1],
+            "coreEvSrc": [-5.2,-1.6],
             "retroShadow": [230,0.06],
             "retroVibGate": [40,100],
             "mag": 0.07,
@@ -1475,7 +1478,7 @@
             "invTone": 0,
             "ae": [0.25,0.8,0.7,0.15],
             "aeReject": 0.01,
-            "aeArea": [0.8,0.5,0.3,0.2],
+            "aeArea": [0.5,0.75,0.45,0.2],
             "aeMatrix": [0.45,0.5],
             "shutter": 0.01666667,
             "readout": 0.011
@@ -1596,7 +1599,7 @@
       "retroCA": 0,
       "wb": [1,1,0.96],
       "wbShade": null,
-      "evBias": -1.5,
+      "evBias": -2.05,
       "lift": 0.02,
       "clipEv": 7.5,
       "con": 1.2,
@@ -1618,8 +1621,9 @@
       "halo": 0.013,
       "haloR": 1.4,
       "haloTint": [1,0.75,0.6],
-      "haloM": [0.025,1.4,1],
+      "haloM": [0.04,1.6,2],
       "haloMTint": [1,1,1],
+      "haloW": [0.01,2.2,3],
       "ghosts": [
         [
           -0.55,
@@ -1644,7 +1648,7 @@
       "coreSrc": [35,55],
       "coreW": [0.05,0.35],
       "coreXtalkSrc": 0.4,
-      "coreEvSrc": [-4.5,-1],
+      "coreEvSrc": [-5.2,-1.6],
       "retroShadow": [230,0.06],
       "retroVibGate": [40,100],
       "mag": 0.07,
@@ -1681,7 +1685,7 @@
       "invTone": 0,
       "ae": [0.25,0.8,0.7,0.15],
       "aeReject": 0.01,
-      "aeArea": [0.8,0.5,0.3,0.2],
+      "aeArea": [0.5,0.75,0.45,0.2],
       "aeMatrix": [0.45,0.5],
       "shutter": 0.016666666666666666,
       "readout": 0.011

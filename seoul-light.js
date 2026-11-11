@@ -508,7 +508,13 @@ export function batchCells(sp, material, opt = {}) {
 // and every shuttered front, at 4.35 m (above the 2.9-4.0 m sign bed), placed clear of the 2F windows and of every sign
 // record on that wall (as near the face's middle as that allows). Pure CPU: records (kind 'street', role 'wallpack', a
 // type-II lobe thrown off the wall) + fixture boxes for wallPackMesh(). Deterministic (no RNG).
-export const WALLPACK = { lumens: 1500, cct: 2700, rgb: [1.558, 0.902, 0.331], y: 4.35, w: 0.3, h: 0.12, every: 12, clearW: 0.45, clearS: 0.6 };
+// P5-A colour #4 (mixed white balance): wall packs are whatever the owner bought: 2700 / 4000 / 5700 K at 40 / 30 / 30 %
+// (mix: [cct, share, rgb], rgb = world-seoul lightRGB(cct) against the camera's 4300 K white), picked per pack by a hash
+// of its id; `cct` / `rgb` stay the first entry's for callers that read one colour.
+export const WALLPACK = { lumens: 1500, cct: 2700, rgb: [1.558, 0.902, 0.331], y: 4.35, w: 0.3, h: 0.12, every: 12, clearW: 0.45, clearS: 0.6,
+  mix: [[2700, 0.4, [1.558, 0.902, 0.331]], [4000, 0.3, [1.069, 0.989, 0.902]], [5700, 0.3, [0.78, 1.031, 1.341]]] };
+const packHash = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; return (h >>> 0) / 4294967296; };
+function packCCT(id, P) { if (!P.mix) return [P.cct, P.rgb]; let u = packHash(id); for (const [K, w, rgb] of P.mix) { u -= w; if (u < 0) return [K, rgb]; } const l = P.mix[P.mix.length - 1]; return [l[0], l[2]]; }
 export function wallPacks(lotInfo, emitters = [], P = WALLPACK) {
   const out = [], vals = !lotInfo ? [] : lotInfo instanceof Map ? [...lotInfo.values()] : Object.values(lotInfo);
   // sign rects near a wall: bucket the emitters by 8 m cell for the clearance test
@@ -535,8 +541,9 @@ export function wallPacks(lotInfo, emitters = [], P = WALLPACK) {
         for (let d = 0; d <= ed.L / want / 2; d += 0.25) { for (const t of [c - d, c + d]) if (t > 0.8 && t < ed.L - 0.8 && ok(t)) { best = t; break; } if (best != null) break; }
         if (best == null) continue;
         const x = ed.a[0] + ed.tx * best + ed.nx * 0.24, z = ed.a[1] + ed.tz * best + ed.nz * 0.24;
-        out.push({ id: `wallpack:${info.id}:${out.length}`, pos: [+x.toFixed(2), P.y, +z.toFixed(2)], normal: [0, -1, 0], forward: [+ed.nx.toFixed(3), 0, +ed.nz.toFixed(3)], w: P.w, h: P.h,
-          rgb: P.rgb, nits, kind: 'street', role: 'wallpack', animated: false, lumens: P.lumens, cct: P.cct, lot: info.id, range: 22 });
+        const id = `wallpack:${info.id}:${out.length}`, [cct, rgb] = packCCT(id, P);
+        out.push({ id, pos: [+x.toFixed(2), P.y, +z.toFixed(2)], normal: [0, -1, 0], forward: [+ed.nx.toFixed(3), 0, +ed.nz.toFixed(3)], w: P.w, h: P.h,
+          rgb, nits, kind: 'street', role: 'wallpack', animated: false, lumens: P.lumens, cct, lot: info.id, range: 22 });
       }
     }
   }
