@@ -151,6 +151,22 @@ ok(perStepT * 60 < 30, 'traffic cost < 30 ms per second of take');
 // rewinds are cheap: snapshots every 10 s
 { const q = new LifeSim(layout, { seed: 7 }); q.advanceTo(300); const h = q.hash(); const c0 = process.cpuUsage(); q.advanceTo(295); q.advanceTo(300); const c = process.cpuUsage(c0);
   ok(q.hash() === h, 'snapshot rewind reproduces the traffic bit for bit'); ok((c.user + c.system) / 1000 < 400, `rewind 5 s at t=300 costs ${((c.user + c.system) / 1000).toFixed(0)} ms CPU (P1: a full re-sim from 0)`); }
+// life #1 (P3): the Rocketbox avatar LODs (seoul/people) parse, fit their budgets and use only the crowd rig's bones
+if (existsSync('seoul/people/people.json')) {
+  const meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), b = readFileSync('seoul/people/people.bin'), bin = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+  let bad = 0; const tris = [[], []];
+  for (const av of meta.avatars) av.lods.forEach((L, k) => { tris[k].push(L.tris); const bd = new Uint8Array(bin, L.bone, L.verts * 4), ix = new Uint16Array(bin, L.index, L.tris * 3), p = new Float32Array(bin, L.pos, L.verts * 3);
+    for (let i = 0; i < L.verts; i++) { const b1 = bd[i * 4], b2 = bd[i * 4 + 1], r = bd[i * 4 + 3]; if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b1) || ![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b2) || r > 6 || !isFinite(p[i * 3 + 1])) bad++; }
+    for (const q of ix) if (q >= L.verts) bad++; });
+  ok(meta.avatars.length >= 8 && bad === 0 && Math.max(...tris[0]) <= 3600 && Math.max(...tris[1]) <= 900 && meta.avatars.every((a) => a.mean && a.joints.top > 1.6 && a.joints.top < 1.95),
+    `avatars: ${meta.avatars.length} (${meta.avatars.filter((a) => a.sex === 'm').length} men), near ${Math.max(...tris[0])} / mid ${Math.max(...tris[1])} tris, ${bad} bad vertices, ${(b.byteLength / 1024).toFixed(0)} KB (MIT, Microsoft Rocketbox)`);
+  const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
+  const L2 = lifeMod.build(layout, { audio: false, scene: new THREE.Scene(), peopleData: { meta, bin } }), cam = new THREE.Vector3(-36, 3, -23), qq = new THREE.Quaternion();
+  for (let k = 0; k < 10; k++) L2.update(10 + k / 30, cam, qq);
+  const nAv = L2.avatars.tiers[0].reduce((a, t) => a + t.n, 0) + L2.avatars.tiers[1].reduce((a, t) => a + t.n, 0);
+  ok(L2.avatars.ready && nAv > 50 && nAv === L2.stats.near + L2.stats.mid && L2.stats.contacts === nAv && L2.motionMeshes.length === 5 && L2.motionMeshes.some((m) => m.count > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 1)),
+    `render path: ${nAv} near/mid people on avatars, ${L2.stats.contacts} contact shadows, ${L2.motionMeshes.length} vehicle meshes with instanceVelocity (A's object blur)`);
+}
 // native export (H): life.json round-trips through JSON and carries the parity hash
 { const d = JSON.parse(JSON.stringify(exportData(layout, { seed: 7 }))); ok(d.lanes.length === a.traffic.lanes.length && d.walkways.length === a.crowd.ways.length && d.parity.trafficHash90 === ha[ha.length - 1], `exportData(): life.json with ${d.lanes.length} lanes, ${d.walkways.length} walkways, ${d.crowd.units.length} units, parity hash ${d.parity.trafficHash90}`); }
 process.exit(fail ? 1 : 0);
