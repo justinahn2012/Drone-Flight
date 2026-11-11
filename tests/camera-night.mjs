@@ -74,6 +74,7 @@ ok(pn.night && Math.abs(pn.night.tone.bc[0] - b) < 1e-5, 'night profile carries 
 
 // --- 4. [P3-A] phase-3 night camera: true-source cores, point-source ghosts, retro shadow hue, AE area rule, mover kinds
 ok(N.coreSrc && N.coreSrc[0] >= 35 && N.coreSrc[0] < N.coreSrc[1] && N.coreSrc[1] <= 60, 'coreSrc ramps between the faces (<= 350 nits) and the tubes (>= 600 nits)');
+ok(/clamp\(c\.a - 1\.0, 0\.0, 1\.0\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })) && /fragColor = vec4\(cs, 1\.0 \+ cw\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })) && /wSrc/.test(C.NIGHT_FINAL_BODY), 'P3-B1: the night blur carries w = clamp(a - 1, 0, 1) and the cores read it');
 ok(N.coreXtalkSrc >= N.coreXtalk && N.coreEvSrc[1] <= 0 && N.coreEvSrc[0] < N.coreEvSrc[1], 'true sources: more crosstalk, ramp under the white point');
 ok(N.ghosts.every((g) => g[1] <= 0.0015 && typeof g[2] === 'number' && Array.isArray(g[3])) && N.ghostEv[0] >= 7 && N.ghostChroma <= 0.3, 'ghosts: <= 0.0015, aperture radius, point sources over +7 EV, chroma <= 0.3');
 ok(N.retroShadow[0] === 205 && N.retroVibGate[0] >= 30 && N.retroVibGate[1] <= 110, 'retro: one shadow hue (205 deg), vibrance off amber');

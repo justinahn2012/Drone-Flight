@@ -147,6 +147,15 @@ vec3 tap(vec2 uv, float lod){
   vec2 h = 0.5 * exp2(lod) / uVp;     // keep the mip footprint inside the live viewport
   return textureLod(tColor, clamp(uv, h, 1.0 - h) * uScale, lod).rgb;
 }
+#ifdef NIGHT
+// [P3-A] contract P3-B1: the scene alpha is 1 + w on true-source cores (B's channel stroke centres, tube axes, bulbs, LEDs);
+// w = clamp(a - 1, 0, 1) per tap, carried through the shutter blur as alpha 1 + w for FINAL's white cores
+vec4 tap4(vec2 uv, float lod){
+  vec2 h = 0.5 * exp2(lod) / uVp;
+  vec4 c = textureLod(tColor, clamp(uv, h, 1.0 - h) * uScale, lod);
+  return vec4(c.rgb, clamp(c.a - 1.0, 0.0, 1.0));
+}
+#endif
 float zAt(vec2 uv){ vec4 c = texelFetch(tDepth, clamp(ivec2(uv * uDVp), ivec2(0), ivec2(uDVp) - 1), 0); return 0.02 * exp2((c.r + c.g / 255.0) * LOGR); }
 // soft depth compare in log2 depth: 1 when b is >15% nearer than a, 0 within 5%
 float nearer(float za, float zb){ return smoothstep(0.07, 0.2, log2(za / max(zb, 1e-3))); }
@@ -161,7 +170,11 @@ void main(){
          + uJ2Amp * sin(uJ2Ph + uJ2W * tauRow);
   vec2 a = warp(P, tauRow - 0.5 * uExp, J);
   vec2 b = warp(P, tauRow + 0.5 * uExp, J);
+#ifdef NIGHT
+  if (a.x < -5.0 || b.x < -5.0) { vec4 t0 = tap4(vUv, 0.0); fragColor = vec4(t0.rgb, 1.0 + t0.a); return; }
+#else
   if (a.x < -5.0 || b.x < -5.0) { fragColor = vec4(tap(vUv, 0.0), 1.0); return; }
+#endif
 #ifdef NIGHT
   // [P2-A] object motion blur: on a mover's swept footprint (its geometry extruded along its velocity) in front of the static
   // surface, the smear is the camera's path plus the mover's own displacement (max of camera and object motion, combined)
@@ -178,6 +191,9 @@ void main(){
   // 1) own surface along its own (curved, rolling-shutter, jello) path. With the reconstruction on, taps that land on
   //    something nearer than this surface would be at that instant are occluders: they come in through 2), not here.
   vec3 acc = vec3(0.0); float wsum = 0.0;
+#ifdef NIGHT
+  float accW = 0.0;
+#endif
   for (int i = 0; i < 24; i++) {
     if (float(i) >= n) break;
     float fi = (n > 1.0) ? (float(i) + j) / n - 0.5 : 0.0;   // box shutter, jittered
@@ -188,9 +204,16 @@ void main(){
     float w = 1.0;
     if (s.x < -5.0) s = vUv;
     else if (uRecon > 0.5 && n > 1.0) w = 1.0 - nearer(ze, zAt(s));
+#ifdef NIGHT
+    vec4 t4 = tap4(s, lod); acc += t4.rgb * w; accW += t4.a * w; wsum += w;
+#else
     acc += tap(s, lod) * w; wsum += w;
+#endif
   }
   vec3 cs = wsum > 1e-3 ? acc / wsum : tap(vUv, 0.0);
+#ifdef NIGHT
+  float cw = wsum > 1e-3 ? accW / wsum : tap4(vUv, 0.0).a;
+#endif
   // 2) foreground smeared over this pixel (McGuire 2012, scatter-as-gather): walk the neighbourhood's longest blur;
   //    a nearer surface Y covers X if X lies on Y's own smear, each tap carrying spacing / Y's smear length of coverage
   if (uRecon > 0.5) {
@@ -200,6 +223,9 @@ void main(){
       float R = nb.b, m = clamp(ceil(2.0 * R / 2.5), 4.0, 12.0), dl = 2.0 * R / m;
       float lf = clamp(log2(max(dl, 1.0) / 1.25), 0.0, uLodMax);
       float cov = 0.0; vec3 fg = vec3(0.0); float fw = 0.0;
+#ifdef NIGHT
+      float fgW = 0.0;
+#endif
       float j2 = fract(j + 0.5);
       for (int i = 0; i < 12; i++) {
         if (float(i) >= m) break;
@@ -214,12 +240,23 @@ void main(){
         float L = length(AB), u = clamp(dot(q - A, AB) / max(L * L, 1e-4), 0.0, 1.0);
         float perp = length(q - A - u * AB);
         float w = f * (1.0 - smoothstep(0.75, 1.5 + 0.15 * L, perp)) * min(1.0, dl / max(L, dl));
+#ifdef NIGHT
+        vec4 f4 = tap4(uy, lf); cov += w; fg += f4.rgb * w; fgW += f4.a * w; fw += w;
+#else
         cov += w; fg += tap(uy, lf) * w; fw += w;
+#endif
       }
       if (fw > 1e-4) cs = mix(cs, fg / fw, min(cov, 1.0));
+#ifdef NIGHT
+      if (fw > 1e-4) cw = mix(cw, fgW / fw, min(cov, 1.0));
+#endif
     }
   }
+#ifdef NIGHT
+  fragColor = vec4(cs, 1.0 + cw);
+#else
   fragColor = vec4(cs, 1.0);
+#endif
 }`;
 
 // Screen-space AO, half res, from the collider (+ depthScene) depth. SAO-style: normal from the flatter neighbour per
@@ -433,7 +470,7 @@ uniform vec4 uNoiseOffC;  // chroma lattice offsets (px)
 uniform vec4 uNoiseK;     // x luma cell (px), y chroma cell (px), z read floor (linear, gain-independent), w chroma kept in the deepest shadows
 uniform vec4 uGhostS;     // lens ghosts: w on (the ghost pass renders them, aperture-shaped, into tGhost)
 uniform sampler2D tGhost; // [P3-A] ghosts of the point sources, 1/8 res, output space (GHOST_FS)
-uniform vec2 uCoreSrc;    // [P3-A] true sources: white-equivalent radiance (max channel, scene units) where the source path ramps in
+uniform vec2 uCoreSrc;    // [P3-A] true sources: radiance floor (max channel, scene units) under B's P3-B1 core flag w (scene alpha 1 + w)
 uniform vec3 uCoreSrcK;   // [P3-A] the source path's x crosstalk, y..z EV over the white point where its cores ramp in
 uniform vec2 uRetroSh;    // [P3-A] retro shadow split-tone: x Oklab hue (rad), y chroma at uRetro 1
 uniform vec2 uVibGate;    // [P3-A] Oklab hue band (rad) the retro vibrance leaves alone (amber rooms)
@@ -472,7 +509,10 @@ const NIGHT_FINAL_BODY = /* glsl */`
   // faces <= 350) take a second path: more crosstalk (uCoreSrcK.x) and a ramp 2 EV earlier, so they bleach to white cores with
   // coloured rims at the exposures the street runs at; light boxes, screens and windows keep the colour path above
   {
-    float sw = smoothstep(uCoreSrc.x, uCoreSrc.y, max(lin.r, max(lin.g, lin.b)));
+    // [P3-A] contract P3-B1: the source path needs B's core flag w (blur alpha 1 + w) AND real radiance under it (additive
+    // sprites raise the alpha too, and a sub-pixel tube averaged to a few hundred nits doesn't clip in a real sensor either)
+    float wSrc = clamp(texture(tSrc, clamp(sG, 0.5 / uSrcPx, 1.0 - 0.5 / uSrcPx) * uScale).a - 1.0, 0.0, 1.0);
+    float sw = wSrc * smoothstep(uCoreSrc.x, uCoreSrc.y, max(lin.r, max(lin.g, lin.b)));
     float xt = mix(uCore.x, uCoreSrcK.x, sw);
     vec2 cev = mix(uCore.yz, uCoreSrcK.yz, sw);
     float mn = mix(min(eCore.r, min(eCore.g, eCore.b)), max(eCore.r, max(eCore.g, eCore.b)), xt);
@@ -902,9 +942,11 @@ export const GRADES = {
   //   grain removed]; sharpDark: exposed level where sharpening fades in. AE (colour #6, graphics #1): aeReject 1 %, aeArea [scene
   //   units above which a tap is an area source, its weight, its weight once area taps exceed the share in [3]], aeMatrix [centre v, falloff].
   // Phase 3 [P3-A] (panel 2 colour #1/#3/#5, FPV #1/#2/#4/#5/#6, graphics #3; fitted offline on HDR captures of walk0/walk180/club90/club270):
-  //   coreSrc [a, b]: true sources are pixels whose white-equivalent radiance (max channel, scene units: 400..600 nits, between faces
-  //   <= 350 and tubes >= 600) passes a..b; they take coreXtalkSrc crosstalk and the earlier ramp coreEvSrc (colour #3: [-2.5, -0.5]
-  //   EV under the white point), so letters and tubes white-core with coloured rims while faces, screens and windows keep their colour.
+  //   coreSrc [a, b]: true sources are pixels B flags as cores (contract P3-B1: scene alpha 1 + w on channel stroke centres, tube
+  //   axes, bulbs and LEDs; carried through the shutter blur) whose max-channel radiance passes a..b scene units (350..550 nits:
+  //   above screens and faces, so an additive sprite's alpha can't bleach a light box); they take coreXtalkSrc crosstalk and the
+  //   earlier ramp coreEvSrc (colour #3: [-2.5, -0.5] EV under the white point): letters and tubes white-core with coloured rims,
+  //   faces, screens and windows keep their colour. Unflagged sources still clip through the base path (lamps, headlights).
   //   ghosts [mirror scale, weight, radius (frame heights), tint]: only point sources whose 1/8 block luma is ghostEv EV over grey feed
   //   them (lamps, headlights; neon and boxes don't), desaturated to ghostChroma, shaped by a ghostBlades-blade aperture with a
   //   ghostFringe chroma rim (GHOST_FS). retroShadow [Oklab hue deg, chroma]: one split-tone hue (the deep blue-violet swing is gone);
@@ -913,7 +955,7 @@ export const GRADES = {
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
-    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [40, 60], coreXtalkSrc: 0.4, coreEvSrc: [-2.5, -0.5], retroShadow: [205, 0.06], retroVibGate: [40, 100],
+    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreXtalkSrc: 0.4, coreEvSrc: [-2.5, -0.5], retroShadow: [205, 0.06], retroVibGate: [40, 100],
     mag: 0.035, magC: 0.04, grain: 0, grainEv: [0, 0], grainPx: 2,
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
     codec: [0.4, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
@@ -1832,7 +1874,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       ...(lk.night ? { night: {
         tone: { curve: 'lottes2016 per channel: t = x^a / (x^(a d) b + c), x = exposed radiance; mix(hue-preserving on max(rgb), per-channel, tonePc); clamp 1',
           a: (lk.tone || [])[0], d: (lk.tone || [])[1], midIn: 0.24, midOut: (lk.tone || [])[2], whitePoint: 0.24 * Math.pow(2, ce ?? 7.5), bc: lk.tone ? nightToneBC(lk.tone[0], lk.tone[1], lk.tone[2], 0.24 * Math.pow(2, ce ?? 7.5)) : null, tonePc: lk.tonePc },
-        core: { key: 'mix(min(rgb), max(rgb), xtalk) of the pre-halo exposure, EV over the white point; xtalk/ev blend to the source path by smoothstep(coreSrc, max(scene rgb))', xtalk: lk.coreXtalk, ev: lk.coreEv,
+        core: { key: 'mix(min(rgb), max(rgb), xtalk) of the pre-halo exposure, EV over the white point; xtalk/ev blend to the source path by w * smoothstep(coreSrc, max(scene rgb)), w = clamp(scene alpha - 1, 0, 1) (contract P3-B1, per tap through the shutter blur)', xtalk: lk.coreXtalk, ev: lk.coreEv,
           source: { radiance: lk.coreSrc, xtalk: lk.coreXtalkSrc, ev: lk.coreEvSrc } },
         ghosts: { list: lk.ghosts, sourceEv: lk.ghostEv, chroma: lk.ghostChroma, fringe: lk.ghostFringe, blades: lk.ghostBlades, resolution: 1 / 8, taps: 37,
           model: 'G(p) = w / s^2 * mean over the aperture (radius R, per channel R * (1 +- fringe)) of S(0.5 + (p - o - 0.5) / s); S = desat(bright pass) * smoothstep(sourceEv, log2(block luma / 0.24))' },
