@@ -1062,7 +1062,13 @@ export function attach(world, emitters = [], ctx = {}) {
     float inb = step(0.0, mc.w) * step(0.0, muv.x) * step(muv.x, 1.0) * step(0.0, muv.y) * step(muv.y, 1.0);
     float nv = clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0);
     float F = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
-    totalEmissiveRadiance += texture(tCityMirror, muv).rgb * (F * cityWet * inb); }`);
+    // [P5-C] graphics #6 (reflections, not sheets: station's lights mirrored as 1-2 m hard slabs): a wet film is not a mirror.
+    // Five taps along the mirror's vertical (the view's Y on the ground) with a log-normal-ish falloff, stretched by how
+    // rough the film is (a damp film streaks ~6 % of the frame, a puddle stays nearly sharp) and broken up by the ripple
+    float pud = cityPud / max(uCityWet, 1e-3), st = mix(0.055, 0.006, pud) * (0.7 + 0.6 * cityNoise(wpw.xz * 1.7));
+    vec3 mr = texture(tCityMirror, muv).rgb * 0.36 + (texture(tCityMirror, muv + vec2(0.0, st * 0.25)).rgb + texture(tCityMirror, muv - vec2(0.0, st * 0.25)).rgb) * 0.2
+      + (texture(tCityMirror, muv + vec2(rip.x * 0.2, st)).rgb + texture(tCityMirror, muv - vec2(rip.y * 0.2, st)).rgb) * 0.12;
+    totalEmissiveRadiance += mr * (F * cityWet * inb); }`);
       }
     };
     mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW4' : '|city4'); };

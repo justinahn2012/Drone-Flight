@@ -344,7 +344,10 @@ export function generateSigns(layout, opts = {}) {
       // fixed colour draws per sign, whatever the push, so geometry/count/lit never move with push
       const uCat = rc.next(), uHue = rc.next(), uNeon = rc.next(), uNit = rc.next(), uFlk = rc.next(), uAcc = rc.next();
       const uDes = rc.next(), uBulb = rc.next(), uGr = rc.next(), uLet = rc.next(), uDes2 = rc.next(), uFilm = rc.next();
-      const c = signColour(uCat, uHue, push, t.use);
+      let c = signColour(uCat, uHue, push, t.use);
+      // [P5-C] the box stacks are warm (red / amber / yellow / green faces, as in refs ccb0 and 8e17): the sign light budget's B/G
+      // sits at its 1.05 limit already
+      if (geo.stackBox && (c.cat === 'blue' || c.cat === 'violet' || c.cat === 'cyan' || c.cat === 'white')) { const cat = uHue < 0.45 ? 'red' : 'ygo', hue = pickW(uHue, CAT_HUES[cat]); c = { cat, hue, rgb: srgb(HEX[hue]) }; }
       const nightlife = NIGHT_USES.has(t.use) || t.use === 'restaurant' && lot.use === 'pocha';
       const pn = Math.min(1, push * (USE_PUSH[t.use] ?? 0.8));
       let style = type;
@@ -409,8 +412,13 @@ export function generateSigns(layout, opts = {}) {
     const signTop = tower ? 8 : Math.min(nFloors, 7);
     const wallWins = (n, c) => S.windows.filter((w) => w.n[0] * n[0] + w.n[2] * n[2] > 0.995 && Math.abs((w.c[0] - c[0]) * n[0] + (w.c[2] - c[2]) * n[2]) < 0.25);
     let motelBand = null;
+    // [P5-C] art #1 (stack the upper floors: walk0's 3F-4F were bare plaster above the fascia): on the walking, club and main
+    // streets every business's 2F-5F spandrel facing the street carries a box, lit on 60 % of the dark tenants too (signs
+    // run on timers, not on whether the room faces the street)
+    const hero = st.kind === 'walking' || st.kind === 'club' || st.kind === 'main';
     const floorBox = (t, BF, y0, H, side, bw) => {
-      const v = r.next(), p = t.lit ? (side ? 0.78 : 0.88) : (side ? 0.25 : 0.35);
+      const v = r.next(), every = hero && t.f >= 1 && t.f <= 4, p = every ? 1.01 : t.lit ? (side ? 0.78 : 0.88) : (side ? 0.25 : 0.35);
+      if (every && !t.lit && v < 0.6) t = { ...t, lit: true };
       if (v < p) {
         const w = Math.min(bw, 10, Math.max(2.2, BF.L * range(r, 0.5, 0.9))), h = Math.min(H - 0.1, range(r, 0.75, 1.05)), y = y0 + (H - h) / 2;
         const u = (BF.L - w) / 2 + (r.next() - 0.5) * Math.max(0, bw - w) * 0.6;
@@ -468,7 +476,7 @@ export function generateSigns(layout, opts = {}) {
           if (perPane) { if (i < i0 || i >= i0 + syl.length) return; text = syl[i - i0]; mode = 'syl'; }
           else { if (i > 1 && r.next() < 0.5) return; text = i === 0 ? (t.name.sub ? `${t.name.main} ${t.name.sub}` : t.name.main) : word; mode = 'full'; }
           const WF = slotFrame(w.c, w.n, w.w, 0.03, base, false);
-          add('vinyl', t, { u: 0, y: w.c[1] - w.h / 2, w: w.w, h: w.h, d: 0 }, { frame: WF, vText: text, vMode: mode, nits: w.nits, lit: true });
+          add('vinyl', t, { u: 0, y: w.c[1] - w.h / 2, w: w.w, h: w.h, d: 0 }, { frame: WF, vText: text, vMode: mode, nits: Math.min(25, w.nits), lit: true });   // [P5-C] film on a 40-60 nit tower office floor stays in its 5-25 band
         });
       }
     } else for (let f = 1; f < nFloors; f++) {   // no window data (a bare layout): phase 3's film panels on the facade
@@ -483,7 +491,8 @@ export function generateSigns(layout, opts = {}) {
     // --- vertical blade stacks (돌출간판): one tenant box per floor at the facade edge (a flat's floor shows the business
     //     below it); every corner lot carries one; a second stack on ~30 % ---
     const bladeRoll = r.next();
-    if ((nFloors >= 3 && bladeRoll < 0.75) || (sides.length && nFloors >= 2) || tower) {
+    // [P5-C] art #1: a blade on 85 % of the walking and club streets' lots from 2F (P4: 75 % of 3F+ lots)
+    if ((nFloors >= (hero && st.kind !== 'main' ? 2 : 3) && bladeRoll < (hero && st.kind !== 'main' ? 0.85 : 0.75)) || (sides.length && nFloors >= 2) || tower) {
       const side = r.next() < 0.5 ? 0.35 : L - 0.35, out = range(r, 0.45, 0.9), bw = range(r, 0.55, 0.75);
       for (let f = 1; f < signTop; f++) add('blade', biz(f), { u: side, y: f * fh + 0.25, w: bw, h: fh - 0.5, d: 0.32, out });
       if (lot.use === 'motel' || lot.use === 'hotel') { // one tall continuous blade for the whole building name
@@ -523,6 +532,16 @@ export function generateSigns(layout, opts = {}) {
     if (lot.use === 'motel' || lot.use === 'hotel') {
       if (motelBand) { const { BF, y0, H } = motelBand, h = Math.min(0.9, H - 0.1); add('fascia', g, { u: BF.L * 0.1, y: y0 + (H - h) / 2, w: BF.L * 0.8, h, d: 0.25 }, { frame: BF }); }
       else if (S.synth) add('fascia', g, { u: L * 0.1, y: fh * 2 - 1.1, w: L * 0.8, h: 0.9, d: 0.25 });
+    }
+    // --- [P5-C] art #1: projecting box stacks (돌출간판 columns, refs ccb0 / 8e17): 3-5 boxes of 0.6 x 1.1 m, one per tenant,
+    //     stacked up the facade between the blades, on 40 % of the walking and club streets' 3F+ lots (20 % on main roads).
+    //     Their own streams (geometry r5; colour draws come after every other sign of the lot), so nothing above moves ---
+    if (hero && nFloors >= 3 && L > 4.5 && !SINGLE.has(lot.use)) {
+      const r5 = new Rng((seed ^ hashStr(lot.id + '#p5')) >>> 0);
+      if (r5.next() < (st.kind === 'main' ? 0.2 : 0.4)) {
+        const u = range(r5, 1.4, L - 1.4), out = range(r5, 0.35, 0.6), n = Math.min(3 + Math.floor(r5.next() * 3), Math.floor((Math.min(signTop * fh, F.top) - fh - 0.3) / 1.35));
+        for (let k2 = 0; k2 < n; k2++) { const y = fh + 0.3 + k2 * 1.35, f = Math.min(nFloors - 1, Math.floor(y / fh)); add('blade', biz(f), { u, y, w: 0.6, h: 1.1, d: 0.26, out, stackBox: true }); }
+      }
     }
     void fasciaY;
   }
