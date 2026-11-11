@@ -49,7 +49,7 @@ ok(wrOk > 0.97 && fasc.length > 400, `${fasc.length} ground shop signs, 0.62-0.9
     if (info.roofSign) { roofs++; if (ss.some((s) => s.geo.cframe || s.geo.roofBox)) roofOk++; }
     for (const b of info.bands) { const t = info.floors[b.f]; if (!t || t.use === 'home' || !t.lit || b.side) continue; bands++; if (ss.some((s) => s.floor === b.f && (s.type === 'fascia' || s.type === 'channel') && sameN(s.frame, b.normal))) bandOk++; }
   }
-  offBed = S.filter((s) => (s.type === 'fascia' || s.type === 'channel') && s.floor === 0 && !s.geo.bay && !s.geo.roofBox && s.use !== 'motel' && s.use !== 'hotel' && s.geo.y < 4.2).length;
+  offBed = S.filter((s) => (s.type === 'fascia' || s.type === 'channel') && s.floor === 0 && !s.geo.bay && !s.geo.roofBox && !s.geo.door && s.use !== 'motel' && s.use !== 'hotel' && s.geo.y < 4.2).length;
   ok(beds === 474 && bedOk === beds, `art #1: signs on ${bedOk}/${beds} of C's sign beds`);
   ok(roofs > 30 && roofOk === roofs, `art #1: C's roof frames filled ${roofOk}/${roofs}`);
   ok(bands > 300 && bandOk / bands >= 0.8, `art #1: a floor box on ${pct(bandOk / Math.max(1, bands))} of lit business spandrels (${bands})`);
@@ -83,7 +83,7 @@ const tall = lots.filter((l) => (l.floors | 0) >= 3 && l.use !== 'motel' && l.us
 const bladeLots = tall.filter((l) => S.some((s) => s.lot === l.id && s.type === 'blade'));
 const twoStacks = bladeLots.filter((l) => new Set(S.filter((s) => s.lot === l.id && s.type === 'blade').map((s) => s.geo.u)).size >= 2);
 ok(bladeLots.length / tall.length >= 0.68, `blades on ${pct(bladeLots.length / tall.length)} of 3F+ lots (>= 70 %)`);
-ok(twoStacks.length / Math.max(1, bladeLots.length) > 0.2, `second blade stack on ${pct(twoStacks.length / Math.max(1, bladeLots.length))} of them (30 %)`);
+ok(twoStacks.length / Math.max(1, bladeLots.length) > 0.2, `second blade stack on ${pct(twoStacks.length / Math.max(1, bladeLots.length))} of them (50 %)`);
 const stands = S.filter((s) => s.type === 'stand').length, openShops = S.filter((s) => s.geo.bay && s.geo.y < SLOT.shutterTop).length;
 ok(stands / openShops >= 0.5, `입간판 ${stands} for ${openShops} open shops (>= 1 per 2; none outside a shutter)`);
 const upLit = S.filter((s) => s.type === 'vinyl' && s.lit && s.floor >= 1 && s.floor <= 3);

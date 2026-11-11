@@ -385,10 +385,13 @@ export function generateSigns(layout, opts = {}) {
         const channel = r.next() < (CH_P[sh.use] ?? 0.25);
         add(channel ? 'channel' : 'fascia', shop, { u: u0 + (bay - w) / 2, y, w, h, d: channel ? 0.12 : range(r, 0.2, 0.3), z0: SLOT.bedOut - 0.02, bay }, xf);
         if (!open) continue;
-        // LED dot scroller on the glass under the bed (bars, pocha, pc, karaoke, restaurants)
+        // LED dot scroller on the glass under the bed (bars, pocha, pc, karaoke, restaurants), else a small light box hung by
+        // the door (영업중, the name again) on ~35 % of bays
         if (r.next() < (SCROLL_P[sh.use] ?? 0.12)) {
           const sw = Math.min(bay * 0.6, range(r, 1.6, 3.2));
           add('scroller', shop, { u: u0 + range(r, 0.3, Math.max(0.35, bay - sw - 0.3)), y: 2.46, w: sw, h: 0.26, d: 0.06 }, { ...xf, scrollRow: Math.floor(r.next() * SCROLL_TEXT.length) });
+        } else if (bay > 3 && r.next() < 0.35) {
+          const dw = range(r, 0.8, 1.1); add('fascia', shop, { u: r.next() < 0.5 ? u0 + 0.45 : u0 + bay - 0.45 - dw, y: 2.4, w: dw, h: 0.46, d: 0.12, z0: 0.02, door: true }, xf);
         }
         // sidewalk standing sign (입간판): ~0.6 per open shop
         if (r.next() < (STAND_P[sh.use] ?? 0.25)) add('stand', shop, { u: u0 + range(r, 0.6, Math.max(0.7, bay - 0.6)), y: 0.15, w: 0.55, h: range(r, 1.1, 1.5), d: 0.55, out: range(r, 0.8, 1.4) }, xf);
@@ -481,7 +484,7 @@ export function generateSigns(layout, opts = {}) {
       for (let f = 1; f < signTop; f++) add('blade', biz(f), { u: side, y: f * fh + 0.25, w: bw, h: fh - 0.5, d: 0.32, out });
       if (lot.use === 'motel' || lot.use === 'hotel') { // one tall continuous blade for the whole building name
         add('blade', tenants[0], { u: L - side, y: fh + 0.2, w: 0.9, h: Math.min(10, (nFloors - 1) * fh - 0.4), d: 0.4, out: 1.0, tall: true });
-      } else if ((r.next() < 0.3 || tower) && L > 5) {
+      } else if ((r.next() < 0.5 || tower) && L > 5) {   // phase 4: a second stack on half the lots (was 30 %)
         const side2 = L - side, out2 = range(r, 0.45, 0.8), bw2 = range(r, 0.5, 0.7);
         for (let f = 1; f < signTop; f++) add('blade', biz(f), { u: side2, y: f * fh + 0.3, w: bw2, h: fh - 0.6, d: 0.3, out: out2 });
       }
@@ -665,7 +668,9 @@ export function designFace(s, w, h) {
     if (dz === 'blackflex') return { col: E(lit, hueC, N), alb: scaleC(hueC, 0.6) };
     return { col: E(lit, hueC, N), alb: scaleC(hueC, 0.55) };   // galva / channel: LED letters in the light colour
   };
-  const small = (k) => (filmLetters ? filmOf(1) : { col: E(lit, letterC, N * k), alb: [0.7, 0.7, 0.7] });   // phone, tag, floor
+  // phone, tag, floor: film on film faces, white on light boxes, the LED colour on galva / black faces (a white "2F" on a
+  // dim blue LED box floated alone at distance)
+  const small = (k) => (filmLetters ? filmOf(1) : design === 'flex' ? { col: E(lit, letterC, N * k), alb: [0.7, 0.7, 0.7] } : { col: E(lit, hueC, N * k), alb: scaleC(hueC, 0.5) });
   const ground = (dz, round) => {
     if (dz === 'flex') { groundNits = N * s.groundK; rect(els, K.BOX, -hx, -hy, hx, hy, E(lit, s.rgb, groundNits), scaleC(s.rgb, 0.5), [w, h, round ? 1 : 0]); }
     else if (dz === 'inverse') { groundNits = N; letterNits = s.film === 'black' ? N * 0.02 : N * lum(filt(filmC)) / Math.max(1e-4, lum(filt(hueC)));
