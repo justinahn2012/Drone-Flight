@@ -1725,6 +1725,9 @@ const HUMAN_ANIM = /* glsl */`
   float filmP = float(poseI == 6.0), danceP = float(poseI == 7.0), singP = float(poseI == 8.0), clapP = float(poseI == 9.0), flinchP = float(poseI == 10.0);
   float style = floor(iWear.w + 0.5), coat = floor(iTop.w + 0.5);
   vec3 p = position, nrm = normal;
+  // (P4) 28 Rocketbox head vertices carry a zero normal (welded seams that cancel): normalize(0) put NaN pixels on heads
+  // (C: 63 px in walk0). Point them out from the head's centre instead.
+  if (dot(nrm, nrm) < 1e-4) { vec3 r = position - vec3(0.0, uJB.w + 0.12, 0.02); nrm = dot(r, r) > 1e-8 ? normalize(r) : vec3(0.0, 1.0, 0.0); }
   // ---- what this person doesn't have
   float hide = 0.0;
   if (bone > 9.5 && bone < 10.5) hide = 1.0 - max(max(phoneP, filmP), 0.0);
@@ -1796,7 +1799,7 @@ const HUMAN_ANIM = /* glsl */`
   gHipL = hipL; gHipR = hipR; gKnL = knL; gKnR = knR; gAnL = anL; gAnR = anR; gSL = sL; gSR = sR; gEL = eL; gER = eR; gAbL = abL; gAbR = abR;
   gHeadP = headP; gHeadY = headY; gPelR = pelR; gThR = thR; gPelZ = pelZ; gSit = sitP;
   vec3 nA = nrm, pRest = p; p = rig(p, nA, bone, position.y);
-  if (bw > 0.004) { vec3 nB = nrm, pB = rig(pRest, nB, bone2, position.y); p = mix(p, pB, bw); nA = normalize(mix(nA, nB, bw)); }
+  if (bw > 0.004) { vec3 nB = nrm, pB = rig(pRest, nB, bone2, position.y); p = mix(p, pB, bw); vec3 nm = mix(nA, nB, bw); nA = dot(nm, nm) > 1e-8 ? normalize(nm) : nA; }
   nrm = nA;
   // body height from the stance leg (the longer of the two: the planted one), so the bob comes out of the gait itself
   float thighL = uJA.y - uJA.z, shinL = uJA.z - uJA.w;
@@ -1835,7 +1838,7 @@ const HUMAN_FS = /* glsl */`
     if (reg == 1.0) {
       // hair cards: alpha sharpened by the mip level (graphics #3, P4), so coverage holds at distance instead of thinning
       vec2 du = dFdx(vUv * vec2(1024.0, 512.0)), dv = dFdy(vUv * vec2(1024.0, 512.0));
-      tx.a *= 1.0 + 0.25 * max(0.0, 0.5 * log2(max(dot(du, du), dot(dv, dv))));
+      tx.a *= 1.0 + 0.25 * max(0.0, 0.5 * log2(max(max(dot(du, du), dot(dv, dv)), 1e-8)));
       if (tx.a < 0.45) discard;
     }
     vec3 mean = reg < 0.5 ? uMean[0] : reg < 1.5 ? uMean[1] : reg < 2.5 ? uMean[2] : reg < 3.5 ? uMean[3] : uMean[4];
@@ -1860,11 +1863,11 @@ const HUMAN_FS = /* glsl */`
   if (reg == 2.0) {
     if (ct == 2.0) { float band = abs(fract(q.y / 0.105) - 0.5) * 2.0; k *= mix(0.66, 1.06, smoothstep(0.05, 0.6, band)); }
     else if (ct == 1.0) k *= 0.94 + 0.08 * hn;
-    else k *= 0.93 + 0.1 * smoothstep(0.3, 0.7, fract(atan(q.z, q.x) * 14.0));
+    else k *= 0.93 + 0.1 * smoothstep(0.3, 0.7, fract(atan(q.z, q.x + 1e-5) * 14.0));
   } else if (reg == 3.0) {
     k *= 0.9 + 0.12 * fract((q.y + q.x * 0.6) * 140.0) * (0.6 + 0.4 * hn);
   } else if (reg == 1.0 || reg == 8.0) {
-    k *= reg == 1.0 ? 0.8 + 0.3 * fract(atan(q.z - 0.01, q.x) * 9.0 + hn * 0.3) : 0.92 + 0.08 * hn;
+    k *= reg == 1.0 ? 0.8 + 0.3 * fract(atan(q.z - 0.01, q.x + 1e-5) * 9.0 + hn * 0.3) : 0.92 + 0.08 * hn;
   } else if (reg == 0.0 && bn == 1.0 && q.y > 1.5) {
     vec3 h = q - vec3(0.0, 1.6, 0.01);
     float front = smoothstep(0.03, 0.08, h.z);
