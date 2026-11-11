@@ -576,5 +576,72 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
   }
 }
 
+// [P4-F1] one HEADS! per contact cluster (headsGrace), a void inside the grace, the speed bonus on `par` lines (timed events,
+// best times), a start point's hint.r
+{
+  const TL = await import(DIR + '/take.js');
+  if ('headsGrace' in T && 'fastBonus' in T) {
+    resetProgress();
+    // two pedestrian contacts 0.7 s apart (phase 3: two stamps, 2 FLOW in BAR ALLEY), then one 1.2 s after the first
+    const W = { lines: [{ name: 'A', caption: 'A', pts: 1000, ...gate(10) }, { name: 'B', caption: 'B', pts: 1000, ...gate(20) }, { name: 'C', caption: 'C', pts: 1000, ...gate(30) }], skimBvh };
+    const tk = new Take(), d = mk(), ev = []; d.moverN = 0; d.moverKind = null;
+    d.pos = { x: 0, y: 2, z: 5 }; d.vel = { x: 0, y: 0, z: 10 };
+    for (let z = 5; z < 34; z += 10 * DT) { d.pos = { ...d.pos, z }; ev.push(...tk.update(DT, d, W, true)); }
+    ok(tk.flow === 4, `three lines: FLOW x${tk.flow}`);
+    const touch = (n) => { d.moverN = n; d.moverKind = 'pedestrian'; d.moverImpact = 0.9; ev.push(...tk.update(DT, d, W, true)); };
+    const wait = (s) => { for (let i = 0; i < Math.round(s / DT); i++) ev.push(...tk.update(DT, d, W, true)); };
+    touch(1); wait(0.7); touch(2);
+    let hs = ev.filter((e) => e.type === 'scrape' && e.heads);
+    ok(hs.length === 1 && tk.flow === 3 && tk.stats.scrapes === 1, `two contacts 0.7 s apart: one HEADS!, FLOW -1 once (${hs.length} stamps, FLOW x${tk.flow})`);
+    wait(0.5); touch(3);
+    hs = ev.filter((e) => e.type === 'scrape' && e.heads);
+    ok(hs.length === 2 && tk.flow === 2, `a contact 1.2 s after the stamp is a new HEADS! (${hs.length} stamps, FLOW x${tk.flow})`);
+    // a heads line armed inside the grace: the contact voids it with a 'void' event (no stamp)
+    resetProgress();
+    const W2 = { lines: [{ name: 'Q', caption: 'Q', pts: 750, micro: true, heads: true, ...gate(20), pre: [gate(10)], within: 6 }], skimBvh };
+    const tk2 = new Take(), d2 = mk(), e2 = []; d2.moverN = 0; d2.moverKind = null;
+    d2.pos = { x: 0, y: 2, z: 5 }; d2.vel = { x: 0, y: 0, z: 10 };
+    for (let z = 5; z < 24; z += 10 * DT) {
+      d2.pos = { ...d2.pos, z };
+      if (Math.abs(z - 8) < 1e-3 + 10 * DT / 2) { d2.moverN = 1; d2.moverKind = 'pedestrian'; }        // a stamp before the pre-gate
+      if (Math.abs(z - 15) < 1e-3 + 10 * DT / 2) d2.moverN = 2;                                         // 0.7 s later, armed
+      e2.push(...tk2.update(DT, d2, W2, true));
+    }
+    const v = e2.find((e) => e.type === 'void');
+    ok(e2.filter((e) => e.type === 'scrape').length === 1 && v && JSON.stringify(v.voids) === '["Q"]' && !e2.some((e) => e.name === 'Q' && e.type === 'line'),
+      `inside the grace a contact still voids the armed heads line: {type: 'void', voids: ${JSON.stringify(v?.voids)}}, one stamp`);
+    // the speed bonus: a 40 m `par` line (par 5 s, within 15 s) flown in 5 s pays x1.5 and is FAST; in 13 s x1.1, not FAST
+    const run = (v, tun) => {
+      const Wp = { lines: [{ name: 'S', caption: 'S', pts: 1000, ...gate(40), pre: [gate(0)], within: 15, par: 5 }], skimBvh, tuning: tun };
+      const t = new Take(), dd = mk(), out = []; dd.pos = { x: 0, y: 2, z: -2 }; dd.vel = { x: 0, y: 0, z: v };
+      for (let z = -2; z < 42; z += v * DT) { dd.pos = { ...dd.pos, z }; out.push(...t.update(DT, dd, Wp, true)); }
+      return out.find((e) => e.name === 'S');
+    };
+    resetProgress();
+    const fast = run(8, { timed: true }), slow = run(40 / 13, { timed: true });
+    ok(fast && Math.abs(fast.dur - 5) < 0.05 && fast.speed === 1.5 && fast.fast && fast.pts === Math.round(1000 * 1.25 * 1.5) && fast.best === 0 && fast.newBest,
+      `at par: x1.5, FAST (${JSON.stringify(fast && { dur: fast.dur, speed: fast.speed, fast: fast.fast, pts: fast.pts, best: fast.best })})`);
+    ok(slow && slow.speed === 1.1 && !slow.fast && Math.abs(slow.best - fast.dur) < 1e-9 && !slow.newBest && slow.pts === Math.round(1000 * 1.25 * 1.1),
+      `13 s of a 15 s window: x1.1, no FAST, best = the 5 s run (${JSON.stringify(slow && { dur: slow.dur, speed: slow.speed, best: slow.best })})`);
+    ok(new Take().lineList({ lines: [{ name: 'S', caption: 'S', pts: 1000, ...gate(40), pre: [gate(0)], within: 15, par: 5 }], skimBvh }).find((l) => l.name === 'S').bestDur === fast.dur, 'lineList carries the best time (bestDur)');
+    // no par, not timed (bando): the event keeps its shape
+    resetProgress();
+    const plain = (() => { const Wp = { lines: [{ name: 'S', caption: 'S', pts: 1000, ...gate(40), pre: [gate(0)], within: 15 }], skimBvh }, t = new Take(), dd = mk(), out = [];
+      dd.pos = { x: 0, y: 2, z: -2 }; dd.vel = { x: 0, y: 0, z: 8 }; for (let z = -2; z < 42; z += 8 * DT) { dd.pos = { ...dd.pos, z }; out.push(...t.update(DT, dd, Wp, true)); } return out.find((e) => e.name === 'S'); })();
+    ok(plain && !('dur' in plain) && !('speed' in plain) && plain.pts === 1250, 'no par and not timed: no speed bonus, no timing fields');
+    // hint.r: the start point's `next` line holds the arrow within r m (default 6)
+    resetProgress();
+    const W5 = { lines: [{ name: 'F', caption: 'F', pts: 1000, ...gate(60), pre: [gate(50)], within: 20 }, { name: 'N', caption: 'N', pts: 1000, ...gate(30) }], skimBvh,
+      startPoints: [{ name: 'S', pos: [0, 2, 0], hint: { text: 'N FIRST', line: 'N', until: 2, next: 'N', r: 20 } }] };
+    const tk5 = new Take(), d5 = mk(); d5.pos = { x: 0, y: 2, z: 15 };
+    ok(tk5.nextHint(d5, W5)?.name === 'N', 'within hint.r of the start: its `next` line');
+    d5.pos = { x: 0, y: 2, z: 48 };
+    ok(tk5.nextHint(d5, W5)?.name === 'F', 'beyond hint.r: the nearest line again');
+    d5.pos = { x: 0, y: 2, z: 15 };
+    ok(tk5.nextHint(d5, { ...W5, startPoints: [{ ...W5.startPoints[0], hint: { ...W5.startPoints[0].hint, r: undefined } }] })?.name === 'N' && new Take().nextHint({ ...d5, pos: { x: 0, y: 2, z: 7 } }, { ...W5, startPoints: [{ ...W5.startPoints[0], hint: { ...W5.startPoints[0].hint, r: undefined } }] })?.name === 'N', 'no r: 6 m (then the nearest, N here too)');
+    resetProgress();
+  }
+}
+
 console.log(`take tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

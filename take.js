@@ -29,6 +29,12 @@
 // crashBy): a pedestrian is SCRAPE + HEADS! (event heads: true), a crash into a vehicle carries by: <type>.
 // [P3-F1 design #6] heads with a stake: a line flagged `heads` (OVER THE QUEUE: a club queue's length at 1.95-2.6 m) is
 // void if a HEADS! comes while it is armed (its pre-gate crossed, the gate not yet): the scrape event lists it in `voids`.
+// [P4-F1 design #2 / UX #5] one HEADS! per contact cluster: a pedestrian contact within headsGrace s of the last HEADS!
+// stamp is the same bump (no stamp, no FLOW); it still voids an armed `heads` line, as a {type: 'void', voids} event.
+// [P4-F1 design #3 / UX #6] skill on timed lines: a line with `par` (its flown path at 8 m/s, s) and a pre-gate scores
+// x(1 + fastBonus * clamp((within - t) / (within - par))), t = the move's time (pre-gate to gate): x1.5 at par, x1 at the
+// end of its window. Its line / repeat event carries dur (s), speed (the multiplier), fast (speed >= 1 + fastAt *
+// fastBonus: the FAST tag), best (the line's best time before this one, s; 0 = none) and newBest; the record keeps bd.
 // No three.js import: plain vector maths, runs headless in node too.
 
 export const TAKE_TUNING = {
@@ -67,6 +73,11 @@ export const TAKE_TUNING = {
   firstR: Infinity,    // m: nextHint's "first line of a new profile" rule only within this of world.takeStart
   headsCost: 1,        // FLOW lost to a pedestrian contact (world.movers, flight.js moverN): SCRAPE + HEADS!
   microFlow: 1,        // FLOW a new micro-line adds (bando: 1, like a line; a level dense with micros: 0, they keep the chain)
+  // [P4-F1] (bando has no movers and no `par`: its numbers stay bit-exact)
+  headsGrace: 1.0,     // s after a HEADS! stamp during which another pedestrian contact is the same cluster (design #2, UX #5)
+  fastBonus: 0.5,      // design #3: a line with `par` scores up to x(1 + fastBonus) when flown at par
+  fastAt: 0.5,         // the FAST tag from this share of fastBonus up (x1.25)
+  timed: false,        // UX #6: line events carry the move's time and best (dur, best, newBest) for lines with a pre-gate
 };
 const T = TAKE_TUNING;
 
@@ -110,7 +121,8 @@ const plainCaption = (s) => String(s || '').replace(/\*/g, '');
 const inShaft = (p, world) => (world?.funnels || []).some((f) => f.dir !== 'up' && p.y <= f.top && Math.hypot(p.x - f.c[0], p.z - f.c[1]) < f.r);
 
 // ---- progress, shared by every Take instance (take + free fly): {name: {n: times flown, flow: best FLOW, pts: best pts,
-// bestT: best take time (s, stats.time clock) at which it was first flown in a scored take: a split, lower is better}}
+// bestT: best take time (s, stats.time clock) at which it was first flown in a scored take: a split, lower is better;
+// bd: [P4-F1] the line's own best time (s, pre-gate to gate) in a scored take, lines with a pre-gate only}}
 // [S0] per level: bando keeps the original keys, any other level suffixes them with @<level id> (setProgressLevel)
 let LVL = 'bando';
 const lk = (base) => (LVL === 'bando' ? base : `${base}@${LVL}`);
@@ -158,7 +170,8 @@ export class Take {
   // [P2-F1 UX #2] the line in progress: its pre-gate crossed the right way and its window (`within`) still open; a named
   // line before a micro (a street's segments arm and fire under its named line), then the most recently armed:
   // {name, caption, left (s to its main gate), within (s), frac (0..1 of the window used), repeat (already flown this
-  // take), micro} or null. The OSD shows "HONGIK-RO · 0:18". With tuning.armHold the bank timer waits while any is armed.
+  // take), micro, t (s since its pre-gate), par (s, a timed line's), best (s, its best time; 0 = none)} or null. The OSD
+  // shows "HONGIK-RO · 0:18". With tuning.armHold the bank timer waits while any is armed.
   get armed() {
     let best = null;
     for (const [k, r] of this._pre) {
@@ -168,7 +181,8 @@ export class Take {
     }
     if (!best || this._state === 'done') return null;
     const l = best.L.l;
-    return { name: l.name, caption: l.caption || l.name, left: +best.left.toFixed(2), within: best.within, frac: +Math.min(1, 1 - best.left / best.within).toFixed(3), repeat: this._done.has(l.name), micro: !!l.micro };
+    return { name: l.name, caption: l.caption || l.name, left: +best.left.toFixed(2), within: best.within, frac: +Math.min(1, 1 - best.left / best.within).toFixed(3), repeat: this._done.has(l.name), micro: !!l.micro,
+      t: +(this._now - best.t).toFixed(2), par: l.par || 0, best: PROG[l.name]?.bd || 0 };
   }
   // [P3-F1] a HEADS! voids the armed moves of `heads` lines: their pre-gate records go; returns their names
   _voidHeads() {
@@ -211,7 +225,7 @@ export class Take {
     this._hover = 0; this._land = 0; this._gndAgo = 9; this._maxSpeed = 0; this._maxFlow = 1; this._log = []; this._done = new Set(); this._lastName = null;
     this._cool = {}; this._pre = new Map(); this._preT = -99; this._last = null; this._released = false; this._skim = 0; this._skimOff = 0;
     this._now = 0; this._holding = false; this._cutIn = 0; this._cutFrac = 0; this._cutKind = null;
-    this._dirty = false; this._imp = null; this._mvN = null; this._scrapeT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._how = null;
+    this._dirty = false; this._imp = null; this._mvN = null; this._scrapeT = -99; this._headsT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._how = null;
     for (const C of this._carves || []) C.st.forEach((s) => { s.ref = null; s.acc = 0; s.out = 0; });
   }
   // the take ends the hard way (out of bounds, a reset mid-take): same as a crash
@@ -264,11 +278,19 @@ export class Take {
     if (hit.touch) this._dirty = true;
     // [P2-F1 design #5] a pedestrian (world.movers via flight.js: drone.moverN counts contacts, moverKind says with what)
     // is a SCRAPE at any speed, captioned HEADS!; it takes the scrape cooldown so the bump isn't counted twice
-    if (hit.mover === 'pedestrian' && this._now - this._scrapeT >= this._T.scrapeCool) {
-      this._dirty = true; this._scrapeT = this._now; this._scrapes++;
-      const lost = Math.min(this._flow - 1, this._T.headsCost); this._flow -= lost;
-      const voids = this._voidHeads();
-      ev.push({ type: 'scrape', impact: +(+drone.moverImpact || 0).toFixed(2), flow: this._flow, lost, heads: true, ...(voids.length ? { voids } : {}) });
+    // [P4-F1 design #2 / UX #5] one stamp per contact cluster: within headsGrace of the last stamp a contact is the same
+    // bump (phase 3: two HEADS! 0.7 s apart cost 2 FLOW in BAR ALLEY); it still voids an armed `heads` line
+    if (hit.mover === 'pedestrian') {
+      this._dirty = true;
+      if (this._now - this._headsT >= this._T.headsGrace && this._now - this._scrapeT >= this._T.scrapeCool) {
+        this._scrapeT = this._now; this._headsT = this._now; this._scrapes++;
+        const lost = Math.min(this._flow - 1, this._T.headsCost); this._flow -= lost;
+        const voids = this._voidHeads();
+        ev.push({ type: 'scrape', impact: +(+drone.moverImpact || 0).toFixed(2), flow: this._flow, lost, heads: true, ...(voids.length ? { voids } : {}) });
+      } else {
+        const voids = this._voidHeads();
+        if (voids.length) ev.push({ type: 'void', voids, heads: true });
+      }
     }
     if (hit.impact > this._T.scrapeV && !hit.floor && this._now - this._scrapeT >= this._T.scrapeCool) {
       this._scrapeT = this._now; this._scrapes++;
@@ -384,26 +406,42 @@ export class Take {
     }
     const clean = !this._dirty; this._dirty = false;
     const cm = clean ? this._T.cleanMult : 1;
+    // [P4-F1 design #3 / UX #6] a timed move (pre-gate to gate): its time, the best before it, and with `par` the speed bonus
+    const tm = this._timed(l, rec, ago);
     if (this._done.has(name)) {
       if (this._lastName === name) return null;                     // fly something else first
       this._cool[name] = now;
-      const pts = Math.round((l.pts || 0) * this._T.repeat * cm);
+      const pts = Math.round((l.pts || 0) * this._T.repeat * cm * tm.k);
       this._unbanked += pts; this._idle = 0; this._lastName = name; this._lineAt = now;
-      const e = this._dedupe({ type: 'repeat', name, caption, pts, clean, micro, t0: tt0, ago, t: tt });
-      this._log.push({ name, pts, t: tt, t0: tt0, flow: 1, repeat: true, clean, micro });
+      const e = this._dedupe({ type: 'repeat', name, caption, pts, clean, micro, t0: tt0, ago, t: tt, ...tm.ev });
+      this._log.push({ name, pts, t: tt, t0: tt0, flow: 1, repeat: true, clean, micro, ...tm.log });
       rec.n++; saveProg();
       return e;
     }
     this._cool[name] = now;
-    const flow = this._flow, pts = Math.round((l.pts || 0) * flow * cm);
+    const flow = this._flow, pts = Math.round((l.pts || 0) * flow * cm * tm.k);
     this._unbanked += pts; this._idle = 0; this._lastName = name; this._done.add(name); this._lineAt = now;
     this._flow = Math.min(this._T.flowMax, flow + (micro ? this._T.microFlow : 1)); this._maxFlow = Math.max(this._maxFlow, flow);
-    const e = this._dedupe({ type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt });
-    this._log.push({ name, pts, t: tt, t0: tt0, flow, clean, micro });
+    const e = this._dedupe({ type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt, ...tm.ev });
+    this._log.push({ name, pts, t: tt, t0: tt0, flow, clean, micro, ...tm.log });
     rec.n++; rec.flow = Math.max(rec.flow, flow); rec.pts = Math.max(rec.pts, pts);
     if (!(rec.bestT > 0) || tt < rec.bestT) rec.bestT = tt;
     saveProg();
     return e;
+  }
+  // with tuning.timed (or a `par`), a line with a pre-gate is a timed move: dur = ago (s); with `par` (and its window
+  // `within`) the speed multiplier k. Updates the record's best time (rec.bd). Bando (not timed, no `par`): nothing, so its
+  // events keep their shape. -> {k, ev: fields for the event, log: fields for stats.lines}
+  _timed(l, rec, ago) {
+    if (!l.pre || !l.pre.length || !(this._T.timed || l.par > 0)) return { k: 1, ev: {}, log: {} };
+    const dur = +ago.toFixed(2), best = rec.bd > 0 ? rec.bd : 0, newBest = !(best > 0) || dur < best;
+    if (newBest && dur > 0) rec.bd = dur;
+    const W = l.within ?? 6, par = +l.par || 0;
+    let k = 1;
+    if (par > 0 && W > par) k = 1 + this._T.fastBonus * Math.min(1, Math.max(0, (W - dur) / (W - par)));
+    k = Math.round(k * 100) / 100;
+    const fast = par > 0 && k >= 1 + this._T.fastAt * this._T.fastBonus - 1e-9;
+    return { k, ev: { dur, best, newBest, ...(par > 0 ? { par, speed: k, fast } : {}) }, log: { dur, ...(par > 0 ? { speed: k, fast } : {}) } };
   }
   // two lines that began at the same moment (CHIMNEY DIVE's pre-gate is DROP IN's gate; THREAD THE NEEDLE's is THE
   // SMALL GAP's) would be captioned one frame apart in the clip. The later event says which caption the clip keeps:
@@ -464,11 +502,12 @@ export class Take {
 
   // ---- discovery
   // every line once, in world order: [{name, caption, pts, micro, flown (ever), n, bestFlow, bestPts, bestT (s, best take
-  // time it was first reached at in a scored take; 0 = never), inTake}]
+  // time it was first reached at in a scored take; 0 = never), bestDur (s, [P4-F1] its own best time, pre-gate to gate;
+  // 0 = none), par (s, a timed line's; 0 = none), inTake}]
   lineList(world) {
     if (world) this._compile(world);
     return (this._names || []).map((l) => { const r = PROG[l.name]; return { name: l.name, caption: l.caption || l.name, pts: l.pts || 0, micro: !!l.micro,
-      flown: !!r?.n, n: r?.n || 0, bestFlow: r?.flow || 0, bestPts: r?.pts || 0, bestT: r?.bestT || 0, inTake: this._done.has(l.name) }; });
+      flown: !!r?.n, n: r?.n || 0, bestFlow: r?.flow || 0, bestPts: r?.pts || 0, bestT: r?.bestT || 0, bestDur: r?.bd || 0, par: l.par || 0, inTake: this._done.has(l.name) }; });
   }
   // {flown, total}: named lines (not micro) ever flown; micro: the same for micro-lines; best: best take; stars: its stars;
   // perfects: PERFECT takes ever
@@ -482,7 +521,8 @@ export class Take {
   // show a down / up triangle instead of the arrow), stage ('via' | 'gate' | 'main'), inProgress} or null.
   // Which line, in order:
   //   1. a line in progress: its pre-gate was crossed the right way (within its `within`) -> its main gate (stage 'main')
-  //   1b. within 6 m of a world.startPoints entry whose hint names `next`: that line (the arrow agrees with the hint)
+  //   1b. within hint.r (default 6) m of a world.startPoints entry whose hint names `next`: that line (the arrow agrees
+  //       with the hint)
   //   2. on a profile that has never flown a named line, the line flagged `first` in world.lines (the one the
   //      onboarding toast names)
   //   3. the nearest line never flown, else the nearest not yet flown this take (route length through its via)
@@ -516,10 +556,11 @@ export class Take {
         if (r && now - r.t <= (L.l.within ?? 6) && (L.l.two || r.s === 1) && (!pick || r.t > pick.t)) pick = { L, tgt: L.main.c, stage: 'main', fresh: el === 1, t: r.t, prog: true };
       });
     });
- // 1b. at a START AT point whose hint names a line to fly from there (hint.next), within 6 m: that line
+ // 1b. at a START AT point whose hint names a line to fly from there (hint.next), within hint.r m (default 6; [P4-F1
+    // design #4] Seoul's spawn: up to UNDER THE STAGE's pre-gate, so the arrow holds on the stage, not the walking street)
     if (!pick) for (const sp of world?.startPoints || []) {
       const nx = sp.hint?.next, q = sp.pos; if (!nx || !q || !eligible(nx)) continue;
-      if (Math.hypot(p.x - (q.x ?? q[0]), p.y - (q.y ?? q[1]), p.z - (q.z ?? q[2])) > 6) continue;
+      if (Math.hypot(p.x - (q.x ?? q[0]), p.y - (q.y ?? q[1]), p.z - (q.z ?? q[2])) > (sp.hint.r ?? 6)) continue;
       const L = this._lines.find((x) => x.l.name === nx); if (!L) continue;
       const [tgt, stage] = aim(L, L.pre.length ? L.pre[0] : L.main); pick = { L, tgt, stage, fresh: eligible(nx) === 1 }; break;
     }

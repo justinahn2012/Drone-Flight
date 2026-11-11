@@ -13,11 +13,14 @@
 // real club queues and crowds, and a HEADS! on the way voids the move (design #6); no gate a vehicle can touch over
 // 0-600 s of the drawn traffic (design #2, gateprobe.mjs); every named line carries a `hint` (UX #2: one source for copy).
 // Re-run after the buildings (C), the dressing (E) or the traffic / crowd (G1) change.
+// [P4-F1] phase 4 (panel 3): tuned at the game's crowd (LIFE.maxAgents, design #2); the stair dive's pre-gate over the heads
+// under the canopy lip (design #1); timed street lines carry `par` for the speed bonus (design #3); the take opens UNDER
+// THE STAGE, whose exit lines up with the walking street's start gate (design #4).
 import fs from 'node:fs';
 import * as THREE from 'three';
 import { buildSeoulGeometry } from '../../world-seoul.js';
 import { LifeSim } from '../../seoul-life.js';
-import { vehicleTouches, gateBasis } from './gateprobe.mjs';
+import { vehicleTouches, gateBasis, lifeAgents } from './gateprobe.mjs';
 
 const ROOT = new URL('../', import.meta.url);
 const layout = JSON.parse(fs.readFileSync(new URL('layout.json', ROOT), 'utf8'));
@@ -47,6 +50,7 @@ function at(pts, s) {
     if (s <= l || i === pts.length - 2) { const t = l ? s / l : 0; return { x: ax + (bx - ax) * t, z: az + (bz - az) * t, tx: (bx - ax) / l, tz: (bz - az) / l }; } s -= l; }
 }
 const r3 = (v) => Math.round(v * 1000) / 1000;
+const norm3 = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 const g = (c, n, w, h, u) => ({ c: c.map(r3), n: n.map(r3), w: r3(w), h: r3(h), ...(u ? { u: u.map(r3) } : {}) });
 const neg = (G) => ({ ...G, n: G.n.map((v) => -v) });
 // a gate across a street at arc length s, y0..y1
@@ -106,6 +110,10 @@ const add = (name, caption, pts, main, extra = {}) => {
 // and missed phase 2's 48 s WALKING STREET window in 4 of 6 sims (route / 4.5 + 2 s).
 const PILOT_V = 3.5, WIN_PAD = 4;
 const within = (dist) => Math.ceil(dist / PILOT_V + WIN_PAD);
+// [P4-F1 design #3] skill on timed lines: `par` = the flown path at PAR_V = 8 m/s (s). take.js pays x(1 + 0.5 * clamp((within
+// - t) / (within - par))) and tags FAST from x1.25: phase 3's WALKING STREET paid 28,836 at 82 s and 28,858 at 44 s.
+const PAR_V = 8;
+const par = (dist) => Math.round(dist / PAR_V * 10) / 10;
 const dist3 = (a, b) => Math.hypot(a.c[0] - b.c[0], a.c[1] - b.c[1], a.c[2] - b.c[2]);
 // arc length of the point nearest (x, z) on a polyline
 function arcOf(pts, x, z) { let best = null, acc = 0; for (let i = 0; i < pts.length - 1; i++) { const [ax, az] = pts[i], [bx, bz] = pts[i + 1], dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz) || 1e-9; const u = Math.max(0, Math.min(l, ((x - ax) * dx + (z - az) * dz) / l)); const d = Math.hypot(x - ax - dx * u / l, z - az - dz * u / l); if (!best || d < best.d) best = { s: acc + u, d }; acc += l; } return best.s; }
@@ -114,21 +122,22 @@ function arcOf(pts, x, z) { let best = null, acc = 0; for (let i = 0; i < pts.le
 // door queue, a fork of the street), so a pilot at 8 m/s meets a beat every 2-5 s instead of nothing for 150-200 m.
 // Segments and feature micros are micro-lines (500-750 pts, never hinted, counted apart from the named lines).
 const MAX_SEG = 60;
-function run({ path, name, caption, value, s0, s1, y0, y1, w, cuts = null, segValue = 750, feats = [], first = false, label = name }) {
+// [P4-F1] a0: the start gate's floor (default y0; the walking street's start gate takes the stage's exit at 1.95-2.88 m)
+function run({ path, name, caption, value, s0, s1, y0, y1, w, cuts = null, segValue = 750, feats = [], first = false, label = name, a0 = y0 }) {
   const Lp = len(path), S = (v) => (v < 0 ? v + Lp : v);
   const gateAt = (sv, a = y0, b = y1, ww = w) => bestAcross(path, [0, 3, -3, 6, -6].map((d) => S(sv) + d), ww, a, b);
   const arcG = (G) => arcOf(path, G.c[0], G.c[2]);
-  const A = gateAt(s0), B = gateAt(s1), sa = arcOf(path, A.c[0], A.c[2]), sb = arcOf(path, B.c[0], B.c[2]);
-  add(name, caption, value, B, { pre: [A], within: within(Math.abs(sb - sa)), ...(first ? { first: true } : {}) });
-  add(name, caption, value, neg(A), { pre: [neg(B)], within: within(Math.abs(sb - sa)) });
+  const A = gateAt(s0, a0), B = gateAt(s1), sa = arcOf(path, A.c[0], A.c[2]), sb = arcOf(path, B.c[0], B.c[2]);
+  add(name, caption, value, B, { pre: [A], within: within(Math.abs(sb - sa)), par: par(Math.abs(sb - sa)), ...(first ? { first: true } : {}) });
+  add(name, caption, value, neg(A), { pre: [neg(B)], within: within(Math.abs(sb - sa)), par: par(Math.abs(sb - sa)) });
   // segment boundaries: given cuts (arc lengths), else equal pieces of <= MAX_SEG m
   const span = sb - sa, n = cuts ? cuts.length + 1 : Math.max(1, Math.ceil(Math.abs(span) / MAX_SEG));
   const cs = cuts ? cuts.map(S) : Array.from({ length: n - 1 }, (_, i) => sa + span * (i + 1) / n);
   const G = [A, ...cs.map((c) => gateAt(c)), B];
   if (n > 1) for (let i = 0; i < n; i++) {
     const a = G[i], b = G[i + 1], segName = `${label} ${i + 1}/${n}`, cap = `${label} *${i + 1}/${n}*`, L = Math.max(dist3(a, b), Math.abs(arcG(b) - arcG(a)));
-    add(segName, cap, segValue, b, { pre: [a], within: within(L), micro: true, seg: name });
-    add(segName, cap, segValue, neg(a), { pre: [neg(b)], within: within(L), micro: true, seg: name });
+    add(segName, cap, segValue, b, { pre: [a], within: within(L), par: par(L), micro: true, seg: name });
+    add(segName, cap, segValue, neg(a), { pre: [neg(b)], within: within(L), par: par(L), micro: true, seg: name });
   }
   for (const f of feats) {
     const cap = f.caption || f.name.replace(/ (\S+)$/, ' *$1*!');
@@ -139,8 +148,8 @@ function run({ path, name, caption, value, s0, s1, y0, y1, w, cuts = null, segVa
     const Gf = f.gate || gateAt(f.s, f.y0 ?? y0, f.y1 ?? y1, f.w ?? w);
     add(f.name, cap, f.pts || 500, Gf, { two: true, micro: true, feature: f.what, on: name, ...(f.heads ? { heads: true } : {}) });
   }
-  report.push(`  (${name}: ${Math.abs(span).toFixed(0)} m, window ${within(Math.abs(span))} s, ${n} segments, ${feats.length} feature micros)`);
-  return { A, B, G };
+  report.push(`  (${name}: ${Math.abs(span).toFixed(0)} m, window ${within(Math.abs(span))} s, par ${par(Math.abs(span))} s, ${n} segments, ${feats.length} feature micros)`);
+  return { A, B, G, span: Math.abs(span), sa, sb };
 }
 
 // ---- [P3-F1 design #6] heads with a stake. seoul-life.js's crowd (LifeSim, world-seoul's seed 11: the drawn city) stands
@@ -152,7 +161,9 @@ function run({ path, name, caption, value, s0, s1, y0, y1, w, cuts = null, segVa
 // voids the move (take.js: lines with `heads`). Across-street head-height micros carry `heads` too.
 const HEAD_Y = [1.95, 2.6];
 const HEADS = { y0: HEAD_Y[0], y1: HEAD_Y[1], heads: true };
-const lifeSim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: 2400, setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] the game's traffic: G1's bus lane round the shelter island
+// [P4-F1 design #2] the game's crowd (gateprobe.mjs lifeAgents: LIFE.maxAgents, 15,500 at quality auto, half at low;
+// phase 3 tuned at 2,400, a fifth of the people)
+const lifeSim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('auto'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] the game's traffic: G1's bus lane round the shelter island
 const queues = lifeSim.crowd?.queues || [];
 const usedQ = new Set();
 // the queue whose door projects onto `path` within r m of arc length s and within the street (+4 m)
@@ -203,12 +214,33 @@ function overTent(P, s) {
   return g([T.pos[0], top + 1.3, T.pos[2]], [a.tx, 0, a.tz], 3.0, 1.6, [-a.tz, 0, a.tx]);
 }
 const tentG = overTent(WP, WL - 178);
-run({ path: WP, name: 'WALKING STREET', caption: 'THE WALKING *STREET*!', value: 2500, s0: 12, s1: -6, y0: 2.2, y1: 5.2, w: walk.width - 1, first: true,
-  cuts: [54, 96, 138, 180, 222, 264].map((v) => v + WL - 312), label: 'WALKING STREET', feats: [
+// [P4-F1 design #4] the take opens UNDER THE STAGE (E's busking canopy, ~30 m from the spawn on this street), and the
+// stage's exit (its gate toward the hub, 1.95-2.88 m) runs straight into the walking street's start gate 5 m on, with that
+// gate's floor at 2.0 m (heads reach 1.85 m): FLOW x2 from the first ~10 s. Phase 3's start gate was 12 m from the spawn,
+// before the stage, so the stage was off the line and a careful take was 10 beats at FLOW x1 until 70 s. No stage piece:
+// phase 3's start gate.
+const stagePiece = (geo.setPieces || []).find((p) => p.id === 'under-the-stage');
+const stageExit = (() => { const Gs = stagePiece?.gates; if (!Gs?.gate?.c || !Gs?.pre?.c) return null;
+  const a = arcOf(WP, Gs.pre.c[0], Gs.pre.c[2]), b = arcOf(WP, Gs.gate.c[0], Gs.gate.c[2]);
+  return b > a ? { s: b, G: Gs.gate, n: Gs.gate.n, pre: Gs.pre } : { s: a, G: Gs.pre, n: Gs.pre.n.map((v) => -v), pre: Gs.gate }; })();
+const WS0 = stageExit ? Math.round(stageExit.s + 5) : 12;
+const WS = run({ path: WP, name: 'WALKING STREET', caption: 'THE WALKING *STREET*!', value: 2500, s0: WS0, s1: -6, y0: 2.2, y1: 5.2, a0: stageExit ? 2.0 : 2.2, w: walk.width - 1, first: !stageExit,
+  // [P4-F1 design #4] the first piece ends 15 m past the start gate (the first x2 caption by 20 s for a careful pilot: the
+  // stage's x2 at ~12 s, then 20 m; at 22 m the sims' median was 21.9 s), the next half way to the 23-gil cut; then phase
+  // 3's cuts at the side streets
+  cuts: stageExit ? (() => { const c = [138, 180, 222, 264].map((v) => v + WL - 312), c1 = WS0 + 15; return [c1, Math.round((c1 + c[0]) / 2), ...c]; })()
+    : [54, 96, 138, 180, 222, 264].map((v) => v + WL - 312), label: 'WALKING STREET', feats: [
     { name: 'OVER THE CROWD', caption: 'OVER THE *CROWD*!', s: 24, ...HEADS, w: 8, pts: 750, what: 'the walking street crowd, 17 m from the spawn (head height)' },
     ...(tentG ? [{ name: 'OVER THE TENT', caption: 'OVER THE *TENT*!', s: WL - 178, gate: tentG, what: 'a pocha tent' }] : []),
     { name: 'THE BRANCHES', caption: 'THE *BRANCHES*!', s: WL - 74, what: 'two Eoulmadang-ro branches leave (68 and 80 m before the junction)' },
   ] });
+// the stage's exit line through the start gate: where it crosses (across the gate from its centre, height), so a pilot who
+// keeps the stage's line flies the start gate
+if (stageExit) { const A = WS.A, n = norm3(A.n), u = norm3(A.u), c = stageExit.G.c, d = norm3(stageExit.n), den = d[0] * n[0] + d[2] * n[2];
+  const k = ((A.c[0] - c[0]) * n[0] + (A.c[2] - c[2]) * n[2]) / (den || 1e-9), q = [c[0] + d[0] * k, c[1], c[2] + d[2] * k];
+  const off = (q[0] - A.c[0]) * u[0] + (q[2] - A.c[2]) * u[2];
+  report.push(`  (WALKING STREET: starts ${(WS.sa - stageExit.s).toFixed(1)} m past UNDER THE STAGE's exit; its line crosses the ${A.w.toFixed(1)} x ${A.h.toFixed(1)} m start gate ${k.toFixed(1)} m on, ${off.toFixed(1)} m off centre (half width ${(A.w / 2).toFixed(1)}), gate ${(A.c[1] - A.h / 2).toFixed(2)}-${(A.c[1] + A.h / 2).toFixed(2)} m, stage ${(c[1] - stageExit.G.h / 2).toFixed(2)}-${(c[1] + stageExit.G.h / 2).toFixed(2)} m)`);
+  if (Math.abs(off) > A.w / 2 - 0.8) report.push('  WARNING: the stage exit is near the start gate\'s edge'); }
 // 1b. RED ROAD: the s065 fork of Eoulmadang-ro (phase 2's walking street: the Red Road busking stretch), 2.2-5.2 m, cut at the
 // side streets (55, 100, 160 of 226 m); micros: the first blade stack (22 m) and the densest blade stretch (58-79 m) at
 // head height under the 3.55 m blades, the fork (133 m), OVER THE QUEUE at the club door (150 m), the split (177 m)
@@ -272,8 +304,8 @@ run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value:
     // 1.6 m kerb-side of the heads: 0.9 m clear of their boxes, ~4-5 m short of the pole
     const under = (m, sg) => { const dd = m.d + sg * 1.6; return g([mx + nx * dd + pa.tx * m.s, 4.3, mz + nz * dd + pa.tz * m.s], [-nx, 0, -nz], 2.4, 1.2, [pa.tx, 0, pa.tz]); };
     const A = fit(under(near, 1), 'CROSSING (near mast)'), B = fit(under(far, -1), 'CROSSING (far mast)'), L = dist3(A, B);
-    add('CROSSING', 'THE *CROSSING*!', 1500, B, { pre: [A], within: within(L) });
-    add('CROSSING', 'THE *CROSSING*!', 1500, neg(A), { pre: [neg(B)], within: within(L) });
+    add('CROSSING', 'THE *CROSSING*!', 1500, B, { pre: [A], within: within(L), par: par(L) });
+    add('CROSSING', 'THE *CROSSING*!', 1500, neg(A), { pre: [neg(B)], within: within(L), par: par(L) });
     report.push(`  (CROSSING: under the masts ${near.id} and ${far.id}, ${L.toFixed(1)} m, ${A.w.toFixed(1)} x ${A.h.toFixed(1)} / ${B.w.toFixed(1)} x ${B.h.toFixed(1)} m at 3.7-4.9 m)`);
   } else {
     add('CROSSING', 'THE *CROSSING*.', 1500, g([mx, 7.5, mz], [nx, 0, nz], 30, 3, [pa.tx, 0, pa.tz]), { two: true });
@@ -294,12 +326,12 @@ run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value:
   const canyonGate = (s) => { const q = at(nA.points, s), n = [q.tx * sg, 0, q.tz * sg]; return g([q.x, 6.4, q.z], n, Math.min(14, nA.width - 4), 4.0, [-n[2], 0, n[0]]); };
   if (pairs.length >= 3) {
     const Gs = pairs.map((v, i) => fit(canyonGate(v), `SCREEN CANYON lamp ${i}`)), Ga = Gs[0], Gb = Gs[Gs.length - 1], dl = Math.abs(pairs[pairs.length - 1] - pairs[0]);
-    add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, Gb, { pre: [Ga], within: within(dl) });
-    add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, neg(Ga), { pre: [neg(Gb)], within: within(dl) });
+    add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, Gb, { pre: [Ga], within: within(dl), par: par(dl) });
+    add('SCREEN CANYON', 'THE SCREEN *CANYON*!', 2500, neg(Ga), { pre: [neg(Gb)], within: within(dl), par: par(dl) });
     const N = Gs.length - 1;
     for (let i = 0; i < N; i++) { const a = Gs[i], b = Gs[i + 1], L = Math.abs(pairs[i + 1] - pairs[i]);
-      add(`SCREEN CANYON ${i + 1}/${N}`, `SCREEN CANYON *${i + 1}/${N}*`, 750, b, { pre: [a], within: within(L), micro: true, seg: 'SCREEN CANYON' });
-      add(`SCREEN CANYON ${i + 1}/${N}`, `SCREEN CANYON *${i + 1}/${N}*`, 750, neg(a), { pre: [neg(b)], within: within(L), micro: true, seg: 'SCREEN CANYON' }); }
+      add(`SCREEN CANYON ${i + 1}/${N}`, `SCREEN CANYON *${i + 1}/${N}*`, 750, b, { pre: [a], within: within(L), par: par(L), micro: true, seg: 'SCREEN CANYON' });
+      add(`SCREEN CANYON ${i + 1}/${N}`, `SCREEN CANYON *${i + 1}/${N}*`, 750, neg(a), { pre: [neg(b)], within: within(L), par: par(L), micro: true, seg: 'SCREEN CANYON' }); }
     report.push(`  (SCREEN CANYON: ${dl.toFixed(0)} m down nA ${nA.id} from exit 9, gates at the lamp pairs ${pairs.map((v) => (v - s0).toFixed(0)).join(', ')} m)`);
   } else report.push(`  (SCREEN CANYON: only ${pairs.length} lamp pairs on ${nA.id}: no line)`);
   // OVER THE BUSES half way: low over the median bus lane (Seoul's median BRT), 4.5-8 m, where the buses are
@@ -357,13 +389,13 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
     const L = Math.min(len(s.points), 90), A = across(s.points, 6, s.width - 0.6, 2.0, 3.8), B = across(s.points, L - 6, s.width - 0.6, 2.0, 3.8);
     if (!clearOf({ ...A, w: A.w * 0.6 }).ok || !clearOf({ ...B, w: B.w * 0.6 }).ok) continue;
     usedAl.push(s);
-    add(name, name.replace(/ (\w+)$/, ' *$1*!'), 1500, B, { pre: [A], within: within(dist3(A, B)) });
-    add(name, name.replace(/ (\w+)$/, ' *$1*!'), 1500, neg(A), { pre: [neg(B)], within: within(dist3(A, B)) });
+    add(name, name.replace(/ (\w+)$/, ' *$1*!'), 1500, B, { pre: [A], within: within(dist3(A, B)), par: par(dist3(A, B)) });
+    add(name, name.replace(/ (\w+)$/, ' *$1*!'), 1500, neg(A), { pre: [neg(B)], within: within(dist3(A, B)), par: par(dist3(A, B)) });
     if (L > MAX_SEG + 12) {   // two halves as micros
       const M = across(s.points, L / 2, s.width - 0.6, 2.0, 3.8);
       if (clearOf({ ...M, w: M.w * 0.6 }).ok) for (const [i, a, b] of [[1, A, M], [2, M, B]]) {
-        add(`${name} ${i}/2`, `${name} *${i}/2*`, 750, b, { pre: [a], within: within(dist3(a, b)), micro: true, seg: name });
-        add(`${name} ${i}/2`, `${name} *${i}/2*`, 750, neg(a), { pre: [neg(b)], within: within(dist3(a, b)), micro: true, seg: name }); }
+        add(`${name} ${i}/2`, `${name} *${i}/2*`, 750, b, { pre: [a], within: within(dist3(a, b)), par: par(dist3(a, b)), micro: true, seg: name });
+        add(`${name} ${i}/2`, `${name} *${i}/2*`, 750, neg(a), { pre: [neg(b)], within: within(dist3(a, b)), par: par(dist3(a, b)), micro: true, seg: name }); }
     }
     report.push(`  (${name}: ${s.ko || s.id} ${s.width} m wide, ${Math.round(L)} m flown, ${(e * 100).toFixed(0)} % walled)`);
     break;
@@ -430,12 +462,12 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
   }
   if (chain) {
     const C = chain.slice().reverse(), A = C[0].G, B = C[C.length - 1].G, L = C[C.length - 1].k === 0 ? C[0].k : dist3(A, B);
-    add('ROOFLINE', 'ROOF*LINE*!', 1500, B, { pre: [A], within: within(L) });
-    add('ROOFLINE', 'ROOF*LINE*!', 1500, neg(A), { pre: [neg(B)], within: within(L) });
+    add('ROOFLINE', 'ROOF*LINE*!', 1500, B, { pre: [A], within: within(L), par: par(L) });
+    add('ROOFLINE', 'ROOF*LINE*!', 1500, neg(A), { pre: [neg(B)], within: within(L), par: par(L) });
     const N = C.length - 1;
     for (let i = 0; i < N; i++) { const a = C[i].G, b = C[i + 1].G, l = C[i].k - C[i + 1].k;
-      add(`ROOFLINE ${i + 1}/${N}`, `ROOFLINE *${i + 1}/${N}*`, 750, b, { pre: [a], within: within(l), micro: true, seg: 'ROOFLINE' });
-      add(`ROOFLINE ${i + 1}/${N}`, `ROOFLINE *${i + 1}/${N}*`, 750, neg(a), { pre: [neg(b)], within: within(l), micro: true, seg: 'ROOFLINE' }); }
+      add(`ROOFLINE ${i + 1}/${N}`, `ROOFLINE *${i + 1}/${N}*`, 750, b, { pre: [a], within: within(l), par: par(l), micro: true, seg: 'ROOFLINE' });
+      add(`ROOFLINE ${i + 1}/${N}`, `ROOFLINE *${i + 1}/${N}*`, 750, neg(a), { pre: [neg(b)], within: within(l), par: par(l), micro: true, seg: 'ROOFLINE' }); }
     report.push(`  (ROOFLINE: ${C[0].k} m of roofs into E's ROOF SLOT, ${N} pieces, gates ${C.slice(0, -1).map((c) => `${c.k} m ${c.slot ? 'slot' : 'open'} (${c.side.toFixed(1)} m)`).join(', ')})`);
   } else {
     const roofAt = (s) => { const p = at(red.points, s); let h = 0; for (const l of layout.lots) { const d = Math.min(...l.footprint.map((q) => Math.hypot(q[0] - p.x, q[1] - p.z))); if (d < 18) h = Math.max(h, H(l)); } return h; };
@@ -555,7 +587,10 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
 // opening, either way). Each line carries `piece`: take.js flies it only while world.setPieces holds that id, so this
 // lines.json also works on a build without the pieces. The stairs are a dive (one way); the rest go either way.
 const SET_LINES = {
-  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true },
+  // [P4-F1 design #1] the dive's pre-gate at 2.0-2.7 m under the canopy lip (2.76 m), not E's 0.55-2.35 m in the mouth:
+  // someone stands or walks on that approach 100 % of the time (the steps themselves <= 1 %), and forced dives took 20
+  // HEADS! in 18. From there to E's landing gate is the ~27 deg dive, over the heads and under the roof.
+  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true, preY: [2.0, 2.7] },
   'under-the-stage': { name: 'UNDER THE STAGE', caption: 'UNDER THE *STAGE*!', pts: 1500 },
   'bus-shelter': { name: 'BUS SHELTER', caption: 'THROUGH THE *SHELTER*!', pts: 1000 },
   'cable-thread': { name: 'CABLE THREAD', caption: 'CABLE *THREAD*!', pts: 1500 },
@@ -577,6 +612,12 @@ function pieceMoves(sp) {   // -> [{pre: rect | null, gate: rect}]
     const mv = pieceMoves(sp).filter((m) => m.gate);
     if (!mv.length) { report.push(`  (set piece ${sp.id}: no gates, no line)`); continue; }
     for (const m of mv) {
+      if (m.pre && L.preY) {
+        const [y0, y1] = L.preY, was = `${(m.pre.c[1] - m.pre.h / 2).toFixed(2)}-${(m.pre.c[1] + m.pre.h / 2).toFixed(2)}`;
+        m.pre = { ...m.pre, c: [m.pre.c[0], r3((y0 + y1) / 2), m.pre.c[2]], h: r3(y1 - y0) };
+        const run = Math.hypot(m.gate.c[0] - m.pre.c[0], m.gate.c[2] - m.pre.c[2]), drop = m.pre.c[1] - m.gate.c[1];
+        report.push(`  (${L.name}: pre-gate ${was} m -> ${y0}-${y1} m; the dive to the gate ${run.toFixed(1)} m on, ${drop.toFixed(2)} m down: ${(Math.atan2(drop, run) * 180 / Math.PI).toFixed(1)} deg, straight path ${openPath(m.pre, m.gate) === true ? 'open' : 'hit at ' + openPath(m.pre, m.gate) + ' m'})`);
+      }
       if (m.pre) {
         const w = within(dist3(m.pre, m.gate) + 4);
         add(L.name, L.caption, L.pts, m.gate, { pre: [m.pre], within: w, piece: sp.id });
@@ -585,7 +626,10 @@ function pieceMoves(sp) {   // -> [{pre: rect | null, gate: rect}]
     }
     made.push(`${sp.id} (${mv.length})`);
   }
-  report.push(`  (set pieces: ${pieces.length ? `${pieces.length} from seoul-dressing.js, lines for ${made.join(', ') || 'none'}` : 'seoul-dressing.js absent or without setPieces: no set-piece lines'})`); }
+  report.push(`  (set pieces: ${pieces.length ? `${pieces.length} from seoul-dressing.js, lines for ${made.join(', ') || 'none'}` : 'seoul-dressing.js absent or without setPieces: no set-piece lines'})`);
+  // [P4-F1 design #4] a new profile's first line is the stage (toward the hub: its exit runs into the walking street)
+  if (stageExit) { const f = lines.find((l) => l.name === 'UNDER THE STAGE' && Math.hypot(l.c[0] - stageExit.G.c[0], l.c[2] - stageExit.G.c[2]) < 0.5);
+    if (f) f.first = true; else { const w = lines.find((l) => l.name === 'WALKING STREET' && l.pre); if (w) w.first = true; } } }
 
 // ---- [P3-F1 design #2] no gate a vehicle can touch. Phase 2: a bus filled BUS SHELTER's gate 42 % of 240 s and 4 of 4 sim
 // flights crashed `by: 'bus'`. Every gate (and pre-gate) below the vehicles' reach is probed against the drawn traffic
@@ -619,13 +663,23 @@ const R_PROBE = 0.35, NU = 9;
   for (const nm of gone) if (!lines.some((l) => l.name === nm)) report.push(`  (vehicles: ${nm} has no gate left a vehicle can't touch: no line until the traffic keeps out (G1))`);
   report.push(`  (vehicles: ${gs.length} gates probed over 600 s in ${((Date.now() - t0) / 1000).toFixed(1)} s, ${touched.length} touched)`); }
 
+// ---- [P4-F1 design #2] the low preset (half the people) draws its club queues elsewhere: seoul-life.js takes a queue's door
+// and length from the crowd's shared random stream after the walkers, whose number follows maxAgents. The queue moves here
+// are placed on the game's (auto) crowd; this reports how far each one's queue moves at low (contract for G1: draw the
+// queues from their own seed, q.seed, so every preset stands them in the same place).
+{ const low = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('low'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });
+  const byLot = new Map((low.crowd?.queues || []).map((q) => [q.lot, q]));
+  const mine = (lifeSim.crowd?.queues || []).filter((q) => usedQ.has(q.id));
+  report.push(`  (queues at the low preset (${lifeAgents('low')} people): ${mine.map((q) => { const o = byLot.get(q.lot); return o ? `${q.lot} door ${Math.hypot(o.door[0] - q.door[0], o.door[1] - q.door[1]).toFixed(1)} m off, ${o.Q} not ${q.Q} people` : `${q.lot} gone`; }).join('; ') || 'none used'})`); }
+
 // ---- [P3-F1 UX #2] one source for line copy: every named line carries `hint` (the LINES grid and the pause menu read it;
 // F2 builds levels.json lineNames from lines.json). Measured here, so a hint can't go stale (phase 2: "the 1.15 m slot" of a
 // 1.29 m gate). Plain ASCII + the UI's middle dot: the menu font is subset to the hangul the UI already shows.
 { const L1 = (nm) => lines.find((l) => l.name === nm && !l.micro);
   const sp = (id) => (geo.setPieces || []).find((p) => p.id === id);
   const HINTS = {
-    'WALKING STREET': () => `the walking street end to end, ${Math.round(WL / 10) * 10} m over the crowd`,
+    // [P4-F1] the line's own length (phase 3 said 310 m, the street's: the line was 291 m)
+    'WALKING STREET': () => `the walking street to Hongik-ro · ${Math.round(WS.span)} m over the crowd`,
     'RED ROAD': () => 'the Red Road fork · under the blades, over the queue',
     'BAR ALLEY': () => 'Wausan-ro 21-gil · under the service drops',
     'CLUB STREET': () => 'Wausan-ro 19-gil · past the club doors',
@@ -657,8 +711,14 @@ const yawTo = (dx, dz) => Math.atan2(-dx, -dz);
 const st = (name, s, pts, y, back = 8) => { const p = at(pts, s), sgn = s < 0 ? -1 : 1; return { name, pos: [r3(p.x - p.tx * back * sgn), y, r3(p.z - p.tz * back * sgn)], yaw: r3(yawTo(p.tx * sgn, p.tz * sgn)) }; };
 const hint = (text, line) => ({ hint: { text, line, until: 2, next: line } });
 const SC = lines.find((l) => l.name === 'SCREEN CANYON');
+// [P4-F1 design #4 / UX #3] the spawn names the stage first; hint.r keeps take.nextHint's arrow on the stage until its
+// pre-gate is behind you (the rule-1b radius: the pre-gate's distance + 4 m)
+const stageL = lines.find((l) => l.name === 'UNDER THE STAGE' && l.first);
+const walkStart = { ...st('Walking street', 15, WP, 3.2) };
 const startPoints = [
-  { ...st('Walking street', 15, WP, 3.2), ...hint('FLY THE WALKING STREET · OVER THE HEADS', 'WALKING STREET') },
+  stageL ? { ...walkStart, hint: { text: 'UNDER THE STAGE · THEN THE WALKING STREET', line: 'UNDER THE STAGE', until: 2, next: 'UNDER THE STAGE',
+    r: Math.ceil(Math.hypot(stageL.pre[0].c[0] - walkStart.pos[0], stageL.pre[0].c[2] - walkStart.pos[2]) + 4) } }
+    : { ...walkStart, ...hint('FLY THE WALKING STREET · OVER THE HEADS', 'WALKING STREET') },
   { ...st('Bar alley', 12, club.points, 3.2), ...hint('DOWN THE BAR ALLEY · UNDER THE DROPS', 'BAR ALLEY') },
   { name: 'Exit 9', pos: SC.pre[0].c.map((v, i) => i === 1 ? r3(v) : r3(v - SC.pre[0].n[i] * 10)), yaw: r3(yawTo(SC.n[0], SC.n[2])), ...hint('DOWN THE SCREEN CANYON · ABOVE THE BUSES', 'SCREEN CANYON') },
   { ...st('Hongik-ro', 10, hong.points, 6.5), ...hint('DOWN HONGIK-RO · OVER THE TRAFFIC', 'HONGIK-RO') },
@@ -680,9 +740,11 @@ for (const sp of startPoints) {
 // micros chained 164-190k, or 54-78k with a bank (3 at 150k). The chain is held while a line is armed (UX #2), micros add
 // no FLOW (FLOW counts lines: x4-6 on a long take), the bank timer covers a 50-100 m transit between streets, the hold
 // zone is 1.5 m (6-10 m streets), PACE is scaled to a 1 km map, and the first-line guide only works near the spawn (design #4).
-const tuning = { stars: [18000, 60000, 150000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [120, 300, 1.5], microFlow: 0 };
-// a copy on the `first` line for world loaders that pass lines[] only (take.js reads either)
-const firstLine = lines.find((l) => l.first); if (firstLine) firstLine.tuning = tuning;
+// [P4-F1] design #3: PACE from [120, 300] s to [60, 180] (every phase-3 take got x1.5) and timed line events (UX #6: the
+// move's time and best); stars re-fitted at the game's crowd (see the phase-4 report).
+const tuning = { stars: [18000, 60000, 150000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [60, 180, 1.5], microFlow: 0, timed: true };
+// a copy on the first named non-set-piece line for world loaders that pass lines[] only (take.js reads either)
+const firstLine = lines.find((l) => !l.piece && !l.micro && l.pre); if (firstLine) firstLine.tuning = tuning;
 const out = { version: 2, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', tuning, lines, funnels, startPoints,
   takeStart: { pos: startPoints[0].pos, yaw: startPoints[0].yaw, hint: startPoints[0].hint } };
 fs.writeFileSync(new URL('lines.json', ROOT), JSON.stringify(out, null, 1));
