@@ -191,7 +191,8 @@ if (existsSync('seoul/people/people.json')) {
   const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
   const L3 = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene() }), C3 = L3.crowd, q0 = new THREE.Quaternion();
   C3.evaluate(140, null, { avoid: false }); let wi = -1;
-  for (let i = 0; i < C3.people.length; i++) if (C3.people[i].kind === K_WALK && C3.VIS[i] && C3.WALK[i] > 0.9 && Math.hypot(C3.X[i] + 36, C3.Z[i] + 23) < 40) { wi = i; break; }
+  // (P5: 1 person in 3 ducks: pick one of those)
+  for (let i = 0; i < C3.people.length; i++) if (C3.people[i].kind === K_WALK && C3.VIS[i] && C3.WALK[i] > 0.9 && Math.hypot(C3.X[i] + 36, C3.Z[i] + 23) < 40 && lifeMod.h32(i, 0xf11c) % 3 === 0) { wi = i; break; }
   let flinch = false, minD = 9, aside = 0, off = 0, sx = 0;
   const posOf = () => { for (const T of [...L3.group.children]) { const g = T.geometry; if (!g?.isInstancedBufferGeometry || !g.attributes.iLook || !/crowd/.test(T.name)) continue; for (let k = 0; k < g.instanceCount; k++) if (g.attributes.iLook.array[k * 4 + 3] === Math.fround(((C3.people[wi].id * 2654435761) >>> 0) / 4294967296)) return [g.attributes.iPos.array[k * 4], g.attributes.iPos.array[k * 4 + 2], g.attributes.iAnim.array[k * 4 + 2], g.attributes.iAnim.array[k * 4 + 1]]; } return null; };
   for (let k = 0; k < 60; k++) {   // 2 s at 30 fps, the camera 1.6 m beside the walker at 1.5 m
@@ -203,6 +204,44 @@ if (existsSync('seoul/people/people.json')) {
     minD = Math.min(minD, Math.hypot(P[0] - cam.x, P[1] - cam.z));
   }
   ok(wi >= 0 && flinch && aside > 0.3 && off < 3.5, `a low drone 1.6 m off a walker: flinch ${flinch}, stepped ${aside.toFixed(2)} m away, drawn ${off.toFixed(2)} m from its collider (P3: walked into the lens at 1.65 m)`);
+}
+// life #4 / fpv #3 (P5): no ghost walkers. In a hover (the drone still at 2.2 m over the walking street's footway, 3 s at
+// 60 fps) every near-tier instance's instanceVelocity (what A's object blur smears by) must match how far that person is
+// actually drawn moving frame to frame, and nobody may jump: a smear on someone standing, or a pop, is a ghost.
+{
+  const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
+  const L4 = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene() }), q0 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 2.2);
+  const cam = new THREE.Vector3(-36, 2.2, -23), near = L4.group.children.find((m) => m.name === 'crowd-near'), T0 = near.geometry.attributes;
+  const tier = L4.group.children.filter((m) => /^crowd-near/.test(m.name));
+  let prev = new Map(), n = 0, smear = 0, jump = 0, worst = 0;
+  for (let k = 0; k < 180; k++) {
+    const t = 30 + k / 60; L4.update(t, cam, q0);
+    const cur = new Map(), pid = L4.tierPids?.(0) || null; if (!pid) break;
+    for (let s = 0; s < near.geometry.instanceCount; s++) {
+      const i = pid[s], x = T0.iPos.array[s * 4], z = T0.iPos.array[s * 4 + 2], v = Math.hypot(T0.instanceVelocity.array[s * 3], T0.instanceVelocity.array[s * 3 + 2]); cur.set(i, [x, z]);
+      const p = prev.get(i); if (!p || k === 0) continue; n++;
+      const act = Math.hypot(x - p[0], z - p[1]) * 60;
+      if (act > 3.5) jump++; else if (Math.abs(v - act) > 0.9) { smear++; worst = Math.max(worst, Math.abs(v - act)); }
+    }
+    prev = cur; void tier;
+  }
+  ok(n > 2000 && smear <= 0.005 * n && jump <= 0.001 * n, `hover: ${n} near-tier instance-frames, ${smear} whose blur velocity is off their drawn motion by > 0.9 m/s (worst ${worst.toFixed(2)}), ${jump} jumps > 3.5 m/s (ghost walkers, fpv #3)`);
+}
+// life #6 (P5): a fresh tableau per attempt. Retry n opens the city at warm + attemptTicks(n) / 240 s (75-240 s in, not
+// past the pre-roll), the movers collide with the vehicles drawn (P4: the movers ran 75 s behind the screen), and a jump
+// to a later city restores the pre-roll's snapshots instead of re-simulating.
+{
+  const lifeMod = await import('../seoul-life.js'), THREE = await import('three'), { lifeMovers } = await import('../seoul-movers.js');
+  const L5 = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene() });
+  const a0 = L5.attemptTicks(1); let pr = 0; const tp = performance.now(); while (pr < LIFE.warmMax + 15) pr = L5.sim.preroll(600); const prMs = performance.now() - tp;
+  const W = L5.colliders.warm, ws = [1, 2, 3, 4, 5, 6].map((n) => W + L5.attemptTicks(n) / 240);
+  const M = lifeMovers(L5); let same = 0, tried = 0, worstMs = 0;
+  for (const n of [3, 1, 5]) {
+    const t0 = L5.attemptTicks(n) / 240 + 2.5, a = performance.now(); const B = L5.colliders.at(t0, []); worstMs = Math.max(worstMs, performance.now() - a);
+    for (const b of B.filter((x) => x.type !== 'scooter').slice(0, 6)) { tried++; const h = M.hit([b.c[0], b.c[1], b.c[2]], 0.1, t0); if (h && h.kind === 'vehicle' && h.id === b.id) same++; }
+  }
+  ok(a0 === 0 && new Set(ws.map((w) => w.toFixed(2))).size >= 5 && ws.every((w) => w >= W && w <= LIFE.warmMax) && Math.max(...ws) - Math.min(...ws) > 60 && same === tried && tried >= 12 && worstMs < 500,
+    `fresh tableau per retry: warm ${ws.map((w) => w.toFixed(0)).join(' / ')} s (before the pre-roll: +${a0}; pre-roll to ${pr.toFixed(0)} s ${prMs.toFixed(0)} ms in all); the movers hit the drawn vehicle ${same}/${tried}; a jump costs <= ${worstMs.toFixed(0)} ms`);
 }
 // life #2 (P4): vehicles right side out. P3's box() wound every face against its normal and the loft was wound inward (98 % of
 // a car's body faced in: a close taxi showed its far panel's inside, buses were hollow). Per primitive: >= 95 % of each part's

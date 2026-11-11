@@ -1288,7 +1288,7 @@ export async function buildSeoul(renderer, a, b) {
   const uniforms = { uTime: { value: 0 } };
   const ctx = { THREE, renderer, scene, layout, NIT, NITS, nitScale: NITS, LUX, rng, hash, seed: opts.seed ?? 11, quality: opts.quality || 'auto', bvh: geo.bvh, lotInfo: geo.lotInfo, poles: geo.poles, cables: geo.cables, uniforms,
     streetById: new Map(layout.streets.map((s) => [s.id, s])), lotById: new Map(layout.lots.map((l) => [l.id, l])), takeClock: opts.takeClock || null,
-    setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null };   // [P3-G1] life #5/#6: busk under E's stage, walk round E's dressing
+    setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null };   // ([P5-G1] + stairwell openings: nobody stands in one)   // [P3-G1] life #5/#6: busk under E's stage, walk round E's dressing
   if (opts.lightmap != null) ctx.lightmap = opts.lightmap;   // [P4 H] node tools (the export) ask for D's night lightmap, baked in line
   // partner modules (each optional)
   prog(0.65, 'Hongdae: signs');

@@ -47,7 +47,7 @@ function boxHit(p, r, cx, cy, cz, hw, hh, hl, hx, hz, out) {
 
 class Movers {
   constructor(src) {
-    this.src = src;                                   // shared, read-only: {TS, net, seed, hz, peds, grid, people}
+    this.src = src;                                   // shared, read-only: {TS, net, seed, hz, peds, grid, people, warm?, snaps?}
     this.ts = src.TS ? new src.TS(src.net, { seed: src.seed }) : null;
     this.bn = -1; this.bb = null;                     // broad phase of traffic step bn: Float64Array [x0, x1, z0, z1] per vehicle
     this._o = {}; this._a = {}; this._b = {};
@@ -56,11 +56,17 @@ class Movers {
   }
   fork() { return new Movers(this.src); }
   // the traffic at take clock t (LifeSim.advanceTo's arithmetic): returns the interpolation alpha
+  // (P5 G1) at take clock + the life's warm start (seoul-life draws and serves its people at t + warm: P4 hit the traffic of
+  // 75 s earlier than the one on screen), and seeking through the life sim's snapshots, so a rewind or a retry that opens on
+  // a later city costs at most 10 s of traffic, not a re-run from 0
   _advance(t) {
-    const ts = this.ts, hz = this.src.hz;
-    t = Math.max(0, t);
+    const ts = this.ts, hz = this.src.hz, S = this.src.snaps;
+    t = Math.max(0, t + (this.src.warm ? this.src.warm() : 0));
     const nt = Math.floor(t * hz + 1e-9);
-    if (nt < ts.n) ts.reset();
+    if (nt < ts.n || (S && nt - ts.n > 1200)) {
+      let best = -1; if (S) for (const k of S.keys()) if (k <= nt && k > best && (nt < ts.n || k > ts.n)) best = k;
+      if (best >= 0) ts.restore(S.get(best)); else if (nt < ts.n) ts.reset();
+    }
     while (ts.n < nt) ts.step();
     let a = ts.n === 0 ? 1 : t * hz - (ts.n - 1);
     return Math.min(1, Math.max(0, a));
@@ -161,7 +167,8 @@ export function lifeMovers(life) {
   const people = col && typeof col.people === 'function' ? (p, r, t) => col.people(p, r, t) : null;
   if (!TS && !grid && !people) return null;
   const hz = tr?.dt ? Math.round(1 / tr.dt) : 60;
-  return new Movers({ TS, net: sim?.net, seed: tr?.seed ?? 1, hz, peds, grid, people });
+  const warm = col && 'warm' in col ? () => +col.warm || 0 : null, snaps = sim?.snaps instanceof Map && hz === 60 ? sim.snaps : null;
+  return new Movers({ TS, net: sim?.net, seed: tr?.seed ?? 1, hz, peds, grid, people, warm, snaps });
 }
 
 export default { lifeMovers, PED_R, PED_H };
