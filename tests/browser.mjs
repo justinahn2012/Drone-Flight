@@ -86,6 +86,8 @@ const CDN = [['https://cdn.jsdelivr.net/npm/three@0.180.0/', join(NM, 'three')],
 let fails = 0;
 const ok = (c, msg) => { console.log(`${c ? 'ok  ' : 'FAIL'} ${msg}`); if (!c) fails++; return !!c; };
 const errors = [];
+let phase = 'load';
+const grouped = (list) => { const m = new Map(); for (const e of list) m.set(e, (m.get(e) || 0) + 1); return [...m].map(([e, n]) => (n > 1 ? `${n} x ` : '') + e); };
 mkdirSync(OUT, { recursive: true });
 const t0 = Date.now(), sec = () => ((Date.now() - t0) / 1000).toFixed(0) + ' s';
 
@@ -95,10 +97,13 @@ const browser = await chromium.launch({ headless: true, executablePath: process.
 try {
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   page.setDefaultTimeout(TIMEOUT);
-  page.on('console', (m) => { if (m.type() === 'error' && !ALLOW.some((r) => r.test(m.text()))) errors.push(`[console.error] ${m.text().slice(0, 800)}`); });
-  page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
-  page.on('requestfailed', (r) => { if (!/fonts\.g/.test(r.url())) errors.push(`[requestfailed] ${r.url()} ${r.failure()?.errorText}`); });
-  page.on('response', (r) => { if (r.status() >= 400 && !ALLOW.some((x) => x.test(r.url()))) errors.push(`[http ${r.status()}] ${r.url()}`); });
+  // [P3 H] each error carries the phase it happened in and, for a page error, the top of its stack (file:line); the report
+  // groups identical ones with a count (integ8: one audio error 184 times, with no line to fix it by)
+  const at = (st) => (st || '').split('\n').slice(1, 4).map((l) => l.trim().replace(/^at\s+/, '').replace(/https?:\/\/127\.0\.0\.1:\d+\//g, '')).join(' < ');
+  page.on('console', (m) => { if (m.type() === 'error' && !ALLOW.some((r) => r.test(m.text()))) { const l = m.location?.(); errors.push(`[console.error] (${phase}) ${m.text().slice(0, 800)}${l?.url ? ` @ ${l.url.replace(/https?:\/\/127\.0\.0\.1:\d+\//, '')}:${l.lineNumber}` : ''}`); } });
+  page.on('pageerror', (e) => errors.push(`[pageerror] (${phase}) ${e.message}${e.stack ? ' @ ' + at(e.stack) : ''}`));
+  page.on('requestfailed', (r) => { if (!/fonts\.g/.test(r.url())) errors.push(`[requestfailed] (${phase}) ${r.url()} ${r.failure()?.errorText}`); });
+  page.on('response', (r) => { if (r.status() >= 400 && !ALLOW.some((x) => x.test(r.url()))) errors.push(`[http ${r.status()}] (${phase}) ${r.url()}`); });
   await page.route('**/*', async (route) => {
     const u = route.request().url();
     for (const [pre, dir] of CDN) if (u.startsWith(pre)) { const f = join(dir, u.slice(pre.length).split('?')[0]); if (existsSync(f)) return route.fulfill({ path: f, contentType: 'text/javascript', headers: { 'access-control-allow-origin': '*' } }); }
@@ -113,11 +118,12 @@ try {
   const ready = await page.waitForFunction(() => window.__onetake?.perfReady === true || /failed/.test(document.getElementById('perfProbe')?.textContent || ''), null, { timeout: TIMEOUT, polling: 1000 }).then(() => true, () => false);
   const probeText = await page.evaluate(() => document.getElementById('perfProbe')?.textContent || '(no probe overlay)');
   if (!ready || !(await page.evaluate(() => window.__onetake?.perfReady === true))) {
-    ok(false, `world did not load (${sec()}): ${probeText}\n     ${errors.join('\n     ')}`);
+    ok(false, `world did not load (${sec()}): ${probeText}\n     ${grouped(errors).join('\n     ')}`);
     throw new Error('load failed');
   }
   ok(await page.evaluate(() => window.__onetake.state === 'fly' || window.__onetake.state === 'crash'), `world loaded, flying (${sec()})`);
   if (!BANDO) ok(await page.evaluate(() => window.__onetake.levels?.loaded) === LEVEL, `level ${LEVEL} is the loaded world`);
+  phase = 'perf';
   if (!SKIP.has('perf')) {
   const perf = await page.evaluate(() => window.__onetake.perfRun(0));
   const segOk = perf.scales.length === 2 && perf.scales.every((s) => perf.segments.every((n) => Number.isFinite(s.seg[n]?.p90) && Number.isFinite(s.seg[n]?.gpuP50)));
@@ -127,6 +133,7 @@ try {
   }
 
   // ---- 3. coverage
+  phase = 'coverage';
   if (!SKIP.has('coverage') && ok(existsSync(join(EXPORTS, 'world.json')), `exports present (${EXPORTS})`)) {
     const { summarize } = await import('./coverage.js');
     const cov = await page.evaluate(async () => {
@@ -150,7 +157,7 @@ try {
   const golden = existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, 'utf8')) : { shots: {} }, now = {}, gate = !!CAMGATE[LEVEL] || a.includes('--camgate');
   if (gate) mkdirSync(join(OUT, 'camgate'), { recursive: true });
   for (const [name, [tp, vel]] of Object.entries(SHOT_SET)) {
-    const ts = Date.now();
+    const ts = Date.now(); phase = `still ${name}`;
     const shoot = () => page.evaluate(async ({ tp, vel, gate }) => {
       const o = window.__onetake; o.S.mode = 'acro'; o.applySettings(); o.fpv.setQualityRange?.(1, 1); o.fpv.scale = 1; o.controls.thr = 0.39;
       new Function('o', tp)(o);
@@ -195,9 +202,9 @@ try {
   }
   writeFileSync(join(OUT, 'stills.json'), JSON.stringify({ level: LEVEL, size: `${W}x${H}`, commit: process.env.GITHUB_SHA || null, shots: now }, null, 1) + '\n');
   if (UPDATE) writeGolden(now, golden, 'tests/browser.mjs --update');
-  ok(!errors.length, `no page / console / shader / request errors` + (errors.length ? `:\n     ${errors.join('\n     ')}` : ''));
+  ok(!errors.length, `no page / console / shader / request errors` + (errors.length ? ` (${errors.length}):\n     ${grouped(errors).join('\n     ')}` : ''));
 } catch (e) {
-  if (e.message !== 'load failed') { ok(false, `browser job threw: ${e.message}`); if (errors.length) console.log('     ' + errors.join('\n     ')); }
+  if (e.message !== 'load failed') { ok(false, `browser job threw: ${e.message}`); if (errors.length) console.log('     ' + grouped(errors).join('\n     ')); }
 } finally {
   await browser.close();
   server.close();
