@@ -44,7 +44,9 @@ export const DRESS_MATS = {
   // [P3-E graphics #2] the AC unit's face (tools/seoul-ac-face.py: louvres, fan grille, plate, grime), tinted per unit
   dr_ac: { color: [0.62, 0.62, 0.6], rough: 0.55, vcol: true, map: 'seoul/dressing/ac_face.png', noCol: true, albedo: [0.42, 0.42, 0.4] },
   // [P3-E fpv #3] background massing (procedural facades: the ring's building shader; uv = metres, colour = floorH, seed, H)
-  dr_mass: { color: [1, 1, 1], rough: 0.9, vcol: true, mass: true, albedo: [0.2, 0.19, 0.18] },
+  // [P4-E bug] fold: false (+ shader) so C's groupMeshes keeps it out of the city atlas group: folded, its colour attribute
+  // (floorH, seed, H) became a vertex tint of (3, 0.5, 12) and the 222 villas rendered violet (41, 28, 61) in the horizon still
+  dr_mass: { color: [1, 1, 1], rough: 0.9, vcol: true, mass: true, fold: false, shader: true, albedo: [0.2, 0.19, 0.18] },
   // [P3-E] clear vinyl (pocha fronts)
   dr_vinyl: { color: [0.32, 0.30, 0.28], rough: 0.12, transparent: true, opacity: 0.22, double: true, noCol: true, albedo: [0.05, 0.05, 0.05] },
 };
