@@ -153,6 +153,9 @@ vec3 tap(vec2 uv, float lod){
 vec4 tap4(vec2 uv, float lod){
   vec2 h = 0.5 * exp2(lod) / uVp;
   vec4 c = textureLod(tColor, clamp(uv, h, 1.0 - h) * uScale, lod);
+  // [P4-A] a NaN/Inf texel (main's walk0 and w21 carry 123 and 30 NaN radiance pixels in shop glass) would poison the 1/8 block
+  // the meter and the bloom read and spread through every PSF lobe: it reads as black (the compare is false for NaN)
+  if (!(abs(c.r) + abs(c.g) + abs(c.b) < 1.0e5)) c = vec4(0.0, 0.0, 0.0, 1.0);
   return vec4(c.rgb, clamp(c.a - 1.0, 0.0, 1.0));
 }
 #endif
@@ -178,14 +181,24 @@ void main(){
 #ifdef NIGHT
   // [P2-A] object motion blur: on a mover's swept footprint (its geometry extruded along its velocity) in front of the static
   // surface, the smear is the camera's path plus the mover's own displacement (max of camera and object motion, combined)
+  // [P4-A] FPV bug (steps on trailing edges): the fastest mover in the 3x3 velocity texels round this one (a max dilation at
+  // depth res), so the footprint has no holes where the extruded silhouette splits and its edge isn't a half-res stair
   vec2 vo = vec2(0.0);
   if (uVelOn > 0.5) {
-    vec4 vv = texelFetch(tVel, clamp(ivec2(vUv * uDVp), ivec2(0), ivec2(uDVp) - 1), 0);
-    if (vv.a > 0.5 && vv.b < zX * 1.03) { vo = vv.rg; a -= 0.5 * vo; b += 0.5 * vo; }
+    ivec2 vc = ivec2(vUv * uDVp), vm = ivec2(uDVp) - 1; float vb = -1.0;
+    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+      vec4 vv = texelFetch(tVel, clamp(vc + ivec2(dx, dy), ivec2(0), vm), 0);
+      float l2 = dot(vv.rg, vv.rg);
+      if (vv.a > 0.5 && vv.b < zX * 1.03 && l2 > vb) { vb = l2; vo = vv.rg; }
+    }
+    a -= 0.5 * vo; b += 0.5 * vo;
   }
 #endif
   float lenPx = length((b - a) * uVp);
   float n = clamp(ceil(lenPx / 1.6), 1.0, uMaxS);
+#ifdef NIGHT
+  if (dot(vo, vo) > 0.0 && length(vo * uVp) > 2.0) n = max(n, min(12.0, uMaxS));   // [P4-A] movers: >= 12 jittered taps (no stepped copies)
+#endif
   float lod = clamp(log2(max(lenPx / n, 1.0) / 1.25), 0.0, uLodMax);   // prefilter: tap footprint ~ sample spacing
   float j = ign(gl_FragCoord.xy + uFrame * 5.588238);
   // 1) own surface along its own (curved, rolling-shutter, jello) path. With the reconstruction on, taps that land on
@@ -461,6 +474,7 @@ uniform vec4 uTone;       // filmic shoulder (Lottes 2016) per channel: x contra
 uniform float uTonePc;    // per-channel share of the shoulder (the rest is hue-preserving on max(rgb)): the path to white
 uniform vec3 uCore;       // white cores: x sensor crosstalk (share of the max channel in the min), y..z EV over the white point where cores ramp in
 uniform vec2 uMag;        // retro magenta roll-off: x amount (x uRetro), y Oklab chroma gate (neutral highlights stay neutral)
+uniform vec4 uMagEv;      // [P4-A] its window: EV over the AE target where it ramps in (x..y) and out (z..w)
 uniform sampler2D tSmall; // 1/8 lens-mapped frame (a: block-mean radiance): codec blocks
 uniform vec4 uCodec;      // x flatten amount, y..z exposed block level where it fades out, w share of the luma grain it removes
 uniform vec2 uSharpDark;  // exposed level where in-camera sharpening fades in (none in the shadows: no crunch on the noise)
@@ -475,6 +489,9 @@ uniform vec2 uCoreW;      // [P3-A] P3-B1 flag ramp (B's stroke-centre w peaks ~
 uniform vec3 uCoreSrcK;   // [P3-A] the source path's x crosstalk, y..z EV over the white point where its cores ramp in
 uniform vec2 uRetroSh;    // [P3-A] retro shadow split-tone: x Oklab hue (rad), y chroma at uRetro 1
 uniform vec2 uVibGate;    // [P3-A] Oklab hue band (rad) the retro vibrance leaves alone (amber rooms)
+uniform sampler2D tHaloM; // [P4-A] the PSF's middle lobe, 1/8 res: source-tinted halation 15-60 px out (colour #4, lighting #4)
+uniform float uHaloM;     // [P4-A] its energy share of the bright pass (0 = off)
+uniform vec3 uHaloMTint;  // [P4-A] its tint, luma 1 (neutral: the glow takes the source's colour)
 vec3 nightTone(vec3 e){
   vec3 x = max(e, 0.0);
   vec3 pc = pow(x, vec3(uTone.x)) / (pow(x, vec3(uTone.x * uTone.y)) * uTone.z + uTone.w);
@@ -533,9 +550,13 @@ const NIGHT_FINAL_BODY = /* glsl */`
     // 2) magenta roll-off: +1..+3 EV over the target shoulders into white through pink-magenta (330 deg); clipped cores stay white.
     //    [P2-A] keyed on the source (eCore), not source + halo: the glow ring round every sign no longer turns magenta; and only
     //    on highlights that already have colour (white windows and walls keep their white) (colour #3)
+    //    [P4-A] colour #5: the window runs to uMagEv (the coloured rims of letters and tubes, +3..+5 EV, take it too) and amber
+    //    (uVibGate) is left alone, so the amber rooms and the shop whites don't go salmon
     float evo = log2(max(dot(eCore, LUMA), 1e-6) / 0.24);
     float wc = 1.0 - smoothstep(0.92, 1.0, min(t.r, min(t.g, t.b)));
-    float wh = smoothstep(0.7, 1.6, evo) * (1.0 - smoothstep(2.6, 3.4, evo)) * wc * smoothstep(uMag.y, uMag.y + 0.03, length(lab.yz));
+    float C0 = length(lab.yz), h0 = C0 > 1e-5 ? atan(lab.z, lab.y) : 0.0; h0 += h0 < 0.0 ? 6.2831853 : 0.0;
+    float wh = smoothstep(uMagEv.x, uMagEv.y, evo) * (1.0 - smoothstep(uMagEv.z, uMagEv.w, evo)) * wc * smoothstep(uMag.y, uMag.y + 0.03, C0);
+    wh *= 1.0 - smoothstep(uVibGate.x - 0.1745, uVibGate.x, h0) * (1.0 - smoothstep(uVibGate.y, uVibGate.y + 0.1745, h0));
     lab.yz += vec2(0.866, -0.5) * (uMag.x * uRetro * wh);
     // 3) neon vibrance: bright AND already saturated pixels only (skin, asphalt and grey concrete are left alone)
     float C = length(lab.yz);
@@ -811,6 +832,9 @@ void main(){
 #ifdef NIGHT
   vec3 eCore = e;                                                          // pre-halo exposure: the clip/core test reads the source, not its glow
   e += texture(tHalo, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uHalo * uHaloTint;   // wide warm halation (lens glow + sensor scatter)
+  // [P4-A] colour #4 / lighting #4: the middle lobe, in the source's own colour: a letter's glow falls off over 15-60 px
+  // instead of stopping at a hard coloured rim (after eCore: the cores and the magenta key still read the source)
+  if (uHaloM > 0.0) e += texture(tHaloM, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uHaloM * uHaloMTint;
   // [P2-A] FPV #2: tBloom is the PSF's narrow lobe, tHalo its wide lobe (energy fractions of the uncapped bright pass)
   // [P3-A] colour #5 / FPV #6 / graphics #3: ghosts come from GHOST_FS (point sources only, aperture-shaped, desaturated)
   if (uGhostS.w > 0.0) e += texture(tGhost, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb;
@@ -953,12 +977,21 @@ export const GRADES = {
   //   them (lamps, headlights; neon and boxes don't), desaturated to ghostChroma, shaped by a ghostBlades-blade aperture with a
   //   ghostFringe chroma rim (GHOST_FS). retroShadow [Oklab hue deg, chroma]: one split-tone hue (the deep blue-violet swing is gone);
   //   retroVibGate [deg, deg]: the retro vibrance skips amber (rooms). aeArea 4th entry: area sources over 20 % of the taps weigh 0.3.
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.0, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.045,
+  // Phase 4 [P4-A] (panel 3 colour #1/#4/#5, lighting #4/#6; fitted offline on HDR captures of main 173666d: walk0/club270/w21/station):
+  //   evBias -2.0 -> -1.5, toe 0.045 -> 0.035 (colour #1, recover the stop: converged p50 walk0 31 -> 45, club270 29 -> 43, w21 26 -> 39,
+  //   station 39 -> 56; below 16 28/22/34/32 -> 16/9/20/26 %). aeArea unchanged: re-fit once C's shop nits and wall albedos land
+  //   (lighting #6). coreEvSrc [-4, -2] -> [-4.5, -1]: the white-to-colour ramp spreads over the stroke (colour #4).
+  //   haloM [energy, tap spacing (1/8 texels), passes]: the PSF's middle lobe, sigma ~2.5 texels at 1/8 (~20 px at 960 wide, visible
+  //   15-60 px out), 2.5 % of the bright pass in the source's own colour (haloMTint neutral): letters glow instead of stopping at a rim.
+  //   retroShadow 205 -> 230 deg (walls blue-grey, not green-teal); mag 0.035 -> 0.07 with its window magEv [in0, in1, out0, out1] EV
+  //   over the AE target running to +4.2 (letter and tube rims) and amber (retroVibGate) left alone (rooms, shop whites).
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -1.5, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.035,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
+    haloM: [0.025, 1.4, 1], haloMTint: [1, 1, 1],
     ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
-    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-4, -2], retroShadow: [205, 0.06], retroVibGate: [40, 100],
-    mag: 0.035, magC: 0.04, grain: 0, grainEv: [0, 0], grainPx: 2,
+    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-4.5, -1], retroShadow: [230, 0.06], retroVibGate: [40, 100],
+    mag: 0.07, magC: 0.04, magEv: [0.7, 1.6, 3.2, 4.2], grain: 0, grainEv: [0, 0], grainPx: 2,
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
     codec: [0.4, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
     recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,
@@ -1193,7 +1226,9 @@ export class FPVCamera {
       tNoise: { value: null }, uNoiseOff: { value: new V4() }, uNoiseOffC: { value: new V4() }, uNoiseK: { value: new V4(1.4, 8, 0, 1) },
       uGhostS: { value: new V4(0, 0, 0, 0) },
       // [P3-A]
-      tGhost: { value: null }, uCoreSrc: { value: new V2(1e9, 2e9) }, uCoreSrcK: { value: new V3(0, 0, 2) }, uCoreW: { value: new V2(0.05, 0.35) }, uRetroSh: { value: new V2(3.578, 0.06) }, uVibGate: { value: new V2(7, 7) } };
+      tGhost: { value: null }, uCoreSrc: { value: new V2(1e9, 2e9) }, uCoreSrcK: { value: new V3(0, 0, 2) }, uCoreW: { value: new V2(0.05, 0.35) }, uRetroSh: { value: new V2(3.578, 0.06) }, uVibGate: { value: new V2(7, 7) },
+      // [P4-A]
+      tHaloM: { value: null }, uHaloM: { value: 0 }, uHaloMTint: { value: new V3(1, 1, 1) }, uMagEv: { value: new V4(0.7, 1.6, 2.6, 3.4) } };
     const bl = () => pass(BLOOM_FS, { tSrc: { value: null }, uDir: { value: new V2() } });
     this._nightP = {
       down: pass(DOWN_FS, this.down.u, D), final: pass(FINAL_FS, nfU, D),
@@ -1257,7 +1292,7 @@ void main(){
 void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       }),
       exp: [rt(1, 1, { filter: THREE.NearestFilter, type: THREE.HalfFloatType }), rt(1, 1, { filter: THREE.NearestFilter, type: THREE.HalfFloatType })], idx: 0,
-      haloA: null, haloB: null,
+      haloA: null, haloB: null, midRT: null,
     };
     return this._nightP;
   }
@@ -1775,6 +1810,21 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
         r.setRenderTarget(NP.ghostRT); r.clear(true, false, false); r.render(NP.ghost.scene, this.quadCam);
       }
       NP.ghostOn = gs.length > 0;
+      // [P4-A] the PSF's middle lobe (colour #4, lighting #4): the narrow lobe blurred again at 1/8 (haloM [energy, tap spacing
+      // in 1/8 texels, passes]; sigma ~1.7 x spacing texels per pass), kept in the source's colour
+      const hm = lk.haloM;
+      NP.midOn = !!(hm && hm[0] > 0);
+      if (NP.midOn) {
+        if (!NP.midRT || NP.midRT.width !== bw || NP.midRT.height !== bh) { NP.midRT?.dispose(); NP.midRT = rt(bw, bh, { type: THREE.HalfFloatType }); }
+        let ms = this.bloomB;
+        for (let it = 0; it < Math.max(1, Math.min(3, hm[2] || 1)); it++) {
+          NP.haloH.u.tSrc.value = ms.texture; NP.haloH.u.uDir.value.set((hm[1] ?? 1.5) / bw, 0);
+          r.setRenderTarget(this.bloomA); r.clear(true, false, false); r.render(NP.haloH.scene, this.quadCam);
+          NP.haloV.u.tSrc.value = this.bloomA.texture; NP.haloV.u.uDir.value.set(0, (hm[1] ?? 1.5) / bh);
+          r.setRenderTarget(NP.midRT); r.clear(true, false, false); r.render(NP.haloV.scene, this.quadCam);
+          ms = NP.midRT;
+        }
+      }
     }
 
     // 8) lens + colour science + sensor -> screen
@@ -1815,7 +1865,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       nf.uCoreSrcK.value.set(lk.coreXtalkSrc ?? lk.coreXtalk ?? 0, ces[0], ces[1]); nf.uCoreW.value.fromArray(lk.coreW || [0.05, 0.35]);
       const rsh = lk.retroShadow || [205, 0.06]; nf.uRetroSh.value.set(rsh[0] * Math.PI / 180, rsh[1]);
       const vg = lk.retroVibGate; if (vg) nf.uVibGate.value.set(vg[0] * Math.PI / 180, vg[1] * Math.PI / 180); else nf.uVibGate.value.set(7, 7);
-      nf.uMag.value.set(lk.mag ?? 0.05, lk.magC ?? 0);
+      nf.uMag.value.set(lk.mag ?? 0.05, lk.magC ?? 0); nf.uMagEv.value.fromArray(lk.magEv || [0.7, 1.6, 2.6, 3.4]);
       nf.tSmall.value = this.smallRT.texture;
       const cd = lk.codec || [0, 0.02, 0.08, 0]; nf.uCodec.value.set(cd[0], cd[1], cd[2], cd[3]);
       nf.uSharpDark.value.fromArray(lk.sharpDark || [0, 0]);
@@ -1827,6 +1877,10 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       nf.tNoise.value = NP.noise; nf.uNoiseOff.value.fromArray(o); nf.uNoiseOffC.value.fromArray(oc);
       nf.uNoiseK.value.set(nc[0], nc[1], lk.noiseFloor ?? 0, lk.chromaDark ?? 1);
       nf.uGhostS.value.set(0, 0, 0, NP.ghostOn ? 1 : 0); nf.tGhost.value = NP.ghostOn ? NP.ghostRT.texture : NP.haloB.texture;
+      // [P4-A] middle lobe: energy x8 when the bright pass is stored /8 (no half-float targets), as uBloom
+      nf.tHaloM.value = NP.midOn ? NP.midRT.texture : NP.haloB.texture; nf.uHaloM.value = NP.midOn ? lk.haloM[0] * (this.f16 ? 1 : 8) : 0;
+      const mt = lk.haloMTint || [1, 1, 1], ml = 0.2126 * mt[0] + 0.7152 * mt[1] + 0.0722 * mt[2];
+      nf.uHaloMTint.value.set(mt[0] / ml, mt[1] / ml, mt[2] / ml);
       nf.uRetro.value = rt0; nf.uRetroVib.value = lk.retroVib ?? 0.5; nf.uRetroCA.value = (lk.retroCA || 0) * rt0 * 0.004;
       nf.uNoise.value.fromArray(lk.noise || [0.010, 0.0011, 1.6]); nf.uNoiseRGB.value.fromArray(lk.noiseRGB || [1.1, 0.8, 1.5]);
       nf.uNoiseEv.value.set(lk.evMax - (lk.noiseSpan ?? 6), lk.noiseSpan ?? 6);
@@ -1880,9 +1934,9 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
           source: { radiance: lk.coreSrc, flagRamp: lk.coreW, xtalk: lk.coreXtalkSrc, ev: lk.coreEvSrc } },
         ghosts: { list: lk.ghosts, sourceEv: lk.ghostEv, chroma: lk.ghostChroma, fringe: lk.ghostFringe, blades: lk.ghostBlades, resolution: 1 / 8, taps: 37,
           model: 'G(p) = w / s^2 * mean over the aperture (radius R, per channel R * (1 +- fringe)) of S(0.5 + (p - o - 0.5) / s); S = desat(bright pass) * smoothstep(sourceEv, log2(block luma / 0.24))' },
-        retro: { shadow: lk.retroShadow, vibGate: lk.retroVibGate },
+        retro: { shadow: lk.retroShadow, vibGate: lk.retroVibGate, magenta: { amount: lk.mag, chromaGate: lk.magC, ev: lk.magEv, amberGate: lk.retroVibGate } },
         meter: { grid: [16, 12], reject: lk.aeReject, areaSource: lk.aeArea, areaRule: '[thr, weight, weight when > share of taps are area, share] (soft +-0.05)', matrix: lk.aeMatrix, veilCapEv: lk.veilCapEv, resetSolvesCap: true },
-        psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, ghosts: lk.ghosts, cap: lk.bloomCap },
+        psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, mid: { energy: lk.haloM?.[0] ?? 0, spacing: lk.haloM?.[1], passes: lk.haloM?.[2], tint: lk.haloMTint || [1, 1, 1] }, ghosts: lk.ghosts, cap: lk.bloomCap },
         noise: { shot: (lk.noise || [])[0], read: (lk.noise || [])[1], chroma: (lk.noise || [])[2], floor: lk.noiseFloor, cellPx: lk.noiseCell, chromaDark: lk.chromaDark, temporal: 'mean of this and last frame lattice (corr 0.5)', texture: '256^2 gaussian, seed 0x9e3779b9 mulberry32' },
         codec: lk.codec, sharpDark: lk.sharpDark, objectBlur: { on: lk.objBlur, contract: 'P2-A1: world.motionMeshes / scene.userData.motionMeshes, geometry attribute instanceVelocity (m/s)' },
       } } : {}),

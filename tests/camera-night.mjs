@@ -77,7 +77,7 @@ ok(N.coreSrc && N.coreSrc[0] >= 35 && N.coreSrc[0] < N.coreSrc[1] && N.coreSrc[1
 ok(/clamp\(c\.a - 1\.0, 0\.0, 1\.0\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })) && /fragColor = vec4\(cs, 1\.0 \+ cw\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })) && /wSrc/.test(C.NIGHT_FINAL_BODY), 'P3-B1: the night blur carries w = clamp(a - 1, 0, 1) and the cores read it');
 ok(N.coreXtalkSrc >= N.coreXtalk && N.coreEvSrc[1] <= 0 && N.coreEvSrc[0] < N.coreEvSrc[1], 'true sources: more crosstalk, ramp under the white point');
 ok(N.ghosts.every((g) => g[1] <= 0.0015 && typeof g[2] === 'number' && Array.isArray(g[3])) && N.ghostEv[0] >= 7 && N.ghostChroma <= 0.3, 'ghosts: <= 0.0015, aperture radius, point sources over +7 EV, chroma <= 0.3');
-ok(N.retroShadow[0] === 205 && N.retroVibGate[0] >= 30 && N.retroVibGate[1] <= 110, 'retro: one shadow hue (205 deg), vibrance off amber');
+ok(N.retroShadow[0] === 230 && N.retroVibGate[0] >= 30 && N.retroVibGate[1] <= 110, 'retro: one shadow hue (230 deg, P4: blue-grey, not green-teal), vibrance off amber');
 ok(N.aeArea.length === 4 && N.aeArea[2] < N.aeArea[1], 'AE: area sources weigh less once they fill the frame');
 ok(/const GHOST_FS/.test(src) && !/uGhostT/.test(C.FINAL_FS), 'ghosts come from GHOST_FS, not mirrored bloom copies');
 {
@@ -90,6 +90,17 @@ ok(/const GHOST_FS/.test(src) && !/uGhostT/.test(C.FINAL_FS), 'ghosts come from 
   ok(k(inst)?.k === 'inst' && k(pose)?.k === 'pose' && k(pose).sa === 'iAnim' && k(ren)?.k === 'pose' && k(ren).va === 'iVel' && k(ren).sa === null && k(obj)?.k === 'obj', 'movers: instanced, posed (iPos) and rigid kinds');
   ok(k({ isMesh: true, ...A({ position: {} }) }) === null && k(null) === null, 'movers: untagged meshes are skipped');
 }
+
+// --- 5. [P4-A] phase-4 night camera: stop recovered, source-tinted middle lobe, magenta window + amber gate, NaN guard, mover dilation
+ok(N.evBias === -1.5 && N.toe === 0.035, 'P4 colour #1: evBias -1.5, toe 0.035');
+ok(N.coreEvSrc[0] === -4.5 && N.coreEvSrc[1] === -1, 'P4 colour #4: true-source ramp [-4.5, -1]');
+ok(Array.isArray(N.haloM) && N.haloM[0] >= 0.02 && N.haloM[0] <= 0.03 && N.haloM[1] > 0 && N.haloMTint.every((v) => v === 1), 'P4 colour #4: middle lobe 2-3 %, source-tinted');
+ok(/uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(C.NIGHT_FINAL_BODY ?? '') || /uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(pp(C.FINAL_FS, { NIGHT: 1 })), 'P4: FINAL adds the middle lobe after eCore');
+ok(!/tHaloM|uMagEv/.test(pp(C.FINAL_FS, {})), 'P4: bando FINAL has no middle lobe or magenta window');
+ok(N.mag === 0.07 && N.magEv.length === 4 && N.magEv[3] > N.magEv[2] && /uMagEv/.test(C.NIGHT_FINAL_BODY) && /h0/.test(C.NIGHT_FINAL_BODY), 'P4 colour #5: magenta x2, window to the rims, amber gated');
+ok(/1\.0e5\)\) c = vec4\(0\.0, 0\.0, 0\.0, 1\.0\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })), 'P4: night blur taps drop NaN/Inf radiance');
+ok(/for \(int dy = -1; dy <= 1; dy\+\+\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })) && /min\(12\.0, uMaxS\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })), 'P4 FPV bug: mover velocity 3x3 dilation, >= 12 taps on movers');
+{ const pn4 = cam.profile({ w: 1920, h: 1080 }); ok(pn4.night && pn4.night.psf.mid.energy === N.haloM[0] && JSON.stringify(pn4.night.retro.magenta.ev) === JSON.stringify(N.magEv), 'P4: profile carries the middle lobe and the magenta window'); }
 
 console.log(`camera-night tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

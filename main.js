@@ -505,6 +505,8 @@ function applyLook(level, def) {
     curLook = look; fpv.resetExposure = true;
   }
   if (level?.grade && typeof level.grade === 'object') for (const [k, v] of Object.entries(level.grade)) fpv.look[k] = Array.isArray(v) ? v.slice() : v;
+  // [P4-A] colour bug: ?retro= is the A/B knob, so it wins over the manifest's grade.retro (which lands after setLook read the URL)
+  if (look !== 'day' && params.has('retro') && params.get('retro') !== '' && Number.isFinite(+params.get('retro'))) fpv.look.retro = Math.max(0, Math.min(1, +params.get('retro')));
 }
 
 // [S0] build a procedural level by manifest id: import(level.module)[level.build](...level.args), args from
