@@ -849,7 +849,7 @@ export function geometry(layout, opts = {}) {
         const ao = 0.5 + 0.5 * Math.min(1, out) * (0.8 + 0.2 * hT);                       // inner cards sit in the crown's shade
         const g = clamp(turn + (out - 0.6) * 0.35 + (hT - 0.5) * 0.25 + (Rt() - 0.5) * 0.35, 0, 1);
         let col = (bare ? mixc(GOLD, BROWN, Rt() * 0.6) : g < 0.35 ? mixc(GRN, YEL, g / 0.35) : mixc(YEL, GOLD, (g - 0.35) / 0.65)).map((v) => v * ao * (0.85 + Rt() * 0.3));
-        if (o.rust) col = mixc(col, [0.62 * ao, 0.3 * ao, 0.09 * ao], 0.55 + 0.3 * g);
+        if (o.rust) col = mixc(col, [0.5 * ao, 0.22 * ao, 0.06 * ao], 0.7 + 0.25 * g);   // November zelkova: rust to brown (pop1: pale cream under the floods)
         card(c, (bare ? 0.75 : 1.05) + Rt() * 0.5, Rt() * Math.PI, (Rt() - 0.5) * 0.8, n, col, Math.floor(Rt() * 8));
       }
       // fallen leaves: flat cards on the pavement round the pit (more under a bare tree), off the carriageway
@@ -1030,17 +1030,17 @@ export function geometry(layout, opts = {}) {
   // panels (dark seams where the steel frame shows through), the roof sagging between the rafters, a clear vinyl front with
   // its roll at the top, the lit inside seen through it (a steel table, green bottles, stools), stools and crates outside.
   // [P4-E art #6] phase 3's tarp glowed as a flat box (tent8). Now the bulb makes a hot spot: emission = fill + I cos(theta) / d^2
-  // from the bulb, per vertex on a 6-8 x 5-6 grid (the roof over the bulb ~230 nits, the walls ~60, the low corners ~17), seams
+  // from the bulb, per vertex on a 6-8 x 5-6 grid (the roof over the bulb ~100 nits, the walls ~22, the low corners ~5), seams
   // where the frame shows through at a quarter of the tarp around them (2 stops) and 6 cm wide, a fogged vinyl front that
   // scatters the inside light (foggy below, clearer at the top, overlapping strips), and the inside lit by the bulb (table top,
   // bottles, stools), so the vinyl shows the tables.
   function tent(F, xo, w, d, R, idx) {
     const eave = 2.1, ridge = 2.62, hz = d / 2, hx = w / 2 - 0.05;
     const tarp = [srgb(0xff7a1a), srgb(0xf0641a), srgb(0xe8541c), srgb(0xff8a24)][idx % 4];
-    const lumOf = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], Nb = 60 / lumOf(tarp);   // 60 nits where k = 1
+    const lumOf = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], Nb = 22 / lumOf(tarp);   // 22 nits where k = 1 (60 clipped flat: tent0 at EV -2.25)
     const bulb = W(F, xo, 1.95, -0.1);
     const kAt = (p, n) => { const v = [p[0] - bulb[0], p[1] - bulb[1], p[2] - bulb[2]], d2 = v3.dot(v, v), cs = n ? Math.max(0.15, v3.dot(v, n) / Math.sqrt(d2)) : 0.7;
-      return 0.2 + 1.25 * cs / (d2 + 0.15); };
+      return 0.15 + 1.4 * cs / (d2 + 0.12); };
     const emAt = (p, n) => NI(tarp, Nb * kAt(p, n));
     // a bilinear patch, nu x nv cells, per-vertex glow, optional sag (m) toward -nrm
     const patch = (P, nu, nv, nrm, sag = 0, kE = 1, col = tarp.map((v) => v * 0.55)) => {
@@ -1848,10 +1848,11 @@ varying float vCov; varying float vSide; varying float vHw;`)
         if (xa < xb && za < zb) { for (const [p0, p1, p2, p3] of [[[x, z], [x + T, z], [x + T, za], [x, za]], [[x, zb], [x + T, zb], [x + T, z + T], [x, z + T]], [[x, za], [xa, za], [xa, zb], [x, zb]], [[xb, za], [x + T, za], [x + T, zb], [xb, zb]]]) if (Math.abs((p1[0] - p0[0]) * (p3[1] - p0[1])) > 1) q(p0, p3, p2, p1, -0.03, G0); }
         else q([x, z], [x, z + T], [x + T, z + T], [x + T, z], -0.03, G0);
       }
-      // road means in nits (M3-class lighting ~1 cd/m2 on the arterials, 0.35 on the local streets); the pools add the shape
+      // road means in nits (0.6 on the arterials, 0.3 on the local streets: horizon1 still read the carried-on road as a white
+      // streak at 0.9); the pools add the shape
       const RD = BY.roads, RLp = BY.roadLamps || null;
       for (let i = 0, ri = 0; i < RD.length; i += 6, ri++) { const ax = RD[i], az = RD[i + 1], bx2 = RD[i + 2], bz2 = RD[i + 3], hw = RD[i + 4], k = RD[i + 5], L = Math.hypot(bx2 - ax, bz2 - az), nx = -(bz2 - az) / L * hw, nz = (bx2 - ax) / L * hw;
-        const col = [[1.0, 0.92, 0.82].map((v) => v * 0.9), [1.0, 0.82, 0.62].map((v) => v * 0.35), [1.0, 0.92, 0.82].map((v) => v * 1.1), [0.9, 0.9, 0.9].map((v) => v * 0.8)][k];
+        const col = [[1.0, 0.92, 0.82].map((v) => v * 0.6), [1.0, 0.82, 0.62].map((v) => v * 0.3), [1.0, 0.92, 0.82].map((v) => v * 0.8), [0.9, 0.9, 0.9].map((v) => v * 0.6)][k];
         q([ax + nx, az + nz], [bx2 + nx, bz2 + nz], [bx2 - nx, bz2 - nz], [ax - nx, az - nz], k === 3 ? 0.4 : 0.0, col, RLp ? [0, L, RLp[ri * 2], RLp[ri * 2 + 1]] : null); }
       { const K = BY.bank; for (let i = 0; i < K.length - 1; i++) q([K[i][0], K[i][1]], [K[i + 1][0], K[i + 1][1]], [K[i + 1][0], 4200], [K[i][0], 4200], -0.6, [0.02, 0.025, 0.03]); }
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(C, 3)); g.setAttribute('aRd', new THREE.Float32BufferAttribute(RDa, 3)); g.boundingSphere = new THREE.Sphere(new THREE.Vector3(cxx, 0, czz), BY.rmax + 600);
@@ -1902,11 +1903,11 @@ void main(){
     float s = mod(aEx.y + uTime * aMove.w, aMove.z); p.xz += aMove.xy * s;
     vec3 tc = cameraPosition - p; float dl = max(length(tc), 1.0);
     float f = dot(normalize(vec3(aMove.x, 0.0, aMove.y)), tc / dl);
-    float lowBeam = mix(1.0, 0.1, smoothstep(0.0, 0.15, tc.y / dl));  // low beams: little light above the horizontal
+    float lowBeam = mix(1.0, 0.1, smoothstep(0.0, 0.08, tc.y / dl));  // low beams: little light above the horizontal
     float head = smoothstep(-0.05, 0.6, f) * lowBeam, tail = smoothstep(0.05, -0.6, f);
     col = (vec3(1.0, 0.93, 0.82) * 2500.0 * head + vec3(1.0, 0.06, 0.03) * 90.0 * tail) / max(1e-3, 2500.0 * head + 90.0 * tail); I = 2500.0 * head + 90.0 * tail;
   }
-  if (aEx.x < 0.5) { float vy = (cameraPosition.y - p.y) / max(length(cameraPosition - p), 1.0); I *= mix(1.0, 0.07, smoothstep(-0.02, 0.3, vy)); }   // cut-off optics
+  if (aEx.x < 0.5) { float vy = (cameraPosition.y - p.y) / max(length(cameraPosition - p), 1.0); I *= mix(1.0, 0.07, smoothstep(-0.03, 0.06, vy)); }   // cut-off optics: nothing above ~3 deg over the horizontal
   if (aEx.x > 2.5 && aEx.x < 3.5) I *= step(0.82, fract(uTime / 1.6 + aEx.y));   // tower beacons blink
   vec4 mv = modelViewMatrix * vec4(p, 1.0); gl_Position = projectionMatrix * mv;
   float d = max(1.0, -mv.z), pa = 2.0 / (projectionMatrix[1][1] * uRes.y);                // radians per pixel
