@@ -152,7 +152,7 @@ function run({ path, name, caption, value, s0, s1, y0, y1, w, cuts = null, segVa
 // voids the move (take.js: lines with `heads`). Across-street head-height micros carry `heads` too.
 const HEAD_Y = [1.95, 2.6];
 const HEADS = { y0: HEAD_Y[0], y1: HEAD_Y[1], heads: true };
-const lifeSim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: 2400 });
+const lifeSim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: 2400, setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] the game's traffic: G1's bus lane round the shelter island
 const queues = lifeSim.crowd?.queues || [];
 const usedQ = new Set();
 // the queue whose door projects onto `path` within r m of arc length s and within the street (+4 m)

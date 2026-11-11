@@ -29,7 +29,7 @@ let movers = null;
 if (MOVERS) {
   try {
     const { LifeSim } = await import('../../seoul-life.js'), { lifeMovers } = await import('../../seoul-movers.js');
-    const sim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: 2400 });
+    const sim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: 2400, setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] as world-seoul builds it
     // [P3-F1] walkers too (the panel: "take-sim has no walkers"): seoul-life's soft people colliders, at the take clock
     // + the drawn city's 75 s warm start, as world-seoul's build() serves them to the game (colliders.people)
     movers = lifeMovers({ sim, colliders: process.env.NOWALKERS ? {} : { people: (p, r, t) => sim.hitPeople(p, r, t + 75) } });

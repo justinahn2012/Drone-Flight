@@ -2,12 +2,12 @@
  "log": "walking.otil",
  "world": "3f6d098a1aba293d",
  "sources": {
-  "geometry": "d1f8f1830b02df87",
-  "lines": "1179a60c30cc4496",
+  "geometry": "54486282527ced5f",
+  "lines": "d1df589a0520925d",
   "layout": "f99777aeb081b885",
   "flight": "245c4c3532ce3786",
-  "take": "71a22bb512e27359",
-  "life": "932191d4fa0e7781"
+  "take": "b4531146828f69ca",
+  "life": "52a4ab0453468131"
  },
  "sticks": "main.js sticksActive, no touches; thrRef starts at the first tick",
  "events": [
@@ -16,7 +16,7 @@
    "type": "start"
   },
   {
-   "tick": 5957,
+   "tick": 8220,
    "type": "line",
    "name": "WALKING STREET",
    "caption": "THE WALKING *STREET*!",
@@ -24,9 +24,22 @@
    "flow": 1,
    "clean": true,
    "micro": false,
-   "t0": 1.86,
-   "ago": 22.962,
-   "t": 24.82
+   "t0": 1.9,
+   "ago": 32.358,
+   "t": 34.25
+  },
+  {
+   "tick": 8220,
+   "type": "line",
+   "name": "WALKING STREET 7/7",
+   "caption": "WALKING STREET *7/7*",
+   "pts": 1875,
+   "flow": 2,
+   "clean": true,
+   "micro": true,
+   "t0": 30.09,
+   "ago": 4.167,
+   "t": 34.25
   }
  ],
  "total": 0,
