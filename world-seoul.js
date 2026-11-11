@@ -837,6 +837,11 @@ const SG_HEAD = /* glsl */`
 uniform sampler2D tSeoulInt; uniform float uSeoulNorm[16]; uniform float uSeoulTime;
 varying vec4 sEm; varying vec4 sWin; varying vec3 sWPos; varying vec3 sONrm; varying vec2 sUv;
 float sgMask = 0.0; vec3 sgEmit = vec3(0.0);
+// [P4-C] A's bug (NaN / Inf radiance in shop glass, walk0 123 px, w21 30 px on main): the glass's own terms are finite, but
+// D's analytic lights on a 0.06-rough pane seen and lit at grazing (shop fronts along a street) drive GGX past the half-float
+// range (D ~ 1 / (pi a^2) ~ 4e4, V ~ 1 / (a dotNV)), Inf in the RT, then Inf - Inf = NaN in the haze and blur. The pane is
+// floored at roughness 0.1 (sgEnv carries the sharp reflection) and its outgoing radiance is sanitised before the haze.
+vec3 sgSafe(vec3 c) { if (any(isnan(c)) || !(c.r == c.r && c.g == c.g && c.b == c.b)) return vec3(0.0); return clamp(c, 0.0, 1.5e4); }
 vec4 sgTile(float t, vec2 uv, float lod) {
   float pad = (0.5 * exp2(lod) + 0.5) / 512.0;
   uv = clamp(uv, vec2(pad), vec2(1.0 - pad));
@@ -1005,7 +1010,8 @@ function patchSeoul(mat, mode) {
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nsEm = aEm; sWin = aWin; sONrm = normal; sUv = uv; sWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + SG_HEAD)
         .replace('#include <color_fragment>', '#include <color_fragment>\n  seoulGlass(diffuseColor);')
-        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = sgMask > 3.5 ? 0.5 : sgMask > 2.5 ? 0.12 : sgMask > 1.5 ? 0.9 : sgMask > 0.5 ? 0.4 : roughnessFactor;')
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = sgMask > 3.5 ? 0.5 : sgMask > 2.5 ? 0.12 : sgMask > 1.5 ? 0.9 : sgMask > 0.5 ? 0.4 : max(roughnessFactor, 0.1);')
+        .replace('#include <opaque_fragment>', '  outgoingLight = sgSafe(outgoingLight);\n#include <opaque_fragment>')
         .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = sgMask > 0.5 && sgMask < 1.5 ? 0.6 : metalnessFactor;')
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += sgEmit;');
     } else if (mode === 'flat') {
