@@ -11,7 +11,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MeshBVH } from 'three-mesh-bvh';
 import { buildSeoulGeometry, SEOUL_MATS, boxOf } from '../world-seoul.js';
-import { geometry, groundTris, DRESS_MATS } from '../seoul-dressing.js';
+import { geometry, groundTris, DRESS_MATS, beyond, ringMean, RING_LOOK } from '../seoul-dressing.js';
 import { Drone } from '../flight.js';
 import { encodePNG } from '../tools/png.mjs';
 
@@ -139,6 +139,39 @@ for (const sp of E.setPieces) for (const [k, g] of Object.entries(sp.gates || {}
   }
   if (ex.length) console.log('pass-throughs:', JSON.stringify(ex));
   console.log(`stress ${((performance.now() - tS) / 1000).toFixed(1)} s`);
+}
+
+// 7. [P4-E] phase-4 items: the violet villas, the ring's luminance (fpv #4: ring median <= 1.5x the near facades), the tents'
+// hot spots and seams (art #6), lit roofs in the block's interior, the Playground's anchor (design #6), the transit holes (#5)
+{
+  ok(DRESS_MATS.dr_mass.fold === false && !!C.merged.dr_mass && !(C.groupMats?.city?.layers || []).includes('dr_mass'), 'dr_mass stays out of the city atlas group (was violet: its colour is data)');
+  const BY = beyond(layout, { seed: 11 }), Bd = BY.buildings, n = Bd.length / 9;
+  ok(RING_LOOK.wall[0] >= 0.05 && RING_LOOK.wall[1] <= 0.16, `ring walls ${RING_LOOK.wall.join('-')} nits (lighting: 0.05-0.15, was 0.5-2)`);
+  // area-weighted facade mean before haze, and the median through the haze at 300-2000 m toward the sky's horizon (x hazeK)
+  const hz = RING_LOOK.horizon.map((v) => v * RING_LOOK.hazeK), hzL = 0.2126 * hz[0] + 0.7152 * hz[1] + 0.0722 * hz[2];
+  const vals = []; let aSum = 0, lSum = 0;
+  for (let i = 0; i < n; i++) { const kind = Bd[i * 9 + 7], H = Bd[i * 9 + 5], area = 2 * (Bd[i * 9 + 2] + Bd[i * 9 + 3]) * 2 * H, apt = kind === 2 && (i % 20) < 11, m = ringMean(kind, H, apt); aSum += area; lSum += area * m;
+    for (const d of [300, 800, 2000]) { const T = Math.exp(-d / RING_LOOK.hazeD); vals.push([m * T + hzL * (1 - T), area]); } }
+  vals.sort((a, b) => a[0] - b[0]); let acc = 0, med = 0; const tot = vals.reduce((s, v) => s + v[1], 0); for (const [v, a] of vals) { acc += a; if (acc >= tot / 2) { med = v; break; } }
+  console.log(`ring: ${n} buildings, area-mean ${(lSum / aSum).toFixed(3)} nits before haze, median through the haze ${med.toFixed(3)} nits (phase 3: ~1.1-1.8)`);
+  ok(lSum / aSum < 0.5 && med < 0.45, `ring luminance budget (mean ${(lSum / aSum).toFixed(2)} < 0.5, hazed median ${med.toFixed(2)} < 0.45 nits)`);
+  ok(BY.roadLamps.length === BY.roads.length / 6 * 2 && BY.roofLamp.length === n * 2, 'ring: lamp pools per road, a roof lamp slot per building');
+  const loc = (() => { let k = 0; const R = BY.roads, Cr = BY.cars; for (let i = 0; i < Cr.length; i += 8) if (Cr[i + 7] < 8.01) k++; return k; })();
+  ok(loc > 200 && BY.facts.roofLamps > 500, `ring: cars on the local streets (${loc}), rooftop wall packs (${BY.facts.roofLamps})`);
+  // tents: per-vertex tarp emission has a hot spot (max / median >= 3) and dark seams (some vertices <= 1/4 of the median)
+  const tg = E.merged.dr_tarp, em = tg.getAttribute('aEm').array, L = []; for (let i = 0; i < em.length; i += 3) L.push(0.2126 * em[i] + 0.7152 * em[i + 1] + 0.0722 * em[i + 2]);
+  L.sort((a, b) => a - b); const mid = L[L.length >> 1], top = L[Math.floor(L.length * 0.995)], low = L[Math.floor(L.length * 0.02)];
+  console.log(`tents: tarp luminance p2 ${(low / 0.1).toFixed(1)}, p50 ${(mid / 0.1).toFixed(1)}, p99.5 ${(top / 0.1).toFixed(1)} nits (carts included)`);
+  ok(top / mid >= 3 && low / mid <= 0.3, `tent bulb hot spots (p99.5 / p50 ${(top / mid).toFixed(1)}) and 2-stop seams (p2 / p50 ${(low / mid).toFixed(2)})`);
+  ok(!!E.merged.dr_vinyl?.getAttribute('aEm'), 'tent vinyl scatters the inside light (emissive)');
+  ok((E.facts.massRoofs || 0) >= 100, `lit roofs in the block's interior: stair houses with wall packs on the massing (${E.facts.massRoofs})`);
+  const A = E.anchors?.['playground-pop'];
+  ok(!!A && A.gate.w >= 3 && A.gate.w <= 4.5 && A.gap - A.gate.w <= 1.6, `PLAYGROUND POP anchored between the mast and a crown (${A ? A.gate.w + ' m in a ' + A.gap + ' m slot' : 'none'})`);
+  const pop = lines.lines.find((l) => l.name === 'PLAYGROUND POP'), pass_ = lines.lines.find((l) => l.name === 'SCREEN PASS');
+  if (A && pop) ok(Math.hypot(pop.c[0] - A.gate.c[0], pop.c[2] - A.gate.c[2]) < 0.5, 'lines.json PLAYGROUND POP is the anchor (regenerate lines.json after the dressing changes)');
+  if (pass_) ok(pass_.h <= 4.01 && pass_.w <= 3.5, `SCREEN PASS at most 4 m tall, 3 m off the screen (${pass_.w} x ${pass_.h})`);
+  for (const nm of ['TO THE SIGN STACK 1', 'TO THE SIGN STACK 2', 'TO THE CABLE LATTICE 1', 'TO THE FORK 1']) ok(lines.lines.some((l) => l.name === nm && l.connector), `transit connector ${nm}`);
+  ok(lines.lines.filter((l) => l.name === 'SIGN STACK').every((l) => l.via?.length === 1 && l.via[0].unless?.length === 6), 'SIGN STACK has a via along the street');
 }
 
 // 6. top-down map: C's roofs dark, ribbons grey, dressing coloured by key, emitters as dots, holes outlined

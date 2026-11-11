@@ -2490,24 +2490,24 @@
    "caption": "PLAYGROUND *POP*!",
    "pts": 500,
    "c": [
-    80,
+    79.903,
     7,
-    97
+    97.548
    ],
    "n": [
     0,
     1,
     0
    ],
-   "w": 4,
-   "h": 4,
+   "w": 3.9,
+   "h": 3,
    "u": [
-    1,
+    0.894,
     0,
-    0
+    -0.447
    ],
    "micro": true,
-   "feature": "over the Playground busker"
+   "feature": "between the light mast and the zelkova over the Playground busker"
   },
   {
    "name": "HONGIK-RO",
@@ -3890,17 +3890,17 @@
    "caption": "SCREEN *PASS*!",
    "pts": 1000,
    "c": [
-    6.5,
+    5.83,
     13.7,
-    -327.04
+    -327.78
    ],
    "n": [
     -0.74,
     0,
     0.67
    ],
-   "w": 6,
-   "h": 15.8,
+   "w": 3.2,
+   "h": 4,
    "u": [
     0.67,
     0,
@@ -3953,6 +3953,24 @@
    ],
    "within": 8,
    "straight": true,
+   "via": [
+    {
+     "p": [
+      -4.681,
+      3.75,
+      -75.645
+     ],
+     "r": 5,
+     "unless": [
+      -10.681,
+      49.424,
+      -1,
+      40,
+      -95.645,
+      -44.151
+     ]
+    }
+   ],
    "hint": "climb the sign stack to the roof · 26 m"
   },
   {
@@ -4651,6 +4669,131 @@
     -0.219,
     0,
     -0.976
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
+   "name": "TO THE SIGN STACK 1",
+   "caption": "TO THE SIGN *STACK*",
+   "pts": 500,
+   "c": [
+    -18.525,
+    3.75,
+    -61.909
+   ],
+   "n": [
+    0.471,
+    0,
+    -0.882
+   ],
+   "w": 8,
+   "h": 2.5,
+   "u": [
+    0.882,
+    0,
+    0.471
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
+   "name": "TO THE SIGN STACK 2",
+   "caption": "TO THE SIGN *STACK*",
+   "pts": 500,
+   "c": [
+    -4.681,
+    3.75,
+    -75.645
+   ],
+   "n": [
+    0.803,
+    0,
+    0.596
+   ],
+   "w": 7.484,
+   "h": 2.325,
+   "u": [
+    -0.596,
+    0,
+    0.803
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
+   "name": "TO THE CABLE LATTICE 1",
+   "caption": "TO THE CABLE *LATTICE*",
+   "pts": 500,
+   "c": [
+    -71.629,
+    3.75,
+    89.087
+   ],
+   "n": [
+    -0.98,
+    0,
+    0.201
+   ],
+   "w": 5,
+   "h": 2.5,
+   "u": [
+    -0.201,
+    0,
+    -0.98
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
+   "name": "TO THE FORK 1",
+   "caption": "TO THE *FORK*",
+   "pts": 500,
+   "c": [
+    -42.124,
+    3.75,
+    -0.241
+   ],
+   "n": [
+    0.263,
+    0,
+    -0.965
+   ],
+   "w": 8,
+   "h": 2.5,
+   "u": [
+    0.965,
+    0,
+    0.263
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
+  },
+  {
+   "name": "INTO THE BAR ALLEY 1",
+   "caption": "INTO THE BAR *ALLEY*",
+   "pts": 500,
+   "c": [
+    139.778,
+    3.75,
+    63.583
+   ],
+   "n": [
+    -0.972,
+    0,
+    0.236
+   ],
+   "w": 5,
+   "h": 2.5,
+   "u": [
+    -0.236,
+    0,
+    -0.972
    ],
    "two": true,
    "micro": true,
