@@ -81,7 +81,10 @@ export const SOURCE_TYPES = {
 };
 // Night sky (plan-L5 2F; P3 lighting #5 / color #4): zenith and horizon radiance in cd/m2. Seoul's sky at 1 am is the
 // city's own sodium/LED light scattered by a low deck: brown-grey overhead, orange-brown at the horizon, never blue.
-export const NIGHT_SKY = { zenith: [0.07, 0.06, 0.05], horizon: [0.5, 0.32, 0.18], glowH: 0.18 };
+// [P5 integ, A's sky (p5/A-to-D-sky.md)] the visible dome at 1-2 cd/m2 so it reads 18-30 codes at the P5 exposure (EV -2..-3.7),
+// warm so R >= G >= B survives the grade; `bake` holds the P4 dome for the lightmap's ambient and the facade sky glow, so the
+// brighter visible sky adds no light to the street.
+export const NIGHT_SKY = { zenith: [1.0, 0.8, 0.55], horizon: [1.25, 0.8, 0.45], glowH: 0.3, bake: { zenith: [0.07, 0.06, 0.05], horizon: [0.5, 0.32, 0.18] } };
 // Air (lighting #3; P3 #5): haze extinction (1/m), scale height (m), scatter albedo, max opacity; byKind: the extinction
 // over each street kind (grill smoke and a closed canyon on the walking and club streets, open air on the main road),
 // blended over 8 m and stored per probe as a factor of `density`; airlight sprites. P3: an airlight sprite's radius is
@@ -832,7 +835,7 @@ export function attach(world, emitters = [], ctx = {}) {
   // the ground a probe sees widens with its height: blur radius (cells) ~ height / 2 cells, capped at 6 (P3: per layer)
   const blurR = YS.map((h) => Math.min(6, Math.round(h / (2 * cell)))); let blurs = new Map();
   let EgL = blurR.map((r) => { if (!blurs.has(r)) blurs.set(r, blur(Eg, r)); return blurs.get(r); }); marks.blur = +(now() - tV0).toFixed(0);
-  const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.zenith[j] + NIGHT_SKY.horizon[j]) * NS * Math.PI);   // pi L of the dome
+  const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.bake.zenith[j] + NIGHT_SKY.bake.horizon[j]) * NS * Math.PI);   // pi L of the dome
   const skyLum = lumaOf(skyL);
   const cityF = new Float32Array(NL * 3); { const CL = ctx.cityLux ?? VOLUME.cityLux, cr = VOLUME.cityRGB, cl = lumaOf(cr); for (let k = 0; k < NL; k++) for (let j = 0; j < 3; j++) cityF[k * 3 + j] = (CL[k] ?? CL[CL.length - 1]) * NS * cr[j] / cl; }
   const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4); let ok = new Uint8Array(NP);
@@ -1007,7 +1010,7 @@ export function attach(world, emitters = [], ctx = {}) {
     uCityDyn: { value: new THREE.Vector4(0, 0, DW, 0) },
     uCityTime: { value: 0 }, uCityGain: { value: ctx.gain ?? 1 }, uCityIrrGain: { value: ctx.irrGain ?? 1 },
     uCityHaze: { value: new THREE.Vector4(ctx.haze?.density ?? HAZE.density, ctx.haze?.height ?? HAZE.height, ctx.haze?.scatter ?? HAZE.scatter, ctx.haze?.max ?? HAZE.max) },
-    uCitySkyGlow: { value: new THREE.Vector3(...NIGHT_SKY.horizon.map((v) => v * NS * 0.6)) },
+    uCitySkyGlow: { value: new THREE.Vector3(...NIGHT_SKY.bake.horizon.map((v) => v * NS * 0.6)) },
     uCityAO: aoU?.uAO || { value: blackTex }, uCityAOOn: aoU?.uAOOn || { value: 0 }, uCityAOScale: aoU?.uAOScale || { value: new THREE.Vector2(1, 1) },
     uCityCar: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uCityCarS: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) },
     uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, uCityLMR: uLMR, tCityLM: { value: tLM },
