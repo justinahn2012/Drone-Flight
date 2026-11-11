@@ -132,7 +132,7 @@ jobs:
 
   browser:
     runs-on: ubuntu-24.04   # [P4 H] pinned (playwright --with-deps supports 24.04; 26.04 runs failed installing Chromium's deps)
-    timeout-minutes: 30
+    timeout-minutes: 45   # [P4 H] run 43040900806 passed every row but was cut at 30 (7 min lost to apt)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -152,7 +152,7 @@ jobs:
       - name: Install Chromium (from Playwright's CDN; system libraries from apt when apt answers)
         run: |   # [P4 H] apt on the runners hung / failed resolving security.ubuntu.com (Nov 11): the browser download no longer waits on it
           for i in 1 2 3; do npx playwright install chromium && break; echo "::warning::playwright install failed (try $i)"; sleep 20; [ $i = 3 ] && exit 1; done
-          timeout 420 npx playwright install-deps chromium || echo "::warning::playwright install-deps failed or timed out (apt): using the runner image's libraries"
+          timeout 180 npx playwright install-deps chromium || echo "::warning::playwright install-deps failed or timed out (apt): using the runner image's libraries"
         timeout-minutes: 12
       - name: Build exports (coverage reads world.json)
         run: node tools/export-world.mjs --out exports
@@ -187,7 +187,7 @@ jobs:
       - name: Install Chromium (from Playwright's CDN; system libraries from apt when apt answers)
         run: |   # [P4 H] apt on the runners hung / failed resolving security.ubuntu.com (Nov 11): the browser download no longer waits on it
           for i in 1 2 3; do npx playwright install chromium && break; echo "::warning::playwright install failed (try $i)"; sleep 20; [ $i = 3 ] && exit 1; done
-          timeout 420 npx playwright install-deps chromium || echo "::warning::playwright install-deps failed or timed out (apt): using the runner image's libraries"
+          timeout 180 npx playwright install-deps chromium || echo "::warning::playwright install-deps failed or timed out (apt): using the runner image's libraries"
         timeout-minutes: 12
       - name: Build the Seoul export (coverage reads its world.json)
         run: node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae
