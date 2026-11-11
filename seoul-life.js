@@ -1495,8 +1495,11 @@ function buildHumanGeo(lod) {
 
 const HUMAN_VS = /* glsl */`
 attribute float bone;
+attribute float bone2;  // second bone and its weight (P3: Rocketbox avatars blend two bones; the procedural body has bw = 0)
+attribute float bw;
 attribute float region;
 attribute float grp;
+attribute vec2 auv;     // atlas uv (textured avatars)
 attribute vec4 iPos;    // x, y, z, yaw
 attribute vec4 iAnim;   // gait phase, walk amount, pose, height scale
 attribute vec4 iTop;    // top rgb, coat (0 jacket, 1 long padded coat, 2 short puffer)
@@ -1511,8 +1514,14 @@ varying vec3 vFillE;
 varying float vScreen;
 varying vec3 vRest;
 varying vec4 vMisc;     // region, bone, coat, accessory bits
+varying vec2 vUv;
 uniform float uTime;
 uniform float uNit;
+// the body's joints (P3): procedural body hipX 0.095, hipY 0.9, knee 0.48, ankle 0.09 / shoulder 0.205, 1.38, elbow 1.1,
+// neck 1.46 / kneeZ 0.01, elbowZ 0.005, height comp 1, textured 0; a Rocketbox avatar passes its own (seoul/people)
+uniform vec4 uJA;       // hipX, hipY, kneeY, ankleY
+uniform vec4 uJB;       // shX, shY, elY, neckY
+uniform vec4 uJC;       // kneeZ, elZ, height comp, textured
 vec2 rot(vec2 v, float a) { float c = cos(a), s = sin(a); return vec2(c * v.x - s * v.y, s * v.x + c * v.y); }
 // rotate p (y,z) about pivot (py,pz) by forward angle a (positive swings the limb end forward = +z)
 vec3 swing(vec3 p, float py, float pz, float a) { vec2 q = rot(vec2(p.z - pz, p.y - py), -a); return vec3(p.x, py + q.y, pz + q.x); }
@@ -1526,10 +1535,39 @@ float gb(float x, float c, float w) { float d = x - c; d -= floor(d + 0.5); retu
 float hipC(float f) { return radians(10.0 + 21.0 * cos(6.2831853 * (f - 0.92))); }
 float kneeC(float f) { return radians(4.0 + 15.0 * gb(f, 0.14, 0.07) + 56.0 * gb(f, 0.72, 0.11)); }
 float ankleC(float f) { return radians(2.0 - 4.0 * gb(f, 0.04, 0.04) + 9.0 * gb(f, 0.42, 0.12) - 18.0 * gb(f, 0.62, 0.05)); }
+// joint angles for this vertex's person (set in main, read by rig)
+float gHipL, gHipR, gKnL, gKnR, gAnL, gAnR, gSL, gSR, gEL, gER, gAbL, gAbR, gHeadP, gHeadY, gPelR, gThR, gPelZ, gSit;
+// one bone's part of the pose: limb swings, pelvis / thorax twist, the upper body's counter-tilt over the stance hip
+vec3 rig(vec3 p, inout vec3 nrm, float b, float restY) {
+  bool legB = b > 1.5 && b < 5.5 || b > 12.5;
+  if (legB) {
+    bool left = b < 3.5 || b == 13.0; float hip = left ? gHipL : gHipR, kn = left ? gKnL : gKnR, an = left ? gAnL : gAnR;
+    if (b > 12.5) { p = swing(p, uJA.w, 0.0, an); nrm = swingN(nrm, an); }
+    if (b == 3.0 || b == 5.0 || b > 12.5) { p = swing(p, uJA.z, uJC.x, -kn); nrm = swingN(nrm, -kn); }
+    p = swing(p, uJA.y, 0.0, hip); nrm = swingN(nrm, hip);
+  } else if (b > 5.5 && b < 10.5) {
+    bool left = b < 7.5; float sh = left ? gSL : gSR, el = left ? gEL : gER, ab = left ? gAbL : gAbR;
+    if (b == 7.0 || b == 9.0 || b == 10.0) { p = swing(p, uJB.z, uJC.y, el); nrm = swingN(nrm, el); }
+    p = swing(p, uJB.y, 0.0, sh); nrm = swingN(nrm, sh);
+    float sx = left ? uJB.x : -uJB.x, aa = left ? ab : -ab; p = rotZ(p, sx, uJB.y, aa); nrm = rotZN(nrm, aa);
+  } else if (b > 0.5 && b < 1.5) {
+    p = swing(p, uJB.w, 0.0, gHeadP); nrm = swingN(nrm, gHeadP);
+    p = rotY(p, gHeadY); nrm = rotY(nrm, gHeadY);
+  } else if (b > 10.5 && b < 11.5) {   // coat follows the thighs a little
+    float sw = 0.35 * (gHipL - gHipR) * 0.5 * sign(p.x) * smoothstep(0.95, 0.5, p.y);
+    p.z += sw * (0.95 - p.y);
+    p = mix(p, swing(p, 0.9, 0.0, 1.4), gSit);
+  }
+  // pelvis / thorax rotation about the vertical axis, by height (legs and pelvis with the pelvis, arms and head with the thorax)
+  float tw = legB || (b > 10.5 && b < 11.5) ? gPelR : (b > 5.5 && b < 10.5) || (b > 0.5 && b < 1.5) ? gThR : mix(gPelR, gThR, smoothstep(uJA.y + 0.07, uJA.y + 0.4, restY));
+  p = rotY(p, tw); nrm = rotY(nrm, tw);
+  if (!legB && b < 10.5) { p = rotZ(p, 0.0, uJA.y + 0.05, -0.6 * gPelZ); nrm = rotZN(nrm, -0.6 * gPelZ); }   // hip drop: the upper body counter-tilts
+  return p;
+}
 `;
 const HUMAN_ANIM = /* glsl */`
-  float ph = iAnim.x, wa = iAnim.y, poseI = floor(iAnim.z + 0.5), hs = iAnim.w;
-  float acc = iLook.z, seed = iLook.w, T = uTime + seed * 37.0;
+  float ph = iAnim.x, wa = iAnim.y, poseI = floor(iAnim.z + 0.5), hs = iAnim.w * uJC.z;
+  float acc = iLook.z, seed = iLook.w, T = uTime + seed * 37.0, tex = uJC.w;
   float scarf = mod(acc, 2.0), backpack = mod(floor(acc / 2.0), 2.0), pocket = mod(floor(acc / 8.0), 2.0);
   float sitP = float(poseI == 3.0), phoneP = float(poseI == 1.0), talkP = float(poseI == 4.0), smokeP = float(poseI == 5.0);
   float filmP = float(poseI == 6.0), danceP = float(poseI == 7.0), singP = float(poseI == 8.0), clapP = float(poseI == 9.0);
@@ -1545,10 +1583,10 @@ const HUMAN_ANIM = /* glsl */`
   if (grp > 97.5) hide = float(style < 0.5);
   if (grp > 10.5 && grp < 11.5) hide = 1.0 - scarf;
   if (grp > 11.5 && grp < 12.5) hide = 1.0 - backpack;
-  // ---- bulk: puffers and padded coats are thick
-  float bulk = coat == 2.0 ? 1.13 : coat == 1.0 ? 1.06 : 1.0;
+  // ---- bulk: puffers and padded coats are thick (procedural body only; an avatar wears its own clothes)
+  float bulk = tex > 0.5 ? 1.0 : coat == 2.0 ? 1.13 : coat == 1.0 ? 1.06 : 1.0;
   if (bone < 0.5 && position.y > 0.95 && grp < 0.5 && region > 1.5 && region < 2.5) p.xz *= bulk;
-  if (bone > 5.5 && bone < 9.5 && region > 1.5) { float ax = bone < 7.5 ? 0.205 : -0.205; p.x = ax + (p.x - ax) * bulk; p.z *= bulk; }
+  if (bone > 5.5 && bone < 9.5 && region > 1.5) { float ax = bone < 7.5 ? uJB.x : -uJB.x; p.x = ax + (p.x - ax) * bulk; p.z *= bulk; }
   // ---- gait (wa = walk amount): normative joint curves, stance-leg hip height, pelvis rotation, thorax counter-rotation
   float fL = ph, fR = fract(ph + 0.5);
   float hipL = wa * hipC(fL), hipR = wa * hipC(fR), knL = wa * kneeC(fL) + (1.0 - wa) * 0.03, knR = wa * kneeC(fR) + (1.0 - wa) * 0.03;
@@ -1599,44 +1637,28 @@ const HUMAN_ANIM = /* glsl */`
   sL = mix(sL, 0.5, sitP); sR = mix(sR, mix(0.55 + 0.25 * phoneP, 0.7, drink), sitP); eL = mix(eL, 1.1, sitP); eR = mix(eR, mix(1.3, 2.2, drink), sitP); headP -= 0.12 * drink;
   // look-at (CPU-side: people turn their heads to the drone, filmers aim up)
   headY += iLook.x; headP += iLook.y;
-  // ---- skeleton (rest-space pivots)
-  bool legB = bone > 1.5 && bone < 5.5 || bone > 12.5;
-  if (legB) {
-    bool left = bone < 3.5 || bone == 13.0; float hip = left ? hipL : hipR, kn = left ? knL : knR, an = left ? anL : anR;
-    if (bone > 12.5) { p = swing(p, 0.09, 0.0, an); nrm = swingN(nrm, an); }
-    if (bone == 3.0 || bone == 5.0 || bone > 12.5) { p = swing(p, 0.48, 0.01, -kn); nrm = swingN(nrm, -kn); }
-    p = swing(p, 0.9, 0.0, hip); nrm = swingN(nrm, hip);
-  } else if (bone > 5.5 && bone < 10.5) {
-    bool left = bone < 7.5; float sh = left ? sL : sR, el = left ? eL : eR, ab = left ? abL : abR;
-    if (bone == 7.0 || bone == 9.0 || bone == 10.0) { p = swing(p, 1.1, 0.005, el); nrm = swingN(nrm, el); }
-    p = swing(p, 1.38, 0.0, sh); nrm = swingN(nrm, sh);
-    float sx = left ? 0.205 : -0.205, aa = left ? ab : -ab; p = rotZ(p, sx, 1.38, aa); nrm = rotZN(nrm, aa);
-  } else if (bone > 0.5 && bone < 1.5) {
-    p = swing(p, 1.46, 0.0, headP); nrm = swingN(nrm, headP);
-    p = rotY(p, headY); nrm = rotY(nrm, headY);
-  } else if (bone > 10.5 && bone < 11.5) {   // coat follows the thighs a little
-    float sw = 0.35 * (hipL - hipR) * 0.5 * sign(p.x) * smoothstep(0.95, 0.5, p.y);
-    p.z += sw * (0.95 - p.y);
-    p = mix(p, swing(p, 0.9, 0.0, 1.4), sitP);
-  }
-  // pelvis / thorax rotation about the vertical axis, by height (legs and pelvis with the pelvis, arms and head with the thorax)
-  float tw = legB || (bone > 10.5 && bone < 11.5) ? pelR : (bone > 5.5 && bone < 10.5) || (bone > 0.5 && bone < 1.5) ? thR : mix(pelR, thR, smoothstep(0.97, 1.3, position.y));
-  p = rotY(p, tw); nrm = rotY(nrm, tw);
+  // ---- skeleton: each vertex's bone (and, on an avatar, its second bone blended by weight bw)
+  gHipL = hipL; gHipR = hipR; gKnL = knL; gKnR = knR; gAnL = anL; gAnR = anR; gSL = sL; gSR = sR; gEL = eL; gER = eR; gAbL = abL; gAbR = abR;
+  gHeadP = headP; gHeadY = headY; gPelR = pelR; gThR = thR; gPelZ = pelZ; gSit = sitP;
+  vec3 nA = nrm, pRest = p; p = rig(p, nA, bone, position.y);
+  if (bw > 0.004) { vec3 nB = nrm, pB = rig(pRest, nB, bone2, position.y); p = mix(p, pB, bw); nA = normalize(mix(nA, nB, bw)); }
+  nrm = nA;
   // body height from the stance leg (the longer of the two: the planted one), so the bob comes out of the gait itself
-  float lenL = 0.42 * cos(hipL) + 0.39 * cos(hipL - knL) + 0.09, lenR = 0.42 * cos(hipR) + 0.39 * cos(hipR - knR) + 0.09;
-  float bob = (max(lenL, lenR) - 0.9) * (1.0 - sitP) - sitP * 0.47 + lift;
+  float thighL = uJA.y - uJA.z, shinL = uJA.z - uJA.w;
+  float lenL = thighL * cos(hipL) + shinL * cos(hipL - knL) + uJA.w, lenR = thighL * cos(hipR) + shinL * cos(hipR - knR) + uJA.w;
+  float bob = (max(lenL, lenR) - uJA.y) * (1.0 - sitP) - sitP * 0.47 * uJA.y / 0.9 + lift;
   p.y += bob;
-  if (!legB && bone < 10.5) { p = rotZ(p, 0.0, 0.95 + bob, -0.6 * pelZ); nrm = rotZN(nrm, -0.6 * pelZ); }   // hip drop: the upper body counter-tilts
   p.x += swayX;
   p.x *= iHair.w;
   p *= hs;
   p *= 1.0 - hide;
   float yaw = iPos.w; vec2 xz = rot(vec2(p.z, p.x), yaw); p = vec3(xz.y, p.y, xz.x) + iPos.xyz;
   vec2 nxz = rot(vec2(nrm.z, nrm.x), yaw); nrm = vec3(nxz.y, nrm.y, nxz.x);
-  // albedo by region (region 3 on a coat's thighs stays coat; headwear and hood take the wear colour; scarf a muted accent)
-  vec3 alb = region < 0.5 ? iSkin.rgb : region < 1.5 ? iHair.rgb : region < 2.5 ? iTop.rgb : region < 3.5 ? (bone > 1.5 && bone < 5.5 && coat == 1.0 && position.y > 0.62 ? iTop.rgb : iBot.rgb)
+  // albedo by region (region 3 on a coat's thighs stays coat; headwear and hood take the wear colour; scarf a muted accent).
+  // On an avatar these are the tint targets for its texture classes (0 skin, 1 hair, 2 top, 3 bottom, 4 shoes).
+  vec3 alb = region < 0.5 ? iSkin.rgb : region < 1.5 ? iHair.rgb : region < 2.5 ? iTop.rgb : region < 3.5 ? (tex < 0.5 && bone > 1.5 && bone < 5.5 && coat == 1.0 && position.y > 0.62 ? iTop.rgb : iBot.rgb)
     : region < 4.5 ? vec3(0.03) : region < 5.5 ? vec3(0.02) : region < 6.5 ? vec3(0.04, 0.035, 0.03) : region < 7.5 ? vec3(0.02, 0.02, 0.025) : region < 8.5 ? iWear.rgb : mix(iBot.rgb, vec3(0.32, 0.08, 0.07), 0.6);
-  vAlb = alb;
+  vAlb = alb; vUv = auv;
   vRest = position; vMisc = vec4(region, bone, coat, acc);
   vScreen = (region > 4.5 && region < 5.5) ? max(phoneP, filmP) : 0.0;
   // shopfront fill (lux) arriving from direction iFill.w, wrapped diffuse + a weak overhead/street term
@@ -1646,10 +1668,25 @@ const HUMAN_ANIM = /* glsl */`
   vFillE = iFill.rgb * (wrap * 0.85 + top * 0.3) * uNit / 3.14159;
 `;
 // fragment detail: fabric (puffer quilting, denim twill, knit ribs, wool), hair strands, and a face (eye sockets, brows,
-// nose and chin shading, a black mask on some) so a head reads as a head and not a bald egg at 3-15 m
+// nose and chin shading, a black mask on some) so a head reads as a head and not a bald egg at 3-15 m. On a textured
+// avatar (P3): its own maps, each class re-tinted toward the person's colours (instance colour x texel / class mean),
+// alpha-tested hair cards, the black mask kept.
 const HUMAN_FS = /* glsl */`
   float reg = floor(vMisc.x + 0.5), bn = floor(vMisc.y + 0.5), ct = floor(vMisc.z + 0.5), ac = vMisc.w;
   vec3 q = vRest; float k = 1.0;
+  vec3 albD;
+  if (uJC.w > 0.5 && reg < 4.5) {
+    vec4 tx = reg == 1.0 ? texture2D(tHair, vUv) : texture2D(tAtlas, vUv);
+    if (reg == 1.0 && tx.a < 0.45) discard;
+    vec3 mean = reg < 0.5 ? uMean[0] : reg < 1.5 ? uMean[1] : reg < 2.5 ? uMean[2] : reg < 3.5 ? uMean[3] : uMean[4];
+    float tint = reg < 0.5 ? 0.45 : reg < 1.5 ? 0.85 : reg < 2.5 ? 0.8 : reg < 3.5 ? 0.7 : 0.3;
+    albD = mix(tx.rgb, vAlb * clamp(tx.rgb / max(mean, vec3(0.004)), 0.0, 3.0), tint);
+    if (reg == 0.0 && bn == 1.0) {   // black mask on some (accessory bit 4), over the lower face
+      vec3 h = q - vec3(0.0, uJB.w + 0.17 * uJA.y / 0.9, 0.0);
+      float mask = mod(floor(ac / 4.0), 2.0) * smoothstep(0.03, 0.07, q.z) * (1.0 - smoothstep(-0.02, -0.005, h.y)) * smoothstep(-0.1, -0.085, h.y);
+      albD = mix(albD, vec3(0.012), mask);
+    }
+  } else {
   float hn = fract(sin(dot(floor(q * 180.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
   if (reg == 2.0) {
     if (ct == 2.0) { float band = abs(fract(q.y / 0.105) - 0.5) * 2.0; k *= mix(0.66, 1.06, smoothstep(0.05, 0.6, band)); }
@@ -1672,11 +1709,15 @@ const HUMAN_FS = /* glsl */`
     float mask = mod(floor(ac / 4.0), 2.0) * smoothstep(0.02, 0.05, h.z) * (1.0 - smoothstep(-0.012, -0.002, h.y)) * smoothstep(-0.105, -0.09, h.y);
     k = mix(k, 0.06 / max(0.05, dot(vAlb, vec3(0.333))), mask);
   } else if (reg == 0.0 && bn == 1.0) k *= 0.72;   // neck in the shadow of the jaw
-  vec3 albD = vAlb * k;
+  albD = vAlb * k;
+  }
 `;
-
-// ---- vehicles. Parts: 0 paint, 1 glass, 2 black (tyres, trim), 3 headlight, 4 taillight, 5 interior glow (bus),
-//      6 roof sign / destination LED, 7 indicator (amber), 8 rider (scooter), 9 delivery box
+// ---- vehicles (P3, life #2 / graphics #6: cars that aren't bricks). Parts: 0 paint, 1 glass, 2 black (tyres, trim, grille),
+//      3 headlight, 4 taillight, 5 interior glow (bus), 6 roof sign / destination LED, 7 indicator (amber), 8 rider (scooter),
+//      9 delivery box, 10 alloy rim, 11 number plate. Cars and taxis are lofted: a side profile (bumper, hood, raked
+//      windscreen, roof, rear screen, boot) swept through rounded cross-sections with tumblehome, wheel arches cut into
+//      the sill, glass split from paint at the beltline; wheels are tyres with alloy faces. (No CC0/MIT car model was
+//      reachable: Kenney's are toys, glTF-Sample-Assets' cars are CC-BY.)
 function vehicleGeo(type) {
   const P = [], N = [], C = [], I = [];
   const box = (x0, y0, z0, x1, y1, z1, part, taper = 0) => {   // z forward; taper narrows the top face in x
@@ -1686,40 +1727,93 @@ function vehicleGeo(type) {
     let q = 0;
     for (const f of F) { for (let k = 0; k < 4; k++) { P.push(...v[f[k]]); N.push(...f[4]); C.push(part); } const o = b + q * 4; I.push(o, o + 2, o + 1, o, o + 3, o + 2); q++; }
   };
+  // a wheel: tyre (16-sided, rounded shoulders) + alloy face on the outside (part 10; spokes in the shader)
   const wheel = (x, z, r, w) => {
-    const b = P.length / 3, n = 8;
-    for (let k = 0; k <= n; k++) { const a = (k / n) * Math.PI * 2, y = r + Math.sin(a) * r, zz = z + Math.cos(a) * r; P.push(x - w / 2, y, zz, x + w / 2, y, zz); N.push(0, Math.sin(a), Math.cos(a), 0, Math.sin(a), Math.cos(a)); C.push(2, 2); }
-    for (let k = 0; k < n; k++) { const o = b + k * 2; I.push(o, o + 2, o + 1, o + 1, o + 2, o + 3); }
+    const n = 16, out = Math.sign(x) || 1, xi = x - out * w / 2, xo = x + out * w / 2;
+    const rings = [[xi, r * 0.78], [xi + out * w * 0.08, r * 0.97], [xo - out * w * 0.08, r * 0.97], [xo, r * 0.8]];
+    const b = P.length / 3;
+    for (const [xx, rr] of rings) for (let k = 0; k <= n; k++) { const a = (k / n) * Math.PI * 2, cy = Math.sin(a), cz = Math.cos(a); P.push(xx, r + cy * rr, z + cz * rr); N.push((xx - x) / (w / 2) * 0.3, cy, cz); C.push(2); }
+    for (let j = 0; j < rings.length - 1; j++) for (let k = 0; k < n; k++) { const a = b + j * (n + 1) + k, c = a + n + 1; out > 0 ? I.push(a, c, a + 1, a + 1, c, c + 1) : I.push(a, a + 1, c, a + 1, c + 1, c); }
+    const ci = P.length / 3; P.push(xo + out * 0.004, r, z); N.push(out, 0, 0); C.push(10);
+    for (let k = 0; k <= n; k++) { const a = (k / n) * Math.PI * 2; P.push(xo + out * 0.002, r + Math.sin(a) * r * 0.8, z + Math.cos(a) * r * 0.8); N.push(out, 0, 0); C.push(10); }
+    for (let k = 0; k < n; k++) out > 0 ? I.push(ci, ci + 1 + k, ci + 2 + k) : I.push(ci, ci + 2 + k, ci + 1 + k);
   };
   const c = VEH[type], L = c.L, W = c.W, H = c.H, hw = W / 2, hl = L / 2;
   if (type === 'car' || type === 'taxi') {
-    box(-hw, 0.28, -hl, hw, 0.85, hl, 0);                                  // lower body
-    box(-hw + 0.06, 0.85, -hl + 1.05, hw - 0.06, H - 0.02, hl - 1.35, 1, 0.16);   // greenhouse
-    box(-hw + 0.25, H - 0.04, -hl + 1.25, hw - 0.25, H, hl - 1.55, 0);    // roof skin
-    // lamps are small point-like emitters (fpv #1): projector cores 0.16 x 0.06 m in a dark housing, slim LED tail bars
-    box(-hw + 0.08, 0.6, hl - 0.02, -hw + 0.42, 0.74, hl + 0.005, 2); box(hw - 0.42, 0.6, hl - 0.02, hw - 0.08, 0.74, hl + 0.005, 2);
-    box(-hw + 0.17, 0.64, hl - 0.01, -hw + 0.33, 0.70, hl + 0.012, 3); box(hw - 0.33, 0.64, hl - 0.01, hw - 0.17, 0.70, hl + 0.012, 3);
-    box(-hw + 0.05, 0.71, -hl - 0.01, -hw + 0.45, 0.76, -hl + 0.02, 4); box(hw - 0.45, 0.71, -hl - 0.01, hw - 0.05, 0.76, -hl + 0.02, 4);
-    box(-hw - 0.01, 0.62, hl - 0.25, -hw + 0.01, 0.7, hl - 0.1, 7); box(hw - 0.01, 0.62, hl - 0.25, hw + 0.01, 0.7, hl - 0.1, 7);
-    box(-hw + 0.1, 0.3, hl - 0.02, hw - 0.1, 0.5, hl + 0.02, 2); box(-hw + 0.1, 0.3, -hl - 0.02, hw - 0.1, 0.5, -hl + 0.02, 2);
-    for (const z of [hl - 0.95, -hl + 0.9]) { wheel(-hw + 0.1, z, 0.33, 0.22); wheel(hw - 0.1, z, 0.33, 0.22); }
-    if (type === 'taxi') box(-0.32, H, -0.25, 0.32, H + 0.2, 0.05, 6, 0.04);   // roof lamp
+    const zf = hl - 0.95, zr = -hl + 0.88, wr = 0.33, ar = 0.385;            // wheel centres, tyre and arch radii
+    const zw = hl - 1.28, zrw = -hl + 0.82, zroofF = hl - 2.02, zroofR = -hl + 1.42, belt = 0.95;
+    // side profile: roofline / hood / boot (top) and sill with the arches (bottom)
+    const topY = (z) => {
+      const K = [[-hl, 0.66], [-hl + 0.12, 0.86], [-hl + 0.5, 0.97], [zrw, 1.0], [zroofR, H - 0.03], [zroofR + 0.4, H], [zroofF - 0.3, H], [zroofF, H - 0.04], [zw, 0.93], [hl - 0.55, 0.82], [hl - 0.12, 0.74], [hl, 0.6]];
+      for (let i = 1; i < K.length; i++) if (z <= K[i][0]) { const u = (z - K[i - 1][0]) / (K[i][0] - K[i - 1][0]); const s = u * u * (3 - 2 * u); return K[i - 1][1] + (K[i][1] - K[i - 1][1]) * (0.35 * u + 0.65 * s); }
+      return 0.6;
+    };
+    const botY = (z) => { let y = 0.3; for (const zc of [zf, zr]) { const d = z - zc; if (Math.abs(d) < ar) y = Math.max(y, wr + Math.sqrt(ar * ar - d * d)); } return Math.min(y, z > hl - 0.1 || z < -hl + 0.1 ? 0.42 : y); };
+    const plan = (z) => { const e = Math.min(1, (hl - Math.abs(z)) / 0.55); return 0.86 + 0.14 * Math.sqrt(Math.max(0, e)); };   // corners round off in plan
+    // z stations (denser at the ends and arches), duplicated at the glass edges (windscreen base, rear screen base)
+    const zs = []; for (let i = 0; i <= 44; i++) { const u = i / 44; zs.push(-hl + L * (0.5 - 0.5 * Math.cos(Math.PI * u))); }
+    for (const zc of [zf, zr]) for (let d = -ar; d <= ar + 1e-6; d += ar / 4) zs.push(zc + d);
+    zs.push(zw, zw, zrw, zrw); zs.sort((a, b) => a - b);
+    const glassZ = (z, k) => z > zrw + (k === 0 ? 1e-6 : -1e-6) && z < zw - (k === 0 ? 1e-6 : -1e-6);
+    const dup = new Map(); const st = zs.map((z) => { const n = (dup.get(z) || 0); dup.set(z, n + 1); return { z, g: n }; });   // g: 0 first, 1 second copy
+    // section rows: [side level u (0 sill .. 1 roof edge), across-roof fraction]; duplicated at the beltline and the roof edge
+    const rows = [[0, 0, 0], [0.12, 0, 0], [0.5, 0, 0], [0.9, 0, 0], [1, 0, 0], [1, 0, 1], [1.45, 0, 1], [1.9, 0, 1], [1.9, 0, 0], [2, 0.55, 0], [2, 1, 0]];
+    const secPt = (z, row, sx) => {
+      const yb = botY(z), yt = topY(z), b = Math.min(belt, yt - 0.02), pl = plan(z), hwz = hw * pl;
+      let y, x; const [u, f] = row;
+      if (u <= 1) { y = yb + (b - yb) * u; x = hwz * (0.965 + 0.035 * Math.sin(Math.PI * u * 0.9)); }
+      else if (u < 2) { const v = (u - 1) / 0.95; y = b + (yt - 0.035 - b) * Math.min(1, v); x = hwz * (1 - 0.2 * Math.min(1, v)); }
+      else { y = yt + 0.012 * (1 - f * f) - 0.03 * (1 - f); x = hwz * 0.8 * (1 - f); }
+      return [sx * x, y, z];
+    };
+    const base = P.length / 3, nr = rows.length;
+    for (const sx of [1, -1]) {
+      for (const { z, g } of st) for (const r of rows) {
+        const [x, y] = secPt(z, r, sx); const glass = r[2] === 1 && topY(z) > belt + 0.05 && (g ? glassZ(z, 1) : glassZ(z, 0));
+        P.push(x, y, z); N.push(0, 0, 0); C.push(glass ? 1 : 0);
+      }
+    }
+    const nS = st.length, side = nS * nr;
+    for (let s2 = 0; s2 < 2; s2++) for (let i = 0; i < nS - 1; i++) for (let j = 0; j < nr - 1; j++) {
+      const a = base + s2 * side + i * nr + j, b2 = a + nr; s2 === 0 ? I.push(a, b2, a + 1, a + 1, b2, b2 + 1) : I.push(a, a + 1, b2, a + 1, b2 + 1, b2);
+    }
+    // end caps (bumper faces): fan between the two sides at the first and last station
+    for (const [i, flip] of [[0, true], [nS - 1, false]]) for (let j = 0; j < nr - 1; j++) {
+      const a = base + i * nr + j, b2 = base + side + i * nr + j; flip ? I.push(a, b2, a + 1, a + 1, b2, b2 + 1) : I.push(a, a + 1, b2, a + 1, b2 + 1, b2);
+    }
+    // smooth normals over the shell
+    { const g0 = new THREE.BufferGeometry(); g0.setAttribute('position', new THREE.Float32BufferAttribute(P.slice(base * 3), 3)); g0.setIndex(I.map((q) => q - base)); g0.computeVertexNormals(); const nn = g0.attributes.normal.array; for (let i = 0; i < nn.length; i++) N[base * 3 + i] = nn[i]; }
+    // trim: grille, lower bumpers, mirrors, lamps (point-like cores in dark housings), plates
+    box(-hw * 0.62, 0.36, hl - 0.05, hw * 0.62, 0.52, hl + 0.015, 2); box(-hw * 0.7, 0.3, -hl - 0.015, hw * 0.7, 0.42, -hl + 0.05, 2);
+    for (const sx of [1, -1]) {
+      box(sx > 0 ? hw - 0.02 : -hw - 0.14, 0.97, zw - 0.3, sx > 0 ? hw + 0.14 : -hw + 0.02, 1.07, zw - 0.17, 0);   // door mirror
+      box(Math.min(sx * (hw - 0.1), sx * (hw - 0.44)), 0.63, hl - 0.13, Math.max(sx * (hw - 0.1), sx * (hw - 0.44)), 0.74, hl - 0.02, 2);
+      box(Math.min(sx * (hw - 0.18), sx * (hw - 0.32)), 0.665, hl - 0.03, Math.max(sx * (hw - 0.18), sx * (hw - 0.32)), 0.71, hl + 0.002, 3);
+      box(Math.min(sx * (hw - 0.06), sx * (hw - 0.5)), 0.74, -hl + 0.02, Math.max(sx * (hw - 0.06), sx * (hw - 0.5)), 0.8, -hl + 0.1, 4);
+      box(Math.min(sx * (hw - 0.03), sx * (hw - 0.05)), 0.64, hl - 0.3, Math.max(sx * (hw - 0.03), sx * (hw - 0.05)), 0.69, hl - 0.18, 7);
+    }
+    box(-0.26, 0.4, hl + 0.012, 0.26, 0.51, hl + 0.025, 11); box(-0.26, 0.5, -hl - 0.025, 0.26, 0.61, -hl - 0.012, 11);
+    for (const z of [zf, zr]) { wheel(hw - 0.12, z, wr, 0.22); wheel(-hw + 0.12, z, wr, 0.22); }
+    if (type === 'taxi') { box(-0.3, H - 0.01, -0.28, 0.3, H + 0.19, -0.06, 6, 0.03); box(-0.34, H - 0.02, -0.3, 0.34, H + 0.01, -0.04, 2); }
   } else if (type === 'truck') {
     box(-hw, 0.4, hl - 1.6, hw, 1.05, hl, 0);
-    box(-hw + 0.04, 1.05, hl - 1.5, hw - 0.04, H, hl - 0.15, 1, 0.08); box(-hw, 1.05, hl - 1.6, hw, H, hl - 1.45, 0);
+    box(-hw + 0.04, 1.05, hl - 1.5, hw - 0.04, H, hl - 0.15, 1, 0.08); box(-hw, 1.05, hl - 1.6, hw, H, hl - 1.45, 0); box(-hw + 0.1, H - 0.04, hl - 1.5, hw - 0.1, H + 0.02, hl - 0.2, 0);
     box(-hw, 0.55, -hl, hw, 0.75, hl - 1.65, 0); box(-hw, 0.75, -hl, -hw + 0.05, 1.15, hl - 1.65, 0); box(hw - 0.05, 0.75, -hl, hw, 1.15, hl - 1.65, 0); box(-hw, 0.75, -hl, hw, 1.15, -hl + 0.05, 0);
+    box(-hw + 0.12, 0.45, hl - 0.02, hw - 0.12, 0.58, hl + 0.015, 2);
     box(-hw + 0.14, 0.6, hl - 0.02, -hw + 0.3, 0.67, hl + 0.01, 3); box(hw - 0.3, 0.6, hl - 0.02, hw - 0.14, 0.67, hl + 0.01, 3);
     box(-hw + 0.05, 0.54, -hl - 0.02, -hw + 0.3, 0.6, -hl + 0.01, 4); box(hw - 0.3, 0.54, -hl - 0.02, hw - 0.05, 0.6, -hl + 0.01, 4);
-    for (const z of [hl - 0.8, -hl + 1.0]) { wheel(-hw + 0.12, z, 0.3, 0.2); wheel(hw - 0.12, z, 0.3, 0.2); }
+    box(-0.26, 0.4, -hl - 0.02, 0.26, 0.51, -hl - 0.005, 11);
+    for (const z of [hl - 0.8, -hl + 1.0]) { wheel(-hw + 0.13, z, 0.3, 0.2); wheel(hw - 0.13, z, 0.3, 0.2); }
   } else if (type === 'bus') {
     box(-hw, 0.3, -hl, hw, 1.1, hl, 0);
     box(-hw, 1.1, -hl + 0.3, hw, H - 0.35, hl - 0.15, 5);                  // window band: dark glass over a 20-40 nit interior
-    box(-hw, 1.1, hl - 0.15, hw, H - 0.35, hl, 1);                          // windscreen
-    box(-hw, H - 0.35, -hl, hw, H, hl, 0); box(-hw, 1.1, -hl, hw, H - 0.35, -hl + 0.3, 0);
+    box(-hw, 0.35, hl - 0.15, hw, H - 0.35, hl, 1);                         // windscreen, full height
+    box(-hw, H - 0.35, -hl, hw, H - 0.05, hl, 0, 0.0); box(-hw + 0.1, H - 0.05, -hl + 0.2, hw - 0.1, H, hl - 0.25, 0); box(-hw, 1.1, -hl, hw, H - 0.35, -hl + 0.3, 0);
     box(-hw + 0.3, H - 0.32, hl - 0.01, hw - 0.3, H - 0.08, hl + 0.02, 6); // destination LED
     box(-hw + 0.18, 0.55, hl - 0.02, -hw + 0.38, 0.63, hl + 0.01, 3); box(hw - 0.38, 0.55, hl - 0.02, hw - 0.18, 0.63, hl + 0.01, 3);
     box(-hw + 0.1, 0.7, -hl - 0.02, -hw + 0.22, 0.95, -hl + 0.01, 4); box(hw - 0.22, 0.7, -hl - 0.02, hw - 0.1, 0.95, -hl + 0.01, 4);
-    for (const z of [hl - 2.3, -hl + 2.6]) { wheel(-hw + 0.15, z, 0.48, 0.3); wheel(hw - 0.15, z, 0.48, 0.3); }
+    box(-hw - 0.01, 0.3, -hl + 0.2, -hw + 0.01, 0.38, hl - 0.2, 2); box(hw - 0.01, 0.3, -hl + 0.2, hw + 0.01, 0.38, hl - 0.2, 2);
+    for (const z of [hl - 2.3, -hl + 2.6]) { wheel(-hw + 0.16, z, 0.48, 0.3); wheel(hw - 0.16, z, 0.48, 0.3); }
   } else {   // scooter + rider + delivery box
     box(-0.16, 0.25, -0.7, 0.16, 0.62, 0.55, 0); box(-0.12, 0.62, -0.6, 0.12, 0.72, 0.05, 2);
     box(-0.08, 0.62, 0.45, 0.08, 1.05, 0.6, 0); box(-0.32, 1.02, 0.42, 0.32, 1.06, 0.48, 2);
@@ -1729,11 +1823,11 @@ function vehicleGeo(type) {
     box(-0.11, 1.45, -0.3, 0.11, 1.68, -0.08, 2);                           // helmet
     box(-0.2, 0.55, -0.15, -0.1, 0.75, 0.35, 8); box(0.1, 0.55, -0.15, 0.2, 0.75, 0.35, 8);   // legs
     box(-0.26, 1.1, -0.1, -0.18, 1.3, 0.42, 8); box(0.18, 1.1, -0.1, 0.26, 1.3, 0.42, 8);      // arms
-    wheel(0, 0.62, 0.22, 0.11); wheel(0, -0.62, 0.22, 0.12);
+    wheel(0.055, 0.62, 0.22, 0.11); wheel(0.055, -0.62, 0.22, 0.12);
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(N.map((v, i) => v), 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
   g.setAttribute('part', new THREE.Float32BufferAttribute(C, 1));
   g.setIndex(I); g.computeBoundingSphere();
   return g;
@@ -1745,28 +1839,48 @@ function vehicleMaterial(nit) {
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uNit = nit; sh.uniforms.uTimeV = m.userData.uTime || (m.userData.uTime = { value: 0 });
     sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>
-attribute float part; attribute vec4 iState; varying float vPart; varying vec4 vState; varying vec3 vPaint; varying vec3 vLoc;`)
+attribute float part; attribute vec4 iState; attribute vec4 iEnv; varying float vPart; varying vec4 vState; varying vec3 vPaint; varying vec3 vLoc; varying vec4 vEnv; varying vec3 vWN; varying vec3 vWP;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-vPart = part; vState = iState; vLoc = position;
+vPart = part; vState = iState; vLoc = position; vEnv = iEnv;
+#ifdef USE_INSTANCING
+vWN = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal); vWP = (modelMatrix * instanceMatrix * vec4(position, 1.0)).xyz;
+#else
+vWN = normalize(mat3(modelMatrix) * normal); vWP = (modelMatrix * vec4(position, 1.0)).xyz;
+#endif
 #ifdef USE_INSTANCING_COLOR
 vPaint = instanceColor;
 #else
 vPaint = vec3(0.8);
 #endif`);
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
-uniform float uNit; uniform float uTimeV; varying float vPart; varying vec4 vState; varying vec3 vPaint; varying vec3 vLoc;
-float vh21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
+uniform float uNit; uniform float uTimeV; varying float vPart; varying vec4 vState; varying vec3 vPaint; varying vec3 vLoc; varying vec4 vEnv; varying vec3 vWN; varying vec3 vWP;
+float vh21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+// the street a body reflects (P3): no env map at night, so a clearcoat sees a dark sky, a horizon band of shopfronts, signs
+// and lamps (the person-fill grid's lux at this vehicle, broken into storefront-wide streaks that slide as the car moves),
+// and the asphalt below; in nits
+vec3 cityEnv(vec3 R) {
+  float hz = 1.0 - smoothstep(0.0, 0.28, abs(R.y - 0.06));
+  float az = atan(R.x, R.z) * 5.0 + vEnv.w * 13.0 + (vWP.x + vWP.z) * 0.35;
+  float streak = 0.25 + 0.75 * smoothstep(0.35, 0.65, fract(az)) * (1.0 - smoothstep(0.75, 0.95, fract(az)));
+  float spot = pow(max(0.0, sin(az * 2.7 + R.y * 9.0)), 24.0);
+  vec3 band = vEnv.rgb * (0.022 * streak + 0.06 * spot);
+  return mix(vec3(0.03, 0.028, 0.03), vec3(0.06, 0.05, 0.045) + band, hz) + (R.y < -0.05 ? vEnv.rgb * 0.004 : vec3(0.0));
+}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 float pt = floor(vPart + 0.5);
-vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.015, 0.017, 0.02) : pt < 2.5 ? vec3(0.025) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.012, 0.014, 0.016) : pt < 6.5 ? vec3(0.02) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : vec3(0.55, 0.12, 0.08);
+// B/C pillars and the window frames read through the glass band as black trim
+if (pt > 0.5 && pt < 1.5 && abs(vWN.y) < 0.75 && vLoc.y > 0.5 && vLoc.y < 2.0 && abs(vLoc.z) < 3.0 && abs(vLoc.z - 0.02) < 0.07) pt = 2.0;
+vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.012, 0.014, 0.016) : pt < 2.5 ? vec3(0.022) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.012, 0.014, 0.016) : pt < 6.5 ? vec3(0.02) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : pt < 9.5 ? vec3(0.55, 0.12, 0.08) : pt < 10.5 ? vec3(0.42, 0.43, 0.45) : vec3(0.75, 0.75, 0.72);
+if (pt > 9.5 && pt < 10.5) { float a = atan(vLoc.y - 0.33, vLoc.z), r = length(vec2(vLoc.y, vLoc.z)); float sp = smoothstep(0.55, 0.75, abs(sin(a * 2.5))); alb *= mix(0.25, 1.0, sp); }   // five spokes
+if (pt > 10.5) { float ch = step(0.45, fract(vLoc.x * 14.0)) * step(0.3, fract(vLoc.y * 18.0 + 0.2)); alb = mix(alb, vec3(0.03), ch * 0.8); }   // plate characters
 diffuseColor.rgb = alb;`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-roughnessFactor = pt < 0.5 ? 0.32 : (pt < 1.5 || (pt > 4.5 && pt < 5.5)) ? 0.06 : 0.6;`)
+roughnessFactor = pt < 0.5 ? 0.24 : (pt < 1.5 || (pt > 4.5 && pt < 5.5)) ? 0.05 : pt > 9.5 && pt < 10.5 ? 0.3 : 0.6;`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 // nits (binding table, PLAN-P2): lamps are point sources (low-beam core ~3k off-axis, tail 250, brake 1500, hazard 600);
 // bodies are not emissive; the bus interior is 20-40 nits seen through dark glass, broken by window posts, seat backs
 // and standing passengers; the destination LED is amber dot-matrix text (250-nit dots, ~30 % lit, so never a plate);
-// the taxi roof lamp is a light box (180)
+// the taxi roof lamp is a light box (180) with dark 'TAXI' strokes
 float blink = step(0.5, fract(uTimeV * 1.5 + vState.w));
 vec3 e = vec3(0.0);
 if (pt > 2.5 && pt < 3.5) e = vec3(1.0, 0.97, 0.92) * 3000.0 * vState.z;
@@ -1781,11 +1895,27 @@ else if (pt > 4.5 && pt < 5.5) {
 else if (pt > 5.5 && pt < 6.5) {
   vec2 dot = vec2(vLoc.x * 55.0, vLoc.y * 55.0), cel = floor(dot);
   float lit = step(0.7, vh21(vec2(floor(cel.x / 5.0), cel.y))) * step(length(fract(dot) - 0.5), 0.38);
-  e = (vState.w > -1.0 && abs(vLoc.z) > 1.0) ? vec3(1.0, 0.55, 0.12) * 250.0 * lit : vec3(1.0, 0.82, 0.55) * 180.0;
+  // taxi sign: four letters across the box face, strokes dark on the lit box
+  vec2 tq = vec2((vLoc.x + 0.3) / 0.6 * 4.0, (vLoc.y - 1.49) / 0.18);
+  float cx = fract(tq.x), li = floor(tq.x), stroke = 0.0;
+  if (tq.y > 0.2 && tq.y < 0.85) {
+    if (li < 0.5) stroke = max(step(abs(cx - 0.5), 0.09), step(0.75, tq.y));                                    // T
+    else if (li < 1.5) stroke = max(step(abs(abs(cx - 0.5) - 0.45 * (tq.y - 0.2)), 0.09), step(abs(tq.y - 0.42), 0.06) * step(abs(cx - 0.5), 0.2));   // A
+    else if (li < 2.5) stroke = step(abs(abs(cx - 0.5) - abs(tq.y - 0.52) * 0.9), 0.09);                     // X
+    else stroke = step(abs(cx - 0.5), 0.09);                                                                     // I
+  }
+  e = (vState.w > -1.0 && abs(vLoc.z) > 1.0) ? vec3(1.0, 0.55, 0.12) * 250.0 * lit : vec3(1.0, 0.86, 0.6) * 180.0 * (1.0 - 0.85 * stroke * step(0.1, abs(vLoc.z + 0.17)));
 }
 else if (pt > 6.5 && pt < 7.5) e = vec3(1.0, 0.45, 0.03) * 600.0 * vState.y * blink;
+// clearcoat and glass: Fresnel x the street they face
+if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5)) {
+  vec3 Vw = normalize(cameraPosition - vWP), Nw = normalize(vWN), Rw = reflect(-Vw, Nw);
+  float F = (pt < 0.5 ? 0.04 : 0.05) + 0.96 * pow(1.0 - clamp(dot(Nw, Vw), 0.0, 1.0), 5.0);
+  e += cityEnv(Rw) * F * (pt < 0.5 ? 0.9 : 1.0);
+}
 totalEmissiveRadiance += e * uNit;`);
   };
+  m.customProgramCacheKey = () => 'seoul-vehicle-3';
   return m;
 }
 
@@ -1872,26 +2002,72 @@ export function build(layout, ctx = {}) {
 
   // ---- people
   const fill = buildFill(sim.net, layout, ctx.emitters);
-  const humanMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 });
-  humanMat.onBeforeCompile = (sh) => {
-    sh.uniforms.uTime = uTime; sh.uniforms.uNit = nit; sh.uniforms.uFillK = fillK;
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\n' + HUMAN_VS)
-      .replace('#include <beginnormal_vertex>', HUMAN_ANIM + '\nvec3 objectNormal = nrm;\n#ifdef USE_TANGENT\nvec3 objectTangent = vec3(1.0, 0.0, 0.0);\n#endif')
-      .replace('#include <begin_vertex>', 'vec3 transformed = p;');
-    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vAlb; varying vec3 vFillE; varying float vScreen; varying vec3 vRest; varying vec4 vMisc; uniform float uNit; uniform float uFillK;')
-      .replace('#include <color_fragment>', '#include <color_fragment>\n' + HUMAN_FS + '\ndiffuseColor.rgb = albD;')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += albD * vFillE * uFillK + vec3(0.75, 0.85, 1.0) * 160.0 * uNit * vScreen;');
+  // one program for every body (procedural tiers and the Rocketbox avatars); per material: the joints (uJA/B/C), the atlases
+  // and the class means (P3)
+  const blank = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1); blank.needsUpdate = true;
+  const JDEF = [new THREE.Vector4(0.095, 0.9, 0.48, 0.09), new THREE.Vector4(0.205, 1.38, 1.1, 1.46), new THREE.Vector4(0.01, 0.005, 1, 0)];
+  const makeHumanMat = (J = JDEF, atlas = blank, hair = blank, mean = null) => {
+    const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 });
+    const U = { uJA: { value: J[0] }, uJB: { value: J[1] }, uJC: { value: J[2] }, tAtlas: { value: atlas }, tHair: { value: hair },
+      uMean: { value: (mean || [[0.2, 0.1, 0.07], [0.02, 0.015, 0.01], [0.06, 0.05, 0.05], [0.03, 0.03, 0.03], [0.02, 0.02, 0.02]]).map((c) => new THREE.Vector3(...c)) } };
+    m.userData.humanU = U;
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uTime = uTime; sh.uniforms.uNit = nit; sh.uniforms.uFillK = fillK; Object.assign(sh.uniforms, U);
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\n' + HUMAN_VS)
+        .replace('#include <beginnormal_vertex>', HUMAN_ANIM + '\nvec3 objectNormal = nrm;\n#ifdef USE_TANGENT\nvec3 objectTangent = vec3(1.0, 0.0, 0.0);\n#endif')
+        .replace('#include <begin_vertex>', 'vec3 transformed = p;');
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vAlb; varying vec3 vFillE; varying float vScreen; varying vec3 vRest; varying vec4 vMisc; varying vec2 vUv; uniform float uNit; uniform float uFillK; uniform vec4 uJA; uniform vec4 uJB; uniform vec4 uJC; uniform sampler2D tAtlas; uniform sampler2D tHair; uniform vec3 uMean[5];')
+        .replace('#include <color_fragment>', '#include <color_fragment>\n' + HUMAN_FS + '\ndiffuseColor.rgb = albD;')
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += albD * vFillE * uFillK + vec3(0.75, 0.85, 1.0) * 160.0 * uNit * vScreen;');
+    };
+    m.customProgramCacheKey = () => 'seoul-human-3';
+    return m;
   };
-  humanMat.customProgramCacheKey = () => 'seoul-human-2';
-  const tiers = [0, 1, 2].map((lod) => {
-    const g = buildHumanGeo(lod), cap = [LIFE.maxNear, LIFE.maxMid, LIFE.maxDrawn][lod];
+  const humanMat = makeHumanMat();
+  const instAttrs = (g, cap) => {
     const at = (n) => { const a = new THREE.InstancedBufferAttribute(new Float32Array(cap * n), n); a.setUsage(THREE.DynamicDrawUsage); return a; };
     const A = { iPos: at(4), iAnim: at(4), iTop: at(4), iBot: at(4), iHair: at(4), iSkin: at(4), iFill: at(4), iWear: at(4), iLook: at(4) };
     for (const k in A) g.setAttribute(k, A[k]);
     g.instanceCount = 0; g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
+    return A;
+  };
+  const tiers = [0, 1, 2].map((lod) => {
+    const g = buildHumanGeo(lod), cap = [LIFE.maxNear, LIFE.maxMid, LIFE.maxDrawn][lod], A = instAttrs(g, cap);
     const m = new THREE.Mesh(g, humanMat); m.frustumCulled = false; m.name = ['crowd-near', 'crowd-mid', 'crowd-far'][lod]; group.add(m);
-    return { g, A, cap, mesh: m, tris: g.index.count / 3 };
+    return { g, A, cap, mesh: m, tris: g.index.count / 3, n: 0 };
   });
+  // ---- Rocketbox avatars (life #1, art #5, graphics #6; MIT, seoul/people): 8 rigged, textured bodies baked onto the crowd's
+  // rig for the near (3.4k tris) and mid (0.77k) tiers; the procedural body stays as the far tier and the fallback (node, no
+  // assets, ctx.people === false). They load after the build; until then everyone is procedural.
+  const avatars = { ready: false, tiers: null, mats: [], n: 0, error: null };
+  const avatarGeo = (bin, L) => {
+    const g = new THREE.InstancedBufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(bin, L.pos, L.verts * 3), 3));
+    g.setAttribute('normal', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(new Int8Array(bin, L.nrm, L.verts * 4), 4), 3, 0, true));
+    g.setAttribute('auv', new THREE.BufferAttribute(new Float32Array(bin, L.uv, L.verts * 2), 2));
+    const bb = new THREE.InterleavedBuffer(new Uint8Array(bin, L.bone, L.verts * 4), 4);
+    g.setAttribute('bone', new THREE.InterleavedBufferAttribute(bb, 1, 0, false)); g.setAttribute('bone2', new THREE.InterleavedBufferAttribute(bb, 1, 1, false));
+    g.setAttribute('bw', new THREE.InterleavedBufferAttribute(bb, 1, 2, true)); g.setAttribute('region', new THREE.InterleavedBufferAttribute(bb, 1, 3, false));
+    g.setIndex(new THREE.BufferAttribute(new Uint16Array(bin, L.index, L.tris * 3), 1));
+    return g;
+  };
+  // people.json + people.bin (+ atlases): build the avatar tiers. data = { meta, bin, atlas?, hair? } (node tests pass it)
+  function attachAvatars(data) {
+    const { meta, bin } = data; const nA = meta.avatars.length;
+    avatars.mats = meta.avatars.map((av) => {
+      const j = av.joints, J = [new THREE.Vector4(j.hipX, j.hipY, j.kneeY, j.ankleY), new THREE.Vector4(j.shX, j.shY, j.elY, j.neckY), new THREE.Vector4(j.kneeZ, j.elZ, 1.712 / j.top, 1)];
+      return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean);
+    });
+    avatars.tiers = [0, 1].map((lod) => meta.avatars.map((av, ai) => {
+      const L = av.lods[lod], g = avatarGeo(bin, L), cap = lod ? Math.ceil(LIFE.maxMid * 0.5) : Math.ceil(LIFE.maxNear * 0.5), A = instAttrs(g, cap);
+      const m = new THREE.Mesh(g, avatars.mats[ai]); m.frustumCulled = false; m.name = `crowd-${lod ? 'mid' : 'near'}-${av.name}`; group.add(m);
+      return { g, A, cap, mesh: m, tris: L.tris, n: 0 };
+    }));
+    avatars.male = meta.avatars.map((av, i) => (av.sex === 'm' ? i : -1)).filter((i) => i >= 0);
+    avatars.female = meta.avatars.map((av, i) => (av.sex === 'f' ? i : -1)).filter((i) => i >= 0);
+    avatars.n = nA; avatars.ready = true; avatars.patched = false;
+    stats.avatars = nA; stats.trisNear = avatars.tiers[0][0].tris; stats.trisMid = avatars.tiers[1][0].tris;
+  }
   // ---- contact shadows (lighting #6, P3): a soft dark footprint under every near and mid person (multiplied into what is
   // already on the ground; walkers' a little longer along their heading), so crowds stand on the street instead of floating
   const capC = LIFE.maxNear + LIFE.maxMid;
@@ -1942,10 +2118,11 @@ export function build(layout, ctx = {}) {
     im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3); im.instanceColor.setUsage(THREE.DynamicDrawUsage);
     const st = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4); st.setUsage(THREE.DynamicDrawUsage); im.geometry.setAttribute('iState', st);
+    const env = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4); env.setUsage(THREE.DynamicDrawUsage); im.geometry.setAttribute('iEnv', env);   // the street's light at this vehicle (lux) + seed
     // contract P2-A1 (A's object blur): world m/s per instance, in setMatrixAt order
     const vel = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3); vel.setUsage(THREE.DynamicDrawUsage); im.geometry.setAttribute('instanceVelocity', vel);
     im.count = 0; im.frustumCulled = false; im.name = 'traffic-' + ty; group.add(im);
-    vByType[ty] = { im, st, vel, cap, n: list.length };
+    vByType[ty] = { im, st, vel, env, cap, n: list.length };
   }
   // contract P2-A1: list the vehicle meshes for A's object blur (world.motionMeshes / scene.userData.motionMeshes)
   const motionMeshes = Object.values(vByType).map((B) => B.im);
@@ -1977,6 +2154,16 @@ export function build(layout, ctx = {}) {
   // door in/out events, busking sites
   const near = { crowdN: 0, feet: [], doors: [], busk: crowd.busk };
 
+  if (ctx.peopleData) { try { attachAvatars(ctx.peopleData); } catch (e) { avatars.error = String(e?.message || e); } }
+  else if (ctx.people !== false && typeof fetch === 'function' && typeof document !== 'undefined') {
+    const base = ctx.peopleBase || new URL('./seoul/people/', import.meta.url).href;
+    Promise.all([fetch(base + 'people.json').then((r) => r.json()), fetch(base + 'people.bin').then((r) => r.arrayBuffer()),
+      new THREE.TextureLoader().loadAsync(base + 'atlas.jpg'), new THREE.TextureLoader().loadAsync(base + 'hair.png')])
+      .then(([meta, bin, atlas, hair]) => {
+        for (const t of [atlas, hair]) { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; t.needsUpdate = true; }
+        attachAvatars({ meta, bin, atlas, hair });
+      }).catch((e) => { avatars.error = String(e?.message || e); console.warn('seoul-life: avatars', e); });
+  }
   function update(t, camPos, camQuat) {
     const c0 = performance.now();
     if (typeof t === 'number') { clock = t; extClock = true; }
@@ -1993,7 +2180,9 @@ export function build(layout, ctx = {}) {
     const c2 = performance.now();
     const X = crowd.X, Z = crowd.Z, VIS = crowd.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
     const cosFov = Math.cos(Math.min(1.55, ctx.fovHalf ?? 1.15)), visTest = typeof ctx.visible === 'function' ? ctx.visible : null;
-    let nN = 0, nM = 0, nF = 0, nC = 0; const T0 = tiers[0].A, T1 = tiers[1].A, T2 = tiers[2].A, mr2 = LIFE.midR * LIFE.midR;
+    let nN = 0, nM = 0, nF = 0, nC = 0; for (const t of tiers) t.n = 0; if (avatars.ready) for (const L of avatars.tiers) for (const t of L) t.n = 0;
+    if (avatars.ready && !avatars.patched) { const SL = ctx.scene?.userData?.seoulLight; if (SL?.patchMaterial) { for (const m of avatars.mats) SL.patchMaterial(m); avatars.patched = true; } }
+    const T0 = tiers[0].A, T1 = tiers[1].A, T2 = tiers[2].A, mr2 = LIFE.midR * LIFE.midR;
     hist.fill(0); near.crowdN = 0; near.feet.length = 0;
     for (let i = 0; i < NP; i++) {
       if (!VIS[i]) { ab[i] = 99; continue; }
@@ -2017,8 +2206,17 @@ export function build(layout, ctx = {}) {
       const a = people[i], x = X[i], z = Z[i];
       const dx = x - camP.x, dz = z - camP.z, h2 = dx * dx + dz * dz, d2 = h2 + camH * camH * 0.25;
       let T, k;
-      if (d2 < nr2 && nN < tiers[0].cap) { T = T0; k = nN++; } else if (d2 < mr2 && nM < tiers[1].cap) { T = T1; k = nM++; } else if (nN + nM + nF < LIFE.maxDrawn) { T = T2; k = nF++; } else continue;
-      if (T !== T2 && nC < capC) {   // contact footprint: full strength standing, a touch lighter and longer walking; fades out by 50 m
+      let lod = d2 < nr2 && nN < tiers[0].cap ? 0 : d2 < mr2 && nM < tiers[1].cap ? 1 : nN + nM + nF < LIFE.maxDrawn ? 2 : -1;
+      if (lod < 0) continue;
+      if (lod === 0) nN++; else if (lod === 1) nM++; else nF++;
+      let AT = null;
+      if (lod < 2 && avatars.ready) {   // the person's own avatar (by sex, then a hash), unless that avatar's buffer is full
+        const list = a.male ? avatars.male : avatars.female, av = list[((a.id * 2654435761) >>> 7) % list.length]; AT = avatars.tiers[lod][av];
+        if (AT.n >= AT.cap) AT = null;
+      }
+      if (!AT) AT = tiers[lod];
+      T = AT.A; k = AT.n++;
+      if (lod < 2 && nC < capC) {   // contact footprint: full strength standing, a touch lighter and longer walking; fades out by 50 m
         const w = crowd.WALK[i] > 0.5 ? 1 : 0, fade = 1 - Math.min(1, Math.max(0, (Math.sqrt(h2) - 38) / 12));
         contactA.setXYZW(nC, x, z, crowd.YAW[i], w + Math.min(0.999, (a.kind === K_SEAT ? 0.45 : 0.62) * fade * (w ? 0.85 : 1))); contactY.setX(nC, groundAt(x, z)); nC++;
       }
@@ -2045,8 +2243,10 @@ export function build(layout, ctx = {}) {
       T.iLook.array[o] = LY[i]; T.iLook.array[o + 1] = LP[i]; T.iLook.array[o + 2] = accOf[i]; T.iLook.array[o + 3] = seedOf[i];
       fill.at(x, z, tmpF); T.iFill.array[o] = tmpF[0]; T.iFill.array[o + 1] = tmpF[1]; T.iFill.array[o + 2] = tmpF[2]; T.iFill.array[o + 3] = tmpF[3];
     }
-    for (const [T, n] of [[tiers[0], nN], [tiers[1], nM], [tiers[2], nF]]) {
-      T.g.instanceCount = n;
+    let avTris = 0;
+    for (const T of [...tiers, ...(avatars.ready ? avatars.tiers.flat() : [])]) {
+      const n = T.n; T.g.instanceCount = n; T.mesh.visible = n > 0; avTris += n * T.tris;
+      if (!n) continue;
       for (const k in T.A) { const at = T.A[k]; at.clearUpdateRanges?.(); at.addUpdateRange?.(0, n * 4); at.needsUpdate = true; }
     }
     contactG.instanceCount = nC; contactA.clearUpdateRanges?.(); contactA.addUpdateRange?.(0, nC * 4); contactA.needsUpdate = true; contactY.clearUpdateRanges?.(); contactY.addUpdateRange?.(0, nC); contactY.needsUpdate = true;
@@ -2064,20 +2264,21 @@ export function build(layout, ctx = {}) {
       const col = v._lin || (v._lin = lin(v.paint)); B.im.instanceColor.setXYZ(k, col[0], col[1], col[2]);
       B.st.setXYZW(k, v.brake, v.hazard ? 1 : 0, 1, (v.id * 0.37) % 1);
       B.vel.setXYZ(k, p.hx * v.v, 0, p.hz * v.v);
+      fill.at(p.x, p.z, tmpF); B.env.setXYZW(k, tmpF[0], tmpF[1], tmpF[2], (v.id * 0.618) % 1);
       const hl = v.L / 2;
       ef.pos[0] = p.x + p.hx * hl; ef.pos[1] = y + (v.type === 'bus' ? 0.6 : 0.68); ef.pos[2] = p.z + p.hz * hl; ef.normal[0] = p.hx; ef.normal[2] = p.hz; ef.nits = 40000;
       er.pos[0] = p.x - p.hx * hl; er.pos[1] = y + 0.75; er.pos[2] = p.z - p.hz * hl; er.normal[0] = -p.hx; er.normal[2] = -p.hz; er.nits = 250 + 1250 * v.brake;
       const I = v.type === 'scooter' ? 0.35 : v.type === 'bus' ? 1.2 : 1;
       poolA.setXYZW(np++, p.x + p.hx * hl, p.z + p.hz * hl, yaw, I);
     }
-    for (const ty of VTYPES) { const B = vByType[ty]; B.im.count = cnt[ty]; B.im.instanceMatrix.needsUpdate = true; B.im.instanceColor.needsUpdate = true; B.st.needsUpdate = true; B.vel.needsUpdate = true; }
+    for (const ty of VTYPES) { const B = vByType[ty]; B.im.count = cnt[ty]; B.im.instanceMatrix.needsUpdate = true; B.im.instanceColor.needsUpdate = true; B.st.needsUpdate = true; B.vel.needsUpdate = true; B.env.needsUpdate = true; }
     poolG.instanceCount = np; poolA.needsUpdate = true;
-    stats.near = nN; stats.mid = nM; stats.far = nF; stats.drawn = nN + nM + nF; stats.tris = nN * tiers[0].tris + nM * tiers[1].tris + nF * tiers[2].tris;
+    stats.near = nN; stats.mid = nM; stats.far = nF; stats.drawn = nN + nM + nF; stats.tris = avTris;
     stats.simMs = c1 - c0; stats.cpuMs = performance.now() - c0;
     if (life.audio && life.audio.feed) life.audio.feed(camP, fwd, clock + W);
   }
   const life = {
-    group, emitters, sim, stats, fill, motionMeshes,
+    group, emitters, sim, stats, fill, motionMeshes, avatars, attachAvatars,
     // F1 (design #5): vehicles are hard (crash), pedestrians soft (scrape); both pure functions of the take clock
     colliders: { at: (t, out) => sim.boxesAt(t + W, out), hit: (p, r, t) => sim.hit(p, r, t + W), people: (p, r, t) => sim.hitPeople(p, r, t + W), keyed: 'take-clock', warm: W },
     near, crowd,
