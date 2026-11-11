@@ -57,14 +57,17 @@ ok(lobbies.every((e) => e.nits >= 80 && e.nits <= 150), `tower lobbies 80-150 ni
 ok(geo.emitters.filter((e) => e.role === 'roof').length === geo.facts.roofLamps && geo.facts.roofLamps > 100, `roof wall packs ${geo.facts.roofLamps} (art #6)`);
 // [P3-C] coloured rooms (club, karaoke, motel) are a filter on 30-130 white-equivalent nits: luminance x lum(filter) >= 15
 const isCol = (e) => { const L = layout.lots.find((l) => l.id === e.lot); return ['club', 'karaoke', 'motel'].includes(L?.use); };
-ok(stores.every((e) => e.nits >= (isCol(e) ? 15 : 30) && e.nits <= 130), `shop interiors 30-130 nits, coloured >= 15 (${Math.min(...stores.map((e) => e.nits))}-${Math.max(...stores.map((e) => e.nits))})`);
+ok(stores.every((e) => e.nits >= (isCol(e) ? 15 : 30) && e.nits <= 60), `shop interiors 30-60 nits (P4 fpv #2, graphics #2), coloured >= 15 (${Math.min(...stores.map((e) => e.nits))}-${Math.max(...stores.map((e) => e.nits))})`);
 ok(stores.every((e) => Math.abs(0.2126 * e.rgb[0] + 0.7152 * e.rgb[1] + 0.0722 * e.rgb[2] - 1) < 0.02), 'store rgb has luminance 1 (rgb x nits = luminance)');
 ok(!geo.colRanges.some((r) => ['glass', 'shop', 'sill', 'ao', 'frame'].includes(r.key)), 'glass, sills, frames and decals are render-only');
 
 // 3. atlas
 const A = buildInteriorAtlas();
 ok(A.width === 2048 && A.height === 3072 && A.data.length === 2048 * 3072 * 4, 'atlas 2048 x 3072 RGBA (512 px tiles, P3)');
-ok([...A.mean].every((m, i) => i >= 20 || (m > 0.05 && m < 2.5)), `tile means ${[...A.mean].map((m) => m.toFixed(2)).join(' ')}`);
+ok([...A.mean].every((m, i) => i >= 20 || i === 10 || i === 15 || (m > 0.05 && m < 2.5)), `tile means ${[...A.mean].map((m) => m.toFixed(2)).join(' ')}`);
+// [P4-C] near layers (10 people, 15 window bar) carry figures: coverage between 5 and 60 %
+for (const t of [10, 15]) { let cov = 0; const ox = (t % 4) * 512, oy = Math.floor(t / 4) * 512; for (let j = 0; j < 512; j += 4) for (let i = 0; i < 512; i += 4) cov += A.data[((oy + j) * 2048 + ox + i) * 4 + 3] / 255; cov /= 128 * 128;
+  ok(cov > 0.05 && cov < 0.6, `near layer ${t} coverage ${(cov * 100).toFixed(1)} %`); }
 
 // 4. layout
 const segD = (p, a, b) => { const vx = b[0] - a[0], vz = b[1] - a[1], l2 = vx * vx + vz * vz || 1e-9, t = Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vz) / l2)); return Math.hypot(p[0] - a[0] - t * vx, p[1] - a[1] - t * vz); };

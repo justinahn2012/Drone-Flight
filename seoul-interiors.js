@@ -11,8 +11,12 @@
 // Tiles (index = row * 4 + col; row 0 is v = 0):
 //   shops   0 convenience store   1 cafe        2 pocha / restaurant   3 bar (dark, backlit bottles)
 //           4 karaoke lobby       5 clothes     6 phone shop           7 PC-bang stair
-//   windows 8 office panels       9 blinds*    10 curtain*            11 study / bookshelves
-//          12 lamp room (home)   13 TV / monitors (blue)  14 common stair  15 frosted glass*      (* front layers, flat)
+//   windows 8 office panels       9 lobby (P4)  10 near: people (P4)   11 study / bookshelves
+//          12 lamp room (home)   13 TV / monitors (blue)  14 common stair  15 near: window bar (P4)
+//   [P4-C] blinds, curtains and frosting (P3's flat tiles 9, 10, 15) are procedural in the glass shader now; 9 is a tower
+//   lobby and 10 / 15 are near layers (u = 3 m of strip across the tile, v = 0..3 m above the floor, alpha = coverage):
+//   10 shoppers standing 0.5-0.9 m behind shop glass (one per 1 m cell, the shader drops cells), 15 a cafe window bar
+//   (counter at 1.05 m, people seated facing out). That makes three depth layers in a shop: near, mid (20-23), room.
 //   16-19   posters, 4 per tile (2 x 2): menu, promo, for-lease (임대) paper, club flyer
 //   20-23   [P3-C] mid-depth layers, 2 per tile (left / right half, 256 x 512 px: u across the bay, v = 0..3 m above the
 //           floor; alpha = coverage): 0 convenience shelves, 1 cafe counter + menu board, 2 diners at pocha tables,
@@ -22,10 +26,13 @@
 // walls get a ceiling-light gradient (bright under the downlights, darker toward the floor).
 // Every room tile is normalised in the shader by TILE_MEAN (its mean linear luminance with the boost), so a pane's aEm
 // is the mean luminance the camera sees through it (nits x NITS).
-export const ATLAS = { cols: 4, rows: 6, tile: 512, width: 2048, height: 3072, boost: 6, mid: 20, desat: 0.35 };
+// [P4-C] desat 0.35 -> 0.2 (colorist: rooms read 0.16-0.42 saturated against the refs' 0.45; the warm light no longer
+// sits on warm paint now that restaurants are 4500 K); near: the near-layer tiles; strip: metres of strip per near tile
+export const ATLAS = { cols: 4, rows: 6, tile: 512, width: 2048, height: 3072, boost: 6, mid: 20, desat: 0.2, near: { people: 10, bar: 15 }, strip: 3.0, backEV: -1.5 };
 export const MID = { conv: 0, cafe: 1, diners: 2, bar: 3, karaoke: 4, clothes: 5, phone: 6, office: 7 };
-export const ROOM = { conv: 0, cafe: 1, pocha: 2, bar: 3, karaoke: 4, clothes: 5, phone: 6, pcstair: 7, office: 8, blinds: 9, curtain: 10,
-  study: 11, home: 12, tv: 13, stair: 14, frosted: 15 };
+export const ROOM = { conv: 0, cafe: 1, pocha: 2, bar: 3, karaoke: 4, clothes: 5, phone: 6, pcstair: 7, office: 8, lobby: 9,
+  study: 11, home: 12, tv: 13, stair: 14 };
+export const NEAR = { people: 10, bar: 15 };
 export const FRONT = { none: 0, blinds: 1, curtain: 2, frosted: 3, vinyl: 4, lease: 5, cafeCurtain: 6 };
 
 const fract = (x) => x - Math.floor(x);
@@ -200,6 +207,11 @@ const PL4 = [K81, K82, K83, K84];
 const PL5 = [K93, K94, K95, K70];
 const PL6 = [K136, K137, K138, K139];
 const PL7 = [K149, K150, K151];
+// [P4-C] fashion stock (saturated, with the black / white / denim / camel that real racks are mostly made of), a campaign image,
+// a carrier's red, a convenience store's purple, the lobby's pale stone
+const FASH = [[0.03, 0.03, 0.035], [0.03, 0.03, 0.035], [0.75, 0.74, 0.7], [0.1, 0.14, 0.3], [0.45, 0.32, 0.18], [0.6, 0.08, 0.08], [0.85, 0.6, 0.1], [0.12, 0.3, 0.12], [0.6, 0.35, 0.5], [0.25, 0.4, 0.6], [0.2, 0.2, 0.21], [0.85, 0.45, 0.55]];
+const CAMP = [[0.85, 0.3, 0.12], [0.2, 0.1, 0.06], [0.95, 0.75, 0.45]];
+const BRAND = [0.8, 0.05, 0.04], CUPUR = [0.42, 0.1, 0.55], LSTONE = [0.62, 0.58, 0.52], WGREY = [0.4, 0.38, 0.35];
 // one room sample: wall 0 back, 1 left, 2 right, 3 floor, 4 ceiling; X, Y in [-1, 1], Z in [0, 1]. Returns [r, g, b, emit 0..1]
 const OUT = K0; let lightZ = 1, lightY = 1;
 const E = (c, e) => { OUT[0] = c[0]; OUT[1] = c[1]; OUT[2] = c[2]; OUT[3] = e; return OUT; };
@@ -207,7 +219,7 @@ const S = (c, k = 1) => { k *= lightZ * lightY; OUT[0] = c[0] * k; OUT[1] = c[1]
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 const near3 = (X, a, b, c, r) => Math.abs(X - a) < r || Math.abs(X - b) < r || Math.abs(X - c) < r;
 function room(v, wall, X, Y, Z) {
-  lightZ = 1 - 0.35 * Z;                                             // falloff away from the window side lights
+  lightZ = Math.pow(2, ATLAS.backEV * Z);                            // [P4-C] fpv #2: the back of the room 1.5 stops under the front
   // [P3-C] ceiling-light gradient: walls darken toward the floor, side walls get downlight scallops, the ceiling sits dim
   lightY = wall === 4 ? 0.8 : wall === 3 ? 0.9 : 0.72 + 0.28 * smooth(-1, 0.55, Y);
   if (wall === 1 || wall === 2) lightY += 0.32 * Math.max(0, 1 - Math.hypot((fract(Z * 2.5) - 0.5) * 3.2, (0.95 - Y) * 1.25));
@@ -216,7 +228,7 @@ function room(v, wall, X, Y, Z) {
       if (wall === 4) { const row = near3(X, -0.55, 0, 0.55, 0.07) && fract(Z * 5) < 0.8; return row ? E(K1, 1) : S(K2); }
       if (wall === 3) { const g = fract(X * 3) < 0.04 || fract(Z * 7) < 0.05; return S(g ? K3 : K4); }
       if (wall === 0) {
-        if (Y > 0.55) return S(band(Y, 0.62, 0.74) ? K5 : K6);
+        if (Y > 0.55) return band(Y, 0.62, 0.7) ? E(K5, 0.35) : band(Y, 0.7, 0.76) ? E(CUPUR, 0.35) : S(K6);   // [P4-C] a lit brand band
         const door = Math.floor((X + 1) * 3), dx = fract((X + 1) * 3);
         if (dx < 0.05 || dx > 0.95 || Y < -0.85) return S(K7);
         const shelf = fract((Y + 0.85) * 3.6); if (shelf < 0.08) return E(K8, 0.4);
@@ -271,18 +283,27 @@ function room(v, wall, X, Y, Z) {
         if (fu < 0.04 || fu > 0.96) return S(K60);
         return S(K61); }
     }
-    case 5: { // clothes shop: white box, racks on the side walls, a campaign poster at the back, track spots
-      if (wall === 4) return Math.abs(X) < 0.03 ? (fract(Z * 5) < 0.2 ? E(K62, 1) : S(K63)) : S(K64);
+    case 5: { // clothes shop. [P4-C] (fpv #2: not a white box) a black ceiling with two track runs of spots, warm grey walls,
+      // two-tier racks on both side walls (a garment every ~6 cm, a rail every 0.5 m of depth), folded stacks above, a lit
+      // campaign lightbox on the back wall (twice the room)
+      if (wall === 4) { const tr = Math.abs(Math.abs(X) - 0.45) < 0.025; if (tr) return fract(Z * 6) < 0.18 ? E(K62, 1) : S(K69); return S(K63); }
       if (wall === 3) return S(fract(Z * 4 + X * 0.2) < 0.03 ? K65 : K66);
-      if (wall === 0) { if (band(X, -0.45, 0.45) && band(Y, -0.3, 0.75)) { const fig = Math.hypot(X * 1.6, Y - 0.45) < 0.12 || (Math.abs(X) < 0.16 && band(Y, -0.3, 0.3)); return E(fig ? K67 : K68, 0.25); } return S(K10); }
-      if (Math.abs(Y - 0.3) < 0.015) return S(K69);
-      if (band(Y, -0.55, 0.3) && fract(Z * 26) < 0.8) return S(mix(pick(PL3, hh(Math.floor(Z * 26), wall)), K75, 0.1));
-      return S(K76);
+      if (wall === 0) {
+        if (band(X, -0.55, 0.55) && band(Y, -0.2, 0.8)) { const fx = X / 0.55, fy = (Y - 0.3) / 0.5, fig = Math.hypot(fx * 1.4, fy - 0.45) < 0.17 || (Math.abs(fx) < 0.26 - 0.08 * fy && band(fy, -1, 0.3));
+          return E(fig ? mix(K67, CAMP[1], 0.15) : mix(CAMP[0], CAMP[2], clamp(0.5 + fy * 0.5)), 0.55); }
+        if (band(Y, -1, -0.45)) return S(K32);
+        return S(WGREY);
+      }
+      if (band(Y, 0.45, 0.85)) { const st = fract(Z * 9), lay = fract((Y - 0.45) * 12); return st < 0.82 ? S(lay < 0.12 ? K90 : pick(FASH, hh(Math.floor(Z * 9), Math.floor((Y - 0.45) * 12), wall + 7)), 0.85) : S(WGREY); }
+      if (Math.abs(Y - 0.4) < 0.014 || Math.abs(Y + 0.08) < 0.014) return S(K69);                // two chrome rails
+      { const tier = Y > -0.08 ? 0 : 1, top = tier ? -0.08 : 0.4, len = tier ? 0.62 : 0.42, g = Math.floor(Z * 70), f = fract(Z * 70);
+        if (band(Y, top - len * (0.75 + 0.25 * hh(g, tier, wall)), top) && f < 0.86) return S(pick(FASH, hh(g, tier + 3, wall)), 0.75 + 0.35 * (Y - top + len) / len); }
+      return S(WGREY);
     }
     case 6: { // phone shop: very white, backlit promo walls, a blue brand band, square ceiling panels
       if (wall === 4) return (fract(X * 1.5 + 0.25) < 0.5 && fract(Z * 3) < 0.6) ? E(K77, 1) : S(K78);
       if (wall === 3) return S(K79);
-      if (band(Y, 0.55, 0.75)) return E(K80, 0.4);
+      if (band(Y, 0.55, 0.75)) return E(BRAND, 0.45);   // [P4-C] a carrier's red brand band (was blue on white)
       { const u = wall ? Z * 2.2 : X * 1.4, fu = fract(u);
         if (band(fu, 0.1, 0.9) && band(Y, -0.35, 0.45)) { const c = pick(PL4, hh(Math.floor(u), wall)); const t = band(Y, -0.25, -0.12) && band(fu, 0.2, 0.7); return E(t ? K1 : c, 0.45); }
         return S(K85); }
@@ -301,6 +322,19 @@ function room(v, wall, X, Y, Z) {
       if (Y < -0.42) { const u = wall ? Z * 4 : X * 2.5; const mon = band(fract(u), 0.3, 0.7) && Y > -0.6; return mon ? E(K99, 0.05) : S(K100); }
       if (wall === 0 && band(X, -0.9, -0.3) && Y < 0.4) return S(K101);   // cabinets
       return S(K102);
+    }
+    case 9: { // [P4-C] tower lobby (lighting #3: 80-150 nits that render): linear ceiling slots, polished pale stone that
+      // mirrors them, stone side walls with a backlit art panel, a lift bank and a lit name band at the back, a dark desk
+      if (wall === 4) { const sl = fract(Z * 3) < 0.1 && Math.abs(X) < 0.85; return sl ? E(K1, 1) : S(fract(X * 4) < 0.02 ? K104 : K102); }
+      if (wall === 3) { const g = fract(X * 2) < 0.012 || fract(Z * 4) < 0.012, refl = fract(Z * 3) < 0.1 && Math.abs(X) < 0.85; return refl ? E(K109, 0.3) : S(g ? K104 : LSTONE); }
+      if (wall === 0) {
+        if (band(Y, 0.6, 0.78) && Math.abs(X) < 0.6) return E(fract(X * 9) < 0.6 && band(Y, 0.64, 0.74) ? K1 : K84, 0.5);
+        for (const c of [-0.55, 0, 0.55]) if (Math.abs(X - c) < 0.17 && Y < 0.45) { if (Y > 0.38) return E(K62, 0.6); return S(Math.abs(X - c) < 0.006 ? K90 : K79, 1.05); }
+        if (Y < -0.45 && Math.abs(X) < 0.75) return S(Y > -0.5 ? K109 : K34);
+        return S(LSTONE);
+      }
+      if (band(Z, 0.35, 0.75) && band(Y, -0.4, 0.55)) return E(mix(CAMP[2], K62, 0.5 + 0.5 * Math.sin(Z * 9 + Y * 3)), 0.5);
+      return S(fract(Z * 5) < 0.015 || fract((Y + 1) * 2.5) < 0.012 ? K104 : LSTONE);
     }
     case 11: { // study: bookshelves, desk lamp, ceiling lamp off
       if (wall === 4) return Math.hypot(X, Z - 0.5) < 0.12 ? E(K103, 0.6) : S(K104);
@@ -331,15 +365,7 @@ function room(v, wall, X, Y, Z) {
     default: return S(K75);
   }
 }
-// flat layers (no perspective): u, v in [0, 1]. Returns [r, g, b, coverage]
-function flat(v, u, w) {
-  switch (v) {
-    case 9: { const s = fract(w * 22); return s < 0.82 ? K132 : K133; }       // blinds: slats
-    case 10: { const f = 0.75 + 0.25 * Math.sin(u * 46 + Math.sin(u * 7) * 2) * (0.8 + 0.2 * Math.sin(w * 3)); return [f, f, f, 0.9]; }   // curtain folds (tinted in shader)
-    case 15: { const b = 0.75 + 0.1 * Math.sin(u * 5 + 1) * Math.sin(w * 4) + 0.08 * Math.sin(u * 40) * 0.3; return [b, b, b * 1.02, 1]; } // frosted
-    default: return K134;
-  }
-}
+// [P4-C] the flat front layers (blinds, curtain, frosted) are procedural in world-seoul.js's glass shader (sgFront).
 // posters 128 px in a 2 x 2 tile: menus, promos, 임대 (for lease), club flyers. Text is drawn as type bars.
 function poster(p, u, v) {
   const k = p % 4, s = (a) => hh(p, a);
@@ -453,6 +479,74 @@ function midLayer(m, u, y) {
   }
 }
 
+// [P4-C] near layers (fpv #2, graphics #2: stock and people in the shop, not blank panels). A figure in metres: x from its
+// centre line, y above the floor. o: h height, view 0 back / 0.5 side / 1 front, top / bot / skin / hair colours, coat, long
+// hair, bag side. Lit from the ceiling (brighter up top), rounded (darker at the silhouette's edges). Seoul at night: dark
+// hair on nearly everyone, black and camel coats, black puffers, denim.
+const TOPS = [[0.025, 0.025, 0.03], [0.025, 0.025, 0.03], [0.03, 0.03, 0.035], [0.06, 0.06, 0.065], [0.45, 0.33, 0.2], [0.7, 0.68, 0.62], [0.2, 0.2, 0.21], [0.04, 0.05, 0.1], [0.6, 0.55, 0.45], [0.12, 0.13, 0.07], [0.22, 0.04, 0.05]];
+const BOTS = [[0.03, 0.03, 0.035], [0.03, 0.03, 0.035], [0.08, 0.12, 0.2], [0.25, 0.32, 0.45], [0.4, 0.32, 0.22], [0.15, 0.15, 0.16]];
+const SKINS = [[0.6, 0.42, 0.32], [0.55, 0.38, 0.28], [0.65, 0.48, 0.38]], HAIRS = [[0.015, 0.012, 0.01], [0.025, 0.018, 0.014], [0.03, 0.02, 0.015], [0.09, 0.05, 0.03]];
+const FO = [0, 0, 0, 0];
+const F = (c, k) => { FO[0] = c[0] * k; FO[1] = c[1] * k; FO[2] = c[2] * k; FO[3] = 1; return FO; };
+function figure(x, y, o) {
+  const H = o.h, ax = Math.abs(x), lit = 0.72 + 0.4 * clamp(y / H);
+  const hy = H - 0.115, hx = x / 0.082, hv = (y - hy) / 0.115;
+  if (hx * hx + hv * hv < 1) {   // head
+    let hair = o.view < 0.25 || hv > 0.32 || (o.view > 0.75 ? Math.abs(hx) > 0.8 : (o.side * hx) < -0.15);
+    if (o.view < 0.25 && !o.longHair && hv < -0.62) hair = false;   // the nape under short hair
+    if (hair) return F(o.hair, lit * (1.15 - 0.3 * Math.abs(hx)));
+    let k = 1 - 0.25 * hx * hx;
+    if (o.view > 0.75 && Math.abs(hv - 0.06) < 0.07 && band(Math.abs(hx), 0.18, 0.62)) k *= 0.5;      // eyes and brows
+    if (o.view > 0.75 && Math.abs(hv + 0.5) < 0.05 && Math.abs(hx) < 0.28) k *= 0.72;                  // mouth
+    return F(o.skin, lit * k * (o.screen ? 1.15 : 1));
+  }
+  if (o.longHair && o.view < 0.75 && ax < 0.11 && band(y, H - 0.42, hy)) return F(o.hair, lit);
+  const ys = H - 0.25;
+  if (ax < 0.045 && band(y, ys - 0.02, H - 0.2)) return F(o.view > 0.25 ? o.skin : o.hair, lit * 0.8);   // neck
+  const yw = H - 0.6, yh = o.coat ? H - 1.05 : H - 0.82;
+  // torso + sleeves: rounded shoulders, tapering to the waist (a coat flares a little to its hem)
+  if (band(y, yh, ys + 0.03)) {
+    const t = clamp((ys - y) / (ys - yw)), sh = y > ys - 0.07 ? Math.sqrt(clamp(1 - ((y - (ys - 0.07)) / 0.1) ** 2)) : 1;
+    let hw = (0.215 - 0.04 * t) * sh; if (y < yw) hw = o.coat ? 0.18 + 0.03 * (yw - y) / (yw - yh) : 0.165;
+    if (ax < hw) { const arm = ax > hw - 0.055 && y > H - 0.86, k = arm ? 0.8 : 1 - 0.35 * (x / hw) ** 2;
+      if (arm && y < H - 0.79) return F(o.skin, lit * 0.8);   // hands
+      return F(o.top, lit * k * (y > ys - 0.05 ? 1.15 : 1)); }
+  }
+  if (o.bag && Math.abs(x - o.bag * 0.25) < 0.07 && band(y, H - 1.02, H - 0.78)) return F(o.bagC, lit * 0.9);
+  if (band(y, 0.07, yh) && !o.seated) {   // hips and legs
+    if (y > H - 0.84 && ax < 0.165) return F(o.bot, lit * (1 - 0.3 * (x / 0.165) ** 2));
+    for (const c of [-0.075, 0.075]) { const lw = 0.062 - 0.016 * (1 - y / (H - 0.84)); if (Math.abs(x - c) < lw) return F(o.bot, lit * (0.9 - 0.3 * ((x - c) / lw) ** 2)); }
+  }
+  if (y < 0.075 && !o.seated) for (const c of [-0.08, 0.08]) if (Math.abs(x - c) < 0.058) return F(o.shoe, 0.8);
+  return null;
+}
+const pickH = (arr, a, b) => arr[Math.min(arr.length - 1, Math.floor(hh(a, b) * arr.length))];
+function personOf(i, seated) {
+  const r = (k) => hh(i * 7.31 + 3, k);
+  return { h: seated ? 1.6 + r(1) * 0.12 : 1.6 + r(1) * 0.22, view: seated ? 1 : r(2) < 0.45 ? 0 : r(2) < 0.75 ? 0.5 : 1, side: r(3) < 0.5 ? -1 : 1,
+    top: pickH(TOPS, i, 4), bot: pickH(BOTS, i, 5), skin: pickH(SKINS, i, 6), hair: r(7) < 0.88 ? HAIRS[Math.floor(r(8) * 3)] : HAIRS[3], coat: !seated && r(9) < 0.4,
+    longHair: r(10) < 0.45, bag: !seated && r(11) < 0.35 ? (r(12) < 0.5 ? -1 : 1) : 0, bagC: r(13) < 0.5 ? [0.85, 0.82, 0.75] : [0.6, 0.12, 0.08], shoe: r(14) < 0.3 ? [0.75, 0.75, 0.72] : [0.03, 0.03, 0.03], seated, screen: seated && r(15) < 0.5 };
+}
+// near tile: u across 3 m of strip (one figure per 1 m cell, centred), y 0..3 m
+function nearLayer(t, u, y) {
+  const xm = u * ATLAS.strip, cell = Math.floor(xm), xc = xm - cell - 0.5;
+  if (t === NEAR.people) {
+    const o = personOf(cell + 11, false), sway = (hh(cell, 21) - 0.5) * 0.2;
+    return figure(xc - sway, y, o) || NONE;
+  }
+  // window bar: a counter (wood top at 1.02-1.07 m, a dark front), a seated figure facing out in two cells of three, a cup,
+  // a laptop's lit back edge in front of some
+  if (band(y, 1.02, 1.07)) return M([0.3, 0.19, 0.1], 1.25);
+  if (y < 1.02) return M(y > 0.97 ? [0.05, 0.04, 0.03] : [0.09, 0.06, 0.04], 0.6 + 0.3 * y);
+  if (cell !== 1 || hh(cell, 31) < 0.3) {
+    const o = personOf(cell + 40, true), p = figure(xc, y, o);
+    if (o.screen && band(xc, -0.17, 0.17) && band(y, 1.07, 1.3)) return M([0.55, 0.56, 0.6], band(y, 1.07, 1.1) ? 0.5 : 0.25);   // laptop lid
+    if (p) return p;
+  }
+  if (Math.abs(xc - 0.28) < 0.035 && band(y, 1.07, 1.18)) return M([0.85, 0.83, 0.78], 1.1);   // a cup
+  return NONE;
+}
+
 const LIN = Float32Array.from({ length: 256 }, (_, x) => { x /= 255; return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
 const SRGB = Uint8Array.from({ length: 4096 }, (_, i) => { const v = i / 4095; return Math.round((v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255); });
 let cached = null;
@@ -467,7 +561,7 @@ export function buildInteriorAtlas() {
       if (t >= 20) { const half = i >= T / 2 ? 1 : 0, m = (t - 20) * 2 + half, u = ((i % (T / 2)) + 0.5) / (T / 2), y = ((j + 0.5) / T) * 3;
         const r = midLayer(m, u, y) || NONE; c = r; }
       else if (t >= 16) { const p = (t - 16) * 4 + (j >= T / 2 ? 2 : 0) + (i >= T / 2 ? 1 : 0); const u = ((i % (T / 2)) + 0.5) / (T / 2), v = ((j % (T / 2)) + 0.5) / (T / 2); c = poster(p, u, v); }
-      else if (t === 9 || t === 10 || t === 15) c = flat(t, (i + 0.5) / T, (j + 0.5) / T);
+      else if (t === NEAR.people || t === NEAR.bar) { const r = nearLayer(t, (i + 0.5) / T, ((j + 0.5) / T) * 3); c = [r[0], r[1], r[2], r[3]]; }
       else {
         const ix = ((i + 0.5) / T) * 2 - 1, iy = ((j + 0.5) / T) * 2 - 1, s = Math.max(Math.abs(ix), Math.abs(iy));
         let r;
@@ -478,8 +572,8 @@ export function buildInteriorAtlas() {
       }
       const k = ((oy + j) * W + ox + i) * 4;
       data[k] = toS(c[0]); data[k + 1] = toS(c[1]); data[k + 2] = toS(c[2]); data[k + 3] = t >= 16 && t < 20 ? 255 : Math.round(clamp(c[3]) * 255);
-      const a = data[k + 3] / 255;
-      sum += (0.2126 * LIN[data[k]] + 0.7152 * LIN[data[k + 1]] + 0.0722 * LIN[data[k + 2]]) * (t < 16 && t !== 9 && t !== 10 && t !== 15 ? 1 + (1 - a) * boost : 1);
+      const a = data[k + 3] / 255, isRoom = t < 16 && t !== NEAR.people && t !== NEAR.bar;
+      sum += (0.2126 * LIN[data[k]] + 0.7152 * LIN[data[k + 1]] + 0.0722 * LIN[data[k + 2]]) * (isRoom ? 1 + (1 - a) * boost : 1);
     }
     mean[t] = sum / (T * T);
   }
