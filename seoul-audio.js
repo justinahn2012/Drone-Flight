@@ -33,7 +33,7 @@ const nrm = (k) => Math.pow(10, NORM[k] / 20);
 export const SND = {
   level: 1,
   world: 5.13,     // trim on the world path, set so the city sits ~9 LU under a hover on the walking street (sound #1)
-  beds: { traffic: 65, crowd: 65, alley: 58, air: 54, rain: 66 },
+  beds: { traffic: 61, crowd: 65, alley: 58, air: 54, rain: 66 },
   car: 90, taxi: 88, truck: 94, bus: 97, scooter: 92, tyre: 90,
   // one-shots and loops, RMS at 1 m (calibrated buffers): shop doorway speaker, club door, busking PA, horn, ...
   music: 81, club: 98, busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 82, shout: 88, talk: 74, yelp: 92, heel: 72, step: 60,
@@ -387,7 +387,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
       // P3 (sound #3) voicing: no +10 dB shelf (it made a 4 kHz hiss hump and a 1 kHz hole); chest +4, the F1/F2 band
       // (1-2 kHz, the phone speaker's best) +8/+6 dB, the consonant hump at 4 kHz -8, air above 6 kHz back (the voice
       // synth's 5.2 kHz low-pass and the 22 kHz buffer's linear resampling took it): each octave 125 Hz-8 kHz within 3 dB of a recorded crowd (tests/seoul-audio)
-      const pk = (f, q, gn) => { const b = F('peaking', f, q); b.gain.value = gn; return b; }, hs = F('highshelf', 6000); hs.gain.value = 16;
+      const pk = (f, q, gn) => { const b = F('peaking', f, q); b.gain.value = gn; return b; }, hs = F('highshelf', 6000); hs.gain.value = 18;
       const eq = [F('highpass', 60, 0.7), pk(140, 1, 4), pk(1100, 0.7, 8), pk(2000, 1.2, 6), pk(4000, 1.4, -8), hs], hp = eq[0], pbG = G(0.5);
       for (let i = 1; i < eq.length; i++) eq[i - 1].connect(eq[i]);
       pa.connect(hp); pb.connect(pbG); pbG.connect(hp); hs.connect(g.bCrowd); g.crowdSrc = [pa, pb]; g.crowdIn = hp;
