@@ -421,10 +421,8 @@ merged (station -13.2 LU, junction -14.4, hover peaks 2.9 dB), ratcheted, owned 
   now says what the near / mid tiers draw.
 - `dressing/ginkgo_cards.png`, `dressing/ac_face.png`: world.json `materials[dr_*].mapFile` (the repo path stays in `map`).
 - `ui/`: the level's menu art (levels.json thumb / backdrop) and the hangul subset.
-- `light/lightmap.bin`: D's night lightmap, baked headless at export (the browser's Worker job, in line): 2048 x 1735
-  RGBA16F (rgb = irradiance x NITS, a = valid), with light.json `lightmap` (uniforms, plan, texel counts) and
-  `layoutSha256` (the layout it was baked for). Its lookup raster and edge table are rows of light/records.bin. A
-  lightmap D ships in the repo (`seoul/light/lightmap.*`, perf #3) is copied instead.
+- `light/lightmap.bin`: D's night lightmap, baked headless at export. **Superseded in phase 5 (§10):** the export now
+  ships the game's own `light/night-lm.bin` (one file, one key).
 - Asset coverage: every repo file a Seoul module (world-seoul.js, seoul-*.js, msdf-meta.js) or the level's levels.json
   entry names must be in the export byte for byte, or listed in `ASSET_EXCEPTIONS` (tools/export-seoul-data.mjs) with a
   reason (the opt-in ?beds recordings, the provisional layout). Otherwise a warning: `--strict` fails CI.
@@ -444,7 +442,7 @@ GLTFLoader + MeshoptDecoder.
 - `signs.bin`: signs.json's big tables (designs, faces, housings, emitters, scrollers) as columns (`onetake.columns/1`):
   per numeric key one meshopt vertex stream (i32, f32, or i32 fixed point with `scale` where the JSON was rounded to
   that many decimals: exact against the JSON); every other key stays a JSON column; nested tables carry `offsets`.
-- `light/lightmap.bin`, `light/volume.bin`, `light/records.bin`, `light/grid.bin`: meshopt vertex streams (lossless;
+- `light/volume.bin`, `light/records.bin`, `light/grid.bin`: meshopt vertex streams (lossless;
   their light.json descriptor says `codec`, `stride`, `decodedBytes`); world.json `data.packed` lists them.
 - Every export decodes its own output with three's decoder before writing (each packed vertex against the source
   vertex it stands for, the triangles as a multiset, each signs.bin value against the JSON; GLTFLoader parses the three

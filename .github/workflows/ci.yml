@@ -95,6 +95,11 @@ jobs:
       - name: Seoul parity (flight log + Take events + traffic vectors; stale = fail, re-record with --record)
         if: ${{ !cancelled() }}
         run: node tests/seoul-parity.mjs --strict
+      - name: Seoul night lightmap is current (one file, one key; stale = fail, fix with node tools/bakelm.mjs --night)
+        if: ${{ !cancelled() }}
+        run: |   # [P5 H, native #1 / #2] the game and the export both use seoul/light/night-lm.bin; a stale key bakes on the phone
+          out=$(node tools/bakelm-night.mjs --check); echo "$out"
+          echo "$out" | grep -q '^current:' || { echo "::error title=stale night lightmap (D / the integrator)::$(echo "$out" | tail -1): run node tools/bakelm.mjs --night on the merge and commit seoul/light/night-lm.bin"; exit 1; }
       - name: Build exports
         if: ${{ !cancelled() }}
         run: |

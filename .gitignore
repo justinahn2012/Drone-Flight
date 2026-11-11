@@ -4,3 +4,4 @@ exports/
 browser-out/
 export/
 browser-out-*/
+ci-merge-check/

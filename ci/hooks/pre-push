@@ -1,0 +1,21 @@
+#!/bin/sh
+# ci/hooks/pre-push (P5 H, native #1): refuse a push that moves main to a commit ci/merge-check.mjs has not run green.
+# Install once per clone: git config core.hooksPath ci/hooks
+# Branch pushes (p5/*, integ/*) pass untouched. Override for an emergency only: ONETAKE_FORCE_MAIN=1 git push ...
+rec="$(git rev-parse --git-dir)/onetake-merge-check.json"
+while read -r lref lsha rref rsha; do
+  [ "$rref" = "refs/heads/main" ] || continue
+  [ "$lsha" = "0000000000000000000000000000000000000000" ] && continue
+  [ -n "$ONETAKE_FORCE_MAIN" ] && { echo "pre-push: ONETAKE_FORCE_MAIN set, main gate skipped" >&2; continue; }
+  if [ -f "$rec" ] && grep -q "\"sha\": \"$lsha\"" "$rec" && grep -q '"ok": true' "$rec"; then
+    echo "pre-push: $(echo "$lsha" | cut -c1-7) ran green in ci/merge-check.mjs: ok to push to main" >&2; continue
+  fi
+  # a commit CI already ran green on another branch (integ/*) is fine too
+  if command -v gh >/dev/null 2>&1 && [ "$(gh run list --commit "$lsha" --workflow ci --json conclusion -q '[.[] | select(.conclusion=="success")] | length' 2>/dev/null)" -gt 0 ] 2>/dev/null; then
+    echo "pre-push: CI is green on $(echo "$lsha" | cut -c1-7): ok to push to main" >&2; continue
+  fi
+  echo "pre-push: REFUSED. main would move to $(echo "$lsha" | cut -c1-7), which has no green ci/merge-check.mjs record and no green CI run." >&2
+  echo "  run: node ci/merge-check.mjs   (about 15 min; or push to integ/<phase>, wait for CI, then git push origin integ/<phase>:main)" >&2
+  exit 1
+done
+exit 0
