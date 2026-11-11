@@ -35,6 +35,9 @@
 // x(1 + fastBonus * clamp((within - t) / (within - par))), t = the move's time (pre-gate to gate): x1.5 at par, x1 at the
 // end of its window. Its line / repeat event carries dur (s), speed (the multiplier), fast (speed >= 1 + fastAt *
 // fastBonus: the FAST tag), best (the line's best time before this one, s; 0 = none) and newBest; the record keeps bd.
+// [P5-F design #4 / UX #5] speed pays on the whole street: with tuning.bankBonus a timed named line's multiplier k also pays
+// (k - 1) x the pts of its own micros flown since its pre-gate (the event's `bonus`), and those micros score x1 themselves
+// (their events still carry dur / fast); Seoul sets fastBonus 1.0 (x2 at par). tuning.fastPar: FAST only within par x fastPar.
 // No three.js import: plain vector maths, runs headless in node too.
 
 export const TAKE_TUNING = {
@@ -78,6 +81,12 @@ export const TAKE_TUNING = {
   fastBonus: 0.5,      // design #3: a line with `par` scores up to x(1 + fastBonus) when flown at par
   fastAt: 0.5,         // the FAST tag from this share of fastBonus up (x1.25)
   timed: false,        // UX #6: line events carry the move's time and best (dur, best, newBest) for lines with a pre-gate
+  // [P5-F] (bando has no `par`: off / unused there)
+  bankBonus: false,    // design #4: a timed named line's speed multiplier also pays on the micros flown along it since its pre-gate
+                       // (its segments and features: seg / on = its name), and those micros take no speed multiplier of their own
+  slowPar: 0,          // design #4: > 0: the speed multiplier is x1 from dur = par x slowPar (not the end of the window): a
+                       // careful 5 m/s pass (par x 1.6 at the 8 m/s par) earns the base, the bonus is for flying fast
+  fastPar: 0,          // UX #5: > 0: the FAST tag only at dur <= par x fastPar (0: from fastAt x fastBonus up, phase 4's rule)
 };
 const T = TAKE_TUNING;
 
@@ -225,7 +234,7 @@ export class Take {
     this._hover = 0; this._land = 0; this._gndAgo = 9; this._maxSpeed = 0; this._maxFlow = 1; this._log = []; this._done = new Set(); this._lastName = null;
     this._cool = {}; this._pre = new Map(); this._preT = -99; this._last = null; this._released = false; this._skim = 0; this._skimOff = 0;
     this._now = 0; this._holding = false; this._cutIn = 0; this._cutFrac = 0; this._cutKind = null;
-    this._dirty = false; this._imp = null; this._mvN = null; this._scrapeT = -99; this._headsT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._how = null;
+    this._dirty = false; this._bonusEv = {}; this._imp = null; this._mvN = null; this._scrapeT = -99; this._headsT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._how = null;
     for (const C of this._carves || []) C.st.forEach((s) => { s.ref = null; s.acc = 0; s.out = 0; });
   }
   // the take ends the hard way (out of bounds, a reset mid-take): same as a crash
@@ -244,7 +253,7 @@ export class Take {
     this._src = world.lines; this._psrc = sp;
     const has = new Set((sp || []).map((p) => p && p.id));
     const all = (world.lines || []).filter((l) => !l.piece || has.has(l.piece));
-    this._lines = all.filter((l) => !l.carve).map((l) => ({ l, main: compileGate(l), pre: (l.pre || []).map(compileGate) }));
+    this._ord = null; this._lines = all.filter((l) => !l.carve).map((l) => ({ l, main: compileGate(l), pre: (l.pre || []).map(compileGate) }));
     this._carves = all.filter((l) => l.carve).map((l) => ({ l, st: (l.carve.axes || [0]).map(() => ({ ref: null, acc: 0, out: 0, t0: 0 })) }));
     this._names = [...new Map(all.map((l) => [l.name, l])).values()];
     this._pre = new Map();
@@ -344,7 +353,10 @@ export class Take {
     const now = this._now;
     // pre-gates first (a fast pass can cross a pre-gate and its line in the same frame)
     this._lines.forEach((L, li) => L.pre.forEach((G, gi) => { const s = crossGate(G, a, p); if (s) { this._pre.set(li * 8 + gi, { t: now, s }); this._preT = now; } }));
-    this._lines.forEach((L, li) => {
+    // [P5-F] under bankBonus a street's micros are scored before the named lines in the same frame (its last segment ends
+    // on the street's own gate, so the street pays on it too); otherwise the lines' order (bando bit-exact)
+    const order = this._T.bankBonus ? (this._ord ||= [...this._lines.keys()].sort((x, y) => (this._lines[y].l.micro ? 1 : 0) - (this._lines[x].l.micro ? 1 : 0) || x - y)) : null;
+    (order ? order.map((li) => [this._lines[li], li]) : this._lines.map((L, li) => [L, li])).forEach(([L, li]) => {
       const s = crossGate(L.main, a, p);
       if (!s || (!L.l.two && s < 0)) return;
       let t0 = now;
@@ -411,19 +423,19 @@ export class Take {
     if (this._done.has(name)) {
       if (this._lastName === name) return null;                     // fly something else first
       this._cool[name] = now;
-      const pts = Math.round((l.pts || 0) * this._T.repeat * cm * tm.k);
+      const pts = Math.round((l.pts || 0) * this._T.repeat * cm * tm.k) + this._bankBonus(l, tm.k, tt0);
       this._unbanked += pts; this._idle = 0; this._lastName = name; this._lineAt = now;
-      const e = this._dedupe({ type: 'repeat', name, caption, pts, clean, micro, t0: tt0, ago, t: tt, ...tm.ev });
-      this._log.push({ name, pts, t: tt, t0: tt0, flow: 1, repeat: true, clean, micro, ...tm.log });
+      const e = this._dedupe({ type: 'repeat', name, caption, pts, clean, micro, t0: tt0, ago, t: tt, ...tm.ev, ...this._bonusEv });
+      this._log.push({ name, pts, t: tt, t0: tt0, flow: 1, repeat: true, clean, micro, ...(micro && (l.seg || l.on) ? { of: l.seg || l.on } : {}), ...tm.log });
       rec.n++; saveProg();
       return e;
     }
     this._cool[name] = now;
-    const flow = this._flow, pts = Math.round((l.pts || 0) * flow * cm * tm.k);
+    const flow = this._flow, pts = Math.round((l.pts || 0) * flow * cm * tm.k) + this._bankBonus(l, tm.k, tt0);
     this._unbanked += pts; this._idle = 0; this._lastName = name; this._done.add(name); this._lineAt = now;
     this._flow = Math.min(this._T.flowMax, flow + (micro ? this._T.microFlow : 1)); this._maxFlow = Math.max(this._maxFlow, flow);
-    const e = this._dedupe({ type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt, ...tm.ev });
-    this._log.push({ name, pts, t: tt, t0: tt0, flow, clean, micro, ...tm.log });
+    const e = this._dedupe({ type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt, ...tm.ev, ...this._bonusEv });
+    this._log.push({ name, pts, t: tt, t0: tt0, flow, clean, micro, ...(micro && (l.seg || l.on) ? { of: l.seg || l.on } : {}), ...tm.log });
     rec.n++; rec.flow = Math.max(rec.flow, flow); rec.pts = Math.max(rec.pts, pts);
     if (!(rec.bestT > 0) || tt < rec.bestT) rec.bestT = tt;
     saveProg();
@@ -438,10 +450,22 @@ export class Take {
     if (newBest && dur > 0) rec.bd = dur;
     const W = l.within ?? 6, par = +l.par || 0;
     let k = 1;
-    if (par > 0 && W > par) k = 1 + this._T.fastBonus * Math.min(1, Math.max(0, (W - dur) / (W - par)));
+    const W0 = this._T.slowPar > 0 ? Math.min(W, par * this._T.slowPar) : W;   // [P5-F] where the bonus starts
+    if (par > 0 && W0 > par) k = 1 + this._T.fastBonus * Math.min(1, Math.max(0, (W0 - dur) / (W0 - par)));
     k = Math.round(k * 100) / 100;
-    const fast = par > 0 && k >= 1 + this._T.fastAt * this._T.fastBonus - 1e-9;
+    const fast = par > 0 && (this._T.fastPar > 0 ? dur <= par * this._T.fastPar + 1e-9 : k >= 1 + this._T.fastAt * this._T.fastBonus - 1e-9);
+    // [P5-F design #4] a street's micro takes no multiplier of its own under bankBonus: its named line pays on it
+    if (this._T.bankBonus && l.micro && (l.seg || l.on)) k = 1;
     return { k, ev: { dur, best, newBest, ...(par > 0 ? { par, speed: k, fast } : {}) }, log: { dur, ...(par > 0 ? { speed: k, fast } : {}) } };
+  }
+  // [P5-F design #4] with bankBonus, a timed named line (k > 1) pays (k - 1) x the pts of its own micros (log `of` = its
+  // name) flown since its pre-gate (t0, take time); sets this._bonusEv ({bonus} or {}) for the event
+  _bankBonus(l, k, t0) {
+    this._bonusEv = {};
+    if (!this._T.bankBonus || l.micro || !(k > 1) || !l.pre?.length) return 0;
+    let sum = 0; for (let i = this._log.length - 1; i >= 0; i--) { const o = this._log[i]; if (o.t0 < t0 - 0.05) break; if (o.of === l.name) sum += o.pts; }
+    const b = Math.round(sum * (k - 1)); if (b > 0) this._bonusEv = { bonus: b };
+    return b;
   }
   // two lines that began at the same moment (CHIMNEY DIVE's pre-gate is DROP IN's gate; THREAD THE NEEDLE's is THE
   // SMALL GAP's) would be captioned one frame apart in the clip. The later event says which caption the clip keeps:

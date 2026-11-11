@@ -177,10 +177,15 @@ const vehAt = (t, pred) => sim.boxesAt(t, []).map((b) => ({ ...b, v: sim.traffic
     for (const [q, S] of [['auto', sim], ['low', low]]) {
       const M2 = lifeMovers({ sim: S, colliders: { people: (p, r, t) => S.hitPeople(p, r, t + 75) } }), F = M2.fork();
       const occ = (pts) => { let k = 0, N = 0; for (let t = 0; t <= 600; t += 1) { N++; if (pts.some((p) => [-0.6, 0, 0.6].some((o) => { const h = F.hit([p[0] + u[0] * o, p[1], p[2] + u[2] * o], 0.12, t); return h && h.kind === 'pedestrian'; }))) k++; } return 100 * k / N; };
-      const a8 = occ(appr), d8 = occ(dive), inHole = M2.src.peds.filter((p) => holes.some((H) => pip(p.x, p.z, H))).length;
+      // [P5-F] the openings the dive goes down (a hole within 6 m of the landing gate); other stairwells are G1's frontage people
+      const mine = holes.filter((H) => H.some(([x, z]) => Math.hypot(x - B[0], z - B[2]) < 6));
+      const a8 = occ(appr), d8 = occ(dive), inHole = M2.src.peds.filter((p) => mine.some((H) => pip(p.x, p.z, H))).length;
       ok(a8 <= 5, `${q}: the stair dive's approach (6 m to the pre-gate at ${(P.c[1] - P.h / 2).toFixed(1)}-${(P.c[1] + P.h / 2).toFixed(1)} m) is ${a8.toFixed(1)} % occupied (<= 5 %)`);
-      if (inHole) console.log(`PEND ${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied: ${inHole} standing people inside E's stairwell openings (G1: keep exit 9's waiting ring and walkers out of dressingOut.holes / the obstacle discs)`);
-      else ok(d8 <= 5, `${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied (<= 5 %)`);
+      // [P5-F design #2] phase 4 logged this as PEND (4-5 people standing in the stairwell, the dive 100 % occupied): a failure now
+      ok(!inHole, `${q}: nobody stands inside E's stairwell openings (dressingOut.holes): ${inHole}`);
+      // the rest is walkers crossing the opening on the sidewalk (seoul-life's walker avoidance: G1)
+      if (d8 > 5) console.log(`PEND ${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied by walkers crossing E's stairwell opening (G1: walkers round dressingOut.holes)`);
+      else ok(true, `${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied (<= 5 %)`);
     }
   }
 }

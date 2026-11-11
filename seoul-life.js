@@ -1043,7 +1043,11 @@ export class CrowdSim {
       }
       for (let q = 0; q < 24; q++) {
         const a = R.next() * 6.283, r = 2.5 + R.next() * 6.5, p = this.newPerson(R, K_STAND);
-        [p.x, p.z] = this.offRoad(ex.x + pcos(a) * r, ex.z + psin(a) * r); p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
+        [p.x, p.z] = this.offRoad(ex.x + pcos(a) * r, ex.z + psin(a) * r);
+        // [P5-F design #2] nobody waits inside E's stairwell openings (its 1.1 m discs + 0.6 m): stepped on outward along the
+        // same ray, no extra draws (the crowd's random stream is unchanged; phase 4 stood 4-5 people in the stair dive)
+        for (let k = 1; k <= 40 && this.inDress(p.x, p.z, 0.6); k++) [p.x, p.z] = this.offRoad(ex.x + pcos(a) * (r + 0.25 * k), ex.z + psin(a) * (r + 0.25 * k));
+        p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
         this.statics.push(p.id);
       }
     }

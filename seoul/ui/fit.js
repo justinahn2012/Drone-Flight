@@ -66,3 +66,14 @@ export function labelSpot(bx, lw, lh, { band = 80, bottom = Infinity, fixed = []
   }
   return null;
 }
+
+// [F2] P4 ux #6 (F1's data: line / repeat events of timed lines carry dur, best = the best before this one (0 = none),
+// newBest, fast): " · 0:44.2 · BEST 0:41.0 · FAST" on a named line's caption sub-line. Micros and untimed lines (bando): nothing.
+// [P5-F] ui #5: with FAST the best drops its word (" · 0:44.2 ▲0:41.0 FAST"): "+128,836 · 0:44.2 ▲0:41.0 FAST" is 30
+// characters (phase 4: 37 at 5 digits), one row at 390 px; main.js moved these here so tests/seoul-ui.mjs measures them.
+export const fmtDur = (t) => { t = Math.round(t * 10) / 10; return `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`; };   // 0:44.2, 1:21.6
+export function timedSub(e) {
+  if (!e || e.micro || e.free || !(+e.dur > 0)) return '';
+  const b = +e.best || 0;
+  return ` · ${fmtDur(+e.dur)}` + (b > 0 ? (e.newBest ? ' · <b>NEW BEST</b>' : e.fast ? ` ▲${fmtDur(b)}` : ` · BEST ${fmtDur(b)}`) : '') + (e.fast ? ' <b class="fast">FAST</b>' : '');   // the chip is its own separator
+}

@@ -1,0 +1,468 @@
+{
+ "note": "seoul/tools/take-sim.mjs --record: noisy-pilot takes at the game crowd (p75 of 4 runs is the best run)",
+ "lines": "f295d7b62c948679",
+ "stars": [
+  20000,
+  100000,
+  290000
+ ],
+ "runs": 4,
+ "results": {
+  "short/careful": {
+   "runs": 4,
+   "p25": 52319,
+   "p50": 53781,
+   "p75": 56546,
+   "crash": 0,
+   "stars": [
+    1,
+    1,
+    1,
+    1
+   ],
+   "lines": 2,
+   "gapMax": 11.6,
+   "x2": 15,
+   "wsPts": 6250,
+   "fast": 0,
+   "flown": 4
+  },
+  "short/regular": {
+   "runs": 4,
+   "p25": 83349,
+   "p50": 84931,
+   "p75": 92840,
+   "crash": 0,
+   "stars": [
+    1,
+    1,
+    1,
+    1
+   ],
+   "lines": 2,
+   "gapMax": 7,
+   "x2": 11.7,
+   "wsPts": 18363,
+   "fast": 2,
+   "flown": 4
+  },
+  "short/sharp": {
+   "runs": 4,
+   "p25": 50674,
+   "p50": 97049,
+   "p75": 105490,
+   "crash": 0,
+   "stars": [
+    1,
+    1,
+    2,
+    1
+   ],
+   "lines": 2,
+   "gapMax": 6.2,
+   "x2": 999,
+   "wsPts": 26875,
+   "fast": 8,
+   "flown": 4
+  },
+  "walk/careful": {
+   "runs": 4,
+   "p25": 24853,
+   "p50": 25333,
+   "p75": 25691,
+   "crash": 0,
+   "stars": [
+    1,
+    1,
+    1,
+    1
+   ],
+   "lines": 1,
+   "gapMax": 11.8,
+   "x2": 999,
+   "wsPts": 3125,
+   "fast": 0,
+   "flown": 4
+  },
+  "walk/regular": {
+   "runs": 4,
+   "p25": 38182,
+   "p50": 38517,
+   "p75": 42566,
+   "crash": 0,
+   "stars": [
+    1,
+    1,
+    1,
+    1
+   ],
+   "lines": 1,
+   "gapMax": 7.5,
+   "x2": 999,
+   "wsPts": 9143,
+   "fast": 2,
+   "flown": 4
+  },
+  "walk/sharp": {
+   "runs": 4,
+   "p25": 50665,
+   "p50": 50665,
+   "p75": 50666,
+   "crash": 0,
+   "stars": [
+    1,
+    1,
+    1,
+    1
+   ],
+   "lines": 1,
+   "gapMax": 6.4,
+   "x2": 999,
+   "wsPts": 14379,
+   "fast": 7,
+   "flown": 4
+  },
+  "loop/careful": {
+   "runs": 4,
+   "p25": 89487,
+   "p50": 130831,
+   "p75": 131636,
+   "crash": 1,
+   "stars": [
+    0,
+    2,
+    1,
+    2
+   ],
+   "lines": 4,
+   "gapMax": 14.4,
+   "x2": 15.7,
+   "wsPts": 6250,
+   "fast": 0,
+   "flown": 2
+  },
+  "loop/regular": {
+   "runs": 4,
+   "p25": 171535,
+   "p50": 189964,
+   "p75": 208808,
+   "crash": 0,
+   "stars": [
+    2,
+    2,
+    2,
+    2
+   ],
+   "lines": 4,
+   "gapMax": 9.3,
+   "x2": 10.6,
+   "wsPts": 21925,
+   "fast": 4,
+   "flown": 4
+  },
+  "loop/sharp": {
+   "runs": 4,
+   "p25": 270353,
+   "p50": 272126,
+   "p75": 280653,
+   "crash": 0,
+   "stars": [
+    2,
+    2,
+    2,
+    2
+   ],
+   "lines": 4,
+   "gapMax": 8.3,
+   "x2": 7.7,
+   "wsPts": 28750,
+   "fast": 25,
+   "flown": 4
+  },
+  "long/careful": {
+   "runs": 4,
+   "p25": 223614,
+   "p50": 224331,
+   "p75": 259628,
+   "crash": 0,
+   "stars": [
+    2,
+    2,
+    2,
+    2
+   ],
+   "lines": 7,
+   "gapMax": 13.7,
+   "x2": 13.9,
+   "wsPts": 6250,
+   "fast": 0,
+   "flown": 4
+  },
+  "long/regular": {
+   "runs": 4,
+   "p25": 313032,
+   "p50": 360237,
+   "p75": 367250,
+   "crash": 0,
+   "stars": [
+    3,
+    3,
+    3,
+    3
+   ],
+   "lines": 7,
+   "gapMax": 13.4,
+   "x2": 10.6,
+   "wsPts": 23113,
+   "fast": 16,
+   "flown": 4
+  },
+  "long/sharp": {
+   "runs": 4,
+   "p25": 347535,
+   "p50": 403568,
+   "p75": 437589,
+   "crash": 0,
+   "stars": [
+    3,
+    2,
+    3,
+    3
+   ],
+   "lines": 6,
+   "gapMax": 12.1,
+   "x2": 7.5,
+   "wsPts": 30000,
+   "fast": 34,
+   "flown": 4
+  },
+  "hongik/careful": {
+   "runs": 4,
+   "p25": 35821,
+   "p50": 36565,
+   "p75": 37736,
+   "crash": 1,
+   "stars": [
+    0,
+    1,
+    1,
+    1
+   ],
+   "lines": 2,
+   "gapMax": 13.1,
+   "x2": 56.1,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 3
+  },
+  "hongik/regular": {
+   "runs": 4,
+   "p25": 59081,
+   "p50": 68275,
+   "p75": 90547,
+   "crash": 0,
+   "stars": [
+    1,
+    1,
+    1,
+    1
+   ],
+   "lines": 2,
+   "gapMax": 9,
+   "x2": 39.8,
+   "wsPts": 0,
+   "fast": 3,
+   "flown": 4
+  },
+  "hongik/sharp": {
+   "runs": 4,
+   "p25": 77337,
+   "p50": 80388,
+   "p75": 113765,
+   "crash": 0,
+   "stars": [
+    1,
+    1,
+    1,
+    2
+   ],
+   "lines": 2,
+   "gapMax": 7.8,
+   "x2": 32.1,
+   "wsPts": 0,
+   "fast": 10,
+   "flown": 4
+  },
+  "stairs/careful": {
+   "runs": 4,
+   "p25": 0,
+   "p50": 0,
+   "p75": 0,
+   "crash": 0,
+   "stars": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "lines": 0,
+   "gapMax": 99,
+   "x2": 999,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 0
+  },
+  "stairs/regular": {
+   "runs": 4,
+   "p25": 0,
+   "p50": 0,
+   "p75": 0,
+   "crash": 0,
+   "stars": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "lines": 0,
+   "gapMax": 99,
+   "x2": 999,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 0
+  },
+  "stairs/sharp": {
+   "runs": 4,
+   "p25": 0,
+   "p50": 0,
+   "p75": 0,
+   "crash": 0,
+   "stars": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "lines": 0,
+   "gapMax": 99,
+   "x2": 999,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 0
+  },
+  "pop/careful": {
+   "runs": 4,
+   "p25": 1406,
+   "p50": 1406,
+   "p75": 1406,
+   "crash": 0,
+   "stars": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "lines": 0,
+   "gapMax": 99,
+   "x2": 999,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 3
+  },
+  "pop/regular": {
+   "runs": 4,
+   "p25": 1406,
+   "p50": 1407,
+   "p75": 1425,
+   "crash": 0,
+   "stars": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "lines": 0,
+   "gapMax": 99,
+   "x2": 999,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 3
+  },
+  "pop/sharp": {
+   "runs": 4,
+   "p25": 1406,
+   "p50": 1426,
+   "p75": 1454,
+   "crash": 0,
+   "stars": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "lines": 0,
+   "gapMax": 99,
+   "x2": 999,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 4
+  },
+  "pass/careful": {
+   "runs": 4,
+   "p25": 2813,
+   "p50": 2813,
+   "p75": 2813,
+   "crash": 0,
+   "stars": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "lines": 1,
+   "gapMax": 99,
+   "x2": 999,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 4
+  },
+  "pass/regular": {
+   "runs": 4,
+   "p25": 2813,
+   "p50": 2813,
+   "p75": 2813,
+   "crash": 0,
+   "stars": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "lines": 1,
+   "gapMax": 99,
+   "x2": 999,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 4
+  },
+  "pass/sharp": {
+   "runs": 4,
+   "p25": 2813,
+   "p50": 2813,
+   "p75": 2813,
+   "crash": 0,
+   "stars": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "lines": 1,
+   "gapMax": 99,
+   "x2": 999,
+   "wsPts": 0,
+   "fast": 0,
+   "flown": 4
+  }
+ }
+}

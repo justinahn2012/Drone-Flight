@@ -38,7 +38,8 @@ ap.add_argument('--font'); ap.add_argument('--backdrop'); ap.add_argument('--thu
 ap.add_argument('--backdrop-crop', default='0,0,1,1', help='x0,y0,x1,y1 (fractions) of the source still')
 ap.add_argument('--thumb-crop', default='0,0,1,1')
 ap.add_argument('--backdrop-pose', default=''); ap.add_argument('--thumb-pose', default='')
-ap.add_argument('--commit', default='', help='the build the stills were shot from (stills.json)')
+ap.add_argument('--commit', default='', help='the build the stills were shot from (stills.json; default: git HEAD)')
+ap.add_argument('--depth', default='', help='[P5-F] the stills-depth.json of the shoot (nearest hit per shot, from stillsnap)')
 a = ap.parse_args()
 os.makedirs(OUT, exist_ok=True)
 
@@ -72,6 +73,18 @@ def sat_bright(path):
     s = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0)
     return float(((s >= 0.5) & (mx >= 0.6)).mean())
 
+def thirds(path):
+    """[P5-F ui #2] mean luma of the lower third over the top third (>= 2: some street in frame, not a sign on a wall)"""
+    from PIL import Image
+    import numpy as np
+    a = np.asarray(Image.open(path).convert('L')).astype(np.float32); h = a.shape[0]
+    return float(a[2 * h // 3:].mean() / max(1e-3, a[:h // 3].mean()))
+
+def git(*args):
+    import subprocess
+    try: return subprocess.run(['git', *args], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    except Exception: return ''
+
 def grade(src, size, crop, out, kb):
     from PIL import Image, ImageFilter
     import numpy as np
@@ -100,13 +113,22 @@ if a.thumb: grade(a.thumb, (480, 270), a.thumb_crop, os.path.join(OUT, 'thumb.jp
 import hashlib
 sp = os.path.join(OUT, 'stills.json')
 rec = json.load(open(sp, encoding='utf8')) if os.path.exists(sp) else {}
+# [P5-F ui #1] the build: HEAD (or --commit) and the commit of seoul-life.js / world-seoul.js it carried, so tests/seoul-ui.mjs
+# checks the stills against the crowd's file, not only the look's date (phase 4: pose and commit were empty)
+commit = a.commit or git('rev-parse', '--short', 'HEAD')
+life = git('log', '-1', '--format=%h', commit or 'HEAD', '--', 'seoul-life.js')
+depth = json.load(open(a.depth)) if a.depth else {}
 for k, src, crop, pose in (('backdrop', a.backdrop, a.backdrop_crop, a.backdrop_pose), ('thumb', a.thumb, a.thumb_crop, a.thumb_pose)):
     f = os.path.join(OUT, k + '.jpg')
     if not os.path.exists(f): continue
     r = rec.get(k, {})
-    if src: r.update({'source': os.path.basename(src), 'crop': crop, 'pose': pose, 'commit': a.commit})
+    if src:
+        r.update({'source': os.path.basename(src), 'crop': crop, 'pose': pose, 'commit': commit, 'lifeCommit': life})
+        dp = depth.get(os.path.splitext(os.path.basename(src))[0])
+        if dp: r['nearest'] = dp.get('near')                       # m: the nearest scene hit in frame (>= 3: no blurred pole)
     r['sha256'] = hashlib.sha256(open(f, 'rb').read()).hexdigest()
     r['satBright'] = round(sat_bright(f), 4)
+    r['lowerTop'] = round(thirds(f), 2)
     rec[k] = r
     print(f'{k}.jpg saturated-bright {100 * r["satBright"]:.1f} %')
 if rec: open(sp, 'w', encoding='utf8').write(json.dumps(rec, indent=1, ensure_ascii=False) + '\n')

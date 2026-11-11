@@ -204,7 +204,13 @@ const fromHero = (st, id) => { const h = (layout.hero || []).find((x) => x.id ==
 // 300 m back: a transit hole, design #4). Cut <= 60 m at the side streets (Wausan-ro 23-gil joins 157 m from the SE
 // end, the two Eoulmadang-ro branches leave at 232 and 244 m); micros on what is there: OVER THE CROWD 17 m from the
 // spawn (head height: design #6), a pocha tent at 134 m, the branches.
-const walk = longest('어울마당로', 'walking'), WP = fromHero(walk, 'hongik-junction').slice().reverse(), WL = len(WP);
+// [P5-F design #1] the take opens at the stage's end of the street: E's stage sits 9 m from the Hongik-ro end (phase 4 kept
+// the SE spawn, so the first instruction named a stage 283 m away). hubFirst: the stage is nearer the junction, so the
+// street is flown from the junction (the spawn) out to its SE end; sx() turns phase 3's SE-end arc lengths into this path's.
+const walk = longest('어울마당로', 'walking'), WPse = fromHero(walk, 'hongik-junction').slice().reverse(), WL = len(WPse);
+const stageP0 = (geo.setPieces || []).find((p) => p.id === 'under-the-stage')?.gates?.gate?.c;
+const hubFirst = !!stageP0 && arcOf(WPse, stageP0[0], stageP0[2]) > WL / 2;
+const WP = hubFirst ? WPse.slice().reverse() : WPse, sx = (v) => (hubFirst ? WL - v : v);
 const tentOn = (P, s, r) => (geo.dressingOut?.labels || []).filter((l) => l.kind === 'tent').map((l) => ({ l, a: arcOf(P, l.pos[0], l.pos[2]) })).filter((x) => Math.abs(x.a - s) < r).sort((a, b) => Math.abs(a.a - s) - Math.abs(b.a - s))[0]?.l || null;
 // over a pocha tent, along the street: the tarp's top found by a ray down, the gate 0.5-2.1 m over it
 function overTent(P, s) {
@@ -213,7 +219,7 @@ function overTent(P, s) {
   const top = 8 - h.distance, a = at(P, arcOf(P, T.pos[0], T.pos[2]));
   return g([T.pos[0], top + 1.3, T.pos[2]], [a.tx, 0, a.tz], 3.0, 1.6, [-a.tz, 0, a.tx]);
 }
-const tentG = overTent(WP, WL - 178);
+const tentG = overTent(WP, sx(WL - 178));
 // [P4-F1 design #4] the take opens UNDER THE STAGE (E's busking canopy, ~30 m from the spawn on this street), and the
 // stage's exit (its gate toward the hub, 1.95-2.88 m) runs straight into the walking street's start gate 5 m on, with that
 // gate's floor at 2.0 m (heads reach 1.85 m): FLOW x2 from the first ~10 s. Phase 3's start gate was 12 m from the spawn,
@@ -224,17 +230,20 @@ const stageExit = (() => { const Gs = stagePiece?.gates; if (!Gs?.gate?.c || !Gs
   const a = arcOf(WP, Gs.pre.c[0], Gs.pre.c[2]), b = arcOf(WP, Gs.gate.c[0], Gs.gate.c[2]);
   return b > a ? { s: b, G: Gs.gate, n: Gs.gate.n, pre: Gs.pre } : { s: a, G: Gs.pre, n: Gs.pre.n.map((v) => -v), pre: Gs.gate }; })();
 // [integ9] only when the stage sits near the spawn end (P4-F1's assumption, ~30 m); E's p4 stage is further up the street -> phase 3's start
+// [P5-F design #1] measured from the take start's end of the street (hubFirst: the junction), not from the SE end
 const stageNear = stageExit && stageExit.s < 60 ? stageExit : null;
 const WS0 = stageNear ? Math.round(stageNear.s + 5) : 12;
-const WS = run({ path: WP, name: 'WALKING STREET', caption: 'THE WALKING *STREET*!', value: 2500, s0: WS0, s1: -6, y0: 2.2, y1: 5.2, a0: stageNear ? 2.0 : 2.2, w: walk.width - 1, first: !stageNear,
+const WS = run({ path: WP, name: 'WALKING STREET', caption: 'THE WALKING *STREET*!', value: 2500, s0: WS0, s1: hubFirst ? -12 : -6, y0: 2.2, y1: 5.2, a0: stageNear ? 2.0 : 2.2, w: walk.width - 1, first: !stageNear,
   // [P4-F1 design #4] the first piece ends 15 m past the start gate (the first x2 caption by 20 s for a careful pilot: the
   // stage's x2 at ~12 s, then 20 m; at 22 m the sims' median was 21.9 s), the next half way to the 23-gil cut; then phase
   // 3's cuts at the side streets
-  cuts: stageNear ? (() => { const c = [138, 180, 222, 264].map((v) => v + WL - 312), c1 = WS0 + 15; return [c1, Math.round((c1 + c[0]) / 2), ...c]; })()
+  // [P5-F design #1] hubFirst: c1 = the start gate + 15 m (F1's), then phase 3's side-street cuts mirrored onto this path
+  cuts: stageNear && hubFirst ? (() => { const c1 = WS0 + 15; return [c1, ...[264, 222, 180, 138, 96, 54].map((v) => sx(v + WL - 312)).filter((v) => v > c1 + 20)]; })()
+    : stageNear ? (() => { const c = [138, 180, 222, 264].map((v) => v + WL - 312), c1 = WS0 + 15; return [c1, Math.round((c1 + c[0]) / 2), ...c]; })()
     : [54, 96, 138, 180, 222, 264].map((v) => v + WL - 312), label: 'WALKING STREET', feats: [
-    { name: 'OVER THE CROWD', caption: 'OVER THE *CROWD*!', s: 24, ...HEADS, w: 8, pts: 750, what: 'the walking street crowd, 17 m from the spawn (head height)' },
-    ...(tentG ? [{ name: 'OVER THE TENT', caption: 'OVER THE *TENT*!', s: WL - 178, gate: tentG, what: 'a pocha tent' }] : []),
-    { name: 'THE BRANCHES', caption: 'THE *BRANCHES*!', s: WL - 74, what: 'two Eoulmadang-ro branches leave (68 and 80 m before the junction)' },
+    { name: 'OVER THE CROWD', caption: 'OVER THE *CROWD*!', s: sx(24), ...HEADS, w: 8, pts: 750, what: hubFirst ? 'the walking street crowd, 24 m before its SE end (head height)' : 'the walking street crowd, 17 m from the spawn (head height)' },
+    ...(tentG ? [{ name: 'OVER THE TENT', caption: 'OVER THE *TENT*!', s: sx(WL - 178), gate: tentG, what: 'a pocha tent' }] : []),
+    { name: 'THE BRANCHES', caption: 'THE *BRANCHES*!', s: sx(WL - 74), what: 'two Eoulmadang-ro branches leave (68 and 80 m before the junction)' },
   ] });
 // the stage's exit line through the start gate: where it crosses (across the gate from its centre, height), so a pilot who
 // keeps the stage's line flies the start gate
@@ -282,7 +291,11 @@ run({ path: club.points, name: 'BAR ALLEY', caption: 'THE BAR *ALLEY*!', value: 
   if (A) report.push(`  (PLAYGROUND POP: ${G.w.toFixed(1)} x ${G.h.toFixed(1)} m at ${G.c[1]} m between the mast at [${A.mast[0]}, ${A.mast[2]}] and the crown ${A.crownEdge} m off its trunk, slot ${A.gap} m)`); }
 // 3. HONGIK-RO: down the main road from the station to the university, 5-8 m: over the buses, under the lamp arms' reach
 const hong = longest('홍익로', 'main'); const HL = len(hong.points);
-run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value: 1500, s0: 10, s1: -10, y0: 5.0, y1: 8.0, w: hong.width });
+// [P5-F design #5] the first segment ends 25 m on (phase 4: 60 m, so THE CORNER -> HONGIK-RO 1/4 ran 15-16.6 s; at 30 m the
+// careful loop's gap off the walking street was 15.6 s), the rest in
+// equal pieces <= 60 m
+run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value: 1500, s0: 10, s1: -10, y0: 5.0, y1: 8.0, w: hong.width,
+  cuts: (() => { const a = 10, b = HL - 10, c1 = a + 25, n = Math.max(1, Math.ceil((b - c1) / MAX_SEG)); return [c1, ...Array.from({ length: n - 1 }, (_, i) => Math.round(c1 + (b - c1) * (i + 1) / n))]; })() });
 // 4. CROSSING: across Yanghwa-ro at the station front. [P3-F1 design #5] anchored: phase 2 was a 30 x 3 m portal in the air
 // over the median. Now a pre-gate under the near carriageway's signal mast arm (E's dressing: the arm at 5.5 m, heads at
 // 5.1-5.4 m) and the gate under the far one's, 3.7-4.9 m (a bus's roof is 3.15 m: it passes under you), across the
@@ -630,8 +643,10 @@ function pieceMoves(sp) {   // -> [{pre: rect | null, gate: rect}]
   }
   report.push(`  (set pieces: ${pieces.length ? `${pieces.length} from seoul-dressing.js, lines for ${made.join(', ') || 'none'}` : 'seoul-dressing.js absent or without setPieces: no set-piece lines'})`);
   // [P4-F1 design #4] a new profile's first line is the stage (toward the hub: its exit runs into the walking street)
-  if (stageExit) { const f = lines.find((l) => l.name === 'UNDER THE STAGE' && Math.hypot(l.c[0] - stageExit.G.c[0], l.c[2] - stageExit.G.c[2]) < 0.5);
-    if (f) f.first = true; else { const w = lines.find((l) => l.name === 'WALKING STREET' && l.pre); if (w) w.first = true; } } }
+  // [P5-F] only when the stage opens the take (stageNear): phase 4 flagged it with WALKING STREET already `first` (two firsts)
+  if (stageNear) { const f = lines.find((l) => l.name === 'UNDER THE STAGE' && Math.hypot(l.c[0] - stageExit.G.c[0], l.c[2] - stageExit.G.c[2]) < 0.5);
+    if (f) f.first = true; else { const w = lines.find((l) => l.name === 'WALKING STREET' && l.pre); if (w) w.first = true; } }
+  if (lines.filter((l) => l.first).length !== 1) report.push(`  WARNING: ${lines.filter((l) => l.first).length} lines flagged first`); }
 
 // ---- [P3-F1 design #2] no gate a vehicle can touch. Phase 2: a bus filled BUS SHELTER's gate 42 % of 240 s and 4 of 4 sim
 // flights crashed `by: 'bus'`. Every gate (and pre-gate) below the vehicles' reach is probed against the drawn traffic
@@ -716,10 +731,14 @@ const SC = lines.find((l) => l.name === 'SCREEN CANYON');
 // [P4-F1 design #4 / UX #3] the spawn names the stage first; hint.r keeps take.nextHint's arrow on the stage until its
 // pre-gate is behind you (the rule-1b radius: the pre-gate's distance + 4 m)
 const stageL = lines.find((l) => l.name === 'UNDER THE STAGE' && l.first);
-const walkStart = { ...st('Walking street', 15, WP, 3.2) };
+// [P5-F design #1] hubFirst: the spawn hovers 13 m behind the junction (the Red Road's mouth, across Hongik-ro) at 4.5 m,
+// over the buses (roofs 3.15 m), looking at the stage's pre-gate: the stage, then the walking street out to its SE end.
+// hint.order: the lines the copy names, in the order they're flown (seoul-ui checks it against the arc)
+const walkStart = hubFirst && stageL ? (() => { const p = st('Walking street', 0, WP, 4.5, 13), q = stageL.pre[0].c; return { ...p, yaw: r3(yawTo(q[0] - p.pos[0], q[2] - p.pos[2])) }; })()
+  : { ...st('Walking street', 15, WP, 3.2) };
 const startPoints = [
-  stageL ? { ...walkStart, hint: { text: 'UNDER THE STAGE · THEN THE WALKING STREET', line: 'UNDER THE STAGE', until: 2, next: 'UNDER THE STAGE',
-    r: Math.ceil(Math.hypot(stageL.pre[0].c[0] - walkStart.pos[0], stageL.pre[0].c[2] - walkStart.pos[2]) + 4) } }
+  stageL ? { ...walkStart, hint: { text: hubFirst ? 'UNDER THE STAGE · UP THE STREET' : 'UNDER THE STAGE · THEN THE WALKING STREET', line: 'UNDER THE STAGE', until: 2, next: 'UNDER THE STAGE',
+    order: ['UNDER THE STAGE', 'WALKING STREET'], r: Math.ceil(Math.hypot(stageL.pre[0].c[0] - walkStart.pos[0], stageL.pre[0].c[2] - walkStart.pos[2]) + 4) } }
     : { ...walkStart, ...hint('FLY THE WALKING STREET · OVER THE HEADS', 'WALKING STREET') },
   { ...st('Bar alley', 12, club.points, 3.2), ...hint('DOWN THE BAR ALLEY · UNDER THE DROPS', 'BAR ALLEY') },
   { name: 'Exit 9', pos: SC.pre[0].c.map((v, i) => i === 1 ? r3(v) : r3(v - SC.pre[0].n[i] * 10)), yaw: r3(yawTo(SC.n[0], SC.n[2])), ...hint('DOWN THE SCREEN CANYON · ABOVE THE BUSES', 'SCREEN CANYON') },
@@ -744,7 +763,12 @@ for (const sp of startPoints) {
 // zone is 1.5 m (6-10 m streets), PACE is scaled to a 1 km map, and the first-line guide only works near the spawn (design #4).
 // [P4-F1] design #3: PACE from [120, 300] s to [60, 180] (every phase-3 take got x1.5) and timed line events (UX #6: the
 // move's time and best); stars re-fitted at the game's crowd (see the phase-4 report).
-const tuning = { stars: [18000, 60000, 150000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [60, 180, 1.5], microFlow: 0, timed: true };
+// [P5-F] design #4: bankBonus + fastBonus 1.0 (a street flown at par pays x2 on its base and its micros), from x1 at par x 1.6
+// (5 m/s: phase 4 paid a careful pilot half the bonus, the window's 3.5 m/s being x1); UX #5: FAST within
+// par x 1.15; design #3: stars re-fitted at P5 (take-sim, 4 runs x 3 pilots, tests/seoul/take-sim.json): 1 star = the walking
+// street alone at a careful pace (walk careful 24.8-25.7k), 2 = a careful loop (119k), 3 = 290k: regular long p50 345k less a
+// crash margin, above every careful long run (best 276k; at P4's 150k a careful long take was 3 stars)
+const tuning = { stars: [20000, 100000, 290000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [60, 180, 1.5], microFlow: 0, timed: true, bankBonus: true, fastBonus: 1.0, slowPar: 1.6, fastPar: 1.15 };
 // a copy on the first named non-set-piece line for world loaders that pass lines[] only (take.js reads either)
 const firstLine = lines.find((l) => !l.piece && !l.micro && l.pre); if (firstLine) firstLine.tuning = tuning;
 const out = { version: 2, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', tuning, lines, funnels, startPoints,

@@ -182,6 +182,7 @@ body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 #pop::before{content:"";position:absolute;inset:-5px -14px -4px;border-radius:10px;background:rgba(0,0,0,.35);opacity:0;transition:opacity .15s;z-index:-1}
 #pop.plate::before{opacity:1}
 #pop .sub b{font-weight:600;color:var(--amber)}
+#pop .sub{font-variant-numeric:tabular-nums}#pop .sub .pts{color:#a29f99}   /* [P5-F] ui #5: tabular times, the points in the quiet grey */
 #pop .sub b.fast{padding:0 .3em;border-radius:3px;background:var(--amber);color:#1a1300;text-shadow:none;box-shadow:0 0 0 1px #000}   /* [F2] P4 ux #6 */
 #pop.show{animation:popA var(--popDur,1.3s) cubic-bezier(.2,.8,.2,1) forwards}
 @keyframes popA{0%{transform:translateX(-50%) scale(1.25);opacity:0}12%{transform:translateX(-50%) scale(1);opacity:1}80%{opacity:1}100%{transform:translateX(-50%) scale(1);opacity:0}}
