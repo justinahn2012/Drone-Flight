@@ -7,6 +7,13 @@
 //     i: index into gates; n: touches; top: the highest roof (m) that touched; cols / rows: touched grid columns (along u)
 //     / rows (along v); t0: the first touch (s); type: what touched first. Gates no vehicle can reach are skipped.
 import { lifeMovers } from '../../seoul-movers.js';
+import { LIFE } from '../../seoul-life.js';
+
+// [P4-F1 design #2] the crowd the game draws: seoul-life.js build() runs LIFE.maxAgents people at quality auto and half at
+// 'low' (ctx.maxAgents ?? (q === 'low' ? round(LIFE.maxAgents * 0.5) : LIFE.maxAgents)). lines.mjs, take-sim.mjs and
+// tests/movers.mjs build their LifeSim with this (phase 3: 2,400, a fifth of the game's). q: 'low' | anything else;
+// default: env LIFE_Q.
+export const lifeAgents = (q = globalThis.process?.env?.LIFE_Q) => (q === 'low' ? Math.round(LIFE.maxAgents * 0.5) : LIFE.maxAgents);
 
 const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];

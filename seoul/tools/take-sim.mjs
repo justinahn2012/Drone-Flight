@@ -3,6 +3,9 @@
 //   node seoul/tools/take-sim.mjs [--runs N] [--route short|loop|long|...|all, or a,b,c] [--json out.json] [--no-movers]
 //   env: PILOT=careful,regular  TL=1 (per-run timelines)  NOPIECES=1 (no set pieces)  NOWALKERS=1
 // [P3-F1] set-piece routes ('from' starts a route 14 m before a line's first gate), walkers, per-run timelines.
+// [P4-F1] the game's crowd (LIFE.maxAgents; env LIFE_Q=low: the low preset's half, design #2); the A* reaches 4 m below the
+// street (down the stair dive) over a heightfield floor: the street at 0, E's stairwell openings (dressing holes) open
+// (design #1); routes open UNDER THE STAGE into the walking street (design #4); prints FAST lines and the first x2.
 // A Cine autopilot (pure pursuit over a 3D A* route at 1 m, 0.9 m clearance) flies each route through the gates in order,
 // with a pilot's cruise speed, OU thumb noise on every stick and a line choice inside each gate; buses, taxis and people
 // are on (world.movers via seoul-movers.js, the drawn sim's seed). Each take ends in a CUT (3 s hands off) or a crash.
@@ -13,6 +16,7 @@ import { buildSeoulGeometry } from '../../world-seoul.js';
 import { Drone } from '../../flight.js';
 import { Take, starsFor, mergeTuning } from '../../take.js';
 import { Rng } from '../../rng.js';
+import { lifeAgents } from './gateprobe.mjs';
 
 const ROOT = new URL('../', import.meta.url);
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
@@ -29,7 +33,7 @@ let movers = null;
 if (MOVERS) {
   try {
     const { LifeSim } = await import('../../seoul-life.js'), { lifeMovers } = await import('../../seoul-movers.js');
-    const sim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: 2400, setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] as world-seoul builds it
+    const sim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents(), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] as world-seoul builds it; [P4-F1] at the game's crowd
     // [P3-F1] walkers too (the panel: "take-sim has no walkers"): seoul-life's soft people colliders, at the take clock
     // + the drawn city's 75 s warm start, as world-seoul's build() serves them to the game (colliders.people)
     movers = lifeMovers({ sim, colliders: process.env.NOWALKERS ? {} : { people: (p, r, t) => sim.hitPeople(p, r, t + 75) } });
@@ -39,9 +43,13 @@ const world = { bvh, lastDist: Infinity, funnels: geo.funnels, envelope: { min: 
   lines: geo.lines, skimBvh: geo.skimBvh, tuning: lineData.tuning, setPieces: process.env.NOPIECES ? null : geo.setPieces, takeStart: { pos: V(lineData.takeStart.pos), yaw: lineData.takeStart.yaw }, movers };
 
 // ---- 3D voxel A* (1 m), occupancy cached, clearance RC
-const RC = 0.9, Y0 = 1, NY = 34; const occ = new Map();
+// [P4-F1 design #1] Y0 -4 (phase 3: 1 m, so the stair dive was "NO LEG") over a heightfield floor: below the street (y < 0)
+// a voxel is open only with a floor under it within 6 m (a stairwell's steps or landing: E's openings and the part under
+// the slab); under the street there is none (the ground is above it), so the A* never routes through the earth
+const RC = 0.9, Y0 = -4, NY = 39; const occ = new Map(), _rd = new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(0, -1, 0));
+const underground = (x, y, z) => { if (y >= 0) return false; _rd.origin.set(x, y, z); return !bvh.raycastFirst(_rd, THREE.DoubleSide, 0, 6); };
 const key = (i, j, k) => (i + 400) * 2e6 + (j + 700) * 1000 + k;
-const blocked = (i, j, k) => { if (k < 0 || k >= NY) return true; const K = key(i, j, k); let o = occ.get(K); if (o === undefined) { o = clr(new THREE.Vector3(i, Y0 + k, j), RC + 0.01) < RC; occ.set(K, o); } return o; };
+const blocked = (i, j, k) => { if (k < 0 || k >= NY) return true; const K = key(i, j, k); let o = occ.get(K); if (o === undefined) { o = underground(i, Y0 + k, j) || clr(new THREE.Vector3(i, Y0 + k, j), RC + 0.01) < RC; occ.set(K, o); } return o; };
 function astar3(a, b) {
   const s = [Math.round(a.x), Math.round(a.z), Math.round(a.y - Y0)], t = [Math.round(b.x), Math.round(b.z), Math.round(b.y - Y0)];
   const sk = key(...s), tk = key(...t);
@@ -59,6 +67,7 @@ function astar3(a, b) {
   const P = [t]; let k = tk; while (from.has(k)) { const [pk, pp] = from.get(k); P.push(pp); k = pk; }
   return P.reverse().map(([x, z, y]) => new THREE.Vector3(x, y + Y0, z));
 }
+const _rs = new THREE.Ray();
 const losClear = (a, b) => { const n = Math.ceil(a.distanceTo(b) / 0.4); for (let i = 0; i <= n; i++) if (clr(a.clone().lerp(b, i / Math.max(1, n)), RC) < RC - 0.2) return false; return true; };
 function simplify(P) { if (P.length < 3) return P; const o = [P[0]]; let i = 0; while (i < P.length - 1) { let j = Math.min(P.length - 1, i + 60); while (j > i + 1 && !losClear(P[i], P[j])) j--; o.push(P[j]); i = j; } return o; }
 
@@ -73,17 +82,23 @@ function streetGates(name, k = 0) {
   for (const l of geo.lines) {
     if (l.carve || l.name === name || (l.seg !== name && l.on !== name)) continue;
     if (l.seg && V(l.n).dot(dir) <= 0) continue;          // segments: this direction's entries only
+    if (V(l.c).sub(V(A.c)).dot(dir) < 0) continue;       // [P4-F1] a feature behind the start gate (OVER THE CROWD, before the stage)
     gs.push(l);
   }
   const uniq = new Map(); for (const l of gs) { const kk = l.c.map((v) => v.toFixed(1)).join(); if (!uniq.has(kk)) uniq.set(kk, l); }
   const mids = [...uniq.values()].filter((l) => V(l.c).distanceTo(V(e.c)) > 2 && V(l.c).distanceTo(V(A.c)) > 2).sort((a, b) => V(a.c).distanceTo(V(A.c)) - V(b.c).distanceTo(V(A.c)));
   return [A, ...mids, e];
 }
-const lineGates = (name, k = 0) => { const e = entries(name)[k]; return e ? [...(e.pre || []), e] : null; };
+// k: the entry index, or 'first' (the entry flagged `first`: UNDER THE STAGE toward the hub)
+const pickEntry = (name, k) => { const E = entries(name); return k === 'first' ? E.find((l) => l.first) || E[0] : E[k]; };
+const lineGates = (name, k = 0) => { const e = pickEntry(name, k); return e ? [...(e.pre || []), e] : null; };
+// [P4-F1 design #4] a take opens over the crowd, UNDER THE STAGE (its exit lines up with the walking street's start gate)
+const OPEN = [['line', 'OVER THE CROWD', 0], ['line', 'UNDER THE STAGE', 'first']];
 const ROUTES = {
-  short: [['street', 'WALKING STREET', 0]],
+  short: [...OPEN, ['street', 'WALKING STREET', 0]],
+  walk: [['street', 'WALKING STREET', 0]],          // [P4-F1] past the stage, straight down the street
   // [P3-F1] through the transit connectors (TO THE BAR ALLEY n): a pilot follows the street between the two lines
-  loop: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0]],
+  loop: [...OPEN, ['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0]],
   stairs: [['from', 'STATION STAIRS', 0, 14], ['line', 'STATION STAIRS', 0]],
   stage0: [['from', 'UNDER THE STAGE', 0, 14], ['line', 'UNDER THE STAGE', 0]],
   stage1: [['from', 'UNDER THE STAGE', 1, 14], ['line', 'UNDER THE STAGE', 1]],
@@ -101,9 +116,9 @@ const ROUTES = {
   queue: [['from', 'OVER THE QUEUE', 0, 10], ['line', 'OVER THE QUEUE', 0]],
   door: [['from', 'DOOR QUEUE', 0, 10], ['line', 'DOOR QUEUE', 0]],
   roofline: [['from', 'ROOFLINE', 0, 14], ['street', 'ROOFLINE', 0], ['line', 'ROOF SLOT', 0]],
-  hub: [['street', 'WALKING STREET', 0], ['street', 'RED ROAD', 1]],
-  sig: [['street', 'WALKING STREET', 0], ['line', 'UNDER THE STAGE', 1], ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
-  long: [['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'SIGN STACK', 0], ['line', 'TO THE ROOFLINE 1', 0], ['street', 'ROOFLINE', 1]],
+  hub: [...OPEN, ['street', 'WALKING STREET', 0], ['street', 'RED ROAD', 1]],
+  sig: [...OPEN, ['street', 'WALKING STREET', 0], ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
+  long: [...OPEN, ['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0], ['street', 'CABLE LATTICE', 0], ['line', 'SIGN STACK', 0], ['line', 'TO THE ROOFLINE 1', 0], ['street', 'ROOFLINE', 1]],
 };
 // a pilot: cruise m/s, thumb noise (stick OU sigma), line choice spread (share of the gate half-size), reaction lookahead m
 const PILOTS = {
@@ -114,18 +129,27 @@ const PILOTS = {
 
 function buildPath(route, rng, spread) {
   const ts = world.takeStart; let path = [ts.pos.clone()];
-  if (route[0][0] === 'from') { const [, nm, kk, back] = route[0]; const g = lineGates(nm, kk)[0]; const n = V(g.n).setY(0).normalize(); const p0 = V(g.c).addScaledVector(n, -back); if (p0.y < 2) p0.y = 2.2; path = [p0]; route = route.slice(1); }
+  if (route[0][0] === 'from') { const [, nm, kk, back] = route[0]; const g = lineGates(nm, kk)[0]; const n = V(g.n).setY(0).normalize(); const p0 = V(g.c).addScaledVector(n, -back); if (p0.y < 2) p0.y = Math.max(2.2, g.c[1]); path = [p0]; route = route.slice(1); }
   for (const [kind, name, k] of route) {
     const gates = kind === 'street' ? streetGates(name, k) : lineGates(name, k);
     if (!gates) { console.log('no line', name, '(skipped)'); continue; }
+    let carry = null;
     for (let gi = 0; gi < gates.length; gi++) {
       const G = gates[gi], n = V(G.n).normalize();
       const u = G.u ? V(G.u) : new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), n); u.addScaledVector(n, -u.dot(n)).normalize();
       const v = new THREE.Vector3().crossVectors(n, u);
-      const off = u.clone().multiplyScalar((rng.next() - 0.5) * G.w * spread).addScaledVector(v, (rng.next() - 0.5) * G.h * spread);
-      const a = along(G, -2.5).add(off), b = along(G, 2.5).add(off);
+      const off = carry || u.clone().multiplyScalar((rng.next() - 0.5) * G.w * spread).addScaledVector(v, (rng.next() - 0.5) * G.h * spread);
+      let a = along(G, -2.5).add(off), b = along(G, 2.5).add(off);
+      // [P4-F1] a pre-gate -> gate move (a 'line' of two gates) whose straight line is open is flown straight (the stair
+      // dive: 27 deg from under the canopy lip to the landing gate), not level out of the pre-gate
+      carry = null;
+      if (kind === 'line' && gi === 0 && gates.length === 2) { const P = V(G.c).add(off), Q = V(gates[1].c).add(off), d = Q.clone().sub(P), L = d.length(); d.normalize();
+        _rs.origin.copy(P); _rs.direction.copy(d); if (!bvh.raycastFirst(_rs, THREE.DoubleSide, 0, L) && Math.abs(Q.y - P.y) > 1) { b = P.clone().addScaledVector(d, Math.min(1.5, L / 3)); carry = off; } }
+      const straight = gi === 1 && path.straight;   // the second gate of a straight move: on along the same line (ray-checked above)
+      if (straight) a = V(G.c).add(off).addScaledVector(V(G.c).add(off).sub(path[path.length - 1]).normalize(), -1.0);
+      path.straight = carry !== null;
       const last = path[path.length - 1];
-      let leg = losClear(last, a) ? [last, a] : astar3(last, a), bb = b;
+      let leg = straight || losClear(last, a) ? [last, a] : astar3(last, a), bb = b;
       if (!leg) { const a0 = along(G, -2.5); bb = along(G, 2.5); leg = losClear(last, a0) ? [last, a0] : astar3(last, a0); }   // the gate centre instead
       if (!leg) { console.log('NO LEG to', name, gi, a.toArray().map((x) => x.toFixed(1)), '(gate skipped: the 1 m A* found no 0.9 m-clear path)'); continue; }
       path.push(...simplify(leg).slice(1), bb);
@@ -155,7 +179,7 @@ function fly(path, P, rng) {
     const roll = Math.max(-1, Math.min(1, -e * 2.2 + ou.r));
     const climb = Math.max(-1, Math.min(1, (tgt.y - p.y) * 0.7 - dr.vel.y * 0.12 + ou.c * 0.5));
     dr.step(DT, { thr: 0.4, pitch, roll, yaw: 0, climb }, 'cine', world); t += DT;
-    for (const e2 of tk.update(DT, dr, world, { hands: true, moved: true, steer: true })) evs.push({ ...e2, at: t });
+    for (const e2 of tk.update(DT, dr, world, { hands: true, moved: true, steer: true })) evs.push({ ...e2, at: t, ...(process.env.TLPOS ? { p: dr.pos.toArray().map((v) => +v.toFixed(2)) } : {}) });
     if (crashed) break;
     if ((Math.round(t * 240) % 480) === 0) { if (dr.pos.distanceTo(lastP) < 0.5) stuck++; else stuck = 0; lastP = dr.pos.clone(); if (stuck > 3) break; }
   }
@@ -166,7 +190,12 @@ function fly(path, P, rng) {
     lines: evs.filter((e) => e.type === 'line' && !e.micro).length, micros: evs.filter((e) => e.type === 'line' && e.micro).length, banks: evs.filter((e) => e.type === 'bank' && !e.cut).length,
     scrapes: evs.filter((e) => e.type === 'scrape').length, heads: evs.filter((e) => e.heads).length, maxFlow: tk.stats.maxFlow,
     first: caps.length ? +(caps[0] - start).toFixed(1) : null, gapMean: gaps.length ? +(gaps.reduce((a, b) => a + b, 0) / gaps.length).toFixed(1) : null, gapMax: gaps.length ? +Math.max(...gaps).toFixed(1) : null,
-    names: evs.filter((e) => e.type === 'line').map((e) => e.name), tl: evs.filter((e)=>['line','repeat','bank','scrape','crash','cut'].includes(e.type)).map((e)=>`${e.at.toFixed(1)} ${e.type} ${e.name||''}${e.by?' by '+e.by:''}${e.heads?' HEADS':''} +${e.pts||0} x${e.flow||''}`) };
+    // [P4-F1] x2: take time of the first caption at FLOW >= 2 (design #4: by 20 s); fast: FAST lines; voids: heads moves voided;
+    // ws: WALKING STREET's own time (s) and pts
+    x2: (() => { const e = evs.find((e) => (e.type === 'line' || e.type === 'repeat') && e.flow >= 2); return e ? +(e.at - start).toFixed(1) : null; })(),
+    fast: evs.filter((e) => e.fast).length, voids: evs.reduce((a, e) => a + (e.voids?.length || 0), 0),
+    ws: (() => { const e = evs.find((e) => e.type === 'line' && e.name === 'WALKING STREET'); return e ? { dur: e.dur, speed: e.speed, pts: e.pts } : null; })(),
+    names: evs.filter((e) => e.type === 'line').map((e) => e.name), tl: evs.filter((e)=>['line','repeat','bank','scrape','crash','cut','void'].includes(e.type)).map((e)=>`${e.at.toFixed(1)} ${e.type} ${e.name||''}${e.by?' by '+e.by:''}${e.heads?' HEADS':''}${e.voids?' VOID '+e.voids:''} +${e.pts||0} x${e.flow||''}${e.fast?' FAST':''}${e.dur?' '+e.dur+'s':''}${e.p?' @'+e.p:''}`) };
 }
 
 const q = (a, f) => { const s = a.slice().sort((x, y) => x - y); return s.length ? s[Math.min(s.length - 1, Math.floor(f * s.length))] : null; };
@@ -179,7 +208,8 @@ for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS).filter(([k
   const tot = R.map((r) => r.total);
   results[`${rn}/${pn}`] = { runs: R.length, p25: q(tot, 0.25), p50: q(tot, 0.5), p75: q(tot, 0.75), crash: R.filter((r) => r.crashed).length, by: R.map((r) => r.by).filter(Boolean),
     stars: R.map((r) => r.stars), lines: q(R.map((r) => r.lines), 0.5), micros: q(R.map((r) => r.micros), 0.5), banks: q(R.map((r) => r.banks), 0.5), scrapes: q(R.map((r) => r.scrapes), 0.5),
-    heads: R.reduce((a, r) => a + r.heads, 0), first: q(R.map((r) => r.first ?? 99), 0.5), gapMean: q(R.map((r) => r.gapMean ?? 99), 0.5), gapMax: q(R.map((r) => r.gapMax ?? 99), 0.5), t: q(R.map((r) => r.t), 0.5), maxFlow: q(R.map((r) => r.maxFlow), 0.5) };
+    heads: R.reduce((a, r) => a + r.heads, 0), first: q(R.map((r) => r.first ?? 99), 0.5), gapMean: q(R.map((r) => r.gapMean ?? 99), 0.5), gapMax: q(R.map((r) => r.gapMax ?? 99), 0.5), t: q(R.map((r) => r.t), 0.5), maxFlow: q(R.map((r) => r.maxFlow), 0.5),
+    x2: q(R.map((r) => r.x2 ?? 999), 0.5), fast: q(R.map((r) => r.fast), 0.5), voids: R.reduce((a, r) => a + r.voids, 0), wsDur: q(R.map((r) => r.ws?.dur ?? 0), 0.5), wsPts: q(R.map((r) => r.ws?.pts ?? 0), 0.5), agents: lifeAgents() };
   console.log(`${rn.padEnd(5)} ${pn.padEnd(8)} ${JSON.stringify(results[`${rn}/${pn}`])}`); if (process.env.TL) for (const r of R) console.log('   ', r.total, r.stars, r.crashed?'CRASH '+r.by:'', '|', r.tl.join(' ; '));
 }
 console.log(`stars ${JSON.stringify(tuning.stars)} | ${((performance.now() - T0) / 1000).toFixed(0)} s`);

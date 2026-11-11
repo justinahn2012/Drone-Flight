@@ -10,6 +10,11 @@
 //  6. without movers nothing changes: the tick clock is the only new state (bando parity is tests/replay.mjs)
 //  7. [P3-F1 design #2] no gate in lines.json (pre-gates too) can be touched by a vehicle of the drawn traffic over
 //     0-600 s at the quad's radius (seoul/tools/gateprobe.mjs; lines.mjs keeps them out at 0.35 m)
+// [P4-F1 design #2] at the game's crowd (gateprobe.mjs lifeAgents: LIFE.maxAgents; phase 3 ran 2,400), and the low preset
+// too: its traffic is the same (7), and
+//  8. [P4-F1 design #1] the stair dive's approach (6 m to its pre-gate at 2.0-2.7 m) is <= 5 % occupied by people, at
+//     both presets; the dive itself (pre-gate to the landing gate) too once nobody stands inside E's stairwell openings
+//     (seoul-life places exit 9's waiting people round the portal without E's discs: PENDING G1 until then)
 import fs from 'node:fs';
 import * as THREE from 'three';
 import { buildSeoulGeometry } from '../world-seoul.js';
@@ -19,7 +24,7 @@ import { InputLog, quantize, replayLog, worldHash } from '../inputlog.js';
 import { lifeMovers, PED_R } from '../seoul-movers.js';
 import { LifeSim } from '../seoul-life.js';
 import { Rng } from '../rng.js';
-import { vehicleTouches } from '../seoul/tools/gateprobe.mjs';
+import { vehicleTouches, lifeAgents } from '../seoul/tools/gateprobe.mjs';
 
 const ROOT = new URL('../seoul/', import.meta.url);
 const J = (f) => JSON.parse(fs.readFileSync(new URL(f, ROOT), 'utf8'));
@@ -27,7 +32,8 @@ let pass = 0, fail = 0; const ok = (c, m) => { if (c) pass++; else fail++; conso
 const layout = J('layout.json');
 const t0 = performance.now();
 const geo = buildSeoulGeometry(layout, { lineData: J('lines.json') });
-const sim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: 2400, setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] as world-seoul builds it   // = world-seoul's ctx.seed 11
+const lifeOpts = (q) => ({ seed: 11, density: 1, maxAgents: lifeAgents(q), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] as world-seoul builds it (ctx.seed 11)
+const sim = new LifeSim(layout, lifeOpts('auto'));
 const life = { sim, colliders: { at: (t, o) => sim.boxesAt(t, o), hit: (p, r, t) => sim.hit(p, r, t) } };
 const M = lifeMovers(life);
 ok(!!M, `lifeMovers: ${JSON.stringify(M?.stats())}`);
@@ -154,6 +160,29 @@ const vehAt = (t, pred) => sim.boxesAt(t, []).map((b) => ({ ...b, v: sim.traffic
   for (const l of J('lines.json').lines) { if (l.carve) continue; gs.push(l); who.push(l.name); for (const p of l.pre || []) { gs.push(p); who.push(l.name + ' (pre)'); } }
   const t1 = performance.now(), T = vehicleTouches(sim, gs, { T: 600, dt: 0.25, r: 0.12 });
   ok(T.length === 0, `no gate a vehicle touches over 0-600 s (${gs.length} gates, ${((performance.now() - t1) / 1000).toFixed(1)} s)${T.length ? ': ' + [...new Set(T.map((x) => `${who[x.i]} by ${x.type} at ${x.t0} s`))].slice(0, 6).join(', ') : ''}`);
+}
+// 7b. the low preset (half the people) draws the same traffic: one gate probe covers both
+{ const low = new LifeSim(layout, lifeOpts('low')), a = [], b = [];
+  for (const t of [0, 37.5, 120, 300]) { sim.advanceTo(t); low.advanceTo(t); a.push(sim.hash()); b.push(low.hash()); }
+  ok(a.join() === b.join(), `the low preset's traffic = the game's (${lifeAgents('low')} vs ${lifeAgents('auto')} people; hashes ${b.join(' ')})`);
+  // 8. the stair dive (lines.json STATION STAIRS): people on its approach and in its dive, both presets
+  const L = J('lines.json').lines.find((l) => l.name === 'STATION STAIRS' && l.pre?.length);
+  if (!L) ok(false, 'STATION STAIRS in lines.json');
+  else {
+    const P = L.pre[0], n = P.n, u = P.u, A = P.c, B = L.c, D = Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]);
+    const holes = geo.dressingOut?.holes || [], pip = (x, z, H) => { let c = false; for (let i = 0, j = H.length - 1; i < H.length; j = i++) { const [xi, zi] = H[i], [xj, zj] = H[j]; if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) c = !c; } return c; };
+    const appr = [], dive = [];
+    for (let s = -6; s <= 0; s += 0.5) for (const y of [P.c[1] - P.h / 2, P.c[1], P.c[1] + P.h / 2]) appr.push([A[0] + n[0] * s, y, A[2] + n[2] * s]);
+    for (let s = 0.5; s <= D; s += 0.5) { const f = s / D; dive.push([A[0] + (B[0] - A[0]) * f, A[1] + (B[1] - A[1]) * f, A[2] + (B[2] - A[2]) * f]); }
+    for (const [q, S] of [['auto', sim], ['low', low]]) {
+      const M2 = lifeMovers({ sim: S, colliders: { people: (p, r, t) => S.hitPeople(p, r, t + 75) } }), F = M2.fork();
+      const occ = (pts) => { let k = 0, N = 0; for (let t = 0; t <= 600; t += 1) { N++; if (pts.some((p) => [-0.6, 0, 0.6].some((o) => { const h = F.hit([p[0] + u[0] * o, p[1], p[2] + u[2] * o], 0.12, t); return h && h.kind === 'pedestrian'; }))) k++; } return 100 * k / N; };
+      const a8 = occ(appr), d8 = occ(dive), inHole = M2.src.peds.filter((p) => holes.some((H) => pip(p.x, p.z, H))).length;
+      ok(a8 <= 5, `${q}: the stair dive's approach (6 m to the pre-gate at ${(P.c[1] - P.h / 2).toFixed(1)}-${(P.c[1] + P.h / 2).toFixed(1)} m) is ${a8.toFixed(1)} % occupied (<= 5 %)`);
+      if (inHole) console.log(`PEND ${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied: ${inHole} standing people inside E's stairwell openings (G1: keep exit 9's waiting ring and walkers out of dressingOut.holes / the obstacle discs)`);
+      else ok(d8 <= 5, `${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied (<= 5 %)`);
+    }
+  }
 }
 console.log(`movers tests: ${pass} passed, ${fail} failed (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
 process.exit(fail ? 1 : 0);
