@@ -113,7 +113,7 @@ jobs:
           retention-days: 30
 
   audio:   # [P3 H] G2's suite: offline Web Audio in node (node-web-audio-api, which links libasound), ~5 min
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # [P4 H] pinned: ubuntu-latest is moving to 26.04, where apt-installed deps (libasound, playwright's) broke
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -131,7 +131,7 @@ jobs:
         run: node ci/run.mjs tests/seoul-audio.mjs
 
   browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # [P4 H] pinned (playwright --with-deps supports 24.04; 26.04 runs failed installing Chromium's deps)
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -149,8 +149,9 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: pw-${{ runner.os }}-${{ hashFiles('ci/package-lock.json') }}
-      - name: Install Chromium (+ system libraries)
-        run: npx playwright install --with-deps chromium
+      - name: Install Chromium (+ system libraries, 3 tries - the runners' apt mirrors drop DNS now and then)
+        run: |
+          for i in 1 2 3; do npx playwright install --with-deps chromium && exit 0; echo "::warning::playwright install failed (try $i)"; sleep 20; done; exit 1
       - name: Build exports (coverage reads world.json)
         run: node tools/export-world.mjs --out exports
       - name: Game in headless Chromium (SwiftShader)
@@ -163,7 +164,7 @@ jobs:
           retention-days: 14
 
   browser-seoul:   # SwiftShader renders Seoul slowly and runners vary 2x: 45 min on integ8, >90 on p3/H-ci 3450714 (stills
-    runs-on: ubuntu-latest   # 1548-2084 s each; stills.json now logs the seconds per step), so 180 (the limit is 360)
+    runs-on: ubuntu-24.04    # 1548-2084 s each; stills.json now logs the seconds per step), so 180 (the limit is 360). [P4 H] pinned like browser
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -181,8 +182,9 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: pw-${{ runner.os }}-${{ hashFiles('ci/package-lock.json') }}
-      - name: Install Chromium (+ system libraries)
-        run: npx playwright install --with-deps chromium
+      - name: Install Chromium (+ system libraries, 3 tries - the runners' apt mirrors drop DNS now and then)
+        run: |
+          for i in 1 2 3; do npx playwright install --with-deps chromium && exit 0; echo "::warning::playwright install failed (try $i)"; sleep 20; done; exit 1
       - name: Build the Seoul export (coverage reads its world.json)
         run: node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae
       - name: Neon Seoul in headless Chromium (SwiftShader; still rows tolerated while A, C, F2, G1, G2 land, see ci/known-failures.json)

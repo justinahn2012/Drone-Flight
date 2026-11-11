@@ -336,6 +336,17 @@ async function headless(fn) {
 // ================================================================================================================
 // [P3 H, native #2] light tables and atlases
 // ================================================================================================================
+/** [P4 H, native #4] a binary table as a meshopt vertex stream (lossless): files[name] = encoded; the descriptor gains codec,
+ *  stride, count, decodedBytes. Without an encoder (--raw) the bytes stay as they are. */
+let MO = null;
+const PACKED = {};
+function packBin(files, name, bytes, stride, desc = {}) {
+  if (!MO || bytes.byteLength % stride || stride % 4 || stride > 256) { files[name] = bytes; return desc; }
+  const n = bytes.byteLength / stride, enc = MO.encodeGltfBuffer(bytes, n, stride, 'ATTRIBUTES');
+  files[name] = enc; PACKED[name] = { stride, count: n, decodedBytes: bytes.byteLength, bytes: enc.byteLength };
+  return Object.assign(desc, { codec: 'meshopt ATTRIBUTES v0 (meshopt_decodeVertexBuffer(dst, count, stride, src))', stride, count: n, decodedBytes: bytes.byteLength });
+}
+
 /** light.json from D's controller: the typed arrays leave the JSON for little-endian binary files under light/. */
 async function lightTables(L, ctl, files) {
   const THREE = await import('three');
@@ -345,15 +356,16 @@ async function lightTables(L, ctl, files) {
   const v = L.volume;
   if (v?.A && v?.B) {
     const a = half(v.A), b = half(v.B), buf = new Uint8Array(a.byteLength + b.byteLength); buf.set(bytes(a), 0); buf.set(bytes(b), a.byteLength);
-    files['light/volume.bin'] = buf;
-    out.volume = { file: 'light/volume.bin', format: 'RGBA16F (IEEE half, little-endian)', dims: v.dims, heights: v.heights, layout: '[cz][cx][layer][4]: A block (count values) then B block', A: { byteOffset: 0, count: v.A.length }, B: { byteOffset: a.byteLength, count: v.B.length },
+    const vd = packBin(files, 'light/volume.bin', buf, 8);
+    out.volume = { ...vd, file: 'light/volume.bin', format: 'RGBA16F (IEEE half, little-endian)', dims: v.dims, heights: v.heights, layout: '[cz][cx][layer][4]: A block (count values) then B block', A: { byteOffset: 0, count: v.A.length }, B: { byteOffset: a.byteLength, count: v.B.length },
       meaning: 'A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + sky openness; E(n) = A.rgb max(0, 1 + B.n) (exportParams().volume)' };
   }
   const U = ctl.uniforms || {};
   const tex = (name, key, fmt, meaning) => {
     const im = U[key]?.value?.image; if (!im?.data) return;
-    files[`light/${name}.bin`] = bytes(im.data);
-    tables[name] = { file: `light/${name}.bin`, format: fmt, width: im.width, height: im.height, count: im.data.length, meaning };
+    const st = name === 'records' ? 16 : 8;   // RGBA32UI / RGBA16UI texels
+    tables[name] = { file: `light/${name}.bin`, format: fmt, width: im.width, height: im.height, count: im.data.length, meaning, ...packBin(files, `light/${name}.bin`, bytes(im.data), st) };
+    if (tables[name].codec) tables[name].count = im.data.length;   // components (the stream's element count is in `stride`/`decodedBytes`)
   };
   tex('records', 'tCityL', 'RGBA32UI, little-endian', 'static light records, 2 texels each (exportParams().record); texel 2i, 2i + 1 = light i; width = 2 x LW');
   tex('grid', 'tCityG', 'RGBA16UI, little-endian; 0xFFFF = none', 'per XZ cell (grid.cell m from grid.x0, z0) the K strongest static light ids, K4 texels wide per cell, strongest first');
@@ -391,6 +403,72 @@ async function atlasFiles(root, files, mods, dressingData) {
   A.fonts = { files: fonts, licence: 'OFL (fonts/OFL.txt, dressing/OFL.txt)', use: 'fonts/: the screen and scroller text atlases (Canvas2D at load: screens.json); dressing/E-Sans: E\'s label atlas, one cell per dressing.json labels[] entry' };
   A.labels = dressingData?.file ? { cells: `${dressingData.file} labels`, font: 'dressing/E-Sans.woff2', note: 'painted at load in the browser (Canvas2D); a port paints the same cells (CoreText)' } : null;
   return A;
+}
+
+// ================================================================================================================
+// [P4 H, native #4] tables -> binary columns (signs.json's designs were 18 MB of JSON)
+// ================================================================================================================
+export const SIGN_TABLES = ['faces', 'designs', 'housings', 'scrollers', 'emitters'];
+export const PACKED_TABLES = 'onetake.columns/1';
+/**
+ * Each listed table (an array of records, or of arrays of records: designs) becomes columns. A key whose every value is
+ * a finite number, or a fixed-length array of them, goes to `file` as one meshopt vertex stream (EXT_meshopt
+ * ATTRIBUTES codec, v0; stride 4 x comps): Int32 when every value is an integer in range, else Float32 (lossless for
+ * integers; JSON decimals round to the nearest float32). Every other key stays a JSON column array. Nested tables
+ * (array of arrays) are flattened, with `offsets` (Int32, rows + 1) marking where each inner list starts.
+ * -> { json (the object with the tables replaced by their column descriptions), bytes, info }
+ */
+export function packTables(obj, tables, E, file) {
+  const out = { ...obj }, chunks = [], info = { format: PACKED_TABLES, file, tables: [] }; let off = 0;
+  const pushStream = (arr, comps) => {
+    const raw = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength), n = arr.length / comps, stride = 4 * comps;
+    const enc = E.encodeGltfBuffer(raw, n, stride, 'ATTRIBUTES'), pad = (4 - (off % 4)) % 4;
+    if (pad) { chunks.push(new Uint8Array(pad)); off += pad; }
+    chunks.push(enc); const d = { byteOffset: off, byteLength: enc.byteLength, count: n, stride, codec: 'meshopt ATTRIBUTES v0' }; off += enc.byteLength; return d;
+  };
+  for (const t of tables) {
+    const T = obj[t]; if (!Array.isArray(T) || T.length < 64) continue;
+    const nested = T.every(Array.isArray), rows = nested ? T.flat() : T;
+    if (!rows.length || !rows.every((r) => r && typeof r === 'object' && !Array.isArray(r))) continue;
+    const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))], cols = {}, json = {};
+    for (const k of keys) {
+      const vals = rows.map((r) => r[k]), first = vals[0];
+      const len = Array.isArray(first) ? first.length : 1;
+      const numeric = len >= 1 && len <= 64 && vals.every((v) => (len === 1 && !Array.isArray(v) ? typeof v === 'number' && Number.isFinite(v) : Array.isArray(v) && v.length === len && v.every((x) => typeof x === 'number' && Number.isFinite(x))));
+      if (!numeric) { json[k] = vals; continue; }
+      const flat = len === 1 && !Array.isArray(first) ? vals : vals.flat(), int = flat.every((x) => Number.isInteger(x) && x >= -2147483648 && x <= 2147483647);
+      // decimals the JSON was rounded to (B writes 2-4): fixed point, exact against the JSON, and far smaller once encoded
+      let dec = -1; if (!int) for (let d = 1; d <= 6 && dec < 0; d++) { const m = 10 ** d; if (flat.every((x) => Math.abs(x * m) < 2e9 && Math.abs(x * m - Math.round(x * m)) < 1e-6 * Math.max(1, Math.abs(x * m)))) dec = d; }
+      const arr = int ? Int32Array.from(flat) : dec > 0 ? Int32Array.from(flat, (x) => Math.round(x * 10 ** dec)) : Float32Array.from(flat);
+      cols[k] = { type: int || dec > 0 ? 'i32' : 'f32', comps: len, ...(dec > 0 ? { scale: +(10 ** -dec).toFixed(dec), note: `fixed point: value = i32 x 1e-${dec} (exact: the JSON had ${dec} decimals)` } : {}), ...(Array.isArray(first) ? { array: true } : {}), ...pushStream(arr, len) };
+    }
+    const desc = { packed: PACKED_TABLES, file, rows: rows.length, columns: cols, json };
+    if (nested) { const o = new Int32Array(T.length + 1); T.forEach((a, i) => { o[i + 1] = o[i] + a.length; }); desc.lists = T.length; desc.offsets = { type: 'i32', comps: 1, ...pushStream(o, 1) }; }
+    out[t] = desc; info.tables.push({ table: t, rows: rows.length, ...(nested ? { lists: T.length } : {}), binary: Object.keys(cols), json: Object.keys(json) });
+  }
+  if (!chunks.length) return { json: obj, bytes: null, info: null };
+  const bytes = new Uint8Array(off); let o = 0; for (const c of chunks) { bytes.set(c, o); o += c.byteLength; }
+  info.decode = 'per column: meshopt_decodeVertexBuffer(dst, count, stride, file[byteOffset, byteLength]) -> count x comps little-endian i32 / f32 (three: MeshoptDecoder.decodeGltfBuffer(dst, count, stride, src, "ATTRIBUTES")); row r of a nested table belongs to list i where offsets[i] <= r < offsets[i + 1]';
+  out.binary = info;
+  return { json: out, bytes, info: { tables: info.tables.map((x) => x.table), bytes: bytes.byteLength } };
+}
+
+/** Decode packTables' columns with an independent decoder and hold every value to the source table. -> [problem] */
+export function unpackCheck(orig, packed, bytes, D) {
+  const bad = [];
+  for (const t of Object.keys(packed)) {
+    const P = packed[t]; if (P?.packed !== PACKED_TABLES) continue;
+    const T = orig[t], rows = T.every(Array.isArray) ? T.flat() : T;
+    const col = (c) => { const out = new Uint8Array(c.count * c.stride); D.decodeGltfBuffer(out, c.count, c.stride, bytes.subarray(c.byteOffset, c.byteOffset + c.byteLength), 'ATTRIBUTES'); return c.type === 'i32' ? new Int32Array(out.buffer) : new Float32Array(out.buffer); };
+    for (const [k, c] of Object.entries(P.columns)) {
+      const v = col(c), want = rows.flatMap((r) => (c.array ? r[k] : [r[k]])); let m = 0;
+      for (let i = 0; i < want.length; i++) { const g = c.scale ? v[i] * c.scale : v[i], w = want[i]; if (!(c.type === 'f32' ? g === Math.fround(w) : Math.abs(g - w) <= (c.scale ? c.scale * 0.5 + 1e-9 : 0))) m++; }
+      if (v.length !== want.length || m) bad.push(`${t}.${k}: ${m} of ${want.length} values differ after decoding`);
+    }
+    if (P.offsets) { const o = col(P.offsets); let acc = 0; const ok = T.every((a, i) => { const r = o[i] === acc; acc += a.length; return r; }) && o[T.length] === acc; if (!ok) bad.push(`${t}: offsets differ`); }
+    for (const [k, vals] of Object.entries(P.json)) if (vals.length !== rows.length) bad.push(`${t}.${k}: json column length`);
+  }
+  return bad;
 }
 
 // ================================================================================================================
@@ -432,14 +510,14 @@ async function lightmapFile(root, ctl, files, layoutSha) {
   const st = ctl?.stats?.lightmap, tex = ctl?.uniforms?.tCityLM?.value, U = ctl?.uniforms || {};
   if (!st?.ready || !tex?.image?.data || tex.image.width < 2) return { status: 'pending', note: `the headless bake did not land (mode ${st?.mode ?? 'none'})` };
   const im = tex.image, d = im.data, bytes = new Uint8Array(d.buffer, d.byteOffset, d.byteLength).slice();
-  files['light/lightmap.bin'] = bytes;
+  const pk = packBin(files, 'light/lightmap.bin', bytes, 8);
   const v4 = (k) => (U[k]?.value?.toArray ? U[k].value.toArray().map((x) => +x.toFixed(6)) : null);
   return { file: 'light/lightmap.bin', format: 'RGBA16F (IEEE half, little-endian), rows bottom-up as a GL DataTexture (row 0 = v 0)', width: im.width, height: im.height, bytes: bytes.byteLength,
     content: 'scene-linear irradiance x NITS (rgb) and alpha = valid; static emitters (no K limit, heightfield-occluded) + the volume\'s indirect part (seoul-nightlm.js)',
     uniforms: { uCityLM: v4('uCityLM'), uCityLMG: v4('uCityLMG'), uCityLMA: v4('uCityLMA'), uCityLMR: v4('uCityLMR') },
     lookup: 'the ground map sits at the atlas origin (uCityLMG: x0, z0, gw, gh); wall rects pack round it (uCityLMA: atlas w, h, raster w, h); the 1 m raster of the two nearest exposed edges and the edge table are rows uCityLMR.x.. of light/records.bin (seoul-light.js CITY_HEAD cityLM)',
     plan: st.edges != null ? { edges: st.edges, atlas: st.atlas, ground: st.ground } : null, texels: st.texels, NIGHT_LM: (await import(pathToFileURL(join(root, 'seoul-nightlm.js')).href)).NIGHT_LM ?? null,
-    layoutSha256: layoutSha, source: 'baked headless at export (seoul-light attach with ctx.lightmap: the browser\'s Worker job, in line)' };
+    layoutSha256: layoutSha, source: 'baked headless at export (seoul-light attach with ctx.lightmap: the browser\'s Worker job, in line)', ...pk };
 }
 
 /** Asset coverage (native #2): every file a Seoul runtime module (or the level's levels.json entry) names that exists in
@@ -505,8 +583,10 @@ export const SEOUL_RUNTIME_ONLY = {
   light: 'the clustered light grid is binned at load from emitters.json (light.json rules); the night lightmap ships baked (light/lightmap.bin, light.json lightmap)',
 };
 
-export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = console.log, note = log, warn = log } = {}) {
+export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = console.log, note = log, warn = log, meshopt = null } = {}) {
   mods ||= await seoulModules(root, log);
+  MO = meshopt; for (const k of Object.keys(PACKED)) delete PACKED[k];
+  const MDEC = meshopt ? (await import('three/addons/libs/meshopt_decoder.module.js')).MeshoptDecoder : null; if (MDEC) await MDEC.ready;
   const ws = mods.files['world-seoul.js'], X = mods.X;
   const signsMod = mods.files[PARTNERS.signs], lightMod = mods.files[PARTNERS.light], lifeMod = mods.files[PARTNERS.life], dressMod = mods.files[PARTNERS.dressing];
   const files = {}, data = {}, layout = geo.layout || (await ws.loadSeoulJSON('./seoul/layout.json')), assetMap = {};
@@ -544,22 +624,32 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
     } catch (e) { warn(`seoul-signs exportData() threw: ${e.message}; using the shim`); }
   } else note('seoul-signs has no exportData() yet (B, native #2): signs.json / screens.json from the shim');
   signs ||= signsShim(parts, X[PARTNERS.signs] || {}, signsMod); screens ||= screensShim(parts, X[PARTNERS.signs] || {}, signsMod);
-  if (signs) { await put('signs.json', signs, ['specs', 'faces', 'designs', 'housings', 'scrollers', 'emitters']); data.signs = { file: 'signs.json', count: signs.count ?? signs.specs?.length ?? signs.faces?.length ?? 0, source: signs.source ?? data.signsSource }; }
+  if (signs) {
+    const count = signs.count ?? signs.specs?.length ?? signs.faces?.length ?? 0;
+    let packed = null;   // [P4 H, native #4] the big tables leave the JSON for meshopt column streams in signs.bin
+    if (meshopt) { const r = packTables(signs, SIGN_TABLES, meshopt, 'signs.bin'); if (r.bytes) { for (const p of unpackCheck(signs, r.json, r.bytes, MDEC)) warn(`signs.bin: ${p}`); signs = r.json; files['signs.bin'] = r.bytes; packed = r.info; } }
+    await put('signs.json', signs, ['specs', ...SIGN_TABLES]);
+    data.signs = { file: 'signs.json', count, source: signs.source ?? data.signsSource, ...(packed ? { bin: 'signs.bin', packed } : {}) };
+  }
   else data.signs = { status: 'pending', count: 0, note: 'seoul-signs did not build in node' };
   if (screens) { await put('screens.json', screens, ['screens']); data.screens = { file: 'screens.json', count: screens.count ?? screens.screens?.length ?? 0, source: screens.source ?? data.signsSource }; }
   else data.screens = { status: 'pending', count: 0 };
   // static sign geometry: B's geometry, else the node-built group's meshes (minus the per-screen planes)
   try {
-    const { GLBWriter } = await import('./glb.mjs'), { attrArray } = await import('./geohash.mjs');
+    const { GLBWriter } = await import('./glb.mjs'), { attrArray } = await import('./geohash.mjs'), { PACK } = await EW();
     const meshes = [];
     const gsrc = signs?.geometryMeshes || null;
     if (gsrc) for (const [name, g] of Object.entries(gsrc)) meshes.push([name, g]);
     else parts.signs?.group?.traverse((m) => { if (m.isMesh && /^signs-/.test(m.name) && m.geometry?.attributes?.position) meshes.push([m.name, m.geometry]); });
     if (meshes.length) {
-      const W = new GLBWriter('One Take FPV tools/export-seoul-data.mjs');
+      const W = new GLBWriter('One Take FPV tools/export-seoul-data.mjs', { meshopt });
       for (const [name, g] of meshes.sort(([a], [b]) => (a < b ? -1 : 1))) {
         const attrs = {}; for (const [k, a] of Object.entries(g.attributes)) attrs[k] = { array: attrArray(a), itemSize: a.itemSize, normalized: a.normalized };
-        W.mesh(name, attrs, g.index ? g.index.array : null, { extras: { kind: 'signs', bucket: name } });
+        // [P4 H, native #4] packed like world.glb, but the triangle order is kept (layered sign faces); instanced
+        // attributes (screens: per-panel rows) cannot share the vertex stream: those meshes stay plain
+        const n = g.attributes.position.count, flat = Object.values(g.attributes).every((a) => a.count === n && !a.isInstancedBufferAttribute);
+        if (meshopt && flat) { const r = W.meshPacked(name, attrs, g.index ? g.index.array : null, { extras: { kind: 'signs', bucket: name } }, { dedupe: false, reorder: 'fetch', index: 'TRIANGLES', quant: PACK.quant(attrs), verify: MDEC }); for (const p of r.problems || []) warn(`signs.glb packing: ${p}`); }
+        else W.mesh(name, attrs, g.index ? g.index.array : null, { extras: { kind: 'signs', bucket: name } });
       }
       extraFiles['signs.glb'] = W.toGLB();
       data.signs.glb = { file: 'signs.glb', meshes: meshes.map(([n, g]) => ({ name: n, vertices: g.attributes.position.count })) };
@@ -627,6 +717,7 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
   // ---- [P4 H, native #2] asset coverage: every repo file a Seoul module (or the level entry) fetches is in `files`
   const mods2 = ['world-seoul.js', ...readdirSync(root).filter((f) => /^seoul-.*\.js$/.test(f)).sort(), 'seoul/signs/msdf-meta.js', { name: 'levels.json#' + L.id, src: JSON.stringify(L) }];
   data.assets = assetCoverage(root, files, mods2, warn);
+  if (Object.keys(PACKED).length) data.packed = { codec: 'meshopt vertex codec v0 (EXT_meshopt_compression ATTRIBUTES): lossless; decode each file to `decodedBytes` with meshopt_decodeVertexBuffer(dst, count, stride, src); the file\'s own descriptor (light.json) gives the decoded format', files: { ...PACKED } };
   return { files, data, textures, coverage: SEOUL_COVERAGE, coverageObjects: ['Mesh', 'Points', 'Line'], runtimeOnly: SEOUL_RUNTIME_ONLY, scene: world?.scene || null, world, assetMap };
 }
 

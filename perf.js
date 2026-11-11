@@ -90,9 +90,9 @@ export function perfProbe(o, frames = 120) {
   const txt = document.createElement('div'), bar = document.createElement('div');
   const mkBtn = (label, bg) => { const b = document.createElement('button'); b.textContent = label; b.style.cssText = `margin:8px 8px 0 0;font:600 16px ui-monospace,Menlo,monospace;padding:10px 18px;border-radius:6px;border:0;background:${bg};color:#fff`;
     for (const ev of ['touchstart', 'mousedown', 'pointerdown']) b.addEventListener(ev, (e) => e.stopPropagation()); return b; };
-  const btn = mkBtn('RUN', '#C9450C'), quick = mkBtn('QUICK', '#3a3d44');
-  bar.style.display = 'none'; bar.append(btn, quick); box.append(txt, bar); document.body.appendChild(box);
-  btn.id = 'perfRun'; quick.id = 'perfQuick';
+  const btn = mkBtn('RUN', '#C9450C'), quick = mkBtn('QUICK', '#3a3d44'), share = mkBtn('SHARE', '#1f6f5c');
+  bar.style.display = 'none'; share.style.display = 'none'; bar.append(btn, quick, share); box.append(txt, bar); document.body.appendChild(box);
+  btn.id = 'perfRun'; quick.id = 'perfQuick'; share.id = 'perfShare';
   const say = (s) => { txt.textContent = s; };
   const warm = Math.min(WARM, frames);   // a short ?perf=N test run gets a short warm-up too
 
@@ -148,7 +148,7 @@ export function perfProbe(o, frames = 120) {
             if (i >= warm) { tot.push(a); cpu.push(b); if (upd0) upd.push(UPD[UPD.length - 1]); }
             if (i % 10 === 0) say(`PERF · ${s.toFixed(1)}× · ${name} · ${i < warm ? 'warm-up' : `frame ${i - warm}/${frames}`}`);
           }
-          row.seg[name] = stats(tot, cpu); if (split.on) row.seg[name].parts = split.read();
+          row.seg[name] = stats(tot, cpu, upd); if (split.on) row.seg[name].parts = split.read();   // [P4 H] upd was dropped (panel3 perf.md bugs)
         }
         const all = Object.values(row.seg);
         row.p90 = Math.max(...all.map((x) => x.p90)); row.worst = Object.keys(row.seg).find((k) => row.seg[k].p90 === row.p90);
@@ -182,8 +182,10 @@ export function perfProbe(o, frames = 120) {
       const g1 = res.scales.find((x) => x.scale === 1.0), gpu = Math.max(res.soak?.last30?.gpuP50 || 0, ...Object.values(g1?.seg || {}).map((v) => v.gpuP50 || 0));
       res.preset = { ran: P ? preset : 'auto', gpuP50: +gpu.toFixed(1), suggest: gpu > (cap.gpuMs || 12) ? 'phone' : 'auto' };
     }
+    res.device = deviceInfo(r, params);   // [P4 H, perf #4] what the shared result needs to name the phone and the build
     o.perf = res;
     console.info('perf ' + JSON.stringify(res));
+    remember(res);
     const lines = ['PERF · ms per frame (CPU+GPU synced; gpu ≈ total − cpu)'];
     for (const x of res.scales) {
       lines.push(`${x.scale.toFixed(1)}×  ${x.px[0]}×${x.px[1]}  ${x.p90 <= BUDGET ? 'fits 60 Hz' : `over budget (${x.worst})`}`);
@@ -194,11 +196,13 @@ export function perfProbe(o, frames = 120) {
     lines.push(`out ${res.out[0]}×${res.out[1]} · dpr ${res.dpr} · ${res.quality} · msaa ${res.msaa}`,
       `suggested auto max: ${res.suggestMax ?? '< 1.0'} (every p90 ≤ ${BUDGET} ms)` + (res.soak ? ` · sustained ≈ ${res.suggestSustained}` : ''),
       ...(res.preset ? [`Seoul preset: ran ${res.preset.ran} · gpu ${res.preset.gpuP50} ms → suggest ${res.preset.suggest}`] : []),
-      'Screenshot this. Reload without ?perf to fly.');
+      'Tap SHARE to send this (text + a JSON file) to Messages, Mail or Notes. Reload without ?perf to fly.');
     say(lines.join('\n'));
-    btn.textContent = 'RUN AGAIN'; bar.style.display = '';
+    o.perfText = lines.slice(0, -1).join('\n');
+    btn.textContent = 'RUN AGAIN'; bar.style.display = ''; share.style.display = '';
     return res;
   };
+  share.onclick = () => sharePerf(o, say);
   btn.onclick = () => run(params.has('soak') ? soakS : 180);
   quick.onclick = () => run(0);
   o.perfRun = (soak = soakS) => run(soak);   // test hook (CI: tests/browser.mjs)
@@ -221,4 +225,46 @@ export function perfProbe(o, frames = 120) {
     btn.textContent = 'RUN'; bar.style.display = '';
     o.perfReady = true;
   })().catch((e) => say('PERF · failed: ' + (e?.message || e)));
+}
+
+// ---- [P4 H, perf #4] a result Justin can send from his iPhone: SHARE opens the iOS share sheet (Web Share API) with the
+// overlay's text plus the run as compact JSON, and a .json file holding this run and the last runs on this phone (so an
+// auto run and a &preset=phone run go out together). No share sheet: the clipboard; no clipboard: a text box to copy.
+// The history lives in this browser's localStorage only (a convenience: it can be empty, and nothing else reads it).
+const HIST = 'onetake.perf.history', KEEP = 6;
+function deviceInfo(r, params) {
+  const gl = r?.getContext?.(), dbg = gl?.getExtension?.('WEBGL_debug_renderer_info');
+  const scr = globalThis.screen || {};
+  return { at: new Date().toISOString(), url: location.pathname + location.search, renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl?.getParameter?.(gl.RENDERER) ?? null,
+    vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : null, screen: [scr.width, scr.height], dpr: globalThis.devicePixelRatio, cores: navigator.hardwareConcurrency ?? null,
+    memoryGB: navigator.deviceMemory ?? null, preset: params.get('preset') || 'auto', standalone: !!(navigator.standalone || globalThis.matchMedia?.('(display-mode: standalone)')?.matches),
+    build: document.querySelector('meta[name="onetake-build"]')?.content || null };
+}
+function readHist() { try { const a = JSON.parse(localStorage.getItem(HIST) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+function remember(res) { try { const a = readHist(); a.push(res); localStorage.setItem(HIST, JSON.stringify(a.slice(-KEEP))); } catch (e) { /* private mode / storage off: share still has this run */ } }
+/** The run in a few hundred bytes (what a text message can carry): per scale and segment p50 / p90 / cpu / gpu (+ parts). */
+export function perfDigest(res) {
+  const r1 = (v) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
+  return { v: 1, lvl: res.level, at: res.device?.at, gpu: res.device?.renderer, scr: res.device?.screen, dpr: res.dpr, out: res.out, q: res.quality, msaa: res.msaa, preset: res.preset ?? res.device?.preset,
+    s: res.scales.map((x) => ({ k: x.scale, px: x.px, seg: Object.fromEntries(Object.entries(x.seg).map(([n, v]) => [n, [r1(v.p50), r1(v.p90), r1(v.cpuP50), r1(v.gpuP50), r1(v.updP50), ...(v.parts ? [v.parts] : [])]])) })),
+    soak: res.soak ? { s: res.soak.seconds, f30: [r1(res.soak.first30.p50), r1(res.soak.first30.p90)], l30: [r1(res.soak.last30.p50), r1(res.soak.last30.p90), r1(res.soak.last30.gpuP50)], x: res.soak.throttle } : null,
+    max: res.suggestMax, sus: res.suggestSustained ?? null, ua: res.ua };
+}
+async function sharePerf(o, say) {
+  const res = o.perf; if (!res) return;
+  const text = `One Take FPV perf · ${res.level || 'bando'} · ${res.device?.at || ''}\n${o.perfText || ''}\n\nperf-digest ${JSON.stringify(perfDigest(res))}`;
+  const name = `onetake-perf-${(res.level || 'bando').replace(/[^\w-]/g, '')}-${(res.device?.at || '').replace(/[:.]/g, '-').slice(0, 19)}.json`;
+  const runs = readHist(); if (!runs.some((x) => x.device?.at === res.device?.at)) runs.push(res);
+  let file = null; try { file = new File([JSON.stringify({ format: 'onetake.perf/1', runs }, null, 1)], name, { type: 'application/json' }); } catch (e) { file = null; }
+  try {
+    if (navigator.share) {
+      const withFile = file && navigator.canShare?.({ files: [file] }) ? { files: [file] } : {};
+      await navigator.share({ title: 'One Take FPV perf', text, ...withFile });
+      return;
+    }
+  } catch (e) { if (e?.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(text); say((o.perfText || '') + '\n\nCopied: paste it into a message.'); return; } catch (e) { /* no clipboard */ }
+  const ta = document.createElement('textarea'); ta.value = text; ta.readOnly = true;
+  ta.style.cssText = 'display:block;width:100%;height:9em;margin-top:8px;font:11px ui-monospace,Menlo,monospace;background:#111;color:#eee;border:1px solid #444';
+  document.getElementById('perfProbe')?.appendChild(ta); ta.focus(); ta.select();
 }

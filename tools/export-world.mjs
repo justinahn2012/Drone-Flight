@@ -28,7 +28,7 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as THREE from 'three';
 import { exposeAndImport, sourceLiteral, evalLiteral, literalFields, functionBody } from './expose.mjs';
-import { GLBWriter, semanticsFor } from './glb.mjs';
+import { GLBWriter, semanticsFor, meshoptEncoder } from './glb.mjs';
 import { encodePNG } from './png.mjs';
 import { GeoHash, HASH_ALGO, attrArray, meshHash, setHash } from './geohash.mjs';
 
@@ -425,6 +425,49 @@ export const LEVEL_SHIMS = {
   },
 };
 
+// [P4 H, native #4] a level export's GLBs are compressed (EXT_meshopt_compression + KHR_mesh_quantization; tools/glb.mjs
+// meshPacked). Render meshes: positions float with a 20-bit mantissa (~1 mm at 500 m), normals oct 12-bit, UVs an
+// 18-bit mantissa (~4 mm of world-metre UV at 500 m), other floats 20-bit (integers < 2^19 exact); identical vertices
+// merged, vertex-cache order. The collider is lossless: exact float32 positions, merged, and its index keeps the
+// three-mesh-bvh triangle order and each triangle's vertex order (INDICES codec). --raw writes the plain GLBs.
+export const PACK = {
+  render: { dedupe: true, reorder: 'cache', index: 'TRIANGLES' },
+  collider: { dedupe: true, reorder: 'fetch', index: 'INDICES' },
+  quant(attrs) { return Object.fromEntries(Object.entries(attrs).filter(([, a]) => a.array instanceof Float32Array).map(([k, a]) => [k, k === 'position' ? 'exp20' : k === 'normal' && a.itemSize === 3 ? 'oct12' : /^uv\d?$/.test(k) ? 'exp18' : 'exp20'])); },
+};
+/** Positions of a triangle list in index order (what any decoder must reproduce for the collider, bit for bit). */
+export function soupHash(posArray, index) {
+  const n = index ? index.length : posArray.length / 3, out = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { const v = index ? index[i] : i; out[i * 3] = posArray[v * 3]; out[i * 3 + 1] = posArray[v * 3 + 1]; out[i * 3 + 2] = posArray[v * 3 + 2]; }
+  return new GeoHash().str('soup').word(n / 3).array(out).hex();
+}
+
+/** [P4 H] The compressed GLBs as a port's loader sees them: three's GLTFLoader + MeshoptDecoder parse each container;
+ *  world.glb's meshes must match world.json rows (names, triangles, decoded vertex count, bounds within 2 mm), the
+ *  collider must decode to the game's triangles bit for bit (soupHash). */
+export async function checkPackedGLBs(glbs, world, MD, warn) {
+  const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+  const L = new GLTFLoader().setMeshoptDecoder(MD);
+  const load = (b) => new Promise((res, rej) => L.parse(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength), '', res, rej));
+  for (const [f, b] of Object.entries(glbs)) {
+    let g; try { g = await load(b); } catch (e) { warn(`${f}: GLTFLoader + MeshoptDecoder failed: ${e.message || e}`); continue; }
+    const meshes = []; g.scene.traverse((o) => { if (o.isMesh) meshes.push(o); });
+    if (f === 'world.glb') {
+      if (meshes.length !== world.meshes.length) warn(`world.glb: ${meshes.length} meshes decoded, world.json lists ${world.meshes.length}`);
+      for (const r of world.meshes) {
+        const m = meshes.find((x) => x.name === r.name); if (!m) { warn(`world.glb: ${r.name} not decoded`); continue; }
+        const G = m.geometry, tris = (G.index ? G.index.count : G.attributes.position.count) / 3; G.computeBoundingBox();
+        const bb = [G.boundingBox.min.toArray(), G.boundingBox.max.toArray()], d = Math.max(...bb[0].map((v, i) => Math.abs(v - r.bounds.min[i])), ...bb[1].map((v, i) => Math.abs(v - r.bounds.max[i])));
+        if (tris !== r.triangles || G.attributes.position.count !== r.glb?.vertices || !(d <= 0.002)) warn(`world.glb ${r.name}: decoded ${tris} triangles / ${G.attributes.position.count} vertices, bounds off ${d} m (world.json ${r.triangles} / ${r.glb?.vertices})`);
+      }
+    } else if (f === 'collider.glb') {
+      const G = meshes[0]?.geometry; if (!G) { warn('collider.glb: no mesh decoded'); continue; }
+      const h = soupHash(G.attributes.position.array, G.index?.array ?? null);
+      if (h !== world.collider.soupHash) warn(`collider.glb: decoded triangles hash ${h} != collider.soupHash ${world.collider.soupHash} (must be lossless)`);
+    } else if (!meshes.length) warn(`${f}: no mesh decoded`);
+  }
+}
+
 /** The level's CPU geometry: its own entry when it has one, else its shim. -> { geo, entry } */
 export async function levelGeometry(mod, L, seed) {
   const fn = [L.geometry, 'buildGeometry'].find((k) => k && typeof mod[k] === 'function');
@@ -437,7 +480,7 @@ export async function levelGeometry(mod, L, seed) {
 const toV = (v) => (v == null ? null : v.isVector3 ? [v.x, v.y, v.z] : Array.isArray(v) ? v : v);
 const toBox = (b) => (b == null ? null : b.isBox3 ? { min: toV(b.min), max: toV(b.max) } : { min: toV(b.min), max: toV(b.max) });
 
-export async function exportLevel({ root = ROOT, id, out, seed, check = false, log = console.log, levelsFile = 'levels.json', dataOnly = false, coverageCheck = true } = {}) {
+export async function exportLevel({ root = ROOT, id, out, seed, check = false, log = console.log, levelsFile = 'levels.json', dataOnly = false, coverageCheck = true, compress = true } = {}) {
   const t0 = performance.now(), warnings = [], notes = [], warn = (s) => { warnings.push(s); log('  warning: ' + s); }, note = (s) => { notes.push(s); log('  note: ' + s); };
   const levels = JSON.parse(readFileSync(join(root, levelsFile), 'utf8')), L = levels.find((l) => l.id === id || (l.alias || []).includes(id));
   if (!L) throw new Error(`level ${id} not in levels.json (${levels.map((l) => l.id).join(', ')})`);
@@ -456,23 +499,32 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
   const hRender = setHash('render', render.map((r) => [r.name, r.geo])), hCol = setHash('collider', [['collider', geo.colGeo]]);
   const hWorld = new GeoHash().str(hRender).str(hCol).hex();
   const hash = { algo: HASH_ALGO, world: hWorld, render: hRender, collider: hCol, meshes: Object.fromEntries(render.map((r) => [r.name, meshHash(r.name, r.geo)])) };
-  const W = new GLBWriter('One Take FPV tools/export-world.mjs'), meshTable = [];
+  const E = compress ? await meshoptEncoder() : null;
+  const MD = E ? (await import('three/addons/libs/meshopt_decoder.module.js')).MeshoptDecoder : null;   // the self-check decodes with three's (an independent build)
+  if (MD) await MD.ready;
+  const W = new GLBWriter('One Take FPV tools/export-world.mjs', { meshopt: E }), meshTable = [];
   for (const r of render) {
     const g = r.geo, attrs = {};
     for (const [k, a] of Object.entries(g.attributes)) attrs[k] = { array: attrArray(a), itemSize: a.itemSize, normalized: a.normalized };
     const m = MATS[r.mat] || {}, alb = m.albedo || [0.3, 0.29, 0.27];
     const material = W.material(r.mat, { name: r.mat, pbrMetallicRoughness: { baseColorFactor: [alb[0], alb[1], alb[2], 1], metallicFactor: m.metal || 0, roughnessFactor: m.rough ?? 1 }, extras: { mat: r.mat, ...plain(m) } });
-    W.mesh(r.name, attrs, g.index ? g.index.array : null, { material, extras: { kind: r.kind, material: r.mat } });
+    const mo = { material, extras: { kind: r.kind, material: r.mat } };
+    const packed = E ? W.meshPacked(r.name, attrs, g.index ? g.index.array : null, mo, { ...PACK.render, quant: PACK.quant(attrs), verify: MD }) : (W.mesh(r.name, attrs, g.index ? g.index.array : null, mo), null);
+    for (const p of packed?.problems || []) warn(`world.glb packing: ${p}`);
     const sem = semanticsFor(Object.keys(g.attributes));
     meshTable.push({ name: r.name, kind: r.kind, material: r.mat, vertices: g.attributes.position.count, triangles: (g.index ? g.index.count : g.attributes.position.count) / 3,
-      attributes: Object.fromEntries(Object.entries(g.attributes).map(([k, a]) => [k, { gltf: sem[k], itemSize: a.itemSize }])), bounds: boundsOf(attrArray(g.attributes.position)), hash: hash.meshes[r.name] });
+      attributes: Object.fromEntries(Object.entries(g.attributes).map(([k, a]) => [k, { gltf: sem[k], itemSize: a.itemSize }])), bounds: boundsOf(attrArray(g.attributes.position)), hash: hash.meshes[r.name],
+      ...(packed ? { glb: { vertices: packed.vertices, indices: packed.indices, index: packed.index, attributes: packed.attributes } } : {}) });
   }
   // collider: per-material vertex ranges when the entry reports colRanges ([{key, tri0, tris}] over the non-indexed merge)
-  const col = geo.colGeo, CW = new GLBWriter('One Take FPV tools/export-world.mjs'), colAttrs = {};
+  const col = geo.colGeo, CW = new GLBWriter('One Take FPV tools/export-world.mjs', { meshopt: E }), colAttrs = {};
   for (const [k, a] of Object.entries(col.attributes)) colAttrs[k] = { array: attrArray(a), itemSize: a.itemSize };
   const ranges = Array.isArray(geo.colRanges) && geo.colRanges.length ? Object.fromEntries(geo.colRanges.map((r) => [r.key, [r.tri0 * 3, (r.tri0 + r.tris) * 3]])) : null;
   const triangleCounts = ranges && col.index ? triCounts(col.index.array, ranges) : null;
-  CW.mesh('collider', colAttrs, col.index ? col.index.array : null, { extras: { kind: 'collider' }, ...(ranges ? { primExtras: { ranges, triangleCounts } } : {}) });
+  const colOpt = { extras: { kind: 'collider' }, ...(ranges ? { primExtras: { ranges, triangleCounts } } : {}) };
+  if (E && ranges) warn('collider ranges are vertex ranges: a packed (merged) collider cannot carry them; export with --raw');
+  const colPacked = E && !ranges ? CW.meshPacked('collider', colAttrs, col.index ? col.index.array : null, colOpt, { ...PACK.collider, quant: {}, verify: MD }) : (CW.mesh('collider', colAttrs, col.index ? col.index.array : null, colOpt), null);
+  for (const p of colPacked?.problems || []) warn(`collider.glb packing: ${p}`);
   const outFiles = { 'world.glb': W.toGLB(), 'collider.glb': CW.toGLB() };
   const spawn = geo.spawn == null ? null : geo.spawn.pos ? { pos: toV(geo.spawn.pos), yaw: plain(geo.spawn.yaw ?? geo.yaw ?? 0) } : { pos: plain(toV(geo.spawn)), yaw: plain(geo.yaw ?? 0) };
   if (!spawn) warn('spawn not found on the geometry entry');
@@ -480,7 +532,7 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
   // the level's runtime content as data (Seoul: emitters, signs, screens, light, life, dressing, look, textures)
   let D = null;
   if (dataMod?.exportSeoulData) {
-    try { D = await dataMod.exportSeoulData({ root, geo, L, seed, mods, log, note, warn }); }
+    try { D = await dataMod.exportSeoulData({ root, geo, L, seed, mods, log, note, warn, meshopt: E }); }
     catch (e) { warn(`level data export threw: ${e.stack || e.message}`); }
   }
   const matOut = Object.fromEntries(Object.entries(MATS).map(([k, m]) => {
@@ -495,6 +547,8 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
     hash, files: null,
     meshes: meshTable,
     collider: { vertices: col.attributes.position.count, triangles: (col.index ? col.index.count : col.attributes.position.count) / 3, bounds: boundsOf(attrArray(col.attributes.position)), hash: hCol,
+      soupHash: soupHash(attrArray(col.attributes.position), col.index?.array ?? null),
+      ...(colPacked ? { glb: { vertices: colPacked.vertices, indices: colPacked.indices, index: colPacked.index, note: 'lossless: exact float32 positions, identical vertices merged; the index keeps the triangle order (three-mesh-bvh) and each triangle\'s vertex order, so the decoded triangles equal the game\'s bit for bit (soupHash: GeoHash over the positions of the triangles in index order)' } } : {}),
       ...(ranges ? { ranges, triangleCounts, skim: 'triangles whose first vertex lies in a range other than the ground layers (walk, road, plaza): world.skimBvh', note: 'double-sided; index in three-mesh-bvh order; ranges = vertex ranges per material key (a triangle belongs to the range holding its first vertex); flush decals (stripe, yellow, glass, shop) are render-only' } : {}) },
     spawn, takeStart: plain(geo.takeStart ?? null), startPoints: plain(geo.startPoints ?? null), funnels: plain(geo.funnels ?? null),
     bounds: plain(toBox(geo.bounds)), envelope: plain(toBox(geo.envelope)), lines: plain(geo.lines ?? []),
@@ -502,6 +556,7 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
     ...(L1 ? { layout: { file: 'layout.json', origin: plain(L1.origin ?? null), box: plain(L1.box ?? null), lots: L1.lots?.length ?? 0, streets: L1.streets?.length ?? 0, screens: L1.screens?.length ?? 0 } } : {}),
     ...(geo.facts ? { facts: plain(Object.fromEntries(Object.entries(geo.facts).filter(([k]) => !/^ms$|Ms$/.test(k)))) } : {}),   // no wall-clock fields: --check compares bytes
     ...(D ? { data: D.data, textures: D.textures, runtimeOnly: D.runtimeOnly, coverage: D.coverage, coverageObjects: D.coverageObjects } : {}),
+    ...(E ? { compression: { glb: 'world.glb, collider.glb and signs.glb need EXT_meshopt_compression + KHR_mesh_quantization (meshoptimizer: meshopt_decodeVertexBuffer / IndexBuffer / IndexSequence, decodeFilterExp / Oct; three: GLTFLoader.setMeshoptDecoder)', render: 'meshes[].glb: per attribute the stored form; positions float with a 20-bit mantissa (<= 1 mm at 500 m), normals oct 12-bit int16, UVs 18-bit, other floats 20-bit; identical vertices merged and indexed (meshes[].vertices / triangles stay the game\'s draw counts)', collider: 'lossless (collider.glb, collider.soupHash)', bins: 'files listed in data.packed are meshopt vertex streams (see there)' } } : {}),
     notes, warnings,
   };
   // node-side coverage: the headless runtime scene against world.json `coverage` (the browser job does it on the real page)
@@ -516,6 +571,7 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
     } catch (e) { warn('coverage in node: ' + e.message); }
   }
   const dataFiles = D?.files || {};
+  if (E) await checkPackedGLBs({ 'world.glb': outFiles['world.glb'], 'collider.glb': outFiles['collider.glb'], ...(dataFiles['signs.glb'] ? { 'signs.glb': dataFiles['signs.glb'] } : {}) }, world, MD, warn);
   const all = { ...outFiles, ...dataFiles };
   world.files = Object.fromEntries(Object.entries(all).sort(([a], [b]) => (a < b ? -1 : 1)).map(([f, b]) => [f, { bytes: b.byteLength, sha256: sha256(b) }]));
   const outputs = dataOnly ? { ...dataFiles } : { ...all, 'world.json': new TextEncoder().encode(stringify(world) + '\n') };
@@ -535,9 +591,9 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
 // texture, or a data exporter that throws stops the build; a missing partner exporter (a shim was used) is only a note.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const a = process.argv.slice(2), opt = (k) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : undefined; };
-  if (a.includes('-h') || a.includes('--help')) { console.log('usage: node tools/export-world.mjs [--level ID] [--out DIR] [--seed N] [--check] [--strict] [--quiet]'); process.exit(0); }
+  if (a.includes('-h') || a.includes('--help')) { console.log('usage: node tools/export-world.mjs [--level ID] [--out DIR] [--seed N] [--check] [--strict] [--quiet] [--raw (a level export: plain, uncompressed GLBs)]'); process.exit(0); }
   const quiet = a.includes('--quiet'), level = opt('--level'), strict = a.includes('--strict'), seed = opt('--seed') != null ? +opt('--seed') : undefined;
-  (level && level !== 'bando' ? exportLevel({ id: level, levelsFile: opt('--levels') ?? 'levels.json', out: opt('--out') ? resolve(opt('--out')) : undefined, seed, check: a.includes('--check'), log: quiet ? () => {} : console.log }) : exportWorld({ out: resolve(opt('--out') ?? ROOT), seed: seed ?? 7, check: a.includes('--check'), log: quiet ? () => {} : console.log })
+  (level && level !== 'bando' ? exportLevel({ id: level, levelsFile: opt('--levels') ?? 'levels.json', out: opt('--out') ? resolve(opt('--out')) : undefined, seed, check: a.includes('--check'), compress: !a.includes('--raw'), log: quiet ? () => {} : console.log }) : exportWorld({ out: resolve(opt('--out') ?? ROOT), seed: seed ?? 7, check: a.includes('--check'), log: quiet ? () => {} : console.log })
   ).then((r) => {
     if (strict && r.warnings?.length) { console.log(`FAIL --strict: ${r.warnings.length} warning(s):\n  ` + r.warnings.join('\n  ')); process.exit(1); }
     process.exit(r.ok ? 0 : 1);
