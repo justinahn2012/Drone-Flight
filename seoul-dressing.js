@@ -222,6 +222,7 @@ function spGates(sp) {
 // geometry(layout, opts) — contract P2-1 (pure CPU)
 // ================================================================================================================
 const CACHE = new WeakMap();
+const slimOut = (o) => { const { merged, colTris, ...rest } = o; return rest; };   // [P5-D] what outlives the build
 export function geometry(layout, opts = {}) {
   const t0 = Date.now();
   const seed = opts.seed ?? 11, R0 = rng('dress' + seed);
@@ -1489,8 +1490,12 @@ export function geometry(layout, opts = {}) {
   facts.tris = tris; facts.colTris = col.length / 9; facts.emitters = emitters.length; facts.holes = holes.length; facts.cables = cables.length; facts.labels = labels.length; facts.lamps = lamps.length; facts.setPieces = setPieces.map((s) => s.id); facts.ms = Date.now() - t0; facts.msParts = msParts; facts.triParts = triParts;
   // ground footprints of what E placed (discs x, z, r): for G's crowd to walk around
   const obstacles = []; for (const v of occ.values()) for (const d of v) if (d[2] > 0.2) obstacles.push([+d[0].toFixed(2), +d[1].toFixed(2), +d[2].toFixed(2)]);
+  // [P5-D] perf #1 (the heap): the gate-tracking push is a closure over this whole function's context (acc, col: ~75 MB
+  // of build buffers), and world.setPieces outlives the build: back to Array.prototype.push. The cache keeps the data
+  // build() and exportData() read, not the render / collider geometry (world-seoul has merged it by then: ~36 MB).
+  delete setPieces.push;
   const out = { merged, colTris, emitters, setPieces, holes, cables, labels, lamps, obstacles, anchors, facts, materials: DRESS_MATS };
-  CACHE.set(layout, out);
+  CACHE.set(layout, slimOut(out));
   return out;
 }
 
@@ -1709,7 +1714,8 @@ export function groundTris(x0, z0, x1, z1, holes = []) {
 // build(layout, ctx) — runtime parts (browser): cable lines, labels, signal lamps
 // ================================================================================================================
 export async function build(layout, ctx = {}) {
-  const geo = ctx.dressing || CACHE.get(layout) || geometry(layout, { seed: ctx.seed ?? 11, poles: ctx.poles, lotInfo: ctx.lotInfo, lines: ctx.lines });
+  const geo = slimOut(ctx.dressing || CACHE.get(layout) || geometry(layout, { seed: ctx.seed ?? 11, poles: ctx.poles, lotInfo: ctx.lotInfo, lines: ctx.lines }));   // [P5-D] the closures below keep it
+  if (ctx.dressing) ctx.dressing = geo;   // [P5-D] ...and ctx (world-seoul's own copy): not the merged meshes and colTris (~36 MB)
   const group = new THREE.Group(); group.name = 'seoul.dressing';
   const nit = ctx.nitScale ?? ctx.NITS ?? NITS;
   const disposables = [];

@@ -53,6 +53,7 @@ const SHOT_SET = Object.fromEntries(Object.entries(BANDO ? SHOTS : LEVEL_SHOTS[L
 const ALLOW = [/favicon\.ico/];   // console errors that are not failures
 const CAMGATE = { 'seoul-hongdae': true };   // [P3 H] levels whose stills feed tools/camgate.py (lossless PNG, retro 0 and shipped)
 const TOL = { p50: 8, p95: 10 };
+const HEAP_MAX = +(process.env.ONETAKE_HEAP_MAX || 450);   // [P5 D] MB, levels other than bando (perf #1, native #3)
 function writeGolden(now, golden, src) {
   writeFileSync(GOLDEN, JSON.stringify({ note: 'tests/browser.mjs golden stills (SwiftShader, ' + `${W}x${H}, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update, or --golden-from <CI artifact>/stills.json, after an intentional look change.` + (src ? ` From ${src}.` : ''),
     shots: Object.fromEntries(Object.entries(now).map(([k, v]) => [k, { p5: v.p5, p50: v.p50, p95: v.p95, clip: v.clip, tol: golden.shots?.[k]?.tol || TOL }])) }, null, 1) + '\n');
@@ -91,7 +92,7 @@ const t0 = Date.now(), sec = () => ((Date.now() - t0) / 1000).toFixed(0) + ' s';
 
 const { chromium } = await import('playwright');   // [P3 H] dynamic: --golden-from needs no browser
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME || undefined,
-  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
+  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required', '--enable-precise-memory-info'] });   // [P5 D] precise heap
 try {
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   page.setDefaultTimeout(TIMEOUT);
@@ -128,6 +129,15 @@ try {
   // and a digest small enough for a text message
   const sh = await page.evaluate(async () => { const m = await import('./perf.js'); const d = JSON.stringify(m.perfDigest(window.__onetake.perf)); return { len: d.length, btn: !!document.getElementById('perfShare') && document.getElementById('perfShare').style.display !== 'none', text: (window.__onetake.perfText || '').length }; });
   ok(perf.segments.every((n) => Number.isFinite(perf.scales[0].seg[n]?.updP50)) && perf.device?.at && sh.btn && sh.text > 0 && sh.len < 4000, `?perf result is shareable: updP50 per segment, device ${JSON.stringify(perf.device?.renderer || null)}, SHARE shown, digest ${sh.len} chars`);
+  }
+
+  // ---- [P5 D] native #3 / perf #1: the live JS heap once the level has settled (main.js heapMark 'settled', 10 s after the
+  // build) <= HEAP_MAX MB, read after a forced GC (CDP), i.e. what a heap snapshot at 'settled' holds. The raw 'settled'
+  // mark is printed beside it: it also counts the build's garbage until V8 next collects (phase 4: 877-946 raw, 407 live).
+  if (!BANDO && !SKIP.has('heap')) {
+    const st = await page.waitForFunction(() => window.__onetake.levels?.mem?.()?.steps?.find((s) => s.step === 'settled'), null, { timeout: 120000, polling: 1000 }).then((h) => h.jsonValue(), () => null);
+    let gcMB = null; try { const cdp = await page.context().newCDPSession(page); await cdp.send('HeapProfiler.collectGarbage'); gcMB = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576)); } catch (e) {}
+    ok(st && Number.isFinite(gcMB) && gcMB <= HEAP_MAX, `live JS heap at settled ${gcMB ?? '?'} MB <= ${HEAP_MAX} (raw mark ${st?.mb ?? '?'} MB before the GC; the build steps ${JSON.stringify(await page.evaluate(() => window.__onetake.levels.mem().steps.map((s) => [s.step, s.mb])))})`);
   }
 
   // ---- 3. coverage
