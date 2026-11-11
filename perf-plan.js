@@ -66,7 +66,11 @@ const load = () => { try { const v = JSON.parse(store()?.getItem(KEY) || 'null')
 const save = (v) => { try { store()?.setItem(KEY, JSON.stringify(v)); return true; } catch (e) { return false; } };
 let lock = null;
 async function wake() {
-  try { if (navigator.wakeLock && (!lock || lock.released)) lock = await navigator.wakeLock.request('screen'); return !!lock; } catch (e) { return false; }
+  // (a request can stay pending forever: headless Chrome, a page that isn't visible; never let it hold the plan up)
+  try {
+    if (navigator.wakeLock && (!lock || lock.released)) lock = await Promise.race([navigator.wakeLock.request('screen'), new Promise((r) => setTimeout(() => r(null), 1500))]);
+    return !!lock && !lock.released;
+  } catch (e) { return false; }
 }
 if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && lock) wake(); });
 
