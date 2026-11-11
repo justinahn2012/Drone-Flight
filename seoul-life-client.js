@@ -31,7 +31,7 @@ export class LifeWorker {
 
   constructor(w) {
     this.w = w; this.seq = 0; this.busy = false; this.pending = null; this.ready = null; this.free = null; this.waiters = new Map();
-    this.stats = { requests: 0, frames: 0, dropped: 0, rtt: 0, workerMs: 0, allocs: 0 };
+    this.stats = { requests: 0, frames: 0, dropped: 0, retargets: 0, rtt: 0, workerMs: 0, allocs: 0, slices: 0, maxRtt: 0 };
     const on = (f) => (w.on ? w.on('message', f) : w.addEventListener('message', (e) => f(e.data)));
     on((m) => this._onMessage(m));
     const err = (e) => { this.error = String(e?.message || e); for (const [, r] of this.waiters) r.reject(new Error(this.error)); this.waiters.clear(); };
@@ -51,9 +51,10 @@ export class LifeWorker {
     if (m.type === 'frame') {
       this.busy = false; this.stats.frames++; this.stats.allocs = m.allocs;
       this.stats.rtt = performance.now() - this._sent; this.stats.workerMs = m.ms.sim + m.ms.crowd + m.ms.pack;
+      this.stats.slices = m.slices ?? 0; this.stats.maxRtt = Math.max(this.stats.maxRtt, this.stats.rtt);
       if (this.ready) this.release(this.ready);   // never read: straight back
       this.ready = { seq: m.seq, t: m.t, aT: m.aT, events: m.events, ms: m.ms, ...m.buf, _buf: m.buf };
-      if (this.pending) { const p = this.pending; this.pending = null; this._send(p.t, p.cam); }
+      if (this.pending) { const p = this.pending; this.pending = null; this._send(p.t, p.cam, p.fr); }
       return;
     }
     const w = m.seq != null ? this.waiters.get(m.seq) : null;
@@ -61,17 +62,27 @@ export class LifeWorker {
     this.waiters.delete(m.seq);
     if (m.type === 'error') w.reject(new Error(m.message)); else w.resolve(m.type === 'call' ? m.value : m);
   }
-  _send(t, cam) {
+  _send(t, cam, fr = null) {
     const seq = ++this.seq, recycle = this.free; this.free = null;
-    this.busy = true; this._sent = performance.now(); this.stats.requests++;
-    this._post({ type: 'frame', seq, t, cam: cam ? [cam.x ?? cam[0], cam.y ?? cam[1], cam.z ?? cam[2]] : null, recycle }, recycle ? bufs(recycle) : []);
+    this.busy = true; this._sent = performance.now(); this.stats.requests++; this.inflightT = t;
+    this._post({ type: 'frame', seq, t, cam: camArr(cam), fr, recycle }, recycle ? bufs(recycle) : []);
   }
 
   /** Ask for the crowd and traffic at take clock t seen from cam ({x,y,z} or [x,y,z]). Never blocks. */
-  request(t, cam = null) {
+  //  cam: {x, y, z, fx?, fz?} or [x, y, z, fx?, fz?] (fx, fz: the camera's horizontal forward, which crowd.evaluate uses to
+  //  thin far units behind the camera; [P5 H] P4 dropped it, so the worker's crowd differed from inline by 7.9 %).
+  //  fr: the crowd's frame counter to evaluate with (seoul-life.js passes the inline sim's, so the stagger phases match).
+  //  [P5 H, perf #2] a request more than SEEK s from the one in flight (a teleport, a rewind) goes out at once: the worker
+  //  is fast-forwarding in slices and retargets to it, instead of finishing a frame nobody will draw.
+  request(t, cam = null, fr = null) {
     if (this.error) return false;
-    if (this.busy) { if (this.pending) this.stats.dropped++; this.pending = { t, cam: cam ? [cam.x ?? cam[0], cam.y ?? cam[1], cam.z ?? cam[2]] : null }; return false; }
-    this._send(t, cam); return true;
+    const c = camArr(cam);
+    if (this.busy) {
+      if (this.pending) this.stats.dropped++;
+      if (Math.abs(t - (this.inflightT ?? t)) > LifeWorker.SEEK) { this.pending = null; this.stats.retargets++; this._send(t, c, fr); return true; }
+      this.pending = { t, cam: c, fr }; return false;
+    }
+    this._send(t, c, fr); return true;
   }
   /** The newest finished frame (yours until release(f)), or null. */
   latest() { const f = this.ready; this.ready = null; return f; }
@@ -81,4 +92,6 @@ export class LifeWorker {
   call(fn, ...args) { return this._ask({ type: 'call', fn, args }, 'call'); }
   dispose() { try { this._post({ type: 'dispose' }); } catch (e) { /* gone */ } try { this.w.terminate?.(); } catch (e) { /* gone */ } this.ready = this.free = null; }
 }
+LifeWorker.SEEK = 0.5;
+const camArr = (c) => (c == null ? null : Array.isArray(c) ? c.slice(0, 5) : [c.x, c.y, c.z, c.fx ?? null, c.fz ?? null]);
 const bufs = (b) => [b.X.buffer, b.Z.buffer, b.YAW.buffer, b.PH.buffer, b.WALK.buffer, b.POSE.buffer, b.VIS.buffer, b.veh.buffer];

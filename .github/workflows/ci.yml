@@ -71,9 +71,12 @@ jobs:
       - name: Seoul life (traffic determinism, budgets, sanity; known failures in ci/known-failures.json)
         if: ${{ !cancelled() }}
         run: node ci/run.mjs tests/seoul-life.mjs
-      - name: Life worker (H; LifeSim off the main thread, bit-identical to the inline sim)
+      - name: Life worker (H; LifeSim off the main thread, bit-identical to the inline sim, seek-safe)
         if: ${{ !cancelled() }}
         run: node tests/life-worker.mjs
+      - name: Phone perf plan (H; ?perf=a18 steps, state across reloads, the shared text)
+        if: ${{ !cancelled() }}
+        run: node tests/perf-plan.mjs
       - name: Seoul movers (F1 / G1)
         if: ${{ !cancelled() }}
         run: node tests/movers.mjs

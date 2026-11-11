@@ -17,6 +17,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MeshBVH } from 'three-mesh-bvh';
 import { buildInteriorAtlas, ROOM, FRONT, ATLAS, NEAR } from './seoul-interiors.js';
+import { moverDepth } from './seoul-depth.js';   // [P5 H, native #6]
 
 // Integrator decision (Seoul light units): 1 cd/m2 = 0.1 scene units (S3's NITS), which keeps night exposure inside
 // the camera's EV range. Illuminance uses the same factor (three: radiance = E x albedo / PI).
@@ -1306,6 +1307,7 @@ export async function buildSeoul(renderer, a, b) {
   await Promise.race([ready, new Promise((r) => setTimeout(r, 8000))]);
 
   const depthScene = new THREE.Scene(); depthScene.name = 'depthScene';   // C2: no alpha-tested extras in Seoul (yet)
+  const moverD = moverDepth(depthScene, parts.life?.group?.userData?.motionMeshes);   // [P5 H, native #6] the traffic in the depth pass (SSAO contact, blur depth)
   const colScene = new THREE.Scene(); { const cm = new THREE.Mesh(geo.colGeo, new THREE.MeshBasicMaterial()); cm.frustumCulled = false; colScene.add(cm); }
   if (geo.signDepth) { const sm = new THREE.Mesh(geo.signDepth, new THREE.MeshBasicMaterial()); sm.name = 'signs-depth'; sm.frustumCulled = false; colScene.add(sm); }   // [P4-B] native #5
   const B = boxOf(layout);
@@ -1316,6 +1318,7 @@ export async function buildSeoul(renderer, a, b) {
     const t = ctx.takeClock ? ctx.takeClock() : uniforms.uTime.value;
     INTERIOR_UNIFORMS.uSeoulTime.value = t % 3600;   // [P4-C] TV flicker
     parts.signs?.update?.(t, camPos, camQuat); parts.life?.update?.(t, camPos, camQuat); parts.dressing?.update?.(t, camPos, camQuat); parts.light?.update?.(t, camPos, camQuat);
+    moverD.update();   // [P5 H]
   };
   const world = {
     scene, colliderScene: colScene, depthScene, bvh: geo.bvh, skimBvh: geo.skimBvh, update, hdr: true, stats,
