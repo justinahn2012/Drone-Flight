@@ -153,9 +153,14 @@ const GAME_HINT = {
 const STICK_LBL = { cine: ['CLIMB · TURN', 'SPEED · CARVE'], angle: ['THROTTLE · YAW', 'PITCH · ROLL'], acro: ['THROTTLE · YAW', 'PITCH · ROLL'] };
 function applySettings() {
   const q = QUALITY[S.quality];
-  fpv.setQualityRange(q.min, q.max);
+  // [F2 for D] P3 perf #4/#6: a level's quality cap (seoul-light's world.qualityCap: render scale <= 1.0, presets auto | phone).
+  // Quality Low (or ?preset=phone) runs the phone preset: MSAA 2, crowd and light low. No cap (bando): unchanged.
+  const cap = world.qualityCap, pq = params.get('preset'), pn = cap ? (cap.presets?.[pq] ? pq : S.quality === 'low' ? 'phone' : 'auto') : null;
+  if (cap && cap.current !== pn && cap.presets?.[pn]) cap.apply?.(pn);
+  const P = cap ? cap.presets?.[pn] || cap : null;
+  fpv.setQualityRange(q.min, P && +P.max > 0 ? Math.min(q.max, +P.max) : q.max);
   fpv.look.maxSamples = q.samples;
-  fpv.look.msaa = q.msaa ?? 4; fpv.look.ssao = q.ao ?? 1;   // [D]
+  fpv.look.msaa = P && P.msaa != null ? Math.min(q.msaa ?? 4, P.msaa) : q.msaa ?? 4; fpv.look.ssao = q.ao ?? 1;   // [D]
   if (spark) spark.maxStdDev = q.std;
   fpv.look.lens = LENSES[S.lens] || LENSES.ref;
   fpv.look.shutter = (SHUTTERS[S.shutter] || SHUTTERS.nd16).t;
@@ -463,6 +468,7 @@ function clearWorld() {
   world.depthScene = null; world.aoUniforms = null; world.dispose = null; world.level = null; world.audio = null;   // [S0]
   world.movers = null; world.tuning = null; world.setPieces = null;                          // [F1] movers hook
   world.places = null;                                                                       // [F2]
+  world.qualityCap = null;                                                                   // [F2 for D] P3 perf #4/#6
 }
 
 // [S0] the camera look of a level (contract L5). 'day' = bando's HDR look line below (unchanged); 'night' = S3's
@@ -533,6 +539,7 @@ async function loadProcWorld(def) {
   // pieces (lines coded against their ids fly once they exist). Each optional; bando has none.
   try { world.movers = w.movers || lifeMovers(w.parts?.life) || null; } catch (e) { console.warn('movers', e); world.movers = null; }
   world.tuning = w.tuning || null; world.setPieces = w.setPieces || w.parts?.dressing?.setPieces || null;
+  world.qualityCap = w.qualityCap || w.scene?.userData?.seoulLight?.qualityCap || null;   // [F2 for D] P3 perf #4/#6 (applySettings)
   world.spawn.copy(w.spawn?.isVector3 ? w.spawn : w.spawn?.pos ? new THREE.Vector3(...(w.spawn.pos.toArray?.() ?? w.spawn.pos)) : new THREE.Vector3(0, 2, 0)); world.yaw = w.yaw ?? w.spawn?.yaw ?? 0;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);

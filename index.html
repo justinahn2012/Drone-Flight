@@ -476,16 +476,17 @@ body.dev .dev{display:revert!important}
   /* [F2] P3 ui #2 / ux #3: 18 lines: six across at 844-932 px, 13 px names on up to two lines (no "STATION STAI…"), NEXT as a
      corner tick; the grid scrolls inside itself above the bar (main.js fitLines) */
   /* grouped: the groups side by side, two cells across each (STREETS 4 rows, SET PIECES and GAPS 3): all 18 in four
-     rows of 34 px. The cells are a checklist, not buttons, so they can be this dense. */
+     rows of 32 px. The cells are a checklist, not buttons, so they can be this dense. */
   .lines{grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:5px}
   .lines.grouped{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:0 8px;align-items:start}
   .lgrp+.lgrp{margin-top:0}
   .lgg{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
   .lines .lg{margin-bottom:4px;font-size:10px}
   .lines.scroll .lg{position:sticky;top:0;z-index:1;padding:2px 0;background:rgba(7,8,10,.92)}
-  .ln{min-height:34px;padding:4px 6px 4px 24px;display:flex;flex-direction:column;justify-content:center}
-  .ln svg{left:6px;top:50%;margin-top:-6px;width:12px;height:12px}
-  .ln b{font-size:13px;line-height:1.1;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+  .ln{min-height:32px;padding:4px 5px 4px 22px;display:flex;flex-direction:column;justify-content:center}
+  .ln svg{left:5px;top:50%;margin-top:-5.5px;width:11px;height:11px}
+  /* 12 px, tight tracking: the longest names (UNDER THE STAGE, 15) stay on one line in a 128 px cell; two at most */
+  .ln b{font-size:12.5px;line-height:1.1;letter-spacing:.02em;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
   body.paused #linesSec>.sec{display:none}   /* paused: the strip says LINES 3/18 and each group head its own count */
   #startSec{display:flex;align-items:center;gap:12px}   /* START AT on one row with its starts */
   #startSec .sec{margin:0!important}
