@@ -732,6 +732,17 @@ export function buildSeoulGeometry(layout, opts = {}) {
   const colKeys = Object.keys(merged).filter((k) => !noCol.has(k) && !dressNoCol.has(k) && (SEOUL_MATS[k] && !k.startsWith('E:'))), colRanges = [];
   const colParts = colKeys.map((k) => posOnly(own[k] || merged[k]));
   if (dressCol) { colKeys.push('dressing'); colParts.push(posOnly(dressCol)); }
+  // [P4-B] native #5: the sign housings (blades, light boxes, stands, raceways, screen cabinets), placed on this build's lotInfo
+  // slots by seoul-signs' pure colliderTris. Always in the collider depth pass (buildSeoul's colliderScene: SSAO sees them);
+  // in the physics BVH / colGeo / export only with SIGN_COLLIDE (or opts.signCollide), because they close 32 of lines.json's
+  // 221 gates: flip it together with a re-run of seoul/tools/lines.mjs (F1), then re-record the Seoul parity vectors.
+  let signCol = null;
+  if (opts.signs !== false && SIGNS?.colliderTris) {
+    try { const sp = SIGNS.colliderTris(layout, { seed, lotInfo }); if (sp?.length) { signCol = new THREE.BufferGeometry(); signCol.setAttribute('position', new THREE.BufferAttribute(sp, 3)); facts.signColTris = sp.length / 9; } }
+    catch (e) { console.warn('seoulSigns.colliderTris', e); }
+  }
+  const signCollide = !!signCol && (opts.signCollide ?? SIGN_COLLIDE);
+  if (signCollide) { colKeys.push('signs'); colParts.push(signCol); }
   { let t = 0; colKeys.forEach((k, i) => { const n = colParts[i].getAttribute('position').count / 3; colRanges.push({ key: k, tri0: t, tris: n }); t += n; }); }
   const colGeo = mergeGeometries(colParts, false);
   const bvh = new MeshBVH(colGeo, { maxLeafTris: 5 });
@@ -754,6 +765,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
   const v3 = (p) => p;
   return {
     merged: grouped.merged, byKey, layers: grouped.layers, groupMats: grouped.mats, colGeo, colRanges, colKeyOf, bvh, skimBvh, emitters, facts, lotInfo, poles, cables, layout,
+    signDepth: signCol && !signCollide ? signCol : null,   // [P4-B] depth-only sign housings (colliderScene)
     lines: L.lines || [], funnels: L.funnels || [],
     startPoints: (L.startPoints || []).map(v3), takeStart: L.takeStart || null,
     spawn: layout.spawn, setPieces: dressing.setPieces, dressingMats: dressing.materials, dressing: DM, dressingOut: dressing.out,
@@ -825,6 +837,12 @@ function groupMeshes(byKey, dmats = {}) {
   };
   return { merged: out, layers, mats };
 }
+// [P4-B] stream B's module, if present (top-level, as E's below): its sign housings join the collider (native #5).
+// SIGN_COLLIDE: the housings are in the physics BVH too (off until lines.json is re-fitted around them; see buildSeoulGeometry)
+export const SIGN_COLLIDE = false;
+let SIGNS = null;
+try { const m = await import('./seoul-signs.js'); SIGNS = typeof m.colliderTris === 'function' ? m : null; }
+catch (e) { if (!/Cannot find|not found|404|Failed to fetch|ERR_MODULE_NOT_FOUND|Importing a module script failed|error loading dynamically/i.test(String(e?.message || e))) console.warn('seoul-signs.js', e); }
 // stream E's module, if present (top-level, so node tests, the exporter and the game all get the same geometry)
 let DRESSING = null;
 try {
@@ -1288,6 +1306,7 @@ export async function buildSeoul(renderer, a, b) {
 
   const depthScene = new THREE.Scene(); depthScene.name = 'depthScene';   // C2: no alpha-tested extras in Seoul (yet)
   const colScene = new THREE.Scene(); { const cm = new THREE.Mesh(geo.colGeo, new THREE.MeshBasicMaterial()); cm.frustumCulled = false; colScene.add(cm); }
+  if (geo.signDepth) { const sm = new THREE.Mesh(geo.signDepth, new THREE.MeshBasicMaterial()); sm.name = 'signs-depth'; sm.frustumCulled = false; colScene.add(sm); }   // [P4-B] native #5
   const B = boxOf(layout);
   const sp = geo.takeStart || layout.spawn || { pos: [0, 6, 0], yaw: 0 };   // the first start point (the walking street) when lines exist
   const stats = { ...geo.facts, ms: { geometry: geo.facts.ms, total: 0 }, emitters: emitters.length, textures: mats.texSource || 'pending' };

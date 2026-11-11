@@ -4,6 +4,8 @@
 //   const signs = await seoulSigns.build(layout, { seed, neonPush, nitScale, renderer, quality });
 //   scene.add(signs.group);  lights.attach(world, signs.emitters);  each frame: signs.update(t, camPos);
 //   seoulSigns.exportData(layout, opts) -> { signs, screens }   (pure, node-safe: signs.json / screens.json for native)
+//   seoulSigns.colliderTris(layout, { seed, lotInfo }) -> Float32Array xyz soup of the housings that collide (world-seoul's BVH)
+//   opts / ctx.lotInfo: world-seoul's per-lot slots (phase 4: signs sit on C's beds, spandrels, glass and roof frames)
 //
 // Phase 2 (panel 1: art #1, graphics #2, lighting #2, colour #2/#5, perf #6, native #2):
 //   * The letters are the light, not the box. Every face is a list of elements: a box ground (light-box diffuser at
@@ -55,13 +57,14 @@ const USE_PUSH = { club: 1.35, bar: 1.3, pocha: 1.2, karaoke: 1.3, motel: 1.25, 
 
 const srgb = (h) => { const c = new THREE.Color(h); return [c.r, c.g, c.b]; };     // THREE.Color hex -> linear
 const HEX = {
-  white: '#f7f9ff', warm: '#ffe0b0', red: '#ff2414', blue: '#1e56ff', yellow: '#ffd21a', orange: '#ff7410', green: '#14d860',
+  white: '#f7f9ff', warm: '#fff2dc', black: '#0a0a0a', red: '#ff2414', blue: '#1e56ff', yellow: '#ffd21a', orange: '#ff7410', green: '#14d860',
   pink: '#ff3c9c', magenta: '#ff28d2', cyan: '#18e4ff', teal: '#10d8b0', violet: '#8a3cff', amber: '#ffa010',
   paleYellow: '#fff1b8', paleBlue: '#e2f2ff', bulb: '#ffc98a', roomWarm: '#ffd7a0', roomCool: '#e6efff', roomFluo: '#eaffef',
 };
 // category -> concrete light colours (weights)
+// Phase 4 (colour #2): white light boxes read white (75 %), not khaki: warm white is #fff2dc on a quarter of them
 const CAT_HUES = {
-  white: [['white', 0.45], ['warm', 0.55]], red: [['red', 1]], blue: [['blue', 1]],
+  white: [['white', 0.75], ['warm', 0.25]], red: [['red', 1]], blue: [['blue', 1]],
   ygo: [['yellow', 0.35], ['orange', 0.25], ['amber', 0.15], ['green', 0.25]], pink: [['pink', 0.6], ['magenta', 0.4]],
   cyan: [['cyan', 0.65], ['teal', 0.35]], violet: [['violet', 1]],
 };
@@ -79,7 +82,11 @@ export const filt = (c) => { const m = Math.max(c[0], c[1], c[2], 1e-4), k = (1 
 // tube axis / bulb point (the shader's profile peaks there; the mean over a letter is ~0.75 of the core).
 export const NITS = {
   boxLetters: [110, 220], boxLettersColour: [100, 200],   // light-box letters: the brightest part of a box face (100-220)
-  ground: [0.25, 0.35],                                    // lit box ground behind the letters, as a share of the letters
+  // Phase 4 (colour #3): a coloured light-box face is the letters' own diffuser behind a dyed film, so its dominant channel
+  // runs at 75-90 % of the letters (phase 3's 25-35 % made muddy grounds: half Hongdae's saturated area)
+  ground: [0.75, 0.9],                                     // lit coloured box face, white-equivalent share of the letters
+  inverse: [250, 400],                                     // colour #2: white light-box face (it clips); film letters on it
+  hot: 1.4,                                                // colour #3: red / orange / amber LED letters' drive
   channel: [700, 1400], channelColour: [600, 1100],        // LED channel letters / galva LED letters (cores; white modules drive hardest)
   neon: [900, 2000], bulb: [1800, 2000], dots: [800, 2000], // tube cores; 2 cm bulb points; exposed-LED letter dots
   scroller: [300, 600],                                    // LED dot board: mean of an "on" cell (dots peak at 2.6x)
@@ -215,12 +222,12 @@ export function sideFaces(layout) {
 function makeName(r, use, latinBias) {
   const w = pick(r, USE_WORDS[use] || USE_WORDS.shop); const latinWord = /^[A-Z0-9 ]+$/.test(w);
   const latin = latinWord || r.next() < latinBias;
-  if (latin) { const n = pick(r, NAME_EN); return { main: latinWord ? `${n} ${w}` : n, sub: latinWord ? '' : w }; }
+  if (latin) { const n = pick(r, NAME_EN); return { main: latinWord ? `${n} ${w}` : n, sub: latinWord ? '' : w, cat: w }; }
   const a = pick(r, NAME_A);
   const form = r.next();
-  if (form < 0.45) return { main: a + w.replace(/ /g, ''), sub: '' };       // 달빛포차
-  if (form < 0.8) return { main: a, sub: w };                                 // 달빛 / 포차 (category set smaller)
-  return { main: `${a} ${w}`, sub: '' };
+  if (form < 0.45) return { main: a + w.replace(/ /g, ''), sub: '', cat: w };       // 달빛포차
+  if (form < 0.8) return { main: a, sub: w, cat: w };                                 // 달빛 / 포차 (category set smaller)
+  return { main: `${a} ${w}`, sub: '', cat: w };
 }
 const fakePhone = (r) => `02-0${Math.floor(r.next() * 90 + 10)}-${String(Math.floor(r.next() * 9000 + 1000))}`; // 02-0xx: no real exchange
 
@@ -233,28 +240,76 @@ function signColour(uCat, uHue, push, use) {
 }
 
 // face design per sign (how the light is made). Real Hongdae: LED letters on galva panels and dark-ground flex boxes
-// have replaced most white flex boxes; coloured flex boxes keep a dimmer ground behind bright letters.
-function chooseDesign(style, cat, use, u) {
+// have replaced many white flex boxes, but the white light box with red / blue / black letters is still the commonest
+// single sign, and red, amber, blue and green boxes glow as a whole face. Phase 4 (colour #2 / #3, art #1):
+//   inverse   white (or warm-white) diffuser face at 250-400 nits, letters in red / blue / black film: 40 % of white boxes
+//   flex      a coloured face (red, orange, amber, yellow, blue, green) lit as a whole, clear letters (yellow: dark film
+//             letters); the face is the same diffuser behind a dye, so its dominant channel runs at 75-90 % of the letters
+//   blackflex black face, coloured letters; galva: dark panel, LED letters; dots: exposed LEDs in letter bodies
+export const GROUND_HUES = new Set(['red', 'orange', 'amber', 'yellow', 'blue', 'green']);
+function chooseDesign(style, cat, hue, use, u, u2) {
   if (style === 'neon') return 'neon';
   if (style === 'channel' || style === 'roof') return 'channel';
   if (style === 'window') return u < 0.55 ? 'vinylA' : 'vinylB';
+  if (style === 'vinyl') return 'film';
   if (style === 'banner' || style === 'scroller') return style;
   if ((style === 'fascia' || style === 'blade') && (use === 'pocha' || use === 'karaoke' || use === 'bar' || use === 'pc') && u < 0.2) return 'dots';
   if (use === 'conv') return 'flex';
-  if (cat === 'white') return u < 0.55 ? 'galva' : 'blackflex';
-  return u < 0.72 ? 'flex' : 'galva';
+  if (cat === 'white') return u2 < 0.4 ? 'inverse' : u2 < 0.75 ? 'galva' : 'blackflex';
+  if (GROUND_HUES.has(hue)) return u2 < 0.7 ? 'flex' : 'galva';
+  return u2 < 0.5 ? 'blackflex' : 'galva';          // pink, magenta, cyan, teal, violet: coloured letters on a dark face
 }
-function designNits(design, cat, u) {
+// red and amber LED letters run at 1.4x drive (colour #3): R clips and the core shows an orange rim, as on camera
+const HOT_HUES = new Set(['red', 'orange', 'amber']);
+function designNits(design, cat, u, hue) {
   const R = design === 'neon' ? NITS.neon : design === 'channel' || design === 'galva' ? (cat === 'white' ? NITS.channel : NITS.channelColour)
-    : design === 'dots' ? NITS.dots : design === 'vinylA' || design === 'vinylB' ? NITS.room : design === 'scroller' ? NITS.scroller
-      : design === 'banner' ? NITS.banner : (cat === 'white' ? NITS.boxLetters : NITS.boxLettersColour);
-  return R[0] + (R[1] - R[0]) * u;
+    : design === 'dots' ? NITS.dots : design === 'vinylA' || design === 'vinylB' || design === 'film' ? NITS.room : design === 'scroller' ? NITS.scroller
+      : design === 'banner' ? NITS.banner : design === 'inverse' ? NITS.inverse : (cat === 'white' ? NITS.boxLetters : NITS.boxLettersColour);
+  const v = R[0] + (R[1] - R[0]) * u;
+  return (design === 'channel' || design === 'galva') && HOT_HUES.has(hue) ? v * NITS.hot : v;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// 4b) C's sign slots (phase 4, art #1). world-seoul's lotInfo (contract P3-C, passed as ctx.lotInfo) says where each
+//     building has room for signs; phase 3 placed signs from the layout alone and hung some over blank walls and shutter
+//     housings (club90's "와도 반와가뻬" was 화로 만화카페 at 2.2-3.2 m with its top behind a closed shop's housing box).
+//   fascias[]  { c (centre of the sign bed's front face), normal, w (= the wall), h (1.1), side, lit (false: shuttered) }:
+//              the bed is y 2.9-4.0, 8 cm proud; a shuttered bay's housing box is y 2.9-3.2, 4-34 cm proud
+//   bands[]    { f, c (2 cm off the wall), normal, w (= 0.9 of the wall), h, side }: the spandrel over floor f's windows
+//   windows[]  { f, c (the pane, 3 cm out), n, w, h, lit, nits } on fronts and street-facing side walls
+//   roofSign   { c (1 cm before C's backing panel), normal, w, h }: the steel frame on ~30 % of 4F-9F commercial roofs
+//   floors[f]  { lit, use }: C's whole-floor tenants (bar karaoke cafe pc office home study restaurant motel hotel)
+// Without lotInfo (a bare layout: old tools), the same slots are synthesised from the layout as phase 3 placed them.
+// ---------------------------------------------------------------------------------------------------------------
+export const SLOT = { bedOut: 0.08, shutterTop: 3.2, vinylOut: 0.045 };
+// a sign frame on a slot: the wall line is `off` behind the slot's centre; reading direction r = up x n
+function slotFrame(c, normal, L, off, base, side) {
+  const l = Math.hypot(normal[0], normal[2]) || 1, n = [normal[0] / l, normal[2] / l], r = [n[1], -n[0]];
+  const mx = c[0] - n[0] * off, mz = c[2] - n[1] * off;
+  return { o: [mx - r[0] * L / 2, mz - r[1] * L / 2], r, n, L, top: base.top, floors: base.floors, fh: base.fh, side: !!side };
+}
+function synthSlots(lot, F, sides, st) {
+  const at = (Fr, y, d, x) => ({ c: [Fr.o[0] + Fr.r[0] * Fr.L / 2 + Fr.n[0] * d, y, Fr.o[1] + Fr.r[1] * Fr.L / 2 + Fr.n[1] * d], normal: [Fr.n[0], 0, Fr.n[1]], ...x });
+  const fascias = [at(F, 3.45, SLOT.bedOut, { w: F.L, h: 1.1, side: false, lit: true })];
+  if (st.kind !== 'alley') for (const SF of sides) if (SF.L > 3.2) fascias.push(at(SF, 3.45, SLOT.bedOut, { w: SF.L, h: 1.1, side: true, lit: true }));
+  const bands = [];
+  for (const Fr of [F, ...sides]) for (let f = 1; f < Math.min(lot.floors - 1, 7); f++) bands.push(at(Fr, (f + 1) * F.fh - 0.6, 0.02, { f, w: Fr.L * 0.9, h: 1.2, side: Fr !== F }));
+  return { fascias, bands, windows: [], roofSign: null, floors: [], synth: true };
+}
+const CUSE = { home: null, study: 'office' };       // C's floor use -> the sign tenant (null: flats carry no business sign)
+const SINGLE = new Set(['hotel', 'motel', 'office']);
+const CH_P = { cafe: 0.55, club: 0.5, shop: 0.4, hotel: 0.7, restaurant: 0.45, bar: 0.45, pocha: 0.45 };
+const SCROLL_P = { bar: 0.5, pocha: 0.6, restaurant: 0.4, pc: 0.6, karaoke: 0.6, conv: 0.1 };
+const STAND_P = { cafe: 0.6, bar: 0.75, pocha: 0.75, restaurant: 0.75, karaoke: 0.8, pc: 0.6, shop: 0.45, club: 0.5, conv: 0.3 };
+// window lettering (시트지) on lit 2F-5F glass: what each trade puts on its windows
+const VINYL_P = { karaoke: 0.85, pc: 0.8, office: 0.7, bar: 0.55, cafe: 0.5, restaurant: 0.45, shop: 0.55, club: 0.4, pocha: 0.5 };
 
 export function generateSigns(layout, opts = {}) {
   const seed = (opts.seed ?? 0x5e0a1) >>> 0, pushOverride = opts.neonPush, pushScale = opts.neonPushScale ?? 1;
+  const LI = opts.lotInfo || opts.world?.lotInfo || null;
   const streets = new Map((layout.streets || []).map((s) => [s.id, s]));
   const specs = [], screens = [], SIDES = sideFaces(layout);
+  const shut = new Set();   // lots whose front bed is shuttered (no door screen)
   for (const lot of layout.lots || []) {
     const st = streets.get(lot.street) || { kind: 'alley' };
     const sides = SIDES.get(lot.id) || [];
@@ -262,153 +317,217 @@ export function generateSigns(layout, opts = {}) {
     const r = new Rng(seed ^ hashStr(lot.id));           // geometry stream (never depends on push)
     const rc = new Rng((seed * 31 + 7) ^ hashStr(lot.id + '#c')); // colour stream (fixed draws per sign)
     const F = facadeFrame(lot);
-    const nFloors = Math.max(1, lot.floors | 0);
-    // tenants per floor: 0 = ground (lot.use), basement club stays in the ground sign
+    const nFloors = Math.max(1, lot.floors | 0), fh = F.fh, base = { top: F.top, floors: F.floors, fh };
+    const info = LI && typeof LI.get === 'function' ? LI.get(lot.id) : null;
+    const S = info ? { fascias: info.fascias || (info.fascia ? [info.fascia] : []), bands: info.bands || [], windows: info.windows || [], roofSign: info.roofSign || null, floors: info.floors || [] }
+      : synthSlots(lot, F, sides, st);
+    // tenants per floor: 0 = ground (lot.use; a basement club stays in the ground sign). Upper floors follow C's whole-floor
+    // tenants when given: a flat carries no sign; a lit floor's sign is on (97 %), a dark floor's as often as its trade
+    // keeps late hours (x 0.8: signs run on timers, rooms face the back)
     const tenants = [];
     for (let f = 0; f < nFloors; f++) {
-      const use = f === 0 ? lot.use : pick(r, UPPER_USES[lot.use] || UPPER_USES.office);
+      const cf = f > 0 ? S.floors[f] : null, cu = cf ? (cf.use in CUSE ? CUSE[cf.use] : cf.use) : undefined;
+      if (cu === null) { tenants.push({ f, use: 'home', home: true, lit: false, name: { main: '', sub: '', cat: '' }, phone: '', tag: '' }); continue; }
+      const use = f === 0 ? lot.use : cu !== undefined ? cu : pick(r, UPPER_USES[lot.use] || UPPER_USES.office);
       const name = makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05);
-      const lit = r.next() < (LIT_P[use] ?? 0.5);
-      tenants.push({ f, use, name, lit, phone: fakePhone(r), tag: pick(r, TAGS) });
+      const u = r.next(), lp = LIT_P[use] ?? 0.5;
+      tenants.push({ f, use, name, lit: cf ? (cf.lit ? u < 0.97 : u < lp * 0.8) : u < lp, phone: fakePhone(r), tag: pick(r, TAGS) });
     }
-    if (lot.use === 'hotel' || lot.use === 'motel') for (const t of tenants) { t.use = lot.use; t.name = tenants[0].name; t.lit = tenants[0].lit; }
+    if (lot.use === 'hotel' || lot.use === 'motel') for (const t of tenants) { t.use = lot.use; t.name = tenants[0].name; t.lit = tenants[0].lit; t.home = false; }
+    const biz = (f) => { for (let k = Math.min(f, nFloors - 1); k >= 0; k--) if (!tenants[k].home) return tenants[k]; return tenants[0]; };
     let k = 0;
     const add = (type, t, geo, extra = {}) => {
       // fixed colour draws per sign, whatever the push, so geometry/count/lit never move with push
       const uCat = rc.next(), uHue = rc.next(), uNeon = rc.next(), uNit = rc.next(), uFlk = rc.next(), uAcc = rc.next();
-      const uDes = rc.next(), uBulb = rc.next(), uGr = rc.next(), uLet = rc.next();
+      const uDes = rc.next(), uBulb = rc.next(), uGr = rc.next(), uLet = rc.next(), uDes2 = rc.next(), uFilm = rc.next();
       const c = signColour(uCat, uHue, push, t.use);
       const nightlife = NIGHT_USES.has(t.use) || t.use === 'restaurant' && lot.use === 'pocha';
       const pn = Math.min(1, push * (USE_PUSH[t.use] ?? 0.8));
       let style = type;
       // neon-tube share (T5: <5 % census -> 15 % hero) re-skins small nightlife faces as tube lettering on a black board
-      if (nightlife && (type === 'fascia' || type === 'round' || type === 'window') && uNeon < (NEON_SHARE[0] + (NEON_SHARE[1] - NEON_SHARE[0]) * pn) * 3.4) style = 'neon';
+      if (nightlife && (type === 'fascia' || type === 'round' || type === 'window') && !geo.roofBox && uNeon < (NEON_SHARE[0] + (NEON_SHARE[1] - NEON_SHARE[0]) * pn) * 3.4) style = 'neon';
       const acc = pickW(uAcc, [['white', 0.5], ['red', 0.2], ['blue', 0.15], ['yellow', 0.15]]);
-      const design = chooseDesign(style, c.cat, t.use, uDes);
-      const nits = designNits(design, c.cat, uNit);
+      const design = chooseDesign(style, c.cat, c.hue, t.use, uDes, uDes2);
+      const nits = designNits(design, c.cat, uNit, c.hue);
       // ~3 % of lit tubes/boxes are failing: irregular flicker (seoul-light can light it; the face flickers in-shader)
       const flicker = t.lit && (style === 'neon' ? uFlk < 0.08 : uFlk < 0.02) ? { hz: 6 + uFlk * 60, depth: 0.7 } : null;
       // bulb / LED borders on ~30 % of nightlife boxes (art #1)
       const bulbs = BOX_STYLES.has(style) && (nightlife || t.use === 'pc') && design !== 'dots' && uBulb < 0.3
         ? (uBulb < 0.11 ? 'chase' : uBulb < 0.19 ? 'bulbs' : 'led') : null;
       const letter = pickW(uLet, [['white', 0.58], ['paleYellow', 0.24], ['paleBlue', 0.18]]);
+      // film letters (inverse boxes, yellow faces): red, blue or black vinyl over the diffuser
+      const film = pickW(uFilm, c.hue === 'yellow' ? [['red', 0.35], ['black', 0.65]] : [['red', 0.45], ['blue', 0.3], ['black', 0.25]]);
       specs.push({ id: `${lot.id}:${type}${k++}`, type, style, design, lot: lot.id, street: lot.street, use: t.use, floor: t.f, lit: t.lit,
-        cat: c.cat, hue: c.hue, rgb: c.rgb, accent: srgb(HEX[acc]), accentName: acc, letter, nits, groundK: lerp(NITS.ground[0], NITS.ground[1], uGr),
+        cat: c.cat, hue: c.hue, rgb: c.rgb, accent: srgb(HEX[acc]), accentName: acc, letter, film, nits, groundK: lerp(NITS.ground[0], NITS.ground[1], uGr),
         bulbs, galva: GALVA[Math.floor(uGr * GALVA.length) % GALVA.length], flicker, name: t.name, phone: t.phone, tag: t.tag, frame: F, geo,
         push, seed: r.next() * 1e9 >>> 0, ...extra });
     };
     const g = tenants[0];
-    const L = F.L, fh = F.fh;
-    // --- ground floor: a building's frontage holds 1-4 shop bays (Hongdae: 4-8 m each), each with its own signs ---
-    const nShops = lot.use === 'hotel' || lot.use === 'motel' || lot.use === 'office' ? 1 : Math.max(1, Math.min(4, Math.round(L / 6.5)));
-    const bay = L / nShops, shops = [g];
-    for (let i = 1; i < nShops; i++) {
-      const use = pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant);
-      shops.push({ f: 0, use, name: makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05), lit: r.next() < (LIT_P[use] ?? 0.5), phone: fakePhone(r), tag: pick(r, TAGS) });
-    }
-    let fasciaY = 2.75;
-    shops.forEach((sh, i) => {
-      const u0 = bay * i;
-      // art #1: fascia 0.55-0.85 of the bay (was 0.82-0.97 L); channel letters on 45 % of restaurants and bars (was 20 %)
-      const fasciaW = Math.min(bay - 0.3, bay * range(r, 0.55, 0.85)), fasciaH = range(r, 0.85, 1.25);
-      const fy = Math.min(fh - fasciaH - 0.15, range(r, 2.55, 2.95)); if (i === 0) fasciaY = fy;
-      const channel = r.next() < ({ cafe: 0.55, club: 0.5, shop: 0.4, hotel: 0.7, restaurant: 0.45, bar: 0.45, pocha: 0.45 }[sh.use] ?? 0.25);
-      add(channel ? 'channel' : 'fascia', sh, { u: u0 + (bay - fasciaW) / 2, y: fy, w: fasciaW, h: fasciaH, d: channel ? 0.12 : 0.28, bay });
-      // second, smaller box over the door (pocha / restaurants stack boxes)
-      if (r.next() < 0.35 && bay > 5) add('fascia', sh, { u: u0 + range(r, 0.2, 0.6), y: fy - 0.95, w: Math.min(2.4, bay * 0.3), h: 0.7, d: 0.2, small: true });
-      // LED dot scroller over the door (bars, pocha, pc, karaoke, restaurants)
-      if (r.next() < ({ bar: 0.5, pocha: 0.6, restaurant: 0.4, pc: 0.6, karaoke: 0.6, conv: 0.1 }[sh.use] ?? 0.12)) {
-        const sw = Math.min(bay * 0.6, range(r, 1.6, 3.2));
-        add('scroller', sh, { u: u0 + range(r, 0.3, Math.max(0.35, bay - sw - 0.3)), y: fy - 0.36, w: sw, h: 0.26, d: 0.06 }, { scrollRow: Math.floor(r.next() * SCROLL_TEXT.length) });
+    const L = F.L;
+    // --- ground floor: every sign bed C built (fronts, and corner shops' second frontage) holds 1-4 shop bays (Hongdae:
+    //     4-8 m each), each with its sign on the bed. A shuttered bay keeps its sign (mostly dark) above the housing box ---
+    let fasciaY = 3.0;
+    for (const bed of S.fascias) {
+      const BF = slotFrame(bed.c, bed.normal, bed.w, SLOT.bedOut, base, bed.side), Lb = BF.L, xf = { frame: BF }, open = bed.lit !== false;
+      if (!open && !bed.side) shut.add(lot.id);
+      const by0 = bed.c[1] - bed.h / 2, by1 = bed.c[1] + bed.h / 2;
+      const nShops = SINGLE.has(lot.use) ? 1 : Math.max(1, Math.min(4, Math.round(Lb / 6.5))), bay = Lb / nShops;
+      for (let i = 0; i < nShops; i++) {
+        let sh = g;
+        if (i > 0) { const use = pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant);
+          sh = { f: 0, use, name: makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05), lit: r.next() < (LIT_P[use] ?? 0.5), phone: fakePhone(r), tag: pick(r, TAGS) }; }
+        const on = r.next(), shop = sh.lit && !open && on >= 0.15 ? { ...sh, lit: false } : sh;
+        const u0 = bay * i;
+        // art #1: the sign fills the bed (60-95 % of the bay; the bed is the slot the building gives it)
+        const lo = open ? by0 + 0.05 : Math.max(by0 + 0.05, SLOT.shutterTop + 0.04), hi = by1 - 0.04;
+        const w = Math.max(1.0, Math.min(bay - 0.4, bay * range(r, 0.62, 0.95))), h = Math.min(hi - lo, range(r, 0.8, 1.02)), y = lo + (hi - lo - h) / 2;
+        if (i === 0 && !bed.side) fasciaY = y;
+        const channel = r.next() < (CH_P[sh.use] ?? 0.25);
+        add(channel ? 'channel' : 'fascia', shop, { u: u0 + (bay - w) / 2, y, w, h, d: channel ? 0.12 : range(r, 0.2, 0.3), z0: SLOT.bedOut - 0.02, bay }, xf);
+        if (!open) continue;
+        // LED dot scroller on the glass under the bed (bars, pocha, pc, karaoke, restaurants), else a small light box hung by
+        // the door (영업중, the name again) on ~35 % of bays
+        if (r.next() < (SCROLL_P[sh.use] ?? 0.12)) {
+          const sw = Math.min(bay * 0.6, range(r, 1.6, 3.2));
+          add('scroller', shop, { u: u0 + range(r, 0.3, Math.max(0.35, bay - sw - 0.3)), y: 2.46, w: sw, h: 0.26, d: 0.06 }, { ...xf, scrollRow: Math.floor(r.next() * SCROLL_TEXT.length) });
+        } else if (bay > 3 && r.next() < 0.35) {
+          const dw = range(r, 0.8, 1.1); add('fascia', shop, { u: r.next() < 0.5 ? u0 + 0.45 : u0 + bay - 0.45 - dw, y: 2.4, w: dw, h: 0.46, d: 0.12, z0: 0.02, door: true }, xf);
+        }
+        // sidewalk standing sign (입간판): ~0.6 per open shop
+        if (r.next() < (STAND_P[sh.use] ?? 0.25)) add('stand', shop, { u: u0 + range(r, 0.6, Math.max(0.7, bay - 0.6)), y: 0.15, w: 0.55, h: range(r, 1.1, 1.5), d: 0.55, out: range(r, 0.8, 1.4) }, xf);
+        // neon in the shop window (bars, pocha, clubs)
+        if (NIGHT_USES.has(sh.use) && r.next() < 0.5) add('neon', shop, { u: u0 + range(r, 0.4, Math.max(0.5, bay - 2.2)), y: 1.0, w: range(r, 1.2, 1.8), h: range(r, 0.5, 0.8), d: 0.05 }, { ...xf, neonText: pick(r, NEON_WORDS) });
       }
-      // sidewalk standing sign (입간판): ~0.6 per shop
-      if (r.next() < ({ cafe: 0.6, bar: 0.75, pocha: 0.75, restaurant: 0.75, karaoke: 0.8, pc: 0.6, shop: 0.45, club: 0.5, conv: 0.3 }[sh.use] ?? 0.25))
-        add('stand', sh, { u: u0 + range(r, 0.6, Math.max(0.7, bay - 0.6)), y: 0.15, w: 0.55, h: range(r, 1.1, 1.5), d: 0.55, out: range(r, 0.8, 1.4) });
-      // neon in the shop window (bars, pocha, clubs)
-      if (NIGHT_USES.has(sh.use) && r.next() < 0.5) add('neon', sh, { u: u0 + range(r, 0.4, Math.max(0.5, bay - 2.2)), y: 1.0, w: range(r, 1.2, 1.8), h: range(r, 0.5, 0.8), d: 0.05 }, { neonText: pick(r, NEON_WORDS) });
-    });
-    // --- upper floors (signs stop around 6-7F; above that only the odd 학원 window): spandrel boxes, window vinyl, channel ---
-    // Phase 3 (art #1): a floor box on 80 % of lit 2F-5F tenants (35 % of unlit ones: a dark box); main-road towers carry
-    // floor boxes 1F-8F and a roof crown.
+    }
+    // --- upper floors (signs stop around 6-7F; main-road towers 8F): a floor box on the spandrel over each tenant's windows
+    //     (C's bands, trimmed to the real window heads and sills), on ~88 % of lit 2F-7F tenants and ~35 % of dark ones ---
     const tower = st.kind === 'main' && nFloors >= 8;
     const signTop = tower ? 8 : Math.min(nFloors, 7);
-    for (let f = 1; f < nFloors; f++) {
-      const t = tenants[f]; if (t.use === 'motel' || t.use === 'hotel') continue;
-      const y0 = f * fh;
-      if (f >= signTop) {
-        if (r.next() < 0.12) { const ww = Math.min(L - 0.6, range(r, 2.0, 3.6)); add('window', t, { u: range(r, 0.3, Math.max(0.35, L - ww - 0.3)), y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.3), d: 0.0 }); }
-        continue;
+    const wallWins = (n, c) => S.windows.filter((w) => w.n[0] * n[0] + w.n[2] * n[2] > 0.995 && Math.abs((w.c[0] - c[0]) * n[0] + (w.c[2] - c[2]) * n[2]) < 0.25);
+    let motelBand = null;
+    const floorBox = (t, BF, y0, H, side, bw) => {
+      const v = r.next(), p = t.lit ? (side ? 0.78 : 0.88) : (side ? 0.25 : 0.35);
+      if (v < p) {
+        const w = Math.min(bw, 10, Math.max(2.2, BF.L * range(r, 0.5, 0.9))), h = Math.min(H - 0.1, range(r, 0.75, 1.05)), y = y0 + (H - h) / 2;
+        const u = (BF.L - w) / 2 + (r.next() - 0.5) * Math.max(0, bw - w) * 0.6;
+        if (v < p * 0.75) add('fascia', t, { u, y, w, h, d: 0.22 }, { frame: BF }); else add('channel', t, { u, y, w, h, d: 0.1 }, { frame: BF });
+      } else if (!t.lit && r.next() < 0.15) { const bw2 = Math.min(BF.L * 0.7, 8), bh = Math.min(0.8, H - 0.1); add('banner', t, { u: (BF.L - bw2) / 2, y: y0 + (H - bh) / 2, w: bw2, h: bh, d: 0.02 }, { frame: BF }); }
+    };
+    const planeKey = (n, c, off) => `${n[0].toFixed(2)},${n[2].toFixed(2)}|${(c[0] * n[0] + c[2] * n[2] - off).toFixed(1)}`;
+    const walls = new Map();   // the sign walls (fronts, street-facing sides) for the top floor's parapet band below
+    for (const b of S.bands) {
+      const t = tenants[b.f]; if (!walls.has(planeKey(b.normal, b.c, 0.02))) walls.set(planeKey(b.normal, b.c, 0.02), { c: b.c, normal: b.normal, L: b.w / 0.9, off: 0.02, side: b.side, bw: b.w });
+      if (!t || b.f >= signTop) continue;
+      const BF = slotFrame(b.c, b.normal, b.w / 0.9, 0.02, base, b.side);
+      let y0 = b.c[1] - b.h / 2, y1 = b.c[1] + b.h / 2;
+      if (S.windows.length) { const ww = wallWins(b.normal, b.c), tops = ww.filter((w) => w.f === b.f).map((w) => w.c[1] + w.h / 2), bots = ww.filter((w) => w.f === b.f + 1).map((w) => w.c[1] - w.h / 2);
+        if (tops.length) y0 = Math.max(...tops) + 0.06; if (bots.length) y1 = Math.min(...bots) - 0.06; }
+      const H = y1 - y0;
+      if (t.use === 'motel' || t.use === 'hotel') { if (b.f === 1 && !b.side && H > 0.6) motelBand = { BF, y0, H }; continue; }
+      if (t.home || H < 0.45) continue;
+      floorBox(t, BF, y0, H, b.side, b.w);
+    }
+    // the top floor's box sits on the parapet band (C's bands stop a floor short: 3F-4F buildings lost their top tenant)
+    const topF = nFloors - 1, tt = tenants[topF];
+    if (topF >= 1 && topF < signTop && !tt.home && tt.use !== 'motel' && tt.use !== 'hotel') {
+      for (const fx of S.fascias) { const kk = planeKey(fx.normal, fx.c, SLOT.bedOut); if (!walls.has(kk)) walls.set(kk, { c: fx.c, normal: fx.normal, L: fx.w, off: SLOT.bedOut, side: fx.side, bw: fx.w * 0.9 }); }
+      for (const wl of walls.values()) {
+        const BF = slotFrame(wl.c, wl.normal, wl.L, wl.off, base, wl.side);
+        const tops = S.windows.length ? wallWins(wl.normal, wl.c).filter((w) => w.f === topF).map((w) => w.c[1] + w.h / 2) : [];
+        const y0 = tops.length ? Math.max(...tops) + 0.06 : topF * fh + fh * 0.72, H = F.top + 0.75 - y0;
+        if (H >= 0.45) floorBox(tt, BF, y0, Math.min(H, 1.3), wl.side, wl.bw);
       }
-      const v = r.next(), pBox = tower ? (t.lit ? 0.85 : 0.4) : f <= 4 ? (t.lit ? 0.84 : 0.35) : (t.lit ? 0.5 : 0.15);
-      if (v < pBox * 0.75) { const bw = Math.min(L * range(r, 0.5, 0.8), range(r, 5, 9)); add('fascia', t, { u: range(r, 0.3, Math.max(0.35, L - bw - 0.3)), y: y0 + fh - range(r, 1.05, 1.3), w: bw, h: range(r, 0.75, 1.0), d: 0.22 }); }
-      else if (v < pBox) { const cw = Math.min(L * range(r, 0.55, 0.8), range(r, 5, 8)); add('channel', t, { u: range(r, 0.3, Math.max(0.35, L - cw - 0.3)), y: y0 + fh - 1.0, w: cw, h: 0.8, d: 0.1 }); }
+    }
+    // --- window lettering (시트지) on C's lit 2F-5F glass: the trade word one syllable per pane across the floor
+    //     (코 인 노 래 방), or the name and phone on each pane. Translucent vinyl, lit by the room behind ---
+    if (S.windows.length) {
+      const groups = new Map();
+      for (const w of S.windows) {
+        if (!w.lit || w.f < 1 || w.f > 4) continue; const t = tenants[w.f]; if (!t || t.home || t.use === 'motel' || t.use === 'hotel') continue;
+        const key = `${w.f}|${w.n[0].toFixed(2)},${w.n[2].toFixed(2)}|${(w.c[0] * w.n[0] + w.c[2] * w.n[2]).toFixed(1)}`;
+        (groups.get(key) || groups.set(key, []).get(key)).push(w);
+      }
+      for (const ws of groups.values()) {
+        const t = tenants[ws[0].f], n = ws[0].n, rx = n[2], rz = -n[0];
+        ws.sort((a, b) => (a.c[0] * rx + a.c[2] * rz) - (b.c[0] * rx + b.c[2] * rz));
+        // a neon piece hung in one window of a bar / pocha / karaoke floor (술, OPEN, 노래), 45 %
+        if ((NIGHT_USES.has(t.use) || t.use === 'pc') && r.next() < 0.45) {
+          const w = ws[Math.floor(r.next() * ws.length)], NF = slotFrame(w.c, w.n, w.w, 0.03, base, false), nw = Math.min(w.w * 0.8, range(r, 0.9, 1.5)), nh = Math.min(w.h * 0.6, range(r, 0.45, 0.7));
+          add('neon', t, { u: (w.w - nw) / 2, y: w.c[1] - nh / 2 + w.h * 0.08, w: nw, h: nh, d: 0.05, z0: 0.012 }, { frame: NF, neonText: pick(r, NEON_WORDS) });
+        }
+        if (r.next() > (VINYL_P[t.use] ?? 0.5)) continue;
+        const word = (t.name.cat || t.name.sub || t.name.main).replace(/ /g, ''), syl = [...word];
+        const perPane = ws.length >= syl.length && syl.length >= 2 && syl.length <= 7 && HANGUL.test(word) && !/[A-Z]/.test(word) && r.next() < 0.6;
+        const i0 = perPane ? Math.floor((ws.length - syl.length) / 2) : 0;
+        ws.forEach((w, i) => {
+          let text, mode;
+          if (perPane) { if (i < i0 || i >= i0 + syl.length) return; text = syl[i - i0]; mode = 'syl'; }
+          else { if (i > 1 && r.next() < 0.5) return; text = i === 0 ? (t.name.sub ? `${t.name.main} ${t.name.sub}` : t.name.main) : word; mode = 'full'; }
+          const WF = slotFrame(w.c, w.n, w.w, 0.03, base, false);
+          add('vinyl', t, { u: 0, y: w.c[1] - w.h / 2, w: w.w, h: w.h, d: 0 }, { frame: WF, vText: text, vMode: mode, nits: w.nits, lit: true });
+        });
+      }
+    } else for (let f = 1; f < nFloors; f++) {   // no window data (a bare layout): phase 3's film panels on the facade
+      const t = tenants[f]; if (t.home || t.use === 'motel' || t.use === 'hotel') continue;
+      const y0 = f * fh;
+      if (f >= signTop) { if (r.next() < 0.12) { const ww = Math.min(L - 0.6, range(r, 2.0, 3.6)); add('window', t, { u: range(r, 0.3, Math.max(0.35, L - ww - 0.3)), y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.3), d: 0.0 }); } continue; }
       if (r.next() < 0.7) {
         const nw = Math.max(1, Math.min(3, Math.round(L / 6) + (r.next() < 0.5 ? 0 : 1)));
-        for (let j = 0; j < nw; j++) {
-          const ww = Math.min(L / nw - 0.6, range(r, 2.0, 3.6));
-          add('window', t, { u: (L / nw) * j + (L / nw - ww) / 2, y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.3), d: 0.0 });
-        }
+        for (let j = 0; j < nw; j++) { const ww = Math.min(L / nw - 0.6, range(r, 2.0, 3.6)); add('window', t, { u: (L / nw) * j + (L / nw - ww) / 2, y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.3), d: 0.0 }); }
       }
-      if (r.next() < 0.12 && t.lit === false) { const bw = Math.min(L * 0.7, 8); add('banner', t, { u: (L - bw) / 2, y: y0 + 0.5, w: bw, h: 0.8, d: 0.02 }); }
     }
-    // --- vertical blade stacks (돌출간판): one tenant box per floor at the facade edge; a second stack on ~30 % ---
+    // --- vertical blade stacks (돌출간판): one tenant box per floor at the facade edge (a flat's floor shows the business
+    //     below it); every corner lot carries one; a second stack on ~30 % ---
     const bladeRoll = r.next();
-    if ((nFloors >= 3 && bladeRoll < 0.75) || (sides.length && nFloors >= 2) || tower) {   // every corner lot and tower
+    if ((nFloors >= 3 && bladeRoll < 0.75) || (sides.length && nFloors >= 2) || tower) {
       const side = r.next() < 0.5 ? 0.35 : L - 0.35, out = range(r, 0.45, 0.9), bw = range(r, 0.55, 0.75);
-      for (let f = 1; f < signTop; f++) add('blade', tenants[f], { u: side, y: f * fh + 0.25, w: bw, h: fh - 0.5, d: 0.32, out });
+      for (let f = 1; f < signTop; f++) add('blade', biz(f), { u: side, y: f * fh + 0.25, w: bw, h: fh - 0.5, d: 0.32, out });
       if (lot.use === 'motel' || lot.use === 'hotel') { // one tall continuous blade for the whole building name
         add('blade', tenants[0], { u: L - side, y: fh + 0.2, w: 0.9, h: Math.min(10, (nFloors - 1) * fh - 0.4), d: 0.4, out: 1.0, tall: true });
-      } else if ((r.next() < 0.3 || tower) && L > 5) {
+      } else if ((r.next() < 0.5 || tower) && L > 5) {   // phase 4: a second stack on half the lots (was 30 %)
         const side2 = L - side, out2 = range(r, 0.45, 0.8), bw2 = range(r, 0.5, 0.7);
-        for (let f = 1; f < signTop; f++) add('blade', tenants[f], { u: side2, y: f * fh + 0.3, w: bw2, h: fh - 0.6, d: 0.3, out: out2 });
+        for (let f = 1; f < signTop; f++) add('blade', biz(f), { u: side2, y: f * fh + 0.3, w: bw2, h: fh - 0.6, d: 0.3, out: out2 });
       }
     }
     // --- round projecting box (원형돌출) at 2F for cafes/restaurants ---
     if (nFloors >= 2 && r.next() < ({ cafe: 0.5, restaurant: 0.3, shop: 0.3, bar: 0.3 }[g.use] ?? 0.08))
       add('round', g, { u: r.next() < 0.5 ? 0.5 : L - 0.5, y: fh + 0.4, w: 0.8, h: 0.8, d: 0.18, out: 0.6 });
-    // --- rooftop sign on taller buildings: steel frame with letters ---
-    if ((nFloors >= 5 && r.next() < 0.45) || tower) {
-      const t = lot.use === 'office' ? tenants[nFloors - 1] : tenants[0], tc = tower ? { ...t, lit: true } : t;   // a tower's crown is always lit
+    // --- rooftop sign: C's steel frame when the building has one (LED letters on its panel, or a light box filling it);
+    //     else a frame of our own on taller buildings; a main-road tower's crown is always lit ---
+    if (S.roofSign) {
+      const rs = S.roofSign, RF = slotFrame(rs.c, rs.normal, rs.w, 0, base, false), xf = { frame: RF };
+      const t = { ...(lot.use === 'office' ? biz(nFloors - 1) : g) }; t.lit = r.next() < 0.88 || tower;   // a tower's crown is always lit
+      if (r.next() < 0.55 || tower) add('roof', t, { u: rs.w * 0.04, y: rs.c[1] - rs.h * 0.45, w: rs.w * 0.92, h: rs.h * 0.9, d: 0.3, out: 0.11, cframe: true }, xf);
+      else add('fascia', t, { u: 0.05, y: rs.c[1] - rs.h / 2 + 0.06, w: rs.w - 0.1, h: rs.h - 0.12, d: 0.25, z0: -0.01, roofBox: true }, xf);
+    } else if ((nFloors >= 5 && r.next() < 0.45) || tower) {
+      const t = lot.use === 'office' ? biz(nFloors - 1) : tenants[0], tc = tower ? { ...t, lit: true } : t;
       const rw = Math.min(L * 0.85, range(r, 6, 11));
       add('roof', tc, { u: (L - rw) / 2, y: F.top + 0.6, w: rw, h: range(r, 1.6, 2.6), d: 0.3, out: -1.2 });
     }
-    // --- street-facing side walls of corner lots (art #1: walk180 / club90 showed 20-60 m of blank wall): the corner shop
-    //     wraps its fascia round, a blade stack 0.9 m from the corner, floor boxes on lit 2F-5F tenants, window film ---
+    // --- street-facing side walls of corner lots: a blade stack 0.9 m from the corner (and at the far end of a long wall);
+    //     their shop beds and floor boxes come from the slots above ---
     for (const SF of sides) {
-      // a long side wall on a walking street is a second frontage: shop bays along it, blades at both ends, floor boxes and
-      // film spread over its length (walk180's 22 m wall was blank past the corner)
-      const Ls = SF.L, cu = (u, w) => (SF.corner === 0 ? u : Ls - u - w);   // u measured from the corner
-      const xf = { frame: SF }, nb = Math.max(1, Math.min(4, Math.round(Ls / 6.5))), sb = Ls / nb;
-      for (let i = 0; i < nb && Ls >= 3.5; i++) {
-        const sh = i === 0 ? g : { ...g, use: pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant), name: makeName(r, 'restaurant', 0.05), lit: r.next() < 0.8 };
-        if (r.next() > (i === 0 ? 0.75 : 0.7)) continue;
-        const w = Math.min(sb - 0.6, sb * range(r, 0.55, 0.85)), h = range(r, 0.85, 1.1), ch = r.next() < 0.3;
-        add(ch ? 'channel' : 'fascia', sh, { u: cu(sb * i + (sb - w) / 2, w), y: Math.min(fh - h - 0.15, fasciaY), w, h, d: ch ? 0.12 : 0.26 }, xf);
-      }
+      const Ls = SF.L, xf = { frame: SF };
       if (nFloors >= 2) {
         const ends = Ls > 12 ? [0.9, Ls - 0.9] : [0.9];
         for (const e of ends) { const out = range(r, 0.45, 0.85), bw = range(r, 0.55, 0.72), bu = SF.corner === 0 ? e : Ls - e;
-          for (let f = 1; f < Math.max(2, signTop); f++) add('blade', tenants[f], { u: bu, y: f * fh + 0.28, w: bw, h: fh - 0.56, d: 0.3, out }, xf); }
-      }
-      for (let f = 1; f < Math.min(signTop, 5); f++) {
-        const t = tenants[f]; if (t.use === 'motel' || t.use === 'hotel') continue;
-        const y0 = f * fh, v = r.next();
-        if (Ls >= 4.5 && v < (t.lit ? 0.75 : 0.25)) { const bw = Math.min(Ls - 3.4, range(r, 3, 7)); add(v < (t.lit ? 0.56 : 0.2) ? 'fascia' : 'channel', t, { u: cu(range(r, 1.7, Math.max(1.75, Ls - bw - 1.7)), bw), y: y0 + fh - range(r, 1.05, 1.25), w: bw, h: range(r, 0.7, 0.95), d: 0.2 }, xf); }
-        if (f <= 3 && t.lit && Ls >= 5) { const nw = Math.max(1, Math.min(3, Math.round(Ls / 8)));
-          for (let j = 0; j < nw; j++) { if (r.next() > 0.6) continue; const seg = (Ls - 3.4) / nw, ww = Math.min(seg - 0.6, range(r, 2.0, 3.4)); if (ww < 1.2) continue;
-            add('window', t, { u: cu(1.7 + seg * j + (seg - ww) / 2, ww), y: y0 + range(r, 0.85, 1.05), w: ww, h: range(r, 0.9, 1.2), d: 0.0 }, xf); } }
+          for (let f = 1; f < Math.max(2, signTop); f++) add('blade', biz(f), { u: bu, y: f * fh + 0.28, w: bw, h: fh - 0.56, d: 0.3, out }, xf); }
       }
       if (tower) { const rw = Math.min(Ls * 0.8, range(r, 6, 10)); add('roof', { ...tenants[0], lit: true }, { u: (Ls - rw) / 2, y: SF.top + 0.6, w: rw, h: range(r, 1.6, 2.4), d: 0.3, out: -1.2 }, xf); }
     }
-    // --- motels: fascia with the 휴게/숙박 tag ---
-    if (lot.use === 'motel' || lot.use === 'hotel') add('fascia', g, { u: L * 0.1, y: fh * 2 - 1.1, w: L * 0.8, h: 0.9, d: 0.25 });
+    // --- motels: the name box with the 휴게/숙박 tag over the first floor's windows ---
+    if (lot.use === 'motel' || lot.use === 'hotel') {
+      if (motelBand) { const { BF, y0, H } = motelBand, h = Math.min(0.9, H - 0.1); add('fascia', g, { u: BF.L * 0.1, y: y0 + (H - h) / 2, w: BF.L * 0.8, h, d: 0.25 }, { frame: BF }); }
+      else if (S.synth) add('fascia', g, { u: L * 0.1, y: fh * 2 - 1.1, w: L * 0.8, h: 0.9, d: 0.25 });
+    }
+    void fasciaY;
   }
   // --- LED screens: from the layout, plus small door screens synthesised for cafes / shops / clubs on hero streets ---
   (layout.screens || []).forEach((s, i) => screens.push({ ...s, idx: i, seed: (seed ^ hashStr(s.id)) >>> 0 }));
   for (const lot of layout.lots || []) {
     const st = streets.get(lot.street); if (!st || st.kind === 'alley') continue;
     const r = new Rng(seed ^ hashStr(lot.id + '#scr'));
-    if (!['cafe', 'shop', 'club', 'karaoke', 'pc'].includes(lot.use) || r.next() > 0.55) continue;
+    if (!['cafe', 'shop', 'club', 'karaoke', 'pc'].includes(lot.use) || r.next() > 0.55 || shut.has(lot.id)) continue;
     const F = facadeFrame(lot); const w = range(r, 1.4, 2.2), h = w * 0.5625, u = range(r, 0.4, Math.max(0.5, F.L - w - 0.4));
     const cu = u + w / 2, y = range(r, 1.3, 1.8);
     screens.push({ id: `${lot.id}:door`, lot: lot.id, pos: [F.o[0] + F.r[0] * cu + F.n[0] * 0.03, y + h / 2, F.o[1] + F.r[1] * cu + F.n[1] * 0.03],
@@ -424,7 +543,7 @@ export function signStats(specs) {
     byType[s.style] = (byType[s.style] || 0) + 1; byDesign[s.design] = (byDesign[s.design] || 0) + 1;
     if (s.bulbs) bulbs++;
     if (BOX_STYLES.has(s.style) && (NIGHT_USES.has(s.use) || s.use === 'pc') && s.design !== 'dots') nlBoxes++;
-    if (s.type === 'banner') continue; eligible++;
+    if (s.type === 'banner' || s.type === 'vinyl') continue; eligible++;
     if (s.lit) { lit++; litN++; cat[s.cat]++; if (s.style === 'neon') neon++; }
   }
   const share = Object.fromEntries(Object.entries(cat).map(([k, v]) => [k, +(v / Math.max(1, litN)).toFixed(3)]));
@@ -459,6 +578,11 @@ function glyphOf(fi, ch) {
   missingGlyphs.add(ch); return null;
 }
 const HANGUL = /[가-힣]/;
+// art bug "MOÖNROÖM" (phase 4): atlas cells are packed edge to edge and some neighbours' fields read "inside" at their
+// border, so bilinear (and mip) taps at a quad's edge picked up a dot from the next cell. Glyph quads and their uvs are
+// inset by GLYPH_INSET texels: the 6 px distance range keeps 4 px of outside field for anti-aliasing.
+export const GLYPH_INSET = 2;
+const IE = GLYPH_INSET / MSDF.px, IU = GLYPH_INSET / AW, IV = GLYPH_INSET / AH;
 // lay one line of text into the box centred (cx, cy), size (w, h). Letter height = h * k (hangul height, or cap height
 // for Latin-only runs); too long -> condense horizontally to 55 % (as Korean sign shops do), then shrink.
 function textRun(els, text, face, cx, cy, w, h, o = {}) {
@@ -479,9 +603,9 @@ function textRun(els, text, face, cx, cy, w, h, o = {}) {
   let ink = 0; const start = els.length;
   for (const g of items) {
     if (!g) { x += (g === null ? 0.3 : 0.5) * em * sx; continue; }
-    const x0 = x + g.l * em * sx, x1 = x + g.r * em * sx, y0 = base + g.b * em, y1 = base + g.t * em;
-    const gi = g.ink * em * em * sx, area = (x1 - x0) * (y1 - y0);
-    els.push({ k: o.kind ?? K.FILL, layer: o.layer ?? 1, z: o.z ?? 0, q: [x0, y0, x1, y0, x1, y1, x0, y1], uv: [g.u0, g.v0, g.u1, g.v0, g.u1, g.v1, g.u0, g.v1],
+    const x0 = x + (g.l + IE) * em * sx, x1 = x + (g.r - IE) * em * sx, y0 = base + (g.b + IE) * em, y1 = base + (g.t - IE) * em;
+    const gi = g.ink * em * em * sx, area = (x1 - x0) * (y1 - y0), u0 = g.u0 + IU, u1 = g.u1 - IU, v0 = g.v0 - IV, v1 = g.v1 + IV;
+    els.push({ k: o.kind ?? K.FILL, layer: o.layer ?? 1, z: o.z ?? 0, q: [x0, y0, x1, y0, x1, y1, x0, y1], uv: [u0, v0, u1, v0, u1, v1, u0, v1],
       col: o.col || [0, 0, 0], alb: o.alb || [0.5, 0.5, 0.5], p: [o.pitchM ? o.pitchM / em : (o.p0 ?? 0), o.p1 ?? 0, area > 0 ? Math.min(1, gi / area) : 0], ink: gi, glyph: true });
     ink += gi; x += (g.adv + track) * em * sx;
   }
@@ -531,17 +655,29 @@ export function designFace(s, w, h) {
   const hueC = s.cat === 'white' ? srgb(HEX[s.hue]) : s.rgb;
   const letterC = srgb(HEX[s.letter] || HEX.white);
   let groundNits = 0, letterNits = N;
-  const lettersOn = (design) => {           // letter colour, emission, albedo per design
-    if (design === 'flex') return { col: E(lit, letterC, N), alb: [0.8, 0.8, 0.78] };
-    if (design === 'blackflex') return { col: E(lit, hueC, N), alb: scaleC(hueC, 0.6) };
+  const design = s.design;
+  // phase 4: film letters (red / blue / black vinyl over a lit diffuser: inverse boxes, yellow faces) pass the face's own
+  // light through the film (filter model), so red film letters on a white face clip R like the face; black passes 2 %
+  const filmLetters = design === 'inverse' || (design === 'flex' && s.hue === 'yellow');
+  const filmC = srgb(HEX[s.film] || HEX.red), faceN = design === 'inverse' ? N : N * s.groundK;
+  const filmOf = (k = 1) => (s.film === 'black' ? { col: E(lit, [1, 1, 1], faceN * 0.02 * k), alb: [0.03, 0.03, 0.03] } : { col: E(lit, filmC, faceN * k), alb: scaleC(filmC, 0.6) });
+  const accentFilm = s.film === 'black' ? srgb(HEX.red) : filmC;           // a band on an inverse face: coloured film, clear letters
+  const lettersOn = (dz) => {           // letter colour, emission, albedo per design
+    if (filmLetters) return filmOf();
+    if (dz === 'flex') return { col: E(lit, letterC, N), alb: [0.8, 0.8, 0.78] };
+    if (dz === 'blackflex') return { col: E(lit, hueC, N), alb: scaleC(hueC, 0.6) };
     return { col: E(lit, hueC, N), alb: scaleC(hueC, 0.55) };   // galva / channel: LED letters in the light colour
   };
-  const ground = (design, round) => {
-    if (design === 'flex') { groundNits = N * s.groundK; rect(els, K.BOX, -hx, -hy, hx, hy, E(lit, s.rgb, groundNits), scaleC(s.rgb, 0.5), [w, h, round ? 1 : 0]); }
-    else if (design === 'blackflex') { groundNits = N * 0.03; rect(els, K.BOX, -hx, -hy, hx, hy, E(lit, scaleC(hueC, 0.5).map((v) => v + 0.02), groundNits), [0.035, 0.035, 0.04], [w, h, round ? 1 : 0]); }
+  // phone, tag, floor: film on film faces, white on light boxes, the LED colour on galva / black faces (a white "2F" on a
+  // dim blue LED box floated alone at distance)
+  const small = (k) => (filmLetters ? filmOf(1) : design === 'flex' ? { col: E(lit, letterC, N * k), alb: [0.7, 0.7, 0.7] } : { col: E(lit, hueC, N * k), alb: scaleC(hueC, 0.5) });
+  const ground = (dz, round) => {
+    if (dz === 'flex') { groundNits = N * s.groundK; rect(els, K.BOX, -hx, -hy, hx, hy, E(lit, s.rgb, groundNits), scaleC(s.rgb, 0.5), [w, h, round ? 1 : 0]); }
+    else if (dz === 'inverse') { groundNits = N; letterNits = s.film === 'black' ? N * 0.02 : N * lum(filt(filmC)) / Math.max(1e-4, lum(filt(hueC)));
+      rect(els, K.BOX, -hx, -hy, hx, hy, E(lit, hueC, N), [0.82, 0.82, 0.8], [w, h, round ? 1 : 0]); }
+    else if (dz === 'blackflex') { groundNits = N * 0.03; rect(els, K.BOX, -hx, -hy, hx, hy, E(lit, scaleC(hueC, 0.5).map((v) => v + 0.02), groundNits), [0.035, 0.035, 0.04], [w, h, round ? 1 : 0]); }
     else { const g = srgb(s.galva); rect(els, K.PANEL, -hx, -hy, hx, hy, [0, 0, 0], g, [w, h, round ? 1 : 0]); }
   };
-  const design = s.design;
   switch (s.style) {
     case 'fascia': case 'round': {
       if (design === 'dots') { // exposed LED bulbs inside letter-shaped bodies on a dark board (포차, 노래방)
@@ -559,17 +695,18 @@ export function designFace(s, w, h) {
         textRun(els, nm.main, fam, -hx + pad + mainW / 2, 0, mainW, h * 0.86, { col: L.col, alb: L.alb, p0: design === 'galva' ? 1 : 0 });
         // category word on a band at the right end, phone underneath (typical 가로형 layout); the band is a ground, not a light
         const bx0 = -hx + pad + mainW + w * 0.02, bx1 = hx - pad, by0 = hy - h * 0.62, by1 = hy - h * 0.16;
-        const bandC = s.accentName !== 'white' && s.accentName !== s.hue ? s.accent : hueC;
-        const bandN = design === 'flex' ? groundNits * 0.9 : 0;
-        rect(els, design === 'flex' ? K.BOX : K.PANEL, bx0, by0, bx1, by1, E(lit, bandC, bandN), design === 'flex' ? scaleC(bandC, 0.5) : scaleC(bandC, 0.35), [bx1 - bx0, by1 - by0, 0], 1);
-        textRun(els, nm.sub, 'S2 Sans', (bx0 + bx1) / 2, (by0 + by1) / 2, (bx1 - bx0) * 0.9, by1 - by0, { k: 0.66, layer: 2, col: E(lit, letterC, N * 0.9), alb: [0.8, 0.8, 0.8] });
-        textRun(els, s.phone, 'S2 Sans', (bx0 + bx1) / 2, -hy + h * 0.2, bx1 - bx0, h * 0.22, { k: 0.8, col: E(lit, letterC, N * 0.7), alb: [0.7, 0.7, 0.7] });
+        const inv = design === 'inverse', lb = design === 'flex' || inv;
+        const bandC = inv ? accentFilm : s.accentName !== 'white' && s.accentName !== s.hue ? s.accent : hueC;
+        const bandN = inv ? faceN : design === 'flex' ? groundNits * 0.9 : 0;
+        rect(els, lb ? K.BOX : K.PANEL, bx0, by0, bx1, by1, E(lit, bandC, bandN), lb ? scaleC(bandC, 0.5) : scaleC(bandC, 0.35), [bx1 - bx0, by1 - by0, 0], 1);
+        textRun(els, nm.sub, 'S2 Sans', (bx0 + bx1) / 2, (by0 + by1) / 2, (bx1 - bx0) * 0.9, by1 - by0, { k: 0.66, layer: 2, col: E(lit, letterC, inv ? faceN : N * 0.9), alb: [0.8, 0.8, 0.8] });
+        textRun(els, s.phone, 'S2 Sans', (bx0 + bx1) / 2, -hy + h * 0.2, bx1 - bx0, h * 0.22, { k: 0.8, ...small(0.7) });
       } else {
         const text = nm.sub ? `${nm.main} ${nm.sub}` : nm.main;
         textRun(els, text, fam, 0, 0, w * 0.78, h * 0.84, { col: L.col, alb: L.alb, p0: design === 'galva' ? 1 : 0 });
-        if (w > h * 4) {
-          textRun(els, s.tag, 'S2 Sans', -hx + w * 0.06, 0, w * 0.09, h * 0.42, { k: 0.6, col: E(lit, letterC, N * 0.6), alb: [0.7, 0.7, 0.7] });
-          textRun(els, s.floor ? `${s.floor + 1}F` : '1F', 'S2 Sans', hx - w * 0.05, 0, w * 0.07, h * 0.5, { k: 0.7, col: E(lit, letterC, N * 0.6), alb: [0.7, 0.7, 0.7] });
+        if (w > h * 4 && !s.geo.roofBox) {
+          textRun(els, s.tag, 'S2 Sans', -hx + w * 0.06, 0, w * 0.09, h * 0.42, { k: 0.6, ...small(0.6) });
+          textRun(els, s.floor ? `${s.floor + 1}F` : '1F', 'S2 Sans', hx - w * 0.05, 0, w * 0.07, h * 0.5, { k: 0.7, ...small(0.6) });
         }
       }
       break;
@@ -588,9 +725,10 @@ export function designFace(s, w, h) {
       if (hangul.length >= 2 || !/[A-Z]/.test(full)) {
         // floor tag on a band at the top, name stacked one syllable per row
         const by0 = hy - h * 0.12, by1 = hy - h * 0.02;
-        rect(els, design === 'flex' ? K.BOX : K.PANEL, -hx * 0.84, by0, hx * 0.84, by1, E(lit, design === 'flex' ? scaleC(s.rgb, 1) : hueC, design === 'flex' ? groundNits * 0.7 : 0),
-          design === 'flex' ? scaleC(s.rgb, 0.35) : [0.06, 0.06, 0.06], [w * 0.84, by1 - by0, 0], 1);
-        textRun(els, s.geo.tall ? s.tag : `${s.floor + 1}층`, 'S2 Sans', 0, (by0 + by1) / 2, w * 0.8, by1 - by0, { k: 0.66, layer: 2, col: E(lit, letterC, N * 0.85), alb: [0.8, 0.8, 0.8] });
+        const inv = design === 'inverse', lb = design === 'flex' || inv;
+        rect(els, lb ? K.BOX : K.PANEL, -hx * 0.84, by0, hx * 0.84, by1, E(lit, inv ? accentFilm : design === 'flex' ? scaleC(s.rgb, 1) : hueC, inv ? faceN : design === 'flex' ? groundNits * 0.7 : 0),
+          inv ? scaleC(accentFilm, 0.5) : design === 'flex' ? scaleC(s.rgb, 0.35) : [0.06, 0.06, 0.06], [w * 0.84, by1 - by0, 0], 1);
+        textRun(els, s.geo.tall ? s.tag : `${s.floor + 1}층`, 'S2 Sans', 0, (by0 + by1) / 2, w * 0.8, by1 - by0, { k: 0.66, layer: 2, ...(filmLetters && !inv ? filmOf() : { col: E(lit, letterC, inv ? faceN : N * 0.85), alb: [0.8, 0.8, 0.8] }) });
         vStack(els, (hangul || full).slice(0, 7), fam, 0, -h * 0.07, w, h * 0.84, { col: L.col, alb: L.alb, p0: design === 'galva' ? 1 : 0 });
       } else {
         const a = els.length; const r = textRun(els, full, fam, 0, 0, h * 0.9, w * 0.9, { col: L.col, alb: L.alb, k: 0.7 }); if (r) rotCW(els, a, els.length, 0, 0);
@@ -637,6 +775,15 @@ export function designFace(s, w, h) {
         textRun(els, sub, 'S2 Sans', 0, -hy + h * 0.22, w * 0.8, h * 0.28, { k: 0.7, ...o });
       }
       break;
+    }
+    case 'vinyl': {
+      // translucent cut vinyl on C's lit glass (no ground: the room shows through): white / pale film scatters the room
+      // light toward the street (x1.15), coloured film passes its band (x0.8). One syllable per pane, or name + trade word
+      const vc = s.cat === 'white' ? srgb(HEX[s.letter] || HEX.white) : s.rgb, T = s.cat === 'white' ? 1.15 : 0.8;
+      const o = { col: E(lit, vc, N * T), alb: scaleC(vc, 0.7), layer: 1 };
+      if (s.vMode === 'syl') textRun(els, s.vText, fam, 0, h * 0.04, w * 0.78, h * 0.6, { k: 0.86, ...o });
+      else { textRun(els, s.vText, fam, 0, hy - h * 0.3, w * 0.86, h * 0.36, { k: 0.82, ...o }); textRun(els, s.phone, 'S2 Sans', 0, -hy + h * 0.24, w * 0.7, h * 0.16, { k: 0.8, ...o }); }
+      letterNits = N * T; break;
     }
     case 'banner': {
       const cl = srgb(pick(R, ['#d8d2c4', '#e8e1cf', '#c9d6e0', '#f0e6c8'])).map((v) => v * 0.8);
@@ -849,7 +996,7 @@ export function buildData(layout, opts = {}) {
   const { specs, screens } = generateSigns(layout, opts);
   const faces = [], boxes = [], emitters = [], scrollers = [];
   const pos3 = (F, u, y, d) => [F.o[0] + F.r[0] * u + F.n[0] * d, y, F.o[1] + F.r[1] * u + F.n[1] * d];
-  const kindOf = { fascia: 'lightbox', stand: 'lightbox', blade: 'lightbox', round: 'lightbox', channel: 'channel', roof: 'channel', window: 'store', neon: 'neon', banner: 'lightbox' };
+  const kindOf = { fascia: 'lightbox', stand: 'lightbox', blade: 'lightbox', round: 'lightbox', channel: 'channel', roof: 'channel', window: 'store', neon: 'neon', banner: 'lightbox', vinyl: 'store' };
   const B = (c, r, n, hw, hh, hd, col, noFront = false, collide = true) => boxes.push({ c: r3(c), r: r3(r), n: r3(n), hw, hh, hd, col, noFront, collide });
   let glyphs = 0, elements = 0;
   for (const s of specs) {
@@ -865,11 +1012,12 @@ export function buildData(layout, opts = {}) {
       continue;
     }
     const fw = s.type === 'stand' ? G.w * 0.92 : G.w, fhh = s.type === 'stand' ? G.h * 0.94 : G.h;
-    const D = designFace(s, fw, fhh);
+    const D = opts.boxesOnly ? { els: [], nits: 0, rgb: [1, 1, 1] } : designFace(s, fw, fhh);
     const fk = s.flicker ? [s.flicker.hz, (s.seed % 1000) / 1000] : [0, 0];
-    const lit = s.lit && s.style !== 'banner' && D.nits > 0;
+    const lit = s.lit && s.style !== 'banner' && s.type !== 'vinyl' && D.nits > 0;   // window film: the pane is C's emitter
     let nf = 0;
     const face = (c, m) => {
+      if (opts.boxesOnly) return;
       faces.push({ id: s.id, c: r3(c), m: r3(m), w: fw, h: fhh, els: D.els, flk: fk });
       glyphs += D.els.filter((e) => e.glyph).length; elements += D.els.length;
       if (lit) emitters.push({ id: `${s.id}${nf ? ':' + (nf + 1) : ''}`, pos: r3(c), normal: r3(m), w: +fw.toFixed(3), h: +fhh.toFixed(3),
@@ -890,17 +1038,22 @@ export function buildData(layout, opts = {}) {
       for (const m of [n, [-n[0], 0, -n[2]]]) face(add3(c, m, G.d / 2 + 0.003), m);
     } else if (s.type === 'roof') {
       const c = pos3(F, G.u + G.w / 2, G.y + G.h / 2, G.out);
-      for (const k of [0.1, 0.5, 0.9]) B(pos3(F, G.u + G.w * k, (F.top + G.y + G.h) / 2, G.out - 0.35), r, n, 0.05, (G.y + G.h - F.top) / 2, 0.05, STEEL);
-      B(pos3(F, G.u + G.w / 2, G.y + G.h * 0.25, G.out - 0.35), r, n, G.w / 2, 0.04, 0.04, STEEL);
-      B(pos3(F, G.u + G.w / 2, G.y + G.h * 0.75, G.out - 0.35), r, n, G.w / 2, 0.04, 0.04, STEEL);
+      if (!G.cframe) {   // our own steel; on C's frame (roofSign) the letters' 10 cm returns stand on its backing panel
+        for (const k of [0.1, 0.5, 0.9]) B(pos3(F, G.u + G.w * k, (F.top + G.y + G.h) / 2, G.out - 0.35), r, n, 0.05, (G.y + G.h - F.top) / 2, 0.05, STEEL);
+        B(pos3(F, G.u + G.w / 2, G.y + G.h * 0.25, G.out - 0.35), r, n, G.w / 2, 0.04, 0.04, STEEL);
+        B(pos3(F, G.u + G.w / 2, G.y + G.h * 0.75, G.out - 0.35), r, n, G.w / 2, 0.04, 0.04, STEEL);
+      }
       face(add3(c, n, 0.02), n);
     } else {
-      const c = pos3(F, G.u + G.w / 2, G.y + G.h / 2, G.d / 2 + 0.02);
+      // z0: the slot's own depth (C's sign bed is 8 cm proud: a bed sign's back sits on it)
+      const z0 = G.z0 || 0, c = pos3(F, G.u + G.w / 2, G.y + G.h / 2, z0 + G.d / 2 + 0.02);
       if (s.style === 'channel') { // raceway bar behind letters; letters stand 0.1 m proud
-        B(pos3(F, G.u + G.w / 2, G.y + G.h * 0.45, 0.06), r, n, G.w * 0.48, 0.06, 0.04, RACE);
+        B(pos3(F, G.u + G.w / 2, G.y + G.h * 0.45, z0 + 0.06), r, n, G.w * 0.48, 0.06, 0.04, RACE);
         face(add3(c, n, G.d / 2), n);
+      } else if (s.type === 'vinyl') {   // on the pane: C's window quad is 3 cm out (the frame's wall line), the film 1.5 cm before it
+        face(pos3(F, G.u + G.w / 2, G.y + G.h / 2, SLOT.vinylOut), n);
       } else if (s.type === 'window' || s.type === 'banner') {
-        face(pos3(F, G.u + G.w / 2, G.y + G.h / 2, 0.025), n);
+        face(pos3(F, G.u + G.w / 2, G.y + G.h / 2, z0 + 0.025), n);
       } else {
         if (G.d > 0.07) B(c, r, n, G.w / 2 + 0.03, G.h / 2 + 0.03, G.d / 2, HOUSE, true);
         else B(add3(c, n, -0.01), r, n, G.w / 2 + 0.03, G.h / 2 + 0.03, 0.012, RACE, true, false); // neon backboard
@@ -932,6 +1085,27 @@ export function buildData(layout, opts = {}) {
   const stats = { ...signStats(specs), faces: faces.length, elements, glyphs, boxes: boxes.length, emitters: emitters.length, screens: scr.length,
     scrollers: scrollers.length, missingGlyphs: [...missingGlyphs].join(''), msdf: { size: MSDF.size[0], pxPerEm: MSDF.px, range: MSDF.range } };
   return { specs, faces, boxes, emitters, screens: scr, scrollers, stats };
+}
+
+// a housing box -> its 6 quads (H: [quad, colour] pairs for the render tiles) and / or 12 triangles (P: xyz soup)
+function boxInto(H, b, P) {
+  const { c, r, n, hw, hh, hd, col } = b;
+  const Pt = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
+  const Fc = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]],
+    [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]],
+    [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]]];
+  Fc.forEach((fc, i) => { const q = fc.map((v) => Pt(...v));
+    if (H && !(b.noFront && i === 0)) H.push(q, col);
+    if (P) for (const j of [0, 1, 2, 0, 2, 3]) P.push(q[j][0], q[j][1], q[j][2]); });
+}
+// native #5 (phase 4): the sign housings that collide (blades, light boxes, stands, raceways, roof steel, screen cabinets)
+// as a triangle soup, pure and node-safe, from the same placement as build(): world-seoul merges it into colGeo / the BVH
+// at geometry time, so the game, the node sims (lines, take-sim, parity) and the native export share one collider, and
+// the collider depth pass (SSAO) sees the signs. opts as generateSigns (seed, lotInfo).
+export function colliderTris(layout, opts = {}) {
+  const D = buildData(layout, { ...opts, boxesOnly: true }), P = [];
+  for (const b of D.boxes) if (b.collide) boxInto(null, b, P);
+  return new Float32Array(P);
 }
 
 // screen state at time t (pure): program, local time, cut, palette, rows, emitter mean colour / nits
@@ -1170,16 +1344,6 @@ export async function build(layout, ctx = {}) {
   const tileOf = (p) => { const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`; let t = tiles.get(k); if (!t) { t = { key: k, faces: [], nq: 0, h: [] }; tiles.set(k, t); } return t; };
   for (const f of D.faces) { const t = tileOf(f.c); t.faces.push(f); t.nq += f.els.length; }
   const colP = [];
-  const boxInto = (H, b, P) => {
-    const { c, r, n, hw, hh, hd, col } = b;
-    const Pt = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
-    const Fc = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1], n], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1], [-n[0], 0, -n[2]]],
-      [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1], [r[0], 0, r[2]]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1], [-r[0], 0, -r[2]]],
-      [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1], [0, 1, 0]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [0, -1, 0]]];
-    Fc.forEach((fc, i) => { const q = fc.slice(0, 4).map((s) => Pt(...s));
-      if (H && !(b.noFront && i === 0)) { H.push(q, col); }
-      if (P) for (const j of [0, 1, 2, 0, 2, 3]) P.push(...q[j]); });
-  };
   // housings ride in the face meshes as unlit PANEL quads (one material, one draw per tile: phase 3 perf, was 2 per tile)
   for (const b of D.boxes) { const t = tileOf(b.c); const n0 = t.h.length; boxInto(t.h, b, b.collide ? colP : null); t.nq += (t.h.length - n0) / 2; }
   // fill typed arrays directly (two passes: count, then write) — this runs once at load on the phone
@@ -1230,7 +1394,8 @@ export async function build(layout, ctx = {}) {
     }
   }
   tiles.clear();   // the closures below keep this scope alive: drop the staging arrays (the meshes own their attributes)
-  // collider triangles for the integrator (blades, boxes, stands, cabinets): not added to any collider here
+  // collider triangles (blades, boxes, stands, cabinets): world-seoul merges colliderTris() into its BVH at geometry time;
+  // this copy stays for tools that read signs.collider
   const collider = new THREE.BufferGeometry(); collider.setAttribute('position', new THREE.Float32BufferAttribute(colP, 3));
 
   // --- text atlases for screens + scrollers (Canvas2D, small) ---
@@ -1342,5 +1507,5 @@ export async function build(layout, ctx = {}) {
   };
 }
 
-export const seoulSigns = { build, buildData, exportData, generateSigns, signStats, designFace, loadFonts, NIT_SCALE, NITS, CENSUS, SHIPPED, PUSH_BY_KIND, K };
+export const seoulSigns = { build, buildData, exportData, generateSigns, signStats, designFace, colliderTris, loadFonts, NIT_SCALE, NITS, CENSUS, SHIPPED, PUSH_BY_KIND, K };
 export default seoulSigns;
