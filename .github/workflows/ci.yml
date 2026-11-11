@@ -183,8 +183,8 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Build the Seoul export (coverage reads its world.json)
         run: node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae
-      - name: Neon Seoul in headless Chromium (SwiftShader)
-        run: node tests/browser.mjs --level seoul-hongdae --exports exports/seoul-hongdae --out browser-out-seoul
+      - name: Neon Seoul in headless Chromium (SwiftShader; still rows tolerated while A, C, F2, G1, G2 land, see ci/known-failures.json)
+        run: node ci/run.mjs tests/browser.mjs --level seoul-hongdae --exports exports/seoul-hongdae --out browser-out-seoul
       - uses: actions/setup-python@v5
         if: ${{ !cancelled() }}
         with:

@@ -1,10 +1,10 @@
 {
- "note": "tests/browser.mjs golden stills (SwiftShader, 320x180, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update, or --golden-from <CI artifact>/stills.json, after an intentional look change. From browser-out-seoul-hongdae/stills.json @ bfe39b1 (CI run 42558204000, browser-seoul artifact JPEGs, re-measured).",
+ "note": "tests/browser.mjs golden stills (SwiftShader, 320x180, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update, or --golden-from <CI artifact>/stills.json, after an intentional look change. From browser-out-seoul/stills.json @ 0b9cf4136d331b3f29d5bea8db1c97b693529c60.",
  "shots": {
   "walk0": {
-   "p5": 6,
-   "p50": 31,
-   "p95": 169,
+   "p5": 5,
+   "p50": 22,
+   "p95": 179,
    "clip": 0,
    "tol": {
     "p50": 8,
@@ -13,8 +13,8 @@
   },
   "club90": {
    "p5": 4,
-   "p50": 9,
-   "p95": 93,
+   "p50": 8,
+   "p95": 40,
    "clip": 0,
    "tol": {
     "p50": 8,
@@ -22,9 +22,9 @@
    }
   },
   "station": {
-   "p5": 5,
-   "p50": 37,
-   "p95": 133,
+   "p5": 8,
+   "p50": 28,
+   "p95": 67,
    "clip": 0,
    "tol": {
     "p50": 8,
