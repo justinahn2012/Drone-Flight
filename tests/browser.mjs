@@ -155,11 +155,11 @@ try {
       const o = window.__onetake; o.S.mode = 'acro'; o.applySettings(); o.fpv.setQualityRange?.(1, 1); o.fpv.scale = 1; o.controls.thr = 0.39;
       new Function('o', tp)(o);
       const cv = o.renderer?.domElement || document.querySelector('canvas');
-      let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null;
+      let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null; const fms = [];   // [P3 H] ms per step (where the still time goes)
       const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };
       for (let i = 0; i < 10; i++) {
         if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
-        o.step(33, 1, false);   // = step(33, 1, i === 9): the grab below happens in the same task, before the buffer is presented
+        const f0 = performance.now(); o.step(33, 1, false); fms.push(Math.round(performance.now() - f0));   // = step(33, 1, i === 9): the grab below happens in the same task, before the buffer is presented
         if (i === 9) { url = cv.toDataURL('image/jpeg', 0.92); if (gate) png = cv.toDataURL('image/png'); }
         await new Promise((r) => setTimeout(r, 20));
       }
@@ -176,7 +176,7 @@ try {
       const d = g.getImageData(0, 0, c.width, c.height).data, h = new Uint32Array(256);
       for (let i = 0; i < d.length; i += 4) h[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
       const n = d.length / 4, pct = (p) => { let s = 0; for (let k = 0; k < 256; k++) { s += h[k]; if (s >= p * n) return k; } return 255; };
-      return { url, png, png0, ev, ev0, retro, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
+      return { url, png, png0, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
     }, { tp, vel, gate });
     // [P3 H] main bfe39b1's CI shot spawn upside down once (p50 83 against ~125 upright) and that became the golden:
     // an inverted craft is a harness state, not a look, so shoot it again once and say so
@@ -185,8 +185,9 @@ try {
     writeFileSync(join(OUT, `${name}.jpg`), Buffer.from(r.url.split(',')[1], 'base64'));
     if (r.png) writeFileSync(join(OUT, 'camgate', `${name}.png`), Buffer.from(r.png.split(',')[1], 'base64'));
     if (r.png0) writeFileSync(join(OUT, 'camgate', `${name}.r0.png`), Buffer.from(r.png0.split(',')[1], 'base64'));
-    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro } : {}), s: +((Date.now() - ts) / 1000).toFixed(0) };
+    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
     const g = golden.shots[name];
+    console.log(`  still ${name}: ${now[name].s} s, steps ${JSON.stringify(now[name].stepS)} s`);
     if (UPDATE || !g || SKIP.has('golden')) console.log(`  still ${name}: p5 ${r.p5} p50 ${r.p50} p95 ${r.p95} clip ${r.clip}${gate ? ` EV ${r.ev?.toFixed?.(2)}` : ''} (${now[name].s} s)${g ? '' : ' (no golden yet)'}`);
     else ok(Math.abs(r.p50 - g.p50) <= g.tol.p50 && Math.abs(r.p95 - g.p95) <= g.tol.p95,
       `still ${name}: p50 ${r.p50} (golden ${g.p50} ± ${g.tol.p50}), p95 ${r.p95} (golden ${g.p95} ± ${g.tol.p95}) (${now[name].s} s)` +
