@@ -1,7 +1,7 @@
 // seoul/tools/test-facades.mjs — [P2-C] facades and layout against PLAN-P2's binding numbers (~5 s):  node seoul/tools/test-facades.mjs
 //  1. window luminance: 2F-4F on commercial streets ~55 % lit, 5F and up 12-20 %, lit 5-25 nits, unlit 0.5-5 nits
 //  2. shop interiors seen through glass 30-130 nits (store emitters), every lit shop has an emitter
-//  3. the interior atlas: 20 tiles, deterministic, room means sane
+//  3. the interior atlas: 24 tiles of 512 px (rooms, posters, mid-depth layers), deterministic, room means sane
 //  4. layout: measured clearances on the Seogyo-365 fork (>= 6.3 m at walk0, >= 9 m by Hongik-ro), R1-R2 is 'walking',
 //     Y151 faces Yanghwa-ro
 //  5. the export entry: buildGeometry({seed}) returns the contract, and the dressing hook tolerates a throwing partner
@@ -28,21 +28,39 @@ ok(share('high') >= 0.12 && share('high') <= 0.2, `5F+ commercial lit share ${sh
 ok(litN.every((n) => n >= 5 && n <= 25), `lit windows 5-25 nits (${Math.min(...litN)}-${Math.max(...litN)})`);
 ok(unlitN.every((n) => n >= 0.5 && n <= 5), `unlit windows 0.5-5 nits (${Math.min(...unlitN)}-${Math.max(...unlitN)})`);
 // the aEm channel really carries those luminances (rgb luminance / NITS)
-{ const e = geo.merged.glass.getAttribute('aEm'); let lo = Infinity, hi = 0;
-  for (let i = 0; i < e.count; i += 6) { const Y = (0.2126 * e.getX(i) + 0.7152 * e.getY(i) + 0.0722 * e.getZ(i)) / NITS; lo = Math.min(lo, Y); hi = Math.max(hi, Y); }
+{ const e = geo.merged.glass.getAttribute('aEm'), wk = geo.merged.glass.getAttribute('aWin'); let lo = Infinity, hi = 0;
+  for (let i = 0; i < e.count; i += 6) { if (wk.getZ(i) >= 4) continue; const Y = (0.2126 * e.getX(i) + 0.7152 * e.getY(i) + 0.0722 * e.getZ(i)) / NITS; lo = Math.min(lo, Y); hi = Math.max(hi, Y); }
   ok(lo >= 0.45 && hi <= 26, `glass aEm luminance ${lo.toFixed(2)}-${hi.toFixed(2)} nits`); }
 
+// [P3-C] atlas groups (perf #1): what is drawn is ground / city / glass / lanepaint / ao, layers resolve, KTX2 slices exist
+{ const { SEOUL_GROUPS, SEOUL_TEX_IDS, SEOUL_LAYER_MAX } = await import('../../world-seoul.js');
+  const keys = Object.keys(geo.merged).sort();
+  ok(['ao', 'city', 'glass', 'ground', 'lanepaint'].every((k) => keys.includes(k)) && keys.length === 5, `drawn groups ${keys.join(', ')} (dressing off)`);
+  for (const g of ['ground', 'city']) { const a = geo.merged[g].getAttribute('aLay'); let bad = 0; for (let i = 0; i < a.count; i++) { const l = geo.layers[a.getX(i)]; if (!l || (g === 'ground') !== SEOUL_GROUPS.ground.includes(l.key)) bad++; } ok(a && !bad, `${g}: every vertex has a valid aLay (${a?.count})`); }
+  ok(geo.layers.length <= SEOUL_LAYER_MAX && geo.layers.every((l) => l.diff < SEOUL_TEX_IDS.length && l.nor < SEOUL_TEX_IDS.length), `${geo.layers.length} layers, slices in range`);
+  const tris = (o) => Object.values(o).reduce((s, g) => s + g.getAttribute('position').count / 3, 0);
+  ok(tris(geo.merged) === tris(geo.byKey), `grouping keeps every triangle (${tris(geo.merged)})`);
+  const tex = new URL('../tex/', import.meta.url);
+  ok(SEOUL_TEX_IDS.every((id) => fs.existsSync(new URL(`${id}_diff.ktx2`, tex)) && fs.existsSync(new URL(`${id}_nor_gl.ktx2`, tex))), `${SEOUL_TEX_IDS.length} x 2 KTX2 slices vendored`);
+  ok(fs.existsSync(new URL('basis/basis_transcoder.wasm', tex)) && fs.existsSync(new URL('basis/basis_transcoder.js', tex)), 'Basis transcoder vendored (no hot-links)');
+  ok(!fs.readFileSync(new URL('../../world-seoul.js', import.meta.url), 'utf8').includes('texLoader.load('), 'no JPG hot-link on the main path'); }
+
 // 2. shops
-const stores = geo.emitters.filter((e) => e.kind === 'store');
-ok(stores.length === geo.facts.shopsLit && stores.length > 150, `store emitters ${stores.length} = lit shops ${geo.facts.shopsLit}`);
-ok(stores.every((e) => e.nits >= 30 && e.nits <= 130), `shop interiors 30-130 nits (${Math.min(...stores.map((e) => e.nits))}-${Math.max(...stores.map((e) => e.nits))})`);
+const stores = geo.emitters.filter((e) => e.kind === 'store'), lobbies = geo.emitters.filter((e) => e.kind === 'lobby');
+ok(stores.length + lobbies.length === geo.facts.shopsLit && stores.length > 150, `store + lobby emitters ${stores.length} + ${lobbies.length} = lit shops ${geo.facts.shopsLit}`);
+ok(lobbies.every((e) => e.nits >= 80 && e.nits <= 150), `tower lobbies 80-150 nits (contract P3-CD, ${lobbies.length})`);
+{ const cr = geo.emitters.filter((e) => e.kind === 'crown'); ok(cr.length > 0 && cr.every((e) => e.normal[1] > 0.5 && e.nits >= 15 && e.nits <= 40), `crown wash records face up the wall (${cr.length})`); }
+ok(geo.emitters.filter((e) => e.role === 'roof').length === geo.facts.roofLamps && geo.facts.roofLamps > 100, `roof wall packs ${geo.facts.roofLamps} (art #6)`);
+// [P3-C] coloured rooms (club, karaoke, motel) are a filter on 30-130 white-equivalent nits: luminance x lum(filter) >= 15
+const isCol = (e) => { const L = layout.lots.find((l) => l.id === e.lot); return ['club', 'karaoke', 'motel'].includes(L?.use); };
+ok(stores.every((e) => e.nits >= (isCol(e) ? 15 : 30) && e.nits <= 130), `shop interiors 30-130 nits, coloured >= 15 (${Math.min(...stores.map((e) => e.nits))}-${Math.max(...stores.map((e) => e.nits))})`);
 ok(stores.every((e) => Math.abs(0.2126 * e.rgb[0] + 0.7152 * e.rgb[1] + 0.0722 * e.rgb[2] - 1) < 0.02), 'store rgb has luminance 1 (rgb x nits = luminance)');
 ok(!geo.colRanges.some((r) => ['glass', 'shop', 'sill', 'ao', 'frame'].includes(r.key)), 'glass, sills, frames and decals are render-only');
 
 // 3. atlas
 const A = buildInteriorAtlas();
-ok(A.width === 1024 && A.height === 1280 && A.data.length === 1024 * 1280 * 4, 'atlas 1024 x 1280 RGBA');
-ok([...A.mean].every((m, i) => m > 0.05 && m < 2.5), `tile means ${[...A.mean].map((m) => m.toFixed(2)).join(' ')}`);
+ok(A.width === 2048 && A.height === 3072 && A.data.length === 2048 * 3072 * 4, 'atlas 2048 x 3072 RGBA (512 px tiles, P3)');
+ok([...A.mean].every((m, i) => i >= 20 || (m > 0.05 && m < 2.5)), `tile means ${[...A.mean].map((m) => m.toFixed(2)).join(' ')}`);
 
 // 4. layout
 const segD = (p, a, b) => { const vx = b[0] - a[0], vz = b[1] - a[1], l2 = vx * vx + vz * vz || 1e-9, t = Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vz) / l2)); return Math.hypot(p[0] - a[0] - t * vx, p[1] - a[1] - t * vz); };
