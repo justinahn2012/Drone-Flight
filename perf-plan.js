@@ -113,6 +113,6 @@ export async function planHook(o, ui, params = new URLSearchParams(location.sear
   btn.textContent = 'START OVER'; bar.style.display = ''; share.style.display = '';
   btn.onclick = () => { save({ id: plan.id, started: null, runs: [] }); location.replace(stepURL(location.href, plan, 0).replace(/([?&])step=\d+&?/, '$1')); };
   share.onclick = () => ui.sharePayload({ text, name: `onetake-perf-${plan.id}-${(fin.runs[0]?.device?.at || '').replace(/[:.]/g, '-').slice(0, 16)}.json`, json: { format: 'onetake.perf/1', plan: plan.id, steps: plan.steps, runs: fin.runs } });
-  o.perfPlanText = text;
+  o.perfPlanText = text; o.perfPlan.action = 'done';
   return true;
 }
