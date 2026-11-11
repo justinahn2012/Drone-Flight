@@ -2410,7 +2410,7 @@ function goStartAt(name) {
 // F1 test hooks (uishots), kept off window.__onetake so that shared object stays merge-clean
 window.__onetakeUI = { uiProg, lineList, nextLine, renderProgress, goStartAt, projectView, retryFrom, readyHint, vertOf, get hint() { return nextNow; },
   // [F2] test hooks: armed line, brackets on screen, the caption meter, place names, the level UI
-  armedLine, placeAt, applyLevelUI, dataFor, fitLines, byText, headsStamp, showSummary, get armed() { return armNow; }, get brackets() { return { n: brOn, cands: brCands.length, labels: [...document.querySelectorAll('#osd .brl.on')].map((e) => e.textContent) }; },
+  armedLine, placeAt, applyLevelUI, dataFor, fitLines, byText, headsStamp, showSummary, get armed() { return armNow; }, osd() { osdBoxes(); return osdFix; },   // [P4] the label keep-outs get brackets() { return { n: brOn, cands: brCands.length, labels: [...document.querySelectorAll('#osd .brl.on')].map((e) => e.textContent) }; },
   get capMeter() { return { luma: capM.luma, plate: capM.plate }; },
   // the live frame composited as one 1080x1920 clip frame with a caption (no recording): the burned-in caption + plate
   capTest(text, place = '', lay = 'radio') {
