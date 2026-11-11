@@ -1726,8 +1726,9 @@ const HUMAN_FS = /* glsl */`
     float tint = reg < 0.5 ? 0.45 : reg < 1.5 ? 0.85 : reg < 2.5 ? 0.8 : reg < 3.5 ? 0.7 : 0.3;
     albD = mix(tx.rgb, vAlb * clamp(tx.rgb / max(mean, vec3(0.004)), 0.0, 3.0), tint);
     if (reg == 0.0 && bn == 1.0) {   // black mask on some (accessory bit 4), over the lower face
-      vec3 h = q - vec3(0.0, uJB.w + 0.17 * uJA.y / 0.9, 0.0);
-      float mask = mod(floor(ac / 4.0), 2.0) * smoothstep(0.03, 0.07, q.z) * (1.0 - smoothstep(-0.02, -0.005, h.y)) * smoothstep(-0.1, -0.085, h.y);
+      // chin to under the nose: neck joint + 3 .. 12 cm on the Rocketbox skeleton (P3 browser check: + 7 .. 16 cm covered the eyes)
+      float hy = q.y - uJB.w;
+      float mask = mod(floor(ac / 4.0), 2.0) * smoothstep(0.045, 0.075, q.z) * (1.0 - smoothstep(0.065, 0.08, abs(q.x))) * smoothstep(0.025, 0.035, hy) * (1.0 - smoothstep(0.112, 0.122, hy));
       albD = mix(albD, vec3(0.012), mask);
     }
   } else {
