@@ -6,7 +6,8 @@
 //   3. coverage: every mesh in world.scene has an export entry in world.json (tests/coverage.js), and every world.glb
 //      mesh is drawn;
 //   4. the graffiti atlas came from the Worker and uploaded in strips (perf #1);
-//   5. three golden stills (spawn, hall, chimney): luma p50 / p95 within tolerance of tests/golden.json.
+//   5. three golden stills (spawn, hall, chimney): luma p50 / p95 within tolerance of tests/golden.json;
+//   6. [P5] (bando) a flight log recorded in this browser replays in node within 1 mm (tests/replay.mjs --log).
 // Usage (repo root; needs `node tools/export-world.mjs --out exports` first):
 //   node tests/browser.mjs [--exports exports] [--out browser-out] [--update] [--frames 3] [--size 480x270]
 // --update rewrites tests/golden.json from this run (do it after an intentional look change; the commit shows it).
@@ -199,6 +200,27 @@ try {
   }
   writeFileSync(join(OUT, 'stills.json'), JSON.stringify({ level: LEVEL, size: `${W}x${H}`, commit: process.env.GITHUB_SHA || null, shots: now }, null, 1) + '\n');
   if (UPDATE) writeGolden(now, golden, 'tests/browser.mjs --update');
+  // ---- 6. [P5 H, native #1] a flight log recorded in this browser, replayed in node on the same world (browser -> node
+  // parity every run; the committed tests/browser.otil went stale with every world change). ~6 s of flying from the
+  // spawn on the keyboard path main.js logs (controls.keys -> poll -> the 240 Hz tick), then tests/replay.mjs --log.
+  if (BANDO && !SKIP.has('otil')) {
+    const rec = await page.evaluate(() => {
+      const o = window.__onetake, K = o.controls.keys, run = (ms, keys) => { K.clear(); for (const k of keys) K.add(k); o.step(16.7, Math.round(ms / 16.7), false); };
+      o.tp(0, 1.6, 118, 0, 0); run(100, []);
+      run(1500, ['KeyW']); run(1200, ['KeyW', 'ArrowUp']); run(1200, ['KeyW', 'KeyA']); run(1000, ['ArrowDown', 'KeyD']); run(800, []);
+      K.clear();
+      const L = o.flight.log; if (!L || !L.ticks) return { ticks: 0 };
+      const u8 = L.toBytes(); let bin = ''; for (let i = 0; i < u8.length; i += 8192) bin += String.fromCharCode(...u8.subarray(i, i + 8192));
+      return { ticks: L.ticks, b64: btoa(bin), pos: o.drone.pos.toArray().map((v) => +v.toFixed(2)) };
+    });
+    if (ok(rec.ticks > 240 * 4, `recorded a ${(rec.ticks / 240).toFixed(1)} s flight log in the browser (end ${JSON.stringify(rec.pos)})`)) {
+      const lp = join(OUT, 'browser.otil'); writeFileSync(lp, Buffer.from(rec.b64, 'base64'));
+      const { spawnSync } = await import('node:child_process');
+      const r = spawnSync(process.execPath, [join(ROOT, 'tests/replay.mjs'), '--strict', '--log', lp], { cwd: ROOT, encoding: 'utf8' });
+      const lines = (r.stdout || '').split('\n').filter((l) => l.includes('browser.otil'));
+      ok(r.status === 0 && lines.some((l) => /continuous max error/.test(l)), `the browser's log replays in node on this world (tests/replay.mjs --log): ${lines.map((l) => l.replace(/^\s*(ok|FAIL)\s+/, '')).join(' | ').slice(0, 400) || (r.stdout || r.stderr || '').slice(-300)}`);
+    }
+  }
   ok(!errors.length, `no page / console / shader / request errors` + (errors.length ? `:\n     ${errors.join('\n     ')}` : ''));
 } catch (e) {
   if (e.message !== 'load failed') { ok(false, `browser job threw: ${e.message}`); if (errors.length) console.log('     ' + errors.join('\n     ')); }
