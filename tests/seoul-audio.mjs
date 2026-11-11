@@ -9,6 +9,9 @@
 //   - P3 sound #6: horns, the crossing guide and exit 9 on Yanghwa-ro; no loops over 2.5-15 s lags
 //   - P3 sound #5: the clip feed is in sync with the live sims and deterministic; P3 bug: the world brickwall
 //   - P3 ux #1: movers speak (a bumped person yelps); the occluder; clip path renders
+//   - P4 sound #2: Yanghwa-ro roars (station >= walking + 2 LU; energy-summed traffic bed, wet tyres, 6 engine voices);
+//     #3: a hover breathes (p95 - p50 >= 4 dB; swells, names, phones, scooter horns); #4: babble rhythm (the 300-1000 Hz
+//     envelope's 2-8 Hz share 0.35-0.5, CV 0.75-0.95); #5: the club doors cooled (spot <= -6 LU); bug: no 12 s loop
 //   NODE_WEB_AUDIO=... node tests/seoul-audio.mjs [layout.json] [--wav out.wav]
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
@@ -93,29 +96,58 @@ function octaves(L, R) {
 }
 // a 2nd-order 350 Hz high-pass (a phone speaker): what is left of the loudness
 function phoneLU(L, R) { const hp = (x) => { const w = 2 * Math.PI * 350 / SR, c = Math.cos(w), al = Math.sin(w) / (2 * 0.7071), a0 = 1 + al, b0 = (1 + c) / 2 / a0, b1 = -(1 + c) / a0, a1 = -2 * c / a0, a2 = (1 - al) / a0; const y = new Float32Array(x.length); let x1 = 0, x2 = 0, y1 = 0, y2 = 0; for (let i = 0; i < x.length; i++) { const o = b0 * x[i] + b1 * x1 + b0 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = x[i]; y2 = y1; y1 = o; y[i] = o; } return y; }; return lufs(hp(L), hp(R)); }
+// P4 sound #4: the babble's rhythm, as the panel measures it (scipy: butter(4) 300-1000 Hz, |hilbert|, decimate 100,
+// welch 4 s): [the 2-8 Hz share of the envelope's 0.5-32 Hz modulation, the envelope's CV]. A recorded crowd: 0.39 / 0.81.
+function rhythm(L, R, lo = 300, hi = 1000) {
+  const bq = (type, f, q) => { const w = 2 * Math.PI * f / SR, c = Math.cos(w), al = Math.sin(w) / (2 * q), a0 = 1 + al; const b = type === 'hp' ? [(1 + c) / 2, -(1 + c), (1 + c) / 2] : [(1 - c) / 2, 1 - c, (1 - c) / 2]; const B0 = b[0] / a0, B1 = b[1] / a0, B2 = b[2] / a0, A1 = -2 * c / a0, A2 = (1 - al) / a0; let x1 = 0, x2 = 0, y1 = 0, y2 = 0; return (x) => { const y = B0 * x + B1 * x1 + B2 * x2 - A1 * y1 - A2 * y2; x2 = x1; x1 = x; y2 = y1; y1 = y; return y; }; };
+  const fs = [bq('hp', lo, 0.5412), bq('hp', lo, 1.3066), bq('lp', hi, 0.5412), bq('lp', hi, 1.3066)];
+  const n = L.length - SR, N = 1 << Math.ceil(Math.log2(n)), re = new Float64Array(N), im = new Float64Array(N);
+  for (let i = 0; i < n; i++) { let y = 0.5 * (L[SR + i] + R[SR + i]); for (const f of fs) y = f(y); re[i] = y; }
+  fft(re, im); for (let k = 1; k < N / 2; k++) { re[k] *= 2; im[k] *= 2; } for (let k = N / 2 + 1; k < N; k++) { re[k] = 0; im[k] = 0; }
+  for (let i = 0; i < N; i++) im[i] = -im[i]; fft(re, im);   // the analytic signal (inverse FFT via conjugation; |.| needs no sign)
+  const D = 100, er = SR / D, m = Math.floor(n / D), e = new Float64Array(m);
+  for (let j = 0; j < m; j++) { let z = 0; for (let i = j * D; i < (j + 1) * D; i++) z += Math.hypot(re[i], im[i]) / N; e[j] = z / D; }
+  let mu = 0; for (const v of e) mu += v; mu /= m; let sd = 0; for (const v of e) sd += (v - mu) ** 2; sd = Math.sqrt(sd / m);
+  const W = Math.round(4 * er), kmax = Math.ceil(32 * W / er); let p28 = 0, pall = 0;
+  for (let o = 0; o + W <= m; o += W >> 1) {
+    let sm = 0; for (let i = 0; i < W; i++) sm += e[o + i]; sm /= W; const a = new Float64Array(W); for (let i = 0; i < W; i++) a[i] = (e[o + i] - sm) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / W));
+    for (let k = 1; k <= kmax; k++) { const f = k * er / W; if (f < 0.5 || f > 32) continue; let a1 = 0, a2 = 0; const w = 2 * Math.PI * k / W; for (let i = 0; i < W; i++) { a1 += a[i] * Math.cos(w * i); a2 -= a[i] * Math.sin(w * i); } const P = a1 * a1 + a2 * a2; pall += P; if (f >= 2 && f <= 8) p28 += P; }
+  }
+  return [p28 / pall, sd / mu];
+}
 const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.23], [-50.95, 27.11]], CLUB = [[64.93, 125.07], [63.73, 129.56], [37.53, 216.53]];
 {
   const spots = { walking: { x: -36, y: 3, z: -23 }, junction: { x: -40, y: 3, z: -150 }, club: { x: 63.7, y: 3, z: 129.6 }, station: { x: 31.8, y: 8, z: -309 } }, res = {};
+  const L0wet = (await import('../seoul-audio.js')).SND.wet;
   for (const [k, cam] of Object.entries(spots)) { const c = await cityAt(cam); const o = octaves(c.L, c.R); res[k] = { lu: lufs(c.L, c.R) - HOVER_LUFS, ph: phoneLU(c.L, c.R) - HOVER_LUFS, cen: centroid(c.L, c.R), low: o.low, sp: spread(c.L, c.R), st: c.stats }; }
   console.log('city vs a hover (LU / through a phone LU / centroid / < 120 Hz / p95-p50): ' + Object.entries(res).map(([k, v]) => `${k} ${v.lu.toFixed(1)} / ${v.ph.toFixed(1)} / ${v.cen.toFixed(0)} Hz / ${(100 * v.low).toFixed(0)} % / ${v.sp.toFixed(1)} dB`).join(', '));
   ok(res.walking.lu > -11 && res.walking.lu < -8.5, `the city is audible under a hover on the walking street: ${res.walking.lu.toFixed(1)} LU (target -10; P1 -14)`);
-  ok(Object.values(res).every((v) => v.lu > -14 && v.lu < -2), 'every spot within reach and under the props (-14 to -2 LU; P2 Yanghwa-ro -17.5, club street -14.7)');
-  ok(res.station.lu > -12 && res.club.lu > -12, `Yanghwa-ro and the club street are heard: ${res.station.lu.toFixed(1)} / ${res.club.lu.toFixed(1)} LU (P2 -17.5 / -14.7)`);
+  ok(Object.values(res).every((v) => v.lu > -14 && v.lu < -2), `every spot within reach and under the props (-14 to -2 LU: ${Object.entries(res).map(([k, v]) => k + ' ' + v.lu.toFixed(1)).join(', ')}; P2 Yanghwa-ro -17.5, club street -14.7; P3 junction -14.4)`);
+  // P4 sound #2: an 8-lane arterial out-shouts the crowd street (P3: station -13.2 vs walking -10.4); #5: the club doors
+  // no longer run hot (P3 club spot -3.4 LU, level with the props) but the club street is still heard
+  ok(res.station.lu >= res.walking.lu + 2, `Yanghwa-ro roars: the station is ${res.station.lu.toFixed(1)} LU, ${(res.station.lu - res.walking.lu).toFixed(1)} over the walking street (>= +2; P3 -2.8), wet tyres ${L0wet}, engine voices ${res.station.st.engine}, traffic near ${res.station.st.trafficNear}`);
+  ok(res.club.lu <= -6 && res.club.lu > -12, `the club doors are cooled: the club spot is ${res.club.lu.toFixed(1)} LU (-12 to -6; P3 -3.4)`);
   ok(Object.values(res).every((v) => v.low < 0.3 && v.lu - v.ph < 5 && v.ph > -17), `voiced for a phone speaker: < 120 Hz ${Object.values(res).map((v) => (100 * v.low).toFixed(0)).join(' / ')} % (< 30; P2 club 53 %), through a 350 Hz high-pass ${Object.values(res).map((v) => v.ph.toFixed(1)).join(' / ')} LU (> -17; P2 club street -18.2), losing ${Object.values(res).map((v) => (v.lu - v.ph).toFixed(1)).join(' / ')} (< 5)`);
   // sound #1: peaks. Momentary loudness p95 - p50 on the hero streets (P2 0.7-1.3 dB everywhere; a recorded crowd 5.3)
   const walk = await cityAt({ y: 3 }, 20, { path: S065 }), club = await cityAt({ y: 3 }, 20, { path: CLUB }), sw = spread(walk.L, walk.R), sc = spread(club.L, club.R);
-  ok(sw >= 4 && sc >= 4 && res.walking.sp >= 3, `the map has peaks: p95 - p50 ${sw.toFixed(1)} dB along the walking street, ${sc.toFixed(1)} along the club street, ${res.walking.sp.toFixed(1)} hovering (>= 4 / 4 / 3; P2 0.7-1.3)`);
+  ok(sw >= 4 && sc >= 4, `the map has peaks: p95 - p50 ${sw.toFixed(1)} dB along the walking street, ${sc.toFixed(1)} along the club street (>= 4 / 4; P2 0.7-1.3)`);
+  // P4 sound #3: a hover breathes (group laughter swells, names called, a phone's K-pop, scooter horns; P3 2.5-2.9 dB)
+  const ws = res.walking.st; ok(res.walking.sp >= 4 && ws.swells >= 1, `a hover breathes: p95 - p50 ${res.walking.sp.toFixed(1)} dB at the walking-street hover (>= 4; P3 2.9); in 12 s: laughter swells ${ws.swells}, names ${ws.names}, phones ${ws.phones}, scooter horns ${ws.beeps}`);
   const clubC = octaves(club.L, club.R); ok(clubC.low < 0.4, `club street: ${(100 * clubC.low).toFixed(0)} % of the energy under 120 Hz (P2 53 %), staff calls ${club.stats.calls}, queue chatter on`);
   // sound #3: the babble re-voiced. Octave spectrum of the crowd bed alone within 3 dB of a recorded crowd per octave,
   // reference: seoul/audio's P2 public-domain restaurant crowd (-3.9, 0, -1.6, -7.9, -14.3, -15.1, -18.6 dB re 250 Hz)
   const REF = [-3.9, 0, -1.6, -7.9, -14.3, -15.1, -18.6], cr = await cityAt(spots.walking, 16, { solo: 'crowd' }), co = octaves(cr.L, cr.R).oct, dev = co.map((v, i) => v - REF[i]);
   ok(dev.every((d) => Math.abs(d) <= 3), `the babble's octave spectrum is within 3 dB of a recorded crowd: ${dev.map((d) => (d >= 0 ? '+' : '') + d.toFixed(1)).join(' ')} dB at 125 Hz-8 kHz (P2: 1 kHz -5.6, 4 kHz +13.8)`);
+  const [syl, cv] = rhythm(cr.L, cr.R);
+  ok(syl >= 0.35 && syl <= 0.5 && cv >= 0.75 && cv <= 0.95, `the babble talks, not ticks: the 300-1000 Hz envelope's 2-8 Hz share ${syl.toFixed(2)} (0.35-0.5; P3 0.66, recorded 0.39), CV ${cv.toFixed(2)} (0.75-0.95; P3 0.61, recorded 0.80)`);
   const beds = await cityAt(spots.walking, 32, { solo: 'beds' }), [ac, lag] = acPeak(beds.L, 2.5, 15);
-  ok(ac < 0.3, `no loops in the beds: autocorrelation peak ${ac.toFixed(2)} at ${lag.toFixed(2)} s over 2.5-15 s lags (the babble is 12 s; P1 0.36-0.67 at 5.00 s)`);
+  ok(ac < 0.07, `no loops in the beds: autocorrelation peak ${ac.toFixed(2)} at ${lag.toFixed(2)} s over 2.5-15 s lags (< 0.07: the babble plays as grains; P3 0.08-0.10 at 11.99 s, the 12 s loop; P1 0.36-0.67 at 5.00 s)`);
   // sound #6: Yanghwa-ro and exit 9 have their events: horns from the nearest 100 m of road, the crossing guide at each
   // walk phase within 60 m (a 45 s hover 25 m off the Yanghwa-ro x Hongik-ro crossings), the exit 9 crowd and draught
   const yh = await cityAt({ x: -45, y: 6, z: -236 }, 45);
   ok(yh.stats.horns >= 1 && yh.stats.guides >= 1 && res.station.st.exit >= 1, `Yanghwa-ro and exit 9 (a 45 s hover): horns ${yh.stats.horns}, crossing guides ${yh.stats.guides}; the exit 9 crowd and stair draught play at the station front (P2: 0 horns and 0 guides in 96 s)`);
+  // sound #6 (G1/F1 add a crossing at exit 9; the guide then plays within SND.guideR): a note, not a gate
+  { const L6 = build(layout, { seed: 7 }), ex = layout.hero?.find((h) => h.id === 'exit9'); if (ex) { const dc = Math.min(...L6.sim.net.crossings.map((c) => Math.hypot(c.x - ex.pos[0], c.z - ex.pos[2]))); console.log(`note exit 9: the nearest sim crossing is ${dc.toFixed(0)} m off (the guide plays within ${SND.guideR} m${dc <= SND.guideR ? ': in reach' : ': waits on a crossing at exit 9 (G1/F1, sound #6)'})`); } }
   const ctx = new WA.OfflineAudioContext(2, SR, SR), ma = new MotorAudio(); ma.startOffline(ctx); ma.openWorld();
   for (let f = 0; f < 30; f++) ma.update([0.392, 0.392, 0.392, 0.392], 0, 0, false, false, {}, f / 30); const dHover = 20 * Math.log10(ma.duck);
   for (let f = 30; f < 60; f++) ma.update([0.85, 0.85, 0.85, 0.85], 12, 0, false, false, {}, f / 30); const dFull = 20 * Math.log10(ma.duck);
@@ -154,7 +186,7 @@ const DUR = +(process.env.DUR || 24);
   }
   ok(nan === 0, 'no NaN'); ok(pk < 1.6, `peaks at the city out stay within the brickwall's +4 dB range (peak ${db(pk)} dBFS; the limiter and brickwall follow in game)`);
   ok(log.every((e) => e.rms > 1e-4), 'never silent'); ok(Math.max(...log.map((e) => e.rms)) / Math.min(...log.map((e) => e.rms)) > 2, 'it is a map, not a loop: >6 dB swing along the path');
-  ok(life.audio.stats.voices <= 26, `voice budget ${life.audio.stats.voices} (beds + reverbs + positional)`);
+  ok(life.audio.stats.voices <= 28, `voice budget ${life.audio.stats.voices} (beds + reverbs + positional; P4: 6 engine voices for the arterials, was 4: 26)`);
   const S = life.audio.stats; ok(S.laughs > 3 && S.music > 0 && S.occluded >= 0, `signature layers fire on the hero path (laughs/shouts ${S.laughs}, steps ${S.steps}, horns ${S.horns}, chimes ${S.chimes}, guides ${S.guides}, applause ${S.applause})`);
   if (wav) {
     const n = L.length, b = Buffer.alloc(44 + n * 4); b.write('RIFF', 0); b.writeUInt32LE(36 + n * 4, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(2, 22); b.writeUInt32LE(SR, 24); b.writeUInt32LE(SR * 4, 28); b.writeUInt16LE(4, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(n * 4, 40);
