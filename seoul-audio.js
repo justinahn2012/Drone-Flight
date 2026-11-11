@@ -39,8 +39,8 @@ export const SND = {
   car: 90, taxi: 88, truck: 94, bus: 97, scooter: 92, tyre: 90,
   // one-shots and loops, RMS at 1 m (calibrated buffers): shop doorway speaker, club door, busking PA, horn, ...
   music: 81, club: 91, busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 82, shout: 88, talk: 74, yelp: 92, heel: 72, step: 60,
-  applause: 92, cheer: 88, guide: 84, tick: 72, queue: 80, staff: 90, exit: 80, draught: 72,
-  glaugh: 85, name: 88, phone: 74, beep: 90,   // P4 (sound #3): a group's laughter, a name called, a phone's K-pop, a scooter's horn
+  applause: 92, cheer: 88, guide: 84, tick: 72, queue: 80, staff: 86, exit: 80, draught: 72,
+  glaugh: 86, name: 92, phone: 74, beep: 88,   // P4 (sound #3): a group's laughter, a name called, a phone's K-pop, a scooter's horn
   pools: { engine: 6, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1, queue: 2, exit: 1 },
   poolsLow: { engine: 3, bus: 1, scooter: 1, music: 2, club: 1, busk: 1, neon: 0, sizzle: 1, queue: 1, exit: 1 },
   // event pacing (sound #6): horns from the nearest 100 m of road, ~1 per 25 s where traffic is; guide within 60 m
@@ -684,7 +684,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
       if (sim?.net?.streets) for (const st of sim.net.streets) {
         if (st.kind !== 'main' || !(st.width >= 13)) continue; const pr = st.path.project(cam.x, cam.z); if (!(pr.dist < 150)) continue;
         const r = Math.hypot(Math.max(0, pr.dist - st.width / 4), cam.y - 0.6), miss = Math.max(0, SND.artFlow * st.width - mainMv);
-        art = Math.max(art, miss * Math.pow(10, (SND.car - 105) / 10) * 1.1 * (1 + 0.6 * g.wet) / (r * r + 1600));
+        art = Math.max(art, miss * Math.pow(10, (SND.car - 105) / 10) * 1.1 * (1 + 0.6 * g.wet) / (r * r + 1600) * Math.pow(10, -0.006 * Math.max(0, r - 20)));
       }
       // platoons: while the nearest crossing in reach shows WALK the arterial holds (x0.45), then it releases (x1.25), ~4 s
       if (art > 0 && life?.crossPhase && crossings.length) {
@@ -852,16 +852,18 @@ export function createSeoulAudio(layout, life, opts = {}) {
       }
       // P4 (sound #3, a hover that breathes; P3 a hover's p95 - p50 was 2.5-2.9 dB, a recorded crowd's 5.3): where the
       // crowd is dense (crowdN > 40) and the drone is under 12 m, events come from the people within 15 m on a clock of
-      // their own (a pure function of t, as the horns): a group's laughter swells every 6-12 s; a name is called every
-      // 10-20 s from 8-25 m; a passer-by's phone plays K-pop for ~7 s every 25-40 s; a delivery scooter within 25 m taps
+      // their own (a pure function of t, as the horns): a group 4-10 m off laughs, swelling, every 6-12 s; a name is called
+      // every 10-20 s from 10-22 m; a passer-by's phone plays K-pop for ~7 s every 25-40 s; a delivery scooter within 25 m taps
       // its horn at the people in its way (once per scooter per ~8 s, more where the crowd is denser).
       if (g.ctxv.crowdN > 40 && cam.y < 12 && nearList.length) {
         const C = life.crowd, d2 = (i) => (C.X[i] - cam.x) ** 2 + (C.Z[i] - cam.z) ** 2, hh = (a, b) => ((Math.imul(a, 2654435761) ^ Math.imul(b + 1, 40503)) >>> 0) / 4294967296;
-        const within = (lo, hi, u) => { const L = nearList.filter((i) => d2(i) >= lo * lo && d2(i) < hi * hi); return L.length ? L[Math.floor(u * L.length)] : -1; };
+        // a pick in [lo, hi) m: the nearest of three seeded draws (a group close by, as a hover over a crowd hears them)
+        const within = (lo, hi, u) => { const L = nearList.filter((i) => d2(i) >= lo * lo && d2(i) < hi * hi); if (!L.length) return -1; let b = L[Math.floor(u * L.length)]; for (const v of [(u * 7.31) % 1, (u * 13.7) % 1]) { const j = L[Math.floor(v * L.length)]; if (d2(j) < d2(b)) b = j; } return b; };
         const crossed = (per, jit, salt) => { const w = Math.floor(t / per), at0 = w * per + jit * hh(w, salt); return at0 > t - dtF && at0 <= t ? w : null; };
-        let w;
-        if ((w = crossed(9, 3, 1)) != null) { const i = within(2, 15, hh(w, 2)); if (i >= 0) { shot(g.buf.glaugh[w % 4], C.X[i], 1.55, C.Z[i], dbA(SND.glaugh), 0.95 + 0.1 * hh(w, 3)); S.swells++; } }
-        if ((w = crossed(15, 5, 4)) != null && hh(w, 5) < 0.85) { const i = within(8, 25, hh(w, 6)); if (i >= 0) { shot(g.buf.name[w % 6], C.X[i], 1.6, C.Z[i], dbA(SND.name), 0.96 + 0.08 * hh(w, 7)); S.names++; } }
+        // (not within 20 m of a club door: there the door cycle, the queue's chatter and the staff calls are the breath)
+        let w; const door = sites.queue.some((q) => (q.x - cam.x) ** 2 + (q.z - cam.z) ** 2 < 400);
+        if (!door && (w = crossed(9, 3, 1)) != null) { const i = within(4, 10, hh(w, 2)); if (i >= 0) { shot(g.buf.glaugh[w % 4], C.X[i], 1.55, C.Z[i], dbA(SND.glaugh), 0.95 + 0.1 * hh(w, 3)); S.swells++; } }
+        if (!door && (w = crossed(15, 5, 4)) != null && hh(w, 5) < 0.85) { const i = within(10, 22, hh(w, 6)); if (i >= 0) { shot(g.buf.name[w % 6], C.X[i], 1.6, C.Z[i], dbA(SND.name), 0.96 + 0.08 * hh(w, 7)); S.names++; } }
         if ((w = crossed(32, 8, 8)) != null && g.buf.phone) { const i = within(1.5, 10, hh(w, 9)); if (i >= 0) { shot(g.buf.phone, C.X[i], 1.2, C.Z[i], dbA(SND.phone), 1); S.phones++; } }
         if (sim && g.ctxv.cand) for (const c of g.ctxv.cand.scooter) {
           if (c.d > 25 || c.v.hidden || c.v.v < 1) continue; const sl = Math.floor((t + (c.v.id % 7)) / 8), key = 'b' + c.v.id; if (g.react.get(key) === sl) continue;
