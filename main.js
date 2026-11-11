@@ -2336,7 +2336,7 @@ function renderProgress() {
   const cell = (l) => {
     const next = !l.flown && nx?.name === l.name;
     const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.hint, bt = l.flown && l.bt > 0 ? `<i> · ${fmtDur(l.bt)}</i>` : '';   // [F2] P4: one time format (the caption's)
-    // [F2] P4 ui #3: the compact grid (short landscape) drops the sub-line for a corner tag (×2), so a cell is two lines at most
+    // [F2] P4 ui #3: the compact grid (short landscape) drops the sub-line for ×N under the tick, so a cell is two lines at most
     const fx = l.flown && l.f >= 1 ? `<u class="fx">×${l.f}</u>` : '';
     return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}${bt}</small>${fx}</div>`;
   };
