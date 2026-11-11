@@ -175,32 +175,6 @@
         "re": "p95 ([0-9.]+)",
         "min": 30
       }
-    },
-    {
-      "suite": "tests/seoul-audio.mjs",
-      "match": "every spot within reach and under the props",
-      "owner": "G2 (PLAN-P4 sound #2 Yanghwa-ro roars, #5 cool the club doors)",
-      "why": "with G1's integrated traffic: junction -14.4 LU (gate -14), station -13.2; the next row ratchets the station"
-    },
-    {
-      "suite": "tests/seoul-audio.mjs",
-      "match": "Yanghwa-ro and the club street are heard",
-      "owner": "G2 (PLAN-P4 sound #2 Yanghwa-ro roars)",
-      "why": "station -13.2 LU against -12 once G1's traffic merged (panel3 sound.md bugs)",
-      "limit": {
-        "re": "heard: (-?[0-9.]+)",
-        "min": -14.0
-      }
-    },
-    {
-      "suite": "tests/seoul-audio.mjs",
-      "match": "the map has peaks",
-      "owner": "G2 (PLAN-P4 sound #3 hover peaks)",
-      "why": "hover p95-p50 2.9 dB against 3 (crowdNear holds at 146 +- 5)",
-      "limit": {
-        "re": "([0-9.]+) hovering",
-        "min": 2.5
-      }
     }
   ]
 }
