@@ -9,7 +9,9 @@
 Gate (hero streets; exit 1 if any fails):
   clip        share of pixels with any channel >= 250            <= 3 %
   blob        largest 8-connected clipped blob                    <= 5 %
-  ev          converged AE EV (from the seoulsnap log)            -1 .. +1.5  (ISO ~1600-6400)
+  ev          converged AE EV (from the seoulsnap log)            -4 .. +1.5  [P5-A: was -1, which assumed phase 3's scene
+              radiance; since C's albedo x3 and D's floor the hero streets meter -2.5 .. -3.8 at the refs' p50, so the
+              frame p50 row (35-50) now carries 'exposed right' and this row only catches a runaway meter; evMin is -4.5]
   ground      median luma of the shot's ground box (GROUND below) >= 40
   sky         median luma of the darkest half of the top quarter  <= 30 (near black; colour #4 wants 12-25)
   p50         [P5-A, panel-4 colour bug] frame median luma            35 .. 50 (refs' median 44; A, C and D each lifted the
@@ -33,7 +35,7 @@ from scipy import ndimage
 # ground boxes [x0, x1, y0, y1] as fractions of the frame (top-down), per seoulsnap shot name
 GROUND = {'walk0': [0.40, 0.70, 0.88, 1.0], 'walk180': [0.35, 0.65, 0.88, 1.0], 'club90': [0.02, 0.30, 0.86, 1.0], 'club270': [0.10, 0.60, 0.84, 1.0],
           'station': [0.00, 0.45, 0.86, 1.0], 'station2': [0.30, 0.70, 0.88, 1.0], 'w21': [0.35, 0.65, 0.86, 1.0]}
-GATE = dict(clip=3.0, blob=5.0, ev=(-1.0, 1.5), ground=40.0, sky=30.0, p50=(35.0, 50.0))
+GATE = dict(clip=3.0, blob=5.0, ev=(-4.0, 1.5), ground=40.0, sky=30.0, p50=(35.0, 50.0))
 COLOUR = dict(rg=10.0, bg=8.0, roomsat=0.55, warm=(45.0, 65.0), white=(2.0, 5.0))
 SIGN_FRAMES = {'walk0', 'walk180', 'club90', 'club270', 'w21'}   # frames where signs dominate (colour #3's white-core target)
 LUMA = np.array([0.2126, 0.7152, 0.0722])

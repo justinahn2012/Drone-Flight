@@ -993,7 +993,11 @@ export const GRADES = {
   //   haloM [0.025, 1.4, 1] -> [0.04, 1.6, 2]: the middle lobe at 4 %, sigma ~30 px at 960 wide (2 passes); haloW [energy,
   //   spacing (1/16 texels), passes]: a second source-tinted lobe built from the middle one at 1/16, 1 % at sigma ~100 px
   //   (visible 80-150 px out): letters glow with a skirt instead of ending in a 3 px rim.
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -1.5, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.035,
+  //   Exposure re-fit (colour #1, lighting "Exposure") on A + D's p5 lighting (cityLux flipped, shop spill, re-baked):
+  //   evBias -1.5 -> -2.05 and aeArea [0.8, 0.5, 0.3, 0.2] -> [0.5, 0.75, 0.45, 0.2] (lit glass and light walls from 5 nits
+  //   count as area sources at 75 %, so a frame of bright shopfronts no longer opens the iris): converged frame p50 walk0
+  //   76 -> 49, club90 58 -> 36, club270 56 -> 39, w21 64 -> 45 (refs' median 44); clip walk0 2.2 -> 0.3 %.
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.05, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.035,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     haloM: [0.04, 1.6, 2], haloMTint: [1, 1, 1], haloW: [0.01, 2.2, 3],
@@ -1003,7 +1007,7 @@ export const GRADES = {
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
     codec: [0.4, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
     recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,
-    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.01, aeArea: [0.8, 0.5, 0.3, 0.2], aeMatrix: [0.45, 0.5],
+    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.01, aeArea: [0.5, 0.75, 0.45, 0.2], aeMatrix: [0.45, 0.5],
     shutter: 1 / 60, readout: 0.011 },
 };
 // Lottes 2016 shoulder constants: x^a / (x^(a d) b + c) passes (0.24, mid) and reaches 1 at the white point hdrMax

@@ -63,7 +63,7 @@ let prev = -1, mono = true; for (let ev = -8; ev <= 8; ev += 0.25) { const c0 = 
 ok(mono, 'tone monotonic');
 const want = { '-2': [45, 65], '0': [112, 135], '2': [180, 200], '4': [220, 235], '6': [240, 250], '7.5': [254, 255.1] };
 for (const [ev, [lo, hi]] of Object.entries(want)) { const c0 = code(+ev); ok(c0 >= lo && c0 <= hi, `code at ${ev} EV = ${c0.toFixed(1)} not in [${lo}, ${hi}]`); }
-ok(N.aeReject <= 0.01 && N.aeArea[1] === 0.5, 'AE: 1 % reject, area sources at 50 %');
+ok(N.aeReject <= 0.01 && N.aeArea[1] === 0.75 && N.aeArea[0] === 0.5, 'AE: 1 % reject, area sources (>= 5 nits) at 75 % (P5 re-fit)');
 
 // --- 3. profile
 const cam = new M.FPVCamera(null); cam.hdr = true; cam._applyGrade(M.GRADES.hdr);
@@ -92,7 +92,7 @@ ok(/const GHOST_FS/.test(src) && !/uGhostT/.test(C.FINAL_FS), 'ghosts come from 
 }
 
 // --- 5. [P4-A] phase-4 night camera: stop recovered, source-tinted middle lobe, magenta window + amber gate, NaN guard, mover dilation
-ok(N.evBias === -1.5 && N.toe === 0.035, 'P4 colour #1: evBias -1.5, toe 0.035');
+ok(N.evBias === -2.05 && N.toe === 0.035, 'P5 colour #1 / exposure re-fit: evBias -2.05, toe 0.035');
 ok(N.coreEvSrc[0] === -4.5 && N.coreEvSrc[1] === -1, 'P4 colour #4: true-source ramp [-4.5, -1]');
 ok(Array.isArray(N.haloM) && N.haloM[0] >= 0.035 && N.haloM[0] <= 0.045 && N.haloM[1] > 0 && N.haloMTint.every((v) => v === 1), 'P4 colour #4 / P5 colour #5: middle lobe 3.5-4.5 %, source-tinted');
 ok(/uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(C.NIGHT_FINAL_BODY ?? '') || /uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(pp(C.FINAL_FS, { NIGHT: 1 })), 'P4: FINAL adds the middle lobe after eCore');

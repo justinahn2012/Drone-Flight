@@ -3,7 +3,7 @@
   "generator": "tools/camera-profile.mjs",
   "source": {
     "fpvcam.js": {
-      "sha256": "a803dff8df6d862b0ef78c95b8a73e6ed09551afa400d8ef466b5b0b8204bf90"
+      "sha256": "b031e81c4a9936d173073a96655841b6bff65553ad1618488d37147b1415deeb"
     },
     "main.js": {
       "sha256": "d9688e4a3087ff5419fe27cca62d9be3596501c607689d1f0046095df96f3bef"
@@ -390,7 +390,7 @@
             "retroCA": 0,
             "wb": [1,1,0.96],
             "wbShade": null,
-            "evBias": -1.5,
+            "evBias": -2.05,
             "lift": 0.02,
             "clipEv": 7.5,
             "con": 1.2,
@@ -476,7 +476,7 @@
             "invTone": 0,
             "ae": [0.25,0.8,0.7,0.15],
             "aeReject": 0.01,
-            "aeArea": [0.8,0.5,0.3,0.2],
+            "aeArea": [0.5,0.75,0.45,0.2],
             "aeMatrix": [0.45,0.5],
             "shutter": 0.01666667,
             "readout": 0.011
@@ -891,7 +891,7 @@
             "retroCA": 0,
             "wb": [1,1,0.96],
             "wbShade": null,
-            "evBias": -1.5,
+            "evBias": -2.05,
             "lift": 0.02,
             "clipEv": 7.5,
             "con": 1.2,
@@ -977,7 +977,7 @@
             "invTone": 0,
             "ae": [0.25,0.8,0.7,0.15],
             "aeReject": 0.01,
-            "aeArea": [0.8,0.5,0.3,0.2],
+            "aeArea": [0.5,0.75,0.45,0.2],
             "aeMatrix": [0.45,0.5],
             "shutter": 0.01666667,
             "readout": 0.011
@@ -1392,7 +1392,7 @@
             "retroCA": 0,
             "wb": [1,1,0.96],
             "wbShade": null,
-            "evBias": -1.5,
+            "evBias": -2.05,
             "lift": 0.02,
             "clipEv": 7.5,
             "con": 1.2,
@@ -1478,7 +1478,7 @@
             "invTone": 0,
             "ae": [0.25,0.8,0.7,0.15],
             "aeReject": 0.01,
-            "aeArea": [0.8,0.5,0.3,0.2],
+            "aeArea": [0.5,0.75,0.45,0.2],
             "aeMatrix": [0.45,0.5],
             "shutter": 0.01666667,
             "readout": 0.011
@@ -1599,7 +1599,7 @@
       "retroCA": 0,
       "wb": [1,1,0.96],
       "wbShade": null,
-      "evBias": -1.5,
+      "evBias": -2.05,
       "lift": 0.02,
       "clipEv": 7.5,
       "con": 1.2,
@@ -1685,7 +1685,7 @@
       "invTone": 0,
       "ae": [0.25,0.8,0.7,0.15],
       "aeReject": 0.01,
-      "aeArea": [0.8,0.5,0.3,0.2],
+      "aeArea": [0.5,0.75,0.45,0.2],
       "aeMatrix": [0.45,0.5],
       "shutter": 0.016666666666666666,
       "readout": 0.011
