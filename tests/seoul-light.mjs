@@ -221,6 +221,24 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
     const fresh = await bakeNight({ log: () => {} });
     if (fresh.header.key !== F.header.key) console.log(`WARN night-lm.bin is stale (file ${F.header.key}, this build ${fresh.header.key}): the game bakes in a Worker until node tools/bakelm.mjs --night is re-run`);
     else { const G = N.lmFileHeader(fresh.file), D2 = N.lmUnplanes(zlib.gunzipSync(G.payload), G.header.w, G.header.h); let diff = 0; for (let i = 0; i < D.length; i++) if (D[i] !== D2[i]) diff++; ok(diff === 0, `night-lm.bin is current (${F.header.key}) and bit-identical to a fresh bake (${diff} texels differ)`); }
+    // the browser path in node (window, fetch, Worker stubbed): the current file is fetched, inflated (DecompressionStream)
+    // and applied with no Worker; a stale file falls back to the Worker; the fetch never aborts
+    if (fresh.header.key === F.header.key) {
+      const { buildNightWorld } = await import('../tools/bakelm-night.mjs');
+      const { fileURLToPath } = await import('node:url');
+      const g0 = { window: globalThis.window, fetch: globalThis.fetch, Worker: globalThis.Worker };
+      let workers = 0; globalThis.window = {}; globalThis.Worker = class { constructor() { workers++; } postMessage() {} terminate() {} };
+      globalThis.fetch = async (u) => { const p = fileURLToPath(u); if (!fs.existsSync(p)) return new Response('', { status: 404 }); await new Promise((r) => setTimeout(r, 50)); return new Response(fs.readFileSync(p)); };
+      try {
+        const run = async (file) => { const w = await buildNightWorld(); const c = attach(w, w.emitters, { layout: w.layout, lotInfo: w.lotInfo, nitScale: w.NITS, steam: false, airlight: false, cull: false, ...(file ? { lightmapFile: file } : {}) }); return c; };
+        const c1 = await run(null), r1 = await Promise.race([c1.lightmapReady, new Promise((r) => setTimeout(() => r('timeout'), 20000))]);
+        const st = c1.stats.lightmap, d1 = c1.lightmapData?.data; let diff = d1 ? 0 : -1; if (d1) for (let i = 0; i < D.length; i++) if (D[i] !== d1[i]) diff++;
+        ok(r1 === true && st.mode === 'file' && workers === 0 && diff === 0, `browser path: the shipped file is applied (${r1}, mode ${st.mode}, ${workers} workers, ${diff} texels differ, key ${st.keyMs} ms)`);
+        const c2 = await run('./seoul/light/missing-night-lm.bin'); await new Promise((r) => setTimeout(r, 200));
+        ok(c2.stats.lightmap.mode === 'worker' && workers === 1 && /404/.test(c2.stats.lightmap.fileMiss || ''), `browser path: a missing file falls back to the worker (${c2.stats.lightmap.mode}, ${c2.stats.lightmap.fileMiss})`);
+        c1.dispose(); c2.dispose();
+      } finally { for (const [k, v] of Object.entries(g0)) { if (v === undefined) delete globalThis[k]; else globalThis[k] = v; } }
+    }
   } else console.log('night-lm.bin absent: skipped');
 }
 console.log(`seoul-light tests: ${pass} passed, ${fail} failed`);

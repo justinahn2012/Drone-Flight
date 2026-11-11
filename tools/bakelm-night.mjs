@@ -19,15 +19,18 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2), arg = (f, d) => { const i = argv.indexOf(f); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const mod = (f) => import(pathToFileURL(path.join(ROOT, f)).href);
 
+// the level as the browser builds it, without the light (attach is the caller's)
+export async function buildNightWorld() {
+  const THREE = await import('three'), ws = await mod('world-seoul.js');
+  const P = THREE.ImageLoader.prototype, load0 = P.load; P.load = function (url) { return { src: url, width: 0, height: 0, headless: true }; };
+  try { return await ws.buildSeoul(null, { seed: ws.SEOUL_SEED, takeClock: () => 0, quality: 'auto', light: false }); }
+  finally { P.load = load0; }
+}
 // the same world the browser builds, with the lightmap baked in line
 export async function bakeNight({ log = console.log } = {}) {
-  const THREE = await import('three');
-  const ws = await mod('world-seoul.js'), L = await mod('seoul-light.js'), N = await mod('seoul-nightlm.js');
-  const P = THREE.ImageLoader.prototype, load0 = P.load; P.load = function (url) { return { src: url, width: 0, height: 0, headless: true }; };
+  const L = await mod('seoul-light.js'), N = await mod('seoul-nightlm.js');
   const t0 = Date.now();
-  let world;
-  try { world = await ws.buildSeoul(null, { seed: ws.SEOUL_SEED, takeClock: () => 0, quality: 'auto', light: false }); }
-  finally { P.load = load0; }
+  const world = await buildNightWorld();
   // seoul-light's attach as buildSeoul makes it (its ctx: layout, lotInfo, nitScale, quality), plus the in-line bake
   const ctl = L.attach(world, world.emitters, { layout: world.layout, lotInfo: world.lotInfo, nitScale: world.NITS, quality: 'auto', lightmap: true, lightmapSync: true, steam: false, airlight: false, reflect: false, cull: false });
   const d = ctl.lightmapData; if (!d) throw new Error('no lightmap: ' + JSON.stringify(ctl.stats.lightmap));

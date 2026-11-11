@@ -920,6 +920,7 @@ export function attach(world, emitters = [], ctx = {}) {
     lm.size = [plan.atlasW, plan.atlasH];
     const IS_NODE = typeof window === 'undefined';
     const apply = (res) => {   // res: { data: RGB9E5 Uint32Array (atlasW x atlasH), texels, ms, valid? }
+      if (lm.ready) return true;
       if (!res?.data || lm.disposed || res.data.length !== plan.atlasW * plan.atlasH) return false;
       tLM.dispose(); tLM = rgb9(plan.atlasW, plan.atlasH, res.data); lm.data = res.data; lm.valid = res.valid || null;
       // P4 perf #5: in the browser the CPU copy (14 MB) goes once the GPU has it (lightmapAt then answers null);
@@ -932,21 +933,23 @@ export function attach(world, emitters = [], ctx = {}) {
     const fail = (mode, why) => { if (lm.ready || lm.disposed) return; lm.mode = mode; console.warn(`[D] night lightmap: ${why}; the volume stays`); job = null; lm.settle(false); };
     lm.apply = apply;
     function startWorker(why) {
-      if (lm.disposed || lm.ready || !job) return;
+      if (lm.disposed || lm.ready || !job || lm.worker) return;
       try {
         lm.mode = 'worker'; lm.why = why; const t0 = now();
         const w = lm.worker = new Worker(new URL('./seoul-nightlm-worker.js', import.meta.url), { type: 'module' });
-        const kill = setTimeout(() => { w.terminate(); lm.worker = null; fail('timeout', `the worker bake ran past ${ctx.lightmapWorkerTimeout ?? 60} s`); }, (ctx.lightmapWorkerTimeout ?? 60) * 1000);
-        w.onmessage = (ev) => { clearTimeout(kill); w.terminate(); lm.worker = null; if (!apply({ ...ev.data, ms: Math.round(now() - t0) })) fail('failed', 'the worker sent a malformed map'); };
+        const kill = lm.kill = setTimeout(() => { w.terminate(); lm.worker = null; fail('timeout', `the worker bake ran past ${ctx.lightmapWorkerTimeout ?? 60} s`); }, (ctx.lightmapWorkerTimeout ?? 60) * 1000);
+        w.onmessage = (ev) => { clearTimeout(kill); w.terminate(); lm.worker = null; if (lm.ready) return; if (apply({ ...ev.data, ms: Math.round(now() - t0) })) lm.mode = 'worker'; else fail('failed', 'the worker sent a malformed map'); };
         w.onerror = (e) => { clearTimeout(kill); w.terminate(); lm.worker = null; fail('failed', 'worker error ' + (e?.message || e)); };
         w.postMessage(job, [job.M.buffer, job.cs.buffer, job.pe.buffer, job.po.buffer, job.H.H.buffer]);
       } catch (e) { fail('failed', 'no worker (' + (e?.message || e) + ')'); }
     }
-    async function fromFile() {   // the shipped bake; any miss -> the worker
-      const t0 = now(), ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      const tm = setTimeout(() => ac?.abort(), (ctx.lightmapFileTimeout ?? 15) * 1000);
+    async function fromFile() {   // the shipped bake. A miss starts the worker; so does a slow file (lightmapFileTimeout s),
+      // without cancelling the fetch: whichever lands first is applied (a main thread blocked by shader compiles made a
+      // 15 s abort fire on a file that had arrived: browser run P4-2)
+      const t0 = now();
+      const slow = setTimeout(() => { if (!lm.ready && !lm.disposed && !lm.worker) { lm.fileSlow = true; startWorker(`file slower than ${ctx.lightmapFileTimeout ?? 30} s`); } }, (ctx.lightmapFileTimeout ?? 30) * 1000);
       try {
-        const r = await fetch(new URL(ctx.lightmapFile || NIGHT_LM.file, import.meta.url), ac ? { signal: ac.signal } : {});
+        const r = await fetch(new URL(ctx.lightmapFile || NIGHT_LM.file, import.meta.url));
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const F = lmFileHeader(await r.arrayBuffer()); if (!F) throw new Error('not a night-lm file');
         lm.fileKey = F.header.key;
@@ -954,9 +957,13 @@ export function attach(world, emitters = [], ctx = {}) {
         if (typeof DecompressionStream === 'undefined') throw new Error('no DecompressionStream');
         const planes = new Uint8Array(await new Response(new Blob([F.payload]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
         if (planes.length !== plan.atlasW * plan.atlasH * 4) throw new Error('payload size ' + planes.length);
-        clearTimeout(tm);
-        if (apply({ data: lmUnplanes(planes, plan.atlasW, plan.atlasH), texels: F.header.texels, ms: Math.round(now() - t0) })) { lm.mode = 'file'; lm.fileBytes = F.header.bytes; }
-      } catch (e) { clearTimeout(tm); if (!lm.disposed && !lm.ready) { lm.fileMiss = String(e?.message || e); console.info('[D] night lightmap file:', lm.fileMiss, '-> worker bake'); startWorker('file: ' + lm.fileMiss); } }
+        clearTimeout(slow);
+        if (lm.ready || lm.disposed) return;   // the worker won
+        if (apply({ data: lmUnplanes(planes, plan.atlasW, plan.atlasH), texels: F.header.texels, ms: Math.round(now() - t0) })) {
+          lm.mode = 'file'; lm.fileBytes = F.header.bytes;
+          if (lm.worker) { clearTimeout(lm.kill); lm.worker.terminate(); lm.worker = null; }
+        }
+      } catch (e) { clearTimeout(slow); if (!lm.disposed && !lm.ready) { lm.fileMiss = String(e?.message || e); console.info('[D] night lightmap file:', lm.fileMiss, '-> worker bake'); if (!lm.worker) startWorker('file: ' + lm.fileMiss); } }
     }
     if (ctx.lightmapSync || IS_NODE || typeof Worker === 'undefined') {   // applied once U exists
       lm.mode = 'sync'; const r = bakeLM(job), p = packLM(r.atlas, plan.atlasW, plan.atlasH); lm.pending = { data: p.data, valid: p.valid, texels: r.texels, ms: r.ms };

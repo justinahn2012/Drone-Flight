@@ -592,7 +592,9 @@ export function buildSeoulGeometry(layout, opts = {}) {
   // walking and club streets: 4.5 m pedestrian posts, staggered, at the edge of the paving (pulled in where facades close in)
   // [P4-D] posts keep 2 m (post + arm) off every gate and pre-gate of lines.json (a gate's centre line, c +- u w/2)
   const gateSegs = []; for (const ln of lineData?.lines || []) for (const G of [ln, ...(ln.pre || [])]) if (G?.c && G.u && G.w) gateSegs.push([G.c[0] - G.u[0] * G.w / 2, G.c[2] - G.u[2] * G.w / 2, G.c[0] + G.u[0] * G.w / 2, G.c[2] + G.u[2] * G.w / 2]);
-  const offGates = (x, z) => gateSegs.every(([ax, az, bx, bz]) => { const vx = bx - ax, vz = bz - az, t = Math.max(0, Math.min(1, ((x - ax) * vx + (z - az) * vz) / (vx * vx + vz * vz || 1))); return Math.hypot(ax + vx * t - x, az + vz * t - z) > 2.0; });
+  // ... and 4 m off every start point (lines.json startPoints / takeStart, the layout spawn): nothing in the lens at a start
+  for (const sp of [...(lineData?.startPoints || []), lineData?.takeStart, layout.spawn]) if (sp?.pos) gateSegs.push([sp.pos[0], sp.pos[2], sp.pos[0], sp.pos[2], 4.0]);
+  const offGates = (x, z) => gateSegs.every(([ax, az, bx, bz, r = 2.0]) => { const vx = bx - ax, vz = bz - az, t = Math.max(0, Math.min(1, ((x - ax) * vx + (z - az) * vz) / (vx * vx + vz * vz || 1))); return Math.hypot(ax + vx * t - x, az + vz * t - z) > r; });
   let side = 1;
   for (const s of streets) {
     if (s.kind !== 'walking' && s.kind !== 'club') continue;
