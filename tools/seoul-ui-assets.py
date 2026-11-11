@@ -16,12 +16,16 @@
   s >= 0.5 and v >= 0.6: lit neon, not white boxes). tests/seoul-ui.mjs checks the hashes and the thumb's share (>= 3 %).
 Re-run after adding hangul to levels.json or new street names to the layout.
 
-Re-shooting the stills ([P4]; the poses ship in stills.json): from a seoulsnap-style run of the build at 1280x720 or more,
-HUD off (hud: clean), quality auto, acro, the drone held still:
+Re-shooting the stills ([P4]). The P4 stills are crops of phase-3 seoulsnap stills (stills.json says which): the backdrop
+is w21 above the crowd (no face, so no mask-band dots or hair hoods), the thumb walk0's sign column (3.6 % saturated-
+bright; the Yanghwa-ro crossing had 0.4 %). Re-shoot once G1's mask fix lands (tests/seoul-ui.mjs fails until the stills
+are newer than seoul-life.js): from a seoulsnap run of the build, 1280x720 or more, HUD off, quality auto, acro, held still.
+Proposed poses, not yet shot (both P4 world runs were OOM-killed in the shared cgroup):
   thumb     o.tp(224.9, 3.2, -334.2, 107, 4 - camTilt): the walking street at the spawn, signs on both sides
-  backdrop  o.tp(205.9, 7.5, -322.5, 127.6, -8 - camTilt): over the stage end of the walking street, 7.5 m up, so no face in
-            the crowd is over ~30 px at 1600 wide
-  python3 tools/seoul-ui-assets.py --backdrop BD.jpg --backdrop-pose "..." --thumb TH.jpg --thumb-pose "..." [--commit SHA]"""
+  backdrop  o.tp(224.9, 7.5, -334.2, 107, -10 - camTilt): the same street from 7.5 m, so no face is over ~30 px at 1600 wide
+            (or keep a crop above the crowd, as now)
+  python3 tools/seoul-ui-assets.py --backdrop BD.jpg [--backdrop-crop ..] --backdrop-pose "..." --thumb TH.jpg --thumb-pose "..." --commit SHA
+The thumb must keep >= 3 % saturated-bright pixels (crop to the signs if a pose falls short)."""
 import argparse, json, os, re, sys
 from fontTools import subset
 from fontTools.ttLib import TTFont

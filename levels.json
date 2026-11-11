@@ -34,7 +34,7 @@
     "audio": "seoul",
     "subtitle": "홍대 · 새벽 1시",
     "backdrop": "seoul/ui/backdrop.jpg",
-    "backdropPos": "50% 42%",
+    "backdropPos": "44% 50%",
     "kicker": "홍대 HONGDAE · 01:00",
     "ui": {"accent": "#3de0ff", "accentInk": "#00171c", "ghost": "#3de0ff", "hairline": "linear-gradient(90deg,#ff3d9a,#3de0ff)"},
     "placeNames": true,
