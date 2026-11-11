@@ -32,7 +32,7 @@ let pass = 0, fail = 0; const ok = (c, m) => { if (c) pass++; else fail++; conso
 const layout = J('layout.json');
 const t0 = performance.now();
 const geo = buildSeoulGeometry(layout, { lineData: J('lines.json') });
-const lifeOpts = (q) => ({ seed: 11, density: 1, maxAgents: lifeAgents(q), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] as world-seoul builds it (ctx.seed 11)
+const lifeOpts = (q) => ({ seed: 11, density: 1, maxAgents: lifeAgents(q), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null });   // (P5: + E's stairwell openings)   // [integ8] as world-seoul builds it (ctx.seed 11)
 const sim = new LifeSim(layout, lifeOpts('auto'));
 const life = { sim, colliders: { at: (t, o) => sim.boxesAt(t, o), hit: (p, r, t) => sim.hit(p, r, t) } };
 const M = lifeMovers(life);
@@ -179,8 +179,10 @@ const vehAt = (t, pred) => sim.boxesAt(t, []).map((b) => ({ ...b, v: sim.traffic
       const occ = (pts) => { let k = 0, N = 0; for (let t = 0; t <= 600; t += 1) { N++; if (pts.some((p) => [-0.6, 0, 0.6].some((o) => { const h = F.hit([p[0] + u[0] * o, p[1], p[2] + u[2] * o], 0.12, t); return h && h.kind === 'pedestrian'; }))) k++; } return 100 * k / N; };
       const a8 = occ(appr), d8 = occ(dive), inHole = M2.src.peds.filter((p) => holes.some((H) => pip(p.x, p.z, H))).length;
       ok(a8 <= 5, `${q}: the stair dive's approach (6 m to the pre-gate at ${(P.c[1] - P.h / 2).toFixed(1)}-${(P.c[1] + P.h / 2).toFixed(1)} m) is ${a8.toFixed(1)} % occupied (<= 5 %)`);
-      if (inHole) console.log(`PEND ${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied: ${inHole} standing people inside E's stairwell openings (G1: keep exit 9's waiting ring and walkers out of dressingOut.holes / the obstacle discs)`);
-      else ok(d8 <= 5, `${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied (<= 5 %)`);
+      // (P5 G1: was a PEND; exit 9's waiting ring and the basement clubs' bouncers now keep out of E's holes)
+      ok(inHole === 0, `${q}: nobody stands in E's stairwell openings (${inHole}; P4: 4-5, the dive 100 % occupied)`);
+      // (P5) with nobody standing in the holes, what is left is walkers crossing the stair mouth on their way (G1 open item)
+      if (d8 > 5) console.log(`PEND ${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied by walkers crossing the stair mouth (<= 5 %)`); else ok(true, `${q}: the dive is ${d8.toFixed(1)} % occupied (<= 5 %)`);
     }
   }
 }

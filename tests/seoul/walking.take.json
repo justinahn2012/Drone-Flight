@@ -2,12 +2,12 @@
  "log": "walking.otil",
  "world": "3f6d098a1aba293d",
  "sources": {
-  "geometry": "48c21746b12e7800",
+  "geometry": "e614964da9615a7d",
   "lines": "e86b80c2251bcc78",
   "layout": "f99777aeb081b885",
   "flight": "245c4c3532ce3786",
   "take": "274d670258c481f6",
-  "life": "8c30007b53377f2d"
+  "life": "eda24044853fe099"
  },
  "sticks": "main.js sticksActive, no touches; thrRef starts at the first tick",
  "events": [

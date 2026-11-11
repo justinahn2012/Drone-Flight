@@ -40,14 +40,26 @@ export const LIFE = {
   // road vehicles at reset: bumper gaps of roadGap[0] + U * roadGap[1] m per lane (P4: 20 + U 40; P3 10 + U 30 packed the
   // widened carriageways past what the junctions pass)
   roadGap: [20, 40],
+  // (P5, life #1) demand at the map edge: Friday night on Yanghwa-ro is ~2,000 veh/h per direction (one-way carriageways:
+  // `arterial`, shared over the entry lanes of each approach); `lane` veh/h for every other road entry lane. P4 ran a closed
+  // fleet that re-entered as fast as it left, so it piled up in front of the junctions until 62 % of main-road traffic
+  // stood. Vehicles that leave wait off stage (hidden) for their entry lane's next arrival; `fleet` is the road fleet
+  // (arterialLane caps a lane at what it clears in 66-72 s of green with taxis stopping at the kerb: westbound has 3 general lanes)
+  demand: { arterial: 2000, arterialLane: 420, lane: 200, fleet: 240 },
   // (P4 perf #2: people were 0.8-1.34 M main-pass triangles) the 3.4k avatar LOD only within nearR0, a 1.7k LOD to nearR;
   // 1500 drawn on auto, 900 on the phone preset (crowd 'low'); the velocity pass sees only the near tiers
-  warm: 75, maxAgents: 15500, nearR0: 6, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 1500, maxDrawnLow: 900,
+  // warm: the city's head start (s) at take clock 0; (P5, life #6) a retry opens 0..warmMax - warm s later (attemptTicks)
+  warm: 75, warmMax: 240, maxAgents: 15500, nearR0: 6, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 1500, maxDrawnLow: 900,
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
-  phoneShare: 0.18,            // walkers looking at a phone
+  phoneShare: 0.32,            // walkers alone looking at a phone (P5, life #3: with groups at 0.2, 25 % of walkers; P4 18 % alone, 8 % in groups)
+  // (P5, life #3) a trip's chance of one stop at a shop window or sign, and its length (s): ~4 % of walkers stand at any time
+  pause: { p: 0.65, t0: 3, t1: 10 },
   sidewalk: (w) => Math.max(3, Math.min(6, w * 0.15)),
   laneW: 3.25,
-  signal: { period: 70, green: 36, amber: 3, allRed: 1, walk: 26 },   // s; walk = after green+amber+allRed
+  // s; walk = after green+amber+allRed. (P5, life #1) a 120 s cycle (Seoul arterials run 120-160 s; P4's 70 s spent 10 s of
+  // every 70 in inter-greens and held the arterial to 36 s of green). Junctions: 2 x (3 s amber + 2 s all-red), the major
+  // axis 55-60 % of the cycle
+  signal: { period: 120, green: 84, amber: 3, allRed: 1, walk: 30 },
   nitScale: 1e-3,
 };
 
@@ -117,15 +129,14 @@ export function signalPhase(t, offset = 0) {   // mid-block crosswalk: -> { car:
   const w0 = S.green + S.amber + S.allRed;
   return { car, walk: tc >= w0 && tc < w0 + S.walk, tc, w0, wlen: S.walk };
 }
-// crosswalk c at take clock t. Intersections ('X') run two axis groups: axis 0 green 0-30 s, axis 1 green 35-65 s
-// (3 s amber, 2 s all-red); a crosswalk over an axis-g road walks while the other axis has its green.
-// (P4, life #3) the split follows the lanes: axis 0 gets c.g0 s of green (default 30), axis 1 the rest of 60 (P3: 30 / 30,
-// so six-lane Yanghwa-ro waited as long as two-lane Hongik-ro)
+// crosswalk c at take clock t. Intersections ('X') run two axis groups: axis 0 green from 0 for c.g0 s, axis 1 green from
+// c.g0 + 5 to P - 5 (each followed by 3 s amber and 2 s all-red); a crosswalk over an axis-g road walks while the other
+// axis has its green. (P4, life #3) the split follows the lanes; (P5, life #1) P = 120 s, so the arterial gets 66-72 s
 export function crossPhase(c, t) {
   if (c.kind !== 'X') return signalPhase(t, c.offset);
-  const P = LIFE.signal.period, G0 = c.g0 ?? 30, G = c.axis ? 60 - G0 : G0, tc = (((t + c.offset) % P) + P) % P, g0 = c.axis ? G0 + 5 : 0, u = (tc - g0 + P) % P;
+  const P = LIFE.signal.period, S = P - 10, G0 = c.g0 ?? S / 2, G = c.axis ? S - G0 : G0, tc = (((t + c.offset) % P) + P) % P, g0 = c.axis ? G0 + 5 : 0, u = (tc - g0 + P) % P;
   const car = u < G ? 'G' : u < G + 3 ? 'A' : 'R';
-  const w0 = c.axis ? 0 : G0 + 5, wlen = (c.axis ? G0 : 60 - G0) - 3;
+  const w0 = c.axis ? 0 : G0 + 5, wlen = (c.axis ? G0 : S - G0) - 3;
   return { car, walk: tc >= w0 && tc < w0 + wlen, tc, w0, wlen };
 }
 
@@ -234,14 +245,36 @@ export function buildNetwork(layout) {
   }
   // green split per junction group: lanes approaching on each axis (one-way pieces count whole, two-way half)
   { const lanes = new Map(); for (const c of [...crossings, ...signals]) if (c.kind === 'X') { const L = lanes.get(c.root) || [0, 0]; L[c.axis] += Math.max(1, Math.round((c.main.ow ? 2 : 1) * c.main.carHalf / LIFE.laneW)); lanes.set(c.root, L); }
-    for (const c of [...crossings, ...signals]) if (c.kind === 'X') { const L = lanes.get(c.root); c.g0 = Math.max(20, Math.min(40, Math.round(60 * L[0] / (L[0] + L[1] || 1)))); } }
+    for (const c of [...crossings, ...signals]) if (c.kind === 'X') { const L = lanes.get(c.root); const S = LIFE.signal.period - 10, r = L[0] / (L[0] + L[1] || 1), maj = Math.max(Math.round(S / 2), Math.min(Math.round(0.55 * LIFE.signal.period), Math.max(Math.round(0.55 * LIFE.signal.period), Math.round(S * Math.max(r, 1 - r))))); c.g0 = r >= 0.5 ? maj : S - maj; } }   // (P5) the major axis 55-60 % of the cycle
   // (P4, life #4) where a crosswalk's kerb is the next carriageway (Yanghwa-ro's two halves), its crowd waits past that one too
   // and crosses both in one go (P3 stood them on the other carriageway, between its crosswalk and stop line); and a junction's
   // split gives them the walk (and its clearance) to do it at 1.4 m/s
   for (const c of crossings) { const P = c.main.path.at(c.sc, {}); c.ext = [-1, 1].map((sd) => { let e = 0; while (e < 30) { const off = sd * (c.halfSpan + e + 0.6), q = offRoad(mains, P.x + P.nx * off, P.z + P.nz * off, 0.4, c.main); if (q.moved === 0) break; e += 0.5; } return e; }); }
   { const need = new Map();
     for (const c of crossings) if (c.kind === 'X') { const sp = 2 * c.halfSpan + c.ext[0] + c.ext[1], nd = need.get(c.root) || [0, 0]; nd[c.axis] = Math.max(nd[c.axis], Math.ceil(sp / 1.4) - 1); need.set(c.root, nd); }   // (walk + the 3 s amber and 2 s all-red after it, 1 s spare)
-    for (const c of [...crossings, ...signals]) if (c.kind === 'X' && need.has(c.root)) { const nd = need.get(c.root); c.g0 = Math.max(nd[1], Math.min(60 - nd[0], c.g0)); } }
+    for (const c of [...crossings, ...signals]) if (c.kind === 'X' && need.has(c.root)) { const nd = need.get(c.root); c.g0 = Math.max(nd[1], Math.min(LIFE.signal.period - 10 - nd[0], c.g0)); } }
+  // (P5, life #1) green wave: junction groups linked by a road get offsets so that a platoon released by one arrives at
+  // the next as its green starts (at 11 m/s, Seoul's 50 km/h limit less the start-up). The group with the most approach
+  // lanes keeps its offset; the others follow it along the shortest road chain that passes no other junction
+  { const P = LIFE.signal.period, xs = [...crossings, ...signals].filter((c) => c.kind === 'X'), groups = [...new Set(xs.map((c) => c.root))];
+    const gOf = new Map(); for (const c of xs) gOf.set(c.node, c.root);
+    const size = (g) => xs.filter((c) => c.root === g).reduce((a, c) => a + c.main.carHalf, 0);
+    groups.sort((a, b) => size(b) - size(a) || a.id - b.id);
+    const done = new Set(groups.slice(0, 1)), gStart = (c) => (c.axis ? c.g0 + 5 : 0);
+    for (let pass = 0; pass < groups.length; pass++) for (const g of groups) {
+      if (done.has(g)) continue; let best = null;
+      for (const c0 of xs) { if (!done.has(c0.root)) continue;   // walk the road from a done junction's approach outward
+        let st = c0.main, n = c0.node, d = 0, seen = 0;
+        while (st && seen++ < 12) {
+          const far = st.n[0] === n ? st.n[1] : st.n[0]; d += st.path.len; const rg = gOf.get(far);
+          if (rg && rg !== c0.root) { if (rg === g) { const c1 = xs.find((c) => c.node === far && c.main === st); if (c1 && (!best || d < best.d)) best = { d, c0, c1 }; } break; }
+          const nx = far.ends.filter((e) => e.st !== st && e.st.kind === 'main' && (e.st.ko || e.st.name) === (st.ko || st.name)); if (nx.length !== 1) break; st = nx[0].st; n = far;
+        } }
+      if (!best) continue;
+      const tg = gStart(best.c0) - best.c0.offset + best.d / 11, off = (((gStart(best.c1) - tg) % P) + P) % P, o = Math.round(off);
+      for (const c of xs) if (c.root === g) c.offset = o;
+      done.add(g);
+    } }
   for (const m of mains) for (const o of streets) {   // mid-block: a walking or club street meets a road
     if (o.kind !== 'walking' && o.kind !== 'club') continue;
     const hits = pathCross(m.path, o.path).map(([sm]) => sm);
@@ -253,7 +286,7 @@ export function buildNetwork(layout) {
       // and one within 60 m of a junction's crosswalk on the same road turns green with that approach
       const P = LIFE.signal.period, nearX = crossings.find((d) => d.kind === 'X' && d.main === m && Math.abs(d.sc - sc) < 60);
       const near = crossings.find((d) => d.kind === 'T' && d.main === m && Math.abs(d.sc - sc) < 80);
-      addCross({ kind: 'T', main: m, sc, toward: 0, axis: 0, offset: nearX ? (nearX.offset - (nearX.axis ? 35 : 0) + P) % P : near ? near.offset : (ci * 13) % P });
+      addCross({ kind: 'T', main: m, sc, toward: 0, axis: 0, offset: nearX ? (nearX.offset - (nearX.axis ? nearX.g0 + 5 : 0) + P) % P : near ? near.offset : (ci * 13) % P });
     }
   }
   return { streets, mains, nodes, crossings, signals, bounds: boundsOf(layout, streets) };
@@ -282,7 +315,7 @@ const PAINT = {
   car: [[0.92, 0.92, 0.9], [0.92, 0.92, 0.9], [0.9, 0.91, 0.92], [0.05, 0.05, 0.06], [0.06, 0.06, 0.07], [0.55, 0.56, 0.58], [0.38, 0.39, 0.41], [0.68, 0.69, 0.7], [0.12, 0.17, 0.3], [0.45, 0.07, 0.07]],
   taxi: [[0.86, 0.86, 0.84], [0.8, 0.81, 0.82], [0.85, 0.42, 0.13], [0.86, 0.86, 0.84]],
   truck: [[0.18, 0.32, 0.62], [0.88, 0.89, 0.9], [0.2, 0.34, 0.6]],
-  bus: [[0.16, 0.36, 0.72], [0.16, 0.36, 0.72], [0.28, 0.6, 0.25]],
+  bus: [[0.0, 0.41, 0.72], [0.0, 0.41, 0.72], [0.33, 0.7, 0.2]],   // (P5) Seoul 간선 blue #0068B7 (2 in 3), 지선 green #53B332
   scooter: [[0.85, 0.85, 0.85], [0.08, 0.08, 0.09], [0.6, 0.12, 0.1], [0.2, 0.22, 0.25]],
 };
 
@@ -310,7 +343,7 @@ export class TrafficSim {
     }
     for (const [i, ln] of this.lanes.entries()) {
       const st = ln.street;
-      ln.id = `${st.id}:${ln.dir > 0 ? 'f' : 'b'}${ln.k}`; ln.idx = i; ln.len = ln.s1 - ln.s0;
+      ln.id = `${st.id}:${ln.dir > 0 ? 'f' : 'b'}${ln.k}`; ln.idx = i; ln.len = ln.s1 - ln.s0; ln.vlim = ln.shared ? 99 : st.ow ? 10.5 : 8;
       ln.start = ln.dir > 0 ? (ln.s0 < 0.5 ? st.n[0] : null) : (ln.s1 > st.path.len - 0.5 ? st.n[1] : null);
       ln.end = ln.dir > 0 ? (ln.s1 > st.path.len - 0.5 ? st.n[1] : null) : (ln.s0 < 0.5 ? st.n[0] : null);
       st.path.at(this.toBase(ln, 0), o); ln.h0 = [o.tx * ln.dir, o.tz * ln.dir];
@@ -378,7 +411,9 @@ export class TrafficSim {
     // a lane's waiting line also stops short of every other movement's swept path through its node (the hand-off ease and
     // wide turns reach past the carriageway edges): front bumper 1 m before the first point any such path comes within
     // 2.45 m (a bus and a car side by side) of its centre line in its last 25 m
-    for (const m of this.lanes) {
+    const EC = net._entry && net._entry.length === this.lanes.length ? net._entry : null;   // (P5) a second sim on this net reuses the first's
+    if (EC) this.lanes.forEach((m, i) => { m.entry = EC[i]; });
+    else for (const m of this.lanes) {
       if (!m.end) continue; let e = m.entry;
       for (const a of this.lanes) {
         if (a === m || !a.end || a.end.bid !== m.end.bid) continue;
@@ -392,7 +427,14 @@ export class TrafficSim {
       }
       m.entry = Math.max(m.len * 0.5, Math.min(m.entry, e));
     }
-    this.mvGeo.clear();
+    if (!EC) net._entry = this.lanes.map((m) => m.entry);
+    // (P5) the movement caches are pure functions of the net's lanes once built: every sim on this net shares them (the
+    // movers' forks and the worker's twin each refilled them from cold, ~2 s of the first 20 s of a fork)
+    { const C = net._mv || (net._mv = { geo: new Map(), dist: new Map(), end: new Map() }); this.mvGeo = C.geo; this.mvDist = C.dist; this.mvEnd = C.end; }
+    // (P5, life #1) a signalled approach waits for its box grant behind its stop line, not at the entry: P4 let a car queue
+    // past the line on its green, keep its place in the crosswalk through the red, then cross on the other axis's green
+    // (World Cup-buk-ro cars ran the red into Yanghwa-ro's platoons and held them, and stood on the walk)
+    for (const ln of this.lanes) { ln.boxStop = null; if (ln.end) for (const st of ln.stops) if (st.c.kind === 'X' && st.c.node && st.c.node.bid === ln.end.bid) ln.boxStop = st.s; }
     // re-entry (life #6): road traffic re-enters only at map-edge lanes, so nothing pops in on stage. Alley scooters come
     // in at a map edge, else at an alley mouth on a road kerb (lane cut by the road band: start === null).
     const len10 = (l) => l.len > 10;
@@ -403,7 +445,12 @@ export class TrafficSim {
     if (this.entries.shared.length < 6) this.entries.shared.push(...this.lanes.filter((l) => l.shared && len10(l) && !l.start));
     if (!this.entries.road.length) this.entries.road = this.lanes.filter((l) => !l.shared && len10(l) && l.pred === 0);
     for (const k of ['road', 'shared']) if (!this.entries[k].length) this.entries[k] = this.lanes.filter((l) => l.shared === (k === 'shared') && len10(l));
-    this.busEntries = this.lanes.filter((l) => l.bus && len10(l) && l.pred === 0 && l.start && l.start.boundary);
+    // (P5) buses run Yanghwa-ro's median bus lanes only (one-way carriageways): World Cup-buk-ro's turned up Hongik-ro, or
+    // right across the BUS SHELTER gates, once the junction let them through
+    this.busEntries = this.lanes.filter((l) => l.bus && l.street.ow && len10(l) && l.pred === 0 && l.start && l.start.boundary);
+    // (P5) arrival rate per road entry lane, as a mean headway in steps (uniform +-60 %: no transcendental in the step)
+    { const D = LIFE.demand, appr = new Map(); for (const l of this.entries.road) { const k = l.street.id + ':' + l.dir; appr.set(k, (appr.get(k) || 0) + 1); }
+      for (const l of this.entries.road) { const vph = l.street.ow ? Math.min(D.arterialLane, D.arterial / appr.get(l.street.id + ':' + l.dir)) : D.lane; l.hw = Math.max(1, Math.round(3600 / vph * LIFE.trafficHz)); } }
     this.twin = new Map();
     for (const ln of this.lanes) this.twin.set(ln, this.lanes.find((m) => m.street === ln.street && m.dir === -ln.dir && m.k === ln.k) || null);
     // neighbours for lane changes (same carriageway and direction, k +- 1)
@@ -417,8 +464,8 @@ export class TrafficSim {
     const R = this.R = new Rng(this.seed ^ 0x7a11c);
     this.n = 0; this.vehicles = []; this.events = []; let id = 0;
     for (const ln of this.lanes) {
-      ln.veh = [];
-      if (ln.len < 8) continue;
+      ln.veh = []; ln.nextArr = 0;
+      if (ln.len < 8 || (ln.bus && !ln.street.ow)) continue;
       let s = ln.shared ? ln.len - R.next() * 400 : ln.len - R.next() * 12;   // alleys: most short ones start empty
       while (s > 2) {
         const type = this.pickType(ln, R), c = VEH[type];
@@ -430,15 +477,26 @@ export class TrafficSim {
       }
     }
     for (const v of this.vehicles) v.next = this.pickNext(v.lane, v, R);
+    // (P5) top the road fleet up to demand.fleet with vehicles waiting off stage for their arrival
+    let road = 0; for (const v of this.vehicles) if (!v.lane.shared) road++;
+    const E = this.entries.road;
+    for (; road < LIFE.demand.fleet && E.length; road++) { const ln = E[0], v = this.spawn(id++, 'car', ln, 0, R); v.hidden = true; ln.veh.push(v); this.vehicles.push(v); this.respawn(v, R); }
   }
   // Hongdae after 22:00: taxis are 45 % of the car-class traffic (life #6), few trucks, scooters on the kerb lanes
   // exact state copy for cheap rewinds (LifeSim keeps one every 10 s of take clock): every vehicle field, lane
   // membership (rebuilt in id order: every per-lane loop is order-free or sorts with an id tie-break), RNG, step count
-  snapshot() { return { n: this.n, rs: this.R.state, v: this.vehicles.map((v) => ({ ...v })) }; }
+  // (P5) portable between sims on the same net: lanes by index (a pre-roll sim's snapshots restore into the drawn sim and the
+  // movers' forks)
+  snapshot() {
+    return { n: this.n, rs: this.R.state, na: this.lanes.map((l) => l.nextArr),
+      v: this.vehicles.map((v) => ({ ...v, lane: v.lane.idx, next: v.next ? v.next.idx : -1, next2: v.next2 ? { lane: v.next2.lane ? v.next2.lane.idx : -1, n2: v.next2.n2 } : null })) };
+  }
   restore(S) {
     this.n = S.n; this.R.state = S.rs; this.events.length = 0;
+    if (S.na) this.lanes.forEach((l, i) => { l.nextArr = S.na[i]; });
     for (const ln of this.lanes) ln.veh = [];
-    S.v.forEach((c, i) => { const v = this.vehicles[i]; for (const k in v) if (!(k in c)) delete v[k]; Object.assign(v, c); });
+    const L = this.lanes, ln = (x) => (typeof x === 'number' ? (x >= 0 ? L[x] : null) : x);
+    S.v.forEach((c, i) => { const v = this.vehicles[i]; for (const k in v) if (!(k in c)) delete v[k]; Object.assign(v, c); v.lane = ln(c.lane); v.next = ln(c.next); v.next2 = c.next2 ? { lane: ln(c.next2.lane), n2: c.next2.n2 } : null; });
     for (const v of this.vehicles) v.lane.veh.push(v);
   }
   pickType(ln, R) {
@@ -452,8 +510,8 @@ export class TrafficSim {
     const c = VEH[type], pal = PAINT[type];
     const v0 = (ln.shared ? (type === 'scooter' ? 5.5 : 3.5) : c.v0) * (0.85 + 0.3 * R.next());
     return { id, type, lane: ln, s, ps: s, v: 0, v0, acc: 0, L: c.L, W: c.W, H: c.H, paint: pal[Math.floor(R.next() * pal.length)], weave: R.next(),
-      dwell: null, dwellT: 0, hazard: false, brake: 0, jumped: true, hidden: false, nextPick: R.next() * 40, next: null, jx: 0, jz: 0, jhx: 0, jhz: 0, stepped: -1,
-      still: 0, hsrc: -1e9, lc0: 0, lcN: -1e9, lcCool: 0, horn: 0, hold: -1, hin: -1, hout: -1, tk: -1, lcFrom: -1, next2: null };
+      arr: 0, dwell: null, dwellT: 0, hazard: false, brake: 0, jumped: true, hidden: false, nextPick: R.next() * 40, next: null, jx: 0, jz: 0, jhx: 0, jhz: 0, stepped: -1,
+      still: 0, hsrc: -1e9, lc0: 0, lcN: -1e9, lcCool: 0, horn: 0, hold: -1, hin: -1, hout: -1, tk: -1, lcFrom: -1, next2: null, _riN: -1, _riM: -1, _ri: 0 };   // (P5: every field from birth: a restore never reshapes the object)
   }
   // the lane v takes after ln: approaches weighted toward straight on; lane index kept (buses keep the bus lane)
   pickNext(ln, v, R) {
@@ -466,9 +524,21 @@ export class TrafficSim {
     if (!tot) return null;
     let r = R.next() * tot, g = ln.succ[w.findLastIndex((x) => x > 0)];
     for (let i = 0; i < w.length; i++) if ((r -= w[i]) < 0) { g = ln.succ[i]; break; }
+    // (P5) buses keep to their route: straight on along the bus lane (P4's could turn up Hongik-ro into Wausan-ro, a
+    // 3.15 m roof under the low gates of INTO THE BAR ALLEY once the arterial flowed)
+    if (v.type === 'bus') {   // (the straightest way on that has a bus lane; across a median link, one whose way out does)
+      const busy = (q) => q.lanes.some((m) => m.bus) || (q.lanes[0].internal && q.lanes[0].succ.some((r) => r.turn > 0.7 && r.lanes.some((m) => m.bus)));
+      let b = null; for (const q of ln.succ) if (busy(q) && (!b || q.turn > b.turn)) b = q;
+      if (!b) for (const q of ln.succ) if (!b || q.turn > b.turn) b = q;
+      g = b;
+    }
     const L = g.lanes;
     if (v.type === 'bus') return L.find((m) => m.bus) || L[0];
     let k = Math.min(L.length - 1, ln.k); if (L[k].bus) k = Math.min(L.length - 1, k + 1);
+    // (P5) a turn goes to the near lane of the road it turns into (right: the kerb lane; left: the innermost general one),
+    // so it never cuts across the straight-on lane beside it (P4 kept the lane index: a right turn from World Cup-buk-ro's
+    // kerb lane landed in Yanghwa-ro's third lane, through the car going straight next to it)
+    if (g.turn <= 0.7 && !ln.shared && L.length > 1) { const h0 = L[0].h0, right = h0[0] * -ln.h1[1] + h0[1] * ln.h1[0] > 0; k = right ? L.length - 1 : L[0].bus ? 1 : 0; }
     if (L[k].bus) return null;
     return L[k];
   }
@@ -480,7 +550,11 @@ export class TrafficSim {
     if (!ln._allow) {   // per lane, once
       const same = this.lanes.filter((m) => m.street === ln.street && m.dir === ln.dir && !m.shared), n = same.length;
       const kmin = same.some((m) => m.bus) ? 1 : 0, side = S.map((g) => { const h0 = g.lanes[0].h0; return h0[0] * -ln.h1[1] + h0[1] * ln.h1[0]; });   // > 0: a right turn
-      const out = S.map((g, i) => n < 2 || g.turn > 0.7 ? true : side[i] > 0 ? ln.k === n - 1 : ln.k === kmin);
+      // (P5, life #1) where straight on narrows (World Cup-buk-ro's 2 general lanes into 1-lane Hongik-ro across the median),
+      // only as many lanes as it has go straight; the kerb-side rest turn right (P4 sent both straight: the queue sat at 93 %)
+      const capOf = (g) => { let c = g.lanes.length; if (g.lanes[0].internal) { let b = null; for (const q of g.lanes[0].succ) if (!b || q.turn > b.turn) b = q; if (b && b.turn > 0.7) c = Math.min(c, b.lanes.filter((m) => !m.bus).length); } return c; };
+      const sg = S.findIndex((g) => g.turn > 0.7), cap = sg >= 0 ? capOf(S[sg]) : n, hasR = side.some((x, i) => x > 0 && S[i].turn <= 0.7);
+      const out = S.map((g, i) => n < 2 ? true : g.turn > 0.7 ? !(hasR && ln.k - kmin >= cap && ln.k > kmin) : side[i] > 0 ? ln.k === n - 1 || (ln.k - kmin >= cap && ln.k > kmin) : ln.k === kmin);
       ln._allow = out.some(Boolean) ? out : S.map(() => true);
     }
     return ln._allow;
@@ -500,11 +574,14 @@ export class TrafficSim {
     v.next = v.next2 && v.next2.n2 === ln.idx ? v.next2.lane : this.pickNext(ln, v, R); v.next2 = null;
   }
   respawn(v, R) {   // re-enter the block at an entry lane (off-stage), or wait hidden until there is room
-    const E = v.type === 'bus' && this.busEntries.length ? this.busEntries : this.entries[v.lane.shared ? 'shared' : 'road'], ln = E[Math.floor(R.next() * E.length)];
+    const E = v.type === 'bus' && this.busEntries.length ? this.busEntries : this.entries[v.lane.shared ? 'shared' : 'road'];
+    let ln = E[Math.floor(R.next() * E.length)], arr = this.n;
+    // (P5) road traffic: the entry lane whose next arrival is due first takes it, at that time (each lane keeps its own rate)
+    if (ln.hw) { for (const l of E) if (l.nextArr < ln.nextArr || (l.nextArr === ln.nextArr && l.idx < ln.idx)) ln = l; arr = Math.max(ln.nextArr, this.n + 1); ln.nextArr = arr + Math.floor(ln.hw * (0.4 + 1.2 * R.next())); }
     const type = this.pickType(ln, R), nv = this.spawn(v.id, type, ln, 0, R), old = v.lane;
     const i = old.veh.indexOf(v); if (i >= 0) old.veh.splice(i, 1);
-    Object.assign(v, nv); v.lane = old; v.hidden = true;
-    this.enter(v, ln, ln.shared && !ln.start ? v.L / 2 + 0.3 : 0, R, false); v.hidden = !this.hasRoom(ln, v.L + 8);   // (P3: alley mouths: rear bumper at the kerb) v.v = v.hidden ? 0 : Math.min(v.v0, 6);
+    Object.assign(v, nv); v.lane = old; v.hidden = true; v.arr = arr;
+    this.enter(v, ln, ln.shared && !ln.start ? v.L / 2 + 0.3 : 0, R, false); v.hidden = arr > this.n || !this.hasRoom(ln, v.L + 8);   // (P3: alley mouths: rear bumper at the kerb) v.v = v.hidden ? 0 : Math.min(v.v0, 6);
   }
   step() {
     const dt = this.dt, R = this.R, t = this.n * dt, N = this.n;
@@ -529,7 +606,7 @@ export class TrafficSim {
         const v = vs[i], c = VEH[v.type];
         if (v.stepped === N) continue;
         v.stepped = N; v.ps = v.s; v.jumped = false;
-        if (v.hidden) { if (this.hasRoom(ln, v.L + 8)) { v.hidden = false; v.v = Math.min(v.v0, 6); v.jumped = true; } continue; }
+        if (v.hidden) { if (N >= v.arr && this.hasRoom(ln, v.L + 8)) { v.hidden = false; v.v = Math.min(v.v0, 6); v.jumped = true; } continue; }
         // leader: in this lane, else the last car of the lane we turn into
         let gap = Infinity, dv = 0, ldr = null;
         // bumper to bumper (P3: s is the centre; P2's l.s - l.L - v.s let a bus run 3 m into a car ahead)
@@ -537,26 +614,30 @@ export class TrafficSim {
         if (eL) for (const l of eL) if (l.lane !== ln && l.s > v.s && !l.hidden) { const g = l.s - v.s - (l.L + v.L) / 2; if (g < gap) { gap = g; dv = v.v - l.v; ldr = l; } }   // still easing out of this lane
         if (gap === Infinity && v.next) {
           let last = null; for (const o of v.next.veh) if (!o.hidden && (!last || o.s < last.s)) last = o;
-          if (last) { gap = ln.len - v.s + last.s - (last.L + v.L) / 2; dv = v.v - last.v; ldr = last; }
+          if (last) { gap = ln.len - v.s + last.s - (last.L + v.L) / 2; dv = v.v - last.v; ldr = last;
+            // (P5) through a turn the bodies are closer than the lanes' lengths say (the hand-off cuts the corner): keep 3 m more
+            if (last.s < 15) { const tn = ln._tn || (ln._tn = new Map()); let tu = tn.get(v.next.idx); if (tu === undefined) { tu = ln.succ.find((q) => q.lanes.includes(v.next))?.turn ?? 1; tn.set(v.next.idx, tu); } if (tu < 0.7) gap -= 3 * (1 - last.s / 15); } }
         }
         // signals (held: a red or amber ahead within 150 m, so the watchdog doesn't count the wait)
-        let held = false;
+        let held = false, sig = Infinity;
         for (const st of ln.stops) {
           const d = st.s - v.s - v.L / 2; if (d < -0.5 || d > 150) continue;   // front bumper to the stop line (past it: committed)
           const ph = crossPhase(st.c, t);
           if (ph.car !== 'G') held = true;
           if (d > 120) continue;
           const stop = ph.car === 'R' || (ph.car === 'A' && d > v.v * v.v / (2 * c.b) + 1);
+          if (stop && d < sig) sig = d;
           if (stop && d < gap) { gap = Math.max(0.01, d); dv = v.v; }
           if (stop && v.hold >= 0 && ln.end && v.hold === ln.end.bid && !ln.internal && d > -0.5) { v.hold = -1; v.tk = -1; }   // (P3) caught by the light: let the box go
+          else if (stop && v.hold < 0) v.tk = -1;   // (P5) and its ticket: P4 kept it, so a car waiting at a red stayed first in the box's FIFO and held the crossing axis out through its green
         }
         // junction box (life #3, P3): within braking distance of the entry, ask for the box; until it is granted the entry is
         // a stop line (and the wait is explained, so the watchdog leaves it alone)
         if (v.next && ln.end && v.hold !== ln.end.bid) {
-          const d = ln.entry - (v.s + v.L / 2);
+          const d = (ln.boxStop != null && v.s + v.L / 2 < ln.boxStop + 0.5 ? ln.boxStop : ln.entry) - (v.s + v.L / 2);
           // ask only when nothing else (a leader, a red light) stops it short of the line (P3: a vehicle granted the box then
           // held at a red kept the crossing axis out of it through its own green: gridlock)
-          if (d < v.v * v.v / (2 * c.b) + 3 && gap >= d - 0.5) {
+          if (d < v.v * v.v / (2 * c.b) + 3 && gap >= d - 0.5 && sig > d + 0.5) {   // (P5) not against its own red
             // the minor road yields (+2 s), and so do turns and median crossings (+6 s: they wait for a gap in the straight flow)
             if (v.tk < 0) { const g = ln.succ.find((q) => q.lanes.includes(v.next)); v.tk = N + (ln.shared || ln.street.kind !== 'main' ? 2 * LIFE.trafficHz : 0) + ((g && g.turn < 0.7) || v.next.internal ? 6 * LIFE.trafficHz : 0); }
             if (this.grant(v, ln, ln.end, N)) { v.hold = ln.end.bid; v.hin = ln.idx; v.hout = v.next.idx; }
@@ -571,10 +652,12 @@ export class TrafficSim {
         }
         // dwell (taxi pick-up, bus stop); no exit: slow for the end of the lane only when it is a dead end on stage
         if (v.dwell != null) { const d = v.dwell - v.s; if (d < gap) { gap = Math.max(0.01, d); dv = v.v; } }
-        // IDM
+        // IDM. (P5, life #1) a Friday-night cruise under Seoul's 5030 limits: ~38 km/h on the arterial carriageways, ~29 on the
+        // other roads (ln.vlim; P4 drove Hongik-ro at 47 km/h)
+        const v0 = v.v0 < ln.vlim ? v.v0 : ln.vlim;
         const sstar = c.s0 + Math.max(0, v.v * c.T + v.v * dv / (2 * Math.sqrt(c.a * c.b)));
-        const r = v.v / v.v0, r2 = r * r;
-        let a = c.a * (1 - r2 * r2 - (gap === Infinity ? 0 : (sstar / gap) * (sstar / gap)));
+        const r = v.v / v0, r2 = r * r;
+        let a = c.a * ((r > 1.1 ? -1 : 1 - r2 * r2) - (gap === Infinity ? 0 : (sstar / gap) * (sstar / gap)));   // (over a new limit: ease down)
         if (a < -9) a = -9;
         v.acc = a; v.v += a * dt; if (v.v < 0) v.v = 0;
         v.s += v.v * dt;
@@ -658,19 +741,38 @@ export class TrafficSim {
         for (let i = 0; i < P.length; i += 2) { const dx = P[i] - o.x, dz = P[i + 1] - o.z, lz = dx * o.hx + dz * o.hz, lx = dx * o.hz - dz * o.hx; if (Math.abs(lx) < hw && Math.abs(lz) < hl) return false; }
       }
     }
+    // (P5) and any other in-lane's holder whose body is on the path now, wherever it is (a late-amber car still leaving the
+    // box as the crossing axis's platoon arrives at speed on its green: the centre-line test passed them 0.6 m into each other)
+    const B = this.box.get(node.bid);
+    if (B) for (const h of B.hold) {
+      if (h === v || h.hidden || h.hold !== node.bid || h.hin === a) continue;
+      this.pose(h, 1, o); const hw = h.W / 2 + v.W / 2 + 0.25, hl = h.L / 2 + 0.4;
+      for (let i = 0; i < P.length; i += 2) { const dx = P[i] - o.x, dz = P[i + 1] - o.z, lz = dx * o.hx + dz * o.hz, lx = dx * o.hz - dz * o.hx; if (Math.abs(lx) < hw && Math.abs(lz) < hl) return false; }
+    }
     return true;
   }
   // room to get the whole vehicle out of the box; into a box's internal link (across the median) only an empty link with
   // room on the way out of it (chosen now, and kept), so nobody waits inside a box they hold
+  // (P5, life #1) a vehicle already moving off at > 2.5 m/s leaves room by the time the next one gets there: P4 counted it
+  // as a blockage, so a platoon went through the box one car per ~40 m of the leader's travel (550 veh/h of green per lane
+  // on Yanghwa-ro against ~1,800 saturation) and every median crossing waited for an empty link
   roomOut(v, nx) {
-    if (!this.hasRoom(nx, Math.min(nx.clear + v.L + 1, nx.entry - 0.5))) return false;
+    if (!this.roomMoving(nx, Math.min(nx.clear + v.L + 1, nx.entry - 0.5)) || !this.roomRed(v, nx)) return false;
     if (nx.internal) {
-      if (nx.veh.some((o) => !o.hidden)) return false;
+      if (nx.veh.some((o) => !o.hidden && o.v < 2.5)) return false;
       if (!v.next2 || v.next2.n2 !== nx.idx) { const c = this.pickNext(nx, v, this.R); v.next2 = c ? { lane: c, n2: nx.idx } : null; }
-      const c = v.next2 && v.next2.lane; if (c && !this.hasRoom(c, Math.min(c.clear + v.L + 1, c.entry - 0.5))) return false;
+      const c = v.next2 && v.next2.lane; if (c && !this.roomMoving(c, Math.min(c.clear + v.L + 1, c.entry - 0.5))) return false;
     }
     return true;
   }
+  // (P5) and room before a red just past the box: a crosswalk 20 m down the exit (Wausan-ro's, off the Hongik-ro junction)
+  // queued turners back into the box, across the crossing flow
+  roomRed(v, nx) {
+    const st = nx.stops[0]; if (!st || st.s > nx.clear + v.L + 20 || crossPhase(st.c, this.n * this.dt).car === 'G') return true;
+    let used = 0; for (const o of nx.veh) if (!o.hidden && o.s < st.s) used += o.L + 2;
+    return st.s - nx.clear - used >= v.L + 1;
+  }
+  roomMoving(ln, need) { for (const o of ln.veh) if (!o.hidden && o.s - o.L / 2 < need && (o.v < 2.5 || o.acc < -1 || o.dwell != null)) return false; return true; }   // (moving off, not braking to a stop)
   // (P4, life #3: AIM-style conflict cells) a holder blocks movement (a -> b) only until its rear bumper has cleared the last
   // point of its own swept path that comes within reach of (a -> b): crossing flows follow each other through the box a
   // car length apart instead of waiting for the whole box to empty (P3: 129 grants in 300 s at the Yanghwa-ro box, 79 %
@@ -891,8 +993,11 @@ export function offRoad(mains, x, z, margin = 0.5, skip = null) {
 }
 
 export class CrowdSim {
-  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null } = {}) {
+  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null, holes = null } = {}) {
     this.net = net; this.layout = layout; this.seed = seed >>> 0; this.density = density; this.maxAgents = maxAgents;
+    // (P5) E's ground openings (stairwells, [[x, z], ...] polygons): nobody stands in one (P4 put 4-5 of exit 9's waiting
+    // ring inside the stair dive)
+    this.holes = (holes || []).filter((h) => Array.isArray(h) && h.length >= 3);
     // E's dressing discs [[x, z, r]] (life #6: carts, tents, stalls, parked scooters): walkers sidestep them, nobody stands in one
     this.dress = (obstacles || []).filter((o) => o && o[2] > 0 && o[2] < 1.7);
     // walkways
@@ -1017,12 +1122,17 @@ export class CrowdSim {
       let n = Math.round((homeW[hi] + lost * homeW[hi] / hsum) * k);
       while (n > 0) {
         const gs = R.next() < LIFE.groupShare ? 2 + Math.floor(R.next() * R.next() * 3.2) : 1;
-        const u = { id: this.units.length, home: w, v: Math.max(0.75, 1.2 + R.gauss() * 0.17) * (gs > 1 ? 0.9 : 1), gsize: gs, members: [], P: 80 + R.next() * 120, phi: R.next(), fvis: 0.66 + R.next() * 0.14, trip: null, lk: null, lv: 0, dc: 0 };
+        // (P5, life #3) a group walks at its slowest member's pace: pairs 0.9x, threes and fours 0.84x
+        const u = { id: this.units.length, home: w, v: Math.max(0.75, 1.2 + R.gauss() * 0.17) * (gs > 2 ? 0.84 : gs > 1 ? 0.9 : 1), gsize: gs, members: [], P: 80 + R.next() * 120, phi: R.next(), fvis: 0.66 + R.next() * 0.14, trip: null, lk: null, lv: 0, dc: 0 };
         for (let g = 0; g < gs; g++) {
-          // groups walk two abreast (P3: 3-4 abreast spanned 1.9 m and ploughed through the crowd): rows of 2, 0.85 m apart
-          const row = g >> 1, inRow = Math.min(2, gs - row * 2);
-          const p = this.newPerson(R, K_WALK); p.unit = u.id; p.slot = inRow === 1 ? (R.next() - 0.5) * 0.3 : ((g & 1) - 0.5) * 0.6; p.sOff = -row * 0.85 + (g ? (R.next() - 0.5) * 0.3 : 0);
-          p.pose = R.next() < (gs > 1 ? 0.08 : LIFE.phoneShare) ? P_PHONE : P_WALK; p.ph0 = R.next(); u.members.push(p.id);
+          // groups walk abreast (P3: 3-4 abreast spanned 1.9 m and ploughed through the crowd, so rows of 2, 0.85 m apart).
+          // (P5, life #3) threes walk three abreast at 0.58 m (1.16 m across: Hongdae friends, not a column), fours as two
+          // pairs 0.7 m apart, the back pair a half step off
+          const three = gs === 3, row = three ? 0 : g >> 1, inRow = three ? 3 : Math.min(2, gs - row * 2);
+          const p = this.newPerson(R, K_WALK); p.unit = u.id;
+          p.slot = inRow === 1 ? (R.next() - 0.5) * 0.3 : inRow === 3 ? (g - 1) * 0.58 : ((g & 1) - 0.5) * 0.6;
+          p.sOff = -row * 0.7 + (g ? (R.next() - 0.5) * (three ? 0.25 : 0.3) : 0);
+          p.pose = R.next() < (gs > 1 ? 0.2 : LIFE.phoneShare) ? P_PHONE : P_WALK; p.ph0 = R.next(); u.members.push(p.id);
         }
         this.units.push(u); n -= gs;
       }
@@ -1042,8 +1152,9 @@ export class CrowdSim {
         this.units.push(u); n -= gs;
       }
       for (let q = 0; q < 24; q++) {
-        const a = R.next() * 6.283, r = 2.5 + R.next() * 6.5, p = this.newPerson(R, K_STAND);
-        [p.x, p.z] = this.offRoad(ex.x + pcos(a) * r, ex.z + psin(a) * r); p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
+        let a = R.next() * 6.283, r = 2.5 + R.next() * 6.5; const p = this.newPerson(R, K_STAND);
+        [p.x, p.z] = this.offRoad(ex.x + pcos(a) * r, ex.z + psin(a) * r);
+        for (let tr = 1; tr < 12 && this.holes.length && (this.inHole(p.x, p.z) || this.inDress(p.x, p.z, 0.3)); tr++) { a += 2.4; r = 2.5 + ((r - 2.5 + 1.7) % 6.5); [p.x, p.z] = this.offRoad(ex.x + pcos(a) * r, ex.z + psin(a) * r); } p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
         this.statics.push(p.id);
       }
     }
@@ -1058,7 +1169,8 @@ export class CrowdSim {
         const Q = 14 + Math.floor(R.next() * 9), q = { id: this.queues.length, lot: l.id, door: [dx, dz], t: [tx, tz], n: [nx, nz], Q, G: 22 + R.next() * 30, seed: h32(this.seed, i, 99), pool: [], cap: Math.max(2, Math.floor((fl * (1 - door) - 1) / 0.75) * 2) };
         q.Q = Math.min(q.Q, q.cap);
         for (let j = 0; j < q.Q + 3; j++) { const p = this.newPerson(R, K_QUEUE); p.q = q.id; p.qi = j; p.pose = R.next() < 0.45 ? P_PHONE : R.next() < 0.5 ? P_TALK : P_IDLE; q.pool.push(p.id); this.statics.push(p.id); }
-        const bo = this.newPerson(R, K_DOOR, true); bo.x = dx + tx * -0.5 + nx * 0.6; bo.z = dz + tz * -0.5 + nz * 0.6; bo.yaw = Math.atan2(tx, tz); bo.pose = P_IDLE; bo.look.top = [0.02, 0.02, 0.025]; bo.look.coat = 1; this.statics.push(bo.id);
+        const bo = this.newPerson(R, K_DOOR, true); bo.x = dx + tx * -0.5 + nx * 0.6; bo.z = dz + tz * -0.5 + nz * 0.6; bo.yaw = Math.atan2(tx, tz); bo.pose = P_IDLE;
+        for (let k = 0; k < 10 && this.inHole(bo.x, bo.z); k++) { bo.x += nx * 0.5; bo.z += nz * 0.5; }   // (P5) at the top of a basement club's stairwell, not in it bo.look.top = [0.02, 0.02, 0.025]; bo.look.coat = 1; this.statics.push(bo.id);
         this.queues.push(q); l._door = [dx, dz];
         return;
       }
@@ -1079,7 +1191,7 @@ export class CrowdSim {
       }
       if (R.next() > 0.85) return;
       const u = 0.2 + 0.6 * R.next(), [gx, gz] = this.offRoad(a[0] + fx * u + nx * (1.0 + R.next() * 0.8), a[1] + fz * u + nz * (1.0 + R.next() * 0.8), 1.0);
-      if (this.inDress(gx, gz, 0.4 + 0.1 * n)) return;   // (life #6) not inside E's cart / tent / stall
+      if (this.inDress(gx, gz, 0.4 + 0.1 * n) || this.inHole(gx, gz, 0.6 + 0.1 * n)) return;   // (life #6) not inside E's cart / tent / stall
       const smokers = n === 1 && R.next() < 0.5;
       for (let q = 0; q < n; q++) {
         const ang = (q / n) * 6.283 + R.next() * 0.5, r = n > 1 ? 0.42 + 0.1 * n : 0;
@@ -1103,7 +1215,7 @@ export class CrowdSim {
       for (let j = 0; j < na; j++) {
         const row = Math.floor(R.next() * R.next() * 3), r = (s.r0 ?? 2.6) + row * 0.75 + R.next() * 0.35, th = (R.next() - 0.5) * 2 * (s.arc ?? 1.95);
         const ax = b.x + (fwx * pcos(th) + rtx * psin(th)) * r, az = b.z + (fwz * pcos(th) + rtz * psin(th)) * r;
-        if (this.inDress(ax, az, 0.3)) continue;
+        if (this.inDress(ax, az, 0.3) || this.inHole(ax, az)) continue;
         const p = this.newPerson(R, K_BUSK); p.x = ax; p.z = az;
         p.yaw = Math.atan2(b.x - p.x, b.z - p.z) + (R.next() - 0.5) * 0.3; p.busk = si; p.film = R.next() < 0.4; p.pose = p.film ? P_FILM : R.next() < 0.6 ? P_IDLE : P_TALK;
         p.Pa = 90 + R.next() * 150; p.pa = R.next(); p.out = [(p.x - b.x) / r, (p.z - b.z) / r]; b.aud.push(p.id); this.statics.push(p.id);
@@ -1131,6 +1243,11 @@ export class CrowdSim {
     for (const l of this.lots) for (const t of l._tables || []) if (!t.stool) addObst(t[0], t[1], 1.0);
     for (const o of this.dress) addObst(o[0], o[1], o[2]);
     for (const w of this.ways) w.obst.sort((p, q) => p[0] - q[0]);
+  }
+  inHole(x, z, pad = 0.45) {
+    const pip = (px, pz, H) => { let c = false; for (let i = 0, j = H.length - 1; i < H.length; j = i++) { const [xi, zi] = H[i], [xj, zj] = H[j]; if ((zi > pz) !== (zj > pz) && px < ((xj - xi) * (pz - zi)) / (zj - zi) + xi) c = !c; } return c; };
+    for (const H of this.holes) for (const [ox, oz] of [[0, 0], [pad, 0], [-pad, 0], [0, pad], [0, -pad]]) if (pip(x + ox, z + oz, H)) return true;
+    return false;
   }
   inDress(x, z, pad = 0) { for (const o of this.dress) { const dx = x - o[0], dz = z - o[1], r = o[2] + pad; if (dx * dx + dz * dz < r * r) return true; } return false; }
   defaultBuskSites(layout) {
@@ -1204,7 +1321,19 @@ export class CrowdSim {
       if (L.w) { L.w.base.at(L.s0, o); L.y0 = Math.atan2(o.tx * L.dir, o.tz * L.dir); L.w.base.at(L.s0 + L.dir * L.len, o); L.y1 = Math.atan2(o.tx * L.dir, o.tz * L.dir); }
       else { L.y0 = L.y1 = Math.atan2(L.x1 - L.x0, L.z1 - L.z0); }
     }
-    return { k, legs, cum, L: cum[legs.length], start, end };
+    // (P5, life #3) one stop on the way, on a way with shop doors: 3-10 s at a window or a sign, facing it (closed form:
+    // the trip's clock just holds; skipped where it would run into the next trip)
+    const tr = { k, legs, cum, L: cum[legs.length], start, end, pD: -1, pT: 0, pYaw: 0 }, PZ = LIFE.pause;
+    if (hu(u.id, k, 0x9a05) < PZ.p) {
+      const pT = PZ.t0 + (PZ.t1 - PZ.t0) * hu(u.id, k, 0x9a06), cand = [];
+      for (let i = 0; i < legs.length; i++) if (legs[i].w && legs[i].w.doorW > 0 && legs[i].len > 6) cand.push(i);
+      if (cand.length && tr.L / u.v + pT < 0.95 * u.P) {
+        const i = cand[Math.floor(hu(u.id, k, 0x9a07) * cand.length)], L = legs[i], a = 2 + (L.len - 4) * hu(u.id, k, 0x9a08);
+        L.w.base.at(L.s0 + L.dir * a, o); const sg = Math.sign(L.w.c + L.d) || 1;
+        tr.pD = cum[i] + a; tr.pT = pT; tr.pYaw = Math.atan2(o.nx * sg, o.nz * sg);
+      }
+    }
+    return tr;
   }
   // ---- evaluation
   unitTrip(u, t) {
@@ -1214,7 +1343,11 @@ export class CrowdSim {
   }
   // walker unit u at t -> members' pose into the arrays (avoidance not applied). Returns false if hidden.
   evalUnit(u, t, A, cam = null, farR2 = Infinity) {
-    const tau = this.unitTrip(u, t), tr = u.trip, dist = tau * u.v;
+    const tau0 = this.unitTrip(u, t), tr = u.trip;
+    // (P5) the window stop: the clock holds at pD for pT s (turn: 0..1 how far turned to the window)
+    let tau = tau0, turn = 0;
+    if (tr.pT > 0) { const tp = tr.pD / u.v; if (tau0 > tp) { if (tau0 < tp + tr.pT) { tau = tp; turn = Math.min(smooth((tau0 - tp) / 0.7), smooth((tp + tr.pT - tau0) / 0.7)); } else tau = tau0 - tr.pT; } }
+    const dist = tau * u.v;
     const vis = dist < tr.L && tr.legs.length;
     if (!vis) { for (const i of u.members) A.VIS[i] = 0; return false; }
     let lo = 0, hi = tr.legs.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (tr.cum[m] <= dist) lo = m; else hi = m - 1; }
@@ -1234,13 +1367,15 @@ export class CrowdSim {
       for (const i of u.members) A.WAY[i] = -1;
     }
     if (into < 0.7 && lo > 0) { const py = tr.legs[lo - 1].y1, f = smooth(into / 0.7); yaw = py + wrapA(yaw - py) * f; }
+    const stopped = turn > 0 || (tr.pT > 0 && tau0 > tr.pD / u.v && tau0 < tr.pD / u.v + tr.pT);
+    if (stopped) yaw += wrapA(tr.pYaw - yaw) * turn;
     const stride = 0.95 + 0.42 * u.v;
     for (const i of u.members) {
       const p = this.people[i], lat = L.w ? p.slot * L.dir : p.slot;
       let px = x + nx * lat + tx * p.sOff, pz = z + nz * lat + tz * p.sOff;
       if (L.w) { let d = L.d + lat; const half = 0.25; d = Math.max(L.w.dmin + half, Math.min(L.w.dmax - half, d)); A.WD[i] = d; px = x + nx * (d - L.d) + tx * p.sOff; pz = z + nz * (d - L.d) + tz * p.sOff; }
-      A.X[i] = px; A.Z[i] = pz; A.YAW[i] = yaw; A.VIS[i] = 1; A.WALK[i] = 1;
-      A.PH[i] = ((dist + p.sOff) / (stride * p.scale) + p.ph0) % 1; A.POSE[i] = p.pose;
+      A.X[i] = px; A.Z[i] = pz; A.YAW[i] = yaw; A.VIS[i] = 1; A.WALK[i] = stopped ? 0 : 1;
+      A.PH[i] = ((dist + p.sOff) / (stride * p.scale) + p.ph0) % 1; A.POSE[i] = stopped && p.pose === P_WALK ? (hu(p.id, tr.k, 3) < 0.5 ? P_IDLE : P_PHONE) : p.pose;
     }
     return true;
   }
@@ -1461,13 +1596,13 @@ export function lookFor(R, male) {
 
 export class LifeSim {
   // setPieces / obstacles: E's (world-seoul ctx); sites: explicit busking sites (override the set pieces')
-  constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles } = {}) {
+  constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles, holes } = {}) {
     this.net = buildNetwork(layout);
     // E's median BUS SHELTER islands (design #2, P3): the traffic gives them room (see TrafficSim: shelter offsets)
     this.net.shelters = (setPieces || []).filter((p) => p && p.kind === 'shelter' && p.pos && p.dir && p.island);
     this.traffic = new TrafficSim(this.net, { seed });
     const bs = buskSitesFrom(setPieces);
-    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null) });
+    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null), holes });
     this.t = 0; this.snaps = new Map();
   }
   reset() { this.traffic.reset(); this.t = 0; }
@@ -1479,6 +1614,9 @@ export class LifeSim {
     if (nt < T.n) {
       let best = -1; for (const k of this.snaps.keys()) if (k <= nt && k > best) best = k;
       if (best >= 0) T.restore(this.snaps.get(best)); else T.reset();
+    } else if (nt - T.n > 1200) {   // (P5) a jump ahead (a new attempt's later city): from the pre-roll's snapshots
+      let best = -1; for (const k of this.snaps.keys()) if (k <= nt && k > T.n && k > best) best = k;
+      if (best >= 0) T.restore(this.snaps.get(best));
     }
     while (T.n < nt) { if (T.n % 600 === 0 && !this.snaps.has(T.n) && (T.n <= 36000 || T.n % 3600 === 0)) this.snaps.set(T.n, T.snapshot()); T.step(); }
     this.t = t;
@@ -1486,6 +1624,17 @@ export class LifeSim {
   }
   // take-tick entry point (240 Hz): t = tick / 240
   stepTick(tick) { this.advanceTo(tick / 240); }
+  // (P5, life #6) a second sim on the same net steps ahead in spare time, leaving its snapshots (every 10 s) for advanceTo
+  // and the movers, so a new attempt can open on a later city (60-240 s in) without simulating up to it. -> pre-rolled s
+  preroll(steps, upTo = LIFE.warmMax + 15) {
+    const N = Math.floor(upTo * LIFE.trafficHz);
+    if (!this._pre) { if (this.traffic.n >= N) return this.prerolled = upTo; this._pre = new TrafficSim(this.net, { seed: this.traffic.seed }); }
+    const P = this._pre;
+    for (let k = 0; k < steps && P.n < N; k++) { if (P.n % 600 === 0 && !this.snaps.has(P.n)) this.snaps.set(P.n, P.snapshot()); P.step(); }
+    this.prerolled = Math.max(this.traffic.n, P.n) / LIFE.trafficHz;
+    if (P.n >= N && P.step) { this.snaps.set(P.n, P.snapshot()); this._pre = { n: N }; }   // done: drop the sim
+    return this.prerolled;
+  }
   // kinematic vehicle boxes at take clock t: [{ id, type, c:[x,y,z], half:[hw,hh,hl], h:[hx,hz] }]
   boxesAt(t, out = []) {
     this.advanceTo(t); out.length = 0; const P = {};
@@ -1791,9 +1940,10 @@ const HUMAN_ANIM = /* glsl */`
   float du = fract(T / 14.0 + seed * 1.7), drink = sitP * smoothstep(0.0, 0.06, du) * (1.0 - smoothstep(0.16, 0.22, du));
   hipL = mix(hipL, 1.45, sitP); hipR = mix(hipR, 1.35, sitP); knL = mix(knL, 1.5, sitP); knR = mix(knR, 1.4, sitP); anL *= 1.0 - sitP; anR *= 1.0 - sitP;
   sL = mix(sL, 0.5, sitP); sR = mix(sR, mix(0.55 + 0.25 * phoneP, 0.7, drink), sitP); eL = mix(eL, 1.1, sitP); eR = mix(eR, mix(1.3, 2.2, drink), sitP); headP -= 0.12 * drink;
-  // flinch (P4, life #4): a drone at head height within 2.5 m: forearms up in front of the face, head back and away
-  sL = mix(sL, 0.95, flinchP); sR = mix(sR, 0.95, flinchP); eL = mix(eL, 1.9, flinchP); eR = mix(eR, 1.9, flinchP);
-  abL = mix(abL, -0.28, flinchP); abR = mix(abR, -0.28, flinchP); headP -= 0.22 * flinchP; knL += 0.12 * flinchP; knR += 0.12 * flinchP;
+  // flinch (P4, life #4): a drone at head height within 2.5 m. (P5, graphics bug: P4's forearms-up read as a hold-up) a duck:
+  // knees give, head ducks forward, hands come up to the chest at most (upper arm 0.4 rad forward, forearm across)
+  sL = mix(sL, 0.4, flinchP); sR = mix(sR, 0.4, flinchP); eL = mix(eL, 1.25, flinchP); eR = mix(eR, 1.25, flinchP);
+  abL = mix(abL, -0.15, flinchP); abR = mix(abR, -0.15, flinchP); headP += 0.18 * flinchP; knL += 0.32 * flinchP; knR += 0.32 * flinchP;
   // look-at (CPU-side: people turn their heads to the drone, filmers aim up)
   headY += iLook.x; headP += iLook.y;
   // ---- skeleton: each vertex's bone (and, on an avatar, its second bone blended by weight bw)
@@ -1985,16 +2135,57 @@ export function vehicleGeo(type) {
     box(-0.26, 0.4, -hl - 0.02, 0.26, 0.51, -hl - 0.005, 11);
     for (const z of [hl - 0.8, -hl + 1.0]) { wheel(-hw + 0.13, z, 0.3, 0.2); wheel(hw - 0.13, z, 0.3, 0.2); }
   } else if (type === 'bus') {
-    box(-hw, 0.3, -hl, hw, 1.1, hl, 0);
-    box(-hw, 1.1, -hl + 0.3, hw, H - 0.35, hl - 0.15, 5);                  // window band: dark glass over a 20-40 nit interior
-    box(-hw, 0.35, hl - 0.15, hw, H - 0.35, hl, 1);                         // windscreen, full height
-    box(-hw, H - 0.35, -hl, hw, H - 0.05, hl, 0, 0.0); box(-hw + 0.1, H - 0.05, -hl + 0.2, hw - 0.1, H, hl - 0.25, 0); box(-hw, 1.1, -hl, hw, H - 0.35, -hl + 0.3, 0);
-    box(-hw + 0.3, H - 0.32, hl - 0.01, hw - 0.3, H - 0.08, hl + 0.02, 6); // destination LED
-    box(-hw + 0.18, 0.55, hl - 0.02, -hw + 0.38, 0.63, hl + 0.01, 3); box(hw - 0.38, 0.55, hl - 0.02, hw - 0.18, 0.63, hl + 0.01, 3);
-    box(-hw + 0.1, 0.7, -hl - 0.02, -hw + 0.22, 0.95, -hl + 0.01, 4); box(hw - 0.22, 0.7, -hl - 0.02, hw - 0.1, 0.95, -hl + 0.01, 4);
-    box(-hw - 0.01, 0.3, -hl + 0.2, -hw + 0.01, 0.38, hl - 0.2, 2); box(hw - 0.01, 0.3, -hl + 0.2, hw + 0.01, 0.38, hl - 0.2, 2);
-    box(-hw - 0.012, 0.42, -hl + 0.1, hw + 0.012, 0.62, hl - 0.05, 12);   // (P4) Seoul city-bus livery: the light skirt band under the colour
-    for (const z of [hl - 2.3, -hl + 2.6]) { wheel(-hw + 0.16, z, 0.48, 0.3); wheel(hw - 0.16, z, 0.48, 0.3); }
+    // (P5, life #5 / graphics #3 / fpv #4: P4's bus was a stack of 48-triangle boxes) a lofted 11 m low-floor city bus:
+    // rounded plan corners (0.42 m), wheel arches cut into the skirt, a tumblehome window band (part 5: the lit interior
+    // and its passengers, in the shader), a crowned roof with a rounded shoulder, a one-piece windscreen (part 1) in a front
+    // cap, the rear window, two kerb-side door leaves (glass to the floor), the livery skirt, LED boards front and
+    // rear (part 6), lamps. Winding is set per triangle from the spine, so every face is outward by construction.
+    const rc = 0.42, ar = 0.6, wz = [hl - 2.3, -hl + 2.6], belt = 1.1, top = H - 0.36;
+    const planHW = (z) => { const d = Math.max(0, Math.abs(z) - (hl - rc)); return hw - rc + Math.sqrt(Math.max(0, rc * rc - d * d)); };
+    const botY = (z) => { let y = 0.32; for (const zc of wz) { const d = z - zc; if (Math.abs(d) < ar) y = Math.max(y, 0.48 + Math.sqrt(ar * ar - d * d) * 0.92); } return y; };
+    // rows: [y(z) or fixed, x fraction of the plan half-width, part]; duplicated at the belt and the window head (sharp edges)
+    const rows = [[(z) => botY(z), 0.985, 0], [() => 0.62, 1, 0], [() => belt, 1, 0], [() => belt, 0.995, 5], [() => top, 0.97, 5], [() => top, 0.97, 0], [() => H - 0.14, 0.93, 0], [() => H - 0.03, 0.72, 0], [() => H, 0.0, 0]];
+    const zs = []; for (let i = 0; i <= 30; i++) { const u = i / 30; zs.push(-hl + L * (0.5 - 0.5 * Math.cos(Math.PI * u))); }
+    for (const zc of wz) for (let d = -ar; d <= ar + 1e-6; d += ar / 4) zs.push(zc + d);
+    zs.sort((a, b) => a - b);
+    const nr = rows.length, nS = zs.length, base = P.length / 3, t0 = I.length / 3;
+    const spine = (x, y, z) => [x, y - 0.45, z - Math.max(-hl + 0.6, Math.min(hl - 0.6, z))];
+    const triO = (a, b, c) => {   // wind (a, b, c) so its normal points away from the spine
+      const A = [P[a * 3], P[a * 3 + 1], P[a * 3 + 2]], B = [P[b * 3], P[b * 3 + 1], P[b * 3 + 2]], Cc = [P[c * 3], P[c * 3 + 1], P[c * 3 + 2]];
+      const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], v = [Cc[0] - A[0], Cc[1] - A[1], Cc[2] - A[2]], n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+      const o = spine((A[0] + B[0] + Cc[0]) / 3, (A[1] + B[1] + Cc[1]) / 3, (A[2] + B[2] + Cc[2]) / 3);
+      if (n[0] * o[0] + n[1] * o[1] + n[2] * o[2] >= 0) I.push(a, b, c); else I.push(a, c, b);
+    };
+    for (const sx of [1, -1]) for (const z of zs) { const hwz = planHW(z); for (const [fy, fx, part] of rows) { P.push(sx * hwz * fx, fy(z), z); N.push(0, 0, 0); C.push(part); } }
+    const side = nS * nr;
+    for (let s2 = 0; s2 < 2; s2++) for (let i = 0; i < nS - 1; i++) for (let j = 0; j < nr - 1; j++) {
+      const a = base + s2 * side + i * nr + j, b2 = a + nr; triO(a, a + 1, b2); triO(a + 1, b2 + 1, b2);
+    }
+    { const g0 = new THREE.BufferGeometry(); g0.setAttribute('position', new THREE.Float32BufferAttribute(P.slice(base * 3), 3)); g0.setIndex(I.slice(t0 * 3).map((q) => q - base)); g0.computeVertexNormals(); const nn = g0.attributes.normal.array; for (let i = 0; i < nn.length; i++) N[base * 3 + i] = nn[i]; }
+    prims.push({ kind: 'loft', c: [0, 0.45, 0], start: t0, count: I.length / 3 - t0 });
+    // end caps on their own vertices: the front is a windscreen from 0.85 m to the roof shoulder, the rear a window band
+    for (const [zi, front] of [[nS - 1, true], [0, false]]) {
+      const c0 = I.length / 3, cb = P.length / 3, z = zs[zi], sz = front ? 1 : -1;
+      for (const sx of [1, -1]) for (let j = 0; j < nr; j++) {
+        const q = base + (sx > 0 ? 0 : side) + zi * nr + j, y = P[q * 3 + 1];
+        const glass = front ? y > 0.84 && y < H - 0.13 : y > 1.45 && y < top + 0.01;
+        P.push(P[q * 3], y, z); N.push(0, 0, sz); C.push(glass ? (front ? 1 : 5) : 0);
+      }
+      for (let j = 0; j < nr - 1; j++) { const a = cb + j, b2 = cb + nr + j; triO(a, a + 1, b2); triO(a + 1, b2 + 1, b2); }
+      prims.push({ kind: 'loft', c: [0, 0.45, 0], start: c0, count: I.length / 3 - c0 });
+    }
+    // kerb-side door leaves (glass to the floor), front and middle; the window posts are drawn by the interior shader
+    for (const [z0, z1] of [[hl - 1.55, hl - 0.5], [-0.75, 0.45]]) box(-hw - 0.012, 0.36, z0, -hw + 0.03, top - 0.05, z1, 1);
+    box(-hw + 0.35, H - 0.34, hl - 0.06, hw - 0.35, H - 0.12, hl + 0.005, 6);   // front destination LED (route + terminus)
+    box(-0.55, top + 0.04, -hl - 0.005, 0.55, H - 0.16, -hl + 0.06, 6);        // rear route LED
+    box(-hw + 0.2, 0.52, hl - 0.03, -hw + 0.42, 0.62, hl + 0.012, 3); box(hw - 0.42, 0.52, hl - 0.03, hw - 0.2, 0.62, hl + 0.012, 3);
+    box(-hw + 0.08, 0.75, -hl - 0.012, -hw + 0.2, 1.05, -hl + 0.03, 4); box(hw - 0.2, 0.75, -hl - 0.012, hw - 0.08, 1.05, -hl + 0.03, 4);
+    box(-hw * 0.75, 0.33, hl - 0.04, hw * 0.75, 0.48, hl + 0.03, 2); box(-hw * 0.8, 0.33, -hl - 0.03, hw * 0.8, 0.5, -hl + 0.04, 2);   // bumpers
+    box(-hw - 0.012, 0.44, -hl + 0.5, hw + 0.012, 0.6, hl - 0.5, 12);     // livery skirt band under the colour
+    box(-0.26, 0.6, hl + 0.025, 0.26, 0.71, hl + 0.04, 11);                // plate
+    for (const sx of [1, -1]) box(sx > 0 ? hw - 0.02 : -hw - 0.22, 2.0, hl - 0.25, sx > 0 ? hw + 0.22 : -hw + 0.02, 2.35, hl - 0.12, 2);   // mirror arms
+    box(-hw * 0.8, 0.27, -hl + 0.6, hw * 0.8, 0.31, hl - 0.6, 2);          // underbody
+    for (const z of wz) { wheel(-hw + 0.16, z, 0.48, 0.3); wheel(hw - 0.16, z, 0.48, 0.3); }
   } else {   // scooter + rider + delivery box
     box(-0.16, 0.25, -0.7, 0.16, 0.62, 0.55, 0); box(-0.12, 0.62, -0.6, 0.12, 0.72, 0.05, 2);
     box(-0.08, 0.62, 0.45, 0.08, 1.05, 0.6, 0); box(-0.32, 1.02, 0.42, 0.32, 1.06, 0.48, 2);
@@ -2174,8 +2365,8 @@ export function build(layout, ctx = {}) {
   const maxAgents = ctx.maxAgents ?? (q === 'low' ? Math.round(LIFE.maxAgents * 0.5) : LIFE.maxAgents);
   // E's set pieces and dressing discs (contract P3-G1/C: world-seoul passes ctx.setPieces = geo.setPieces and ctx.obstacles =
   // geo.dressingOut.obstacles; ctx.dressing (E's geometry output) is read too). Absent: the default rings, no discs.
-  const setPieces = ctx.setPieces ?? ctx.dressing?.setPieces ?? null, obstacles = ctx.obstacles ?? ctx.dressing?.obstacles ?? null;
-  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles });
+  const setPieces = ctx.setPieces ?? ctx.dressing?.setPieces ?? null, obstacles = ctx.obstacles ?? ctx.dressing?.obstacles ?? null, holes = ctx.holes ?? ctx.dressing?.holes ?? null;
+  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles, holes });
   const crowd = sim.crowd, traffic = sim.traffic;
   const group = new THREE.Group(); group.name = 'seoul-life';
   const nit = { value: ctx.nitScale ?? LIFE.nitScale };
@@ -2224,7 +2415,7 @@ export function build(layout, ctx = {}) {
   const tiers = [0, 1, 2].map((lod) => {
     const g = buildHumanGeo(lod), cap = [LIFE.maxNear, LIFE.maxMid, LIFE.maxDrawn][lod], A = instAttrs(g, cap);
     const m = new THREE.Mesh(g, humanMat); m.frustumCulled = false; m.name = ['crowd-near', 'crowd-mid', 'crowd-far'][lod]; group.add(m);
-    return { g, A, cap, mesh: m, tris: g.index.count / 3, n: 0 };
+    return { g, A, cap, mesh: m, tris: g.index.count / 3, n: 0, pid: new Int32Array(cap) };   // (pid: the person in each slot)
   });
   // ---- Rocketbox avatars (life #1, art #5, graphics #6; MIT, seoul/people): 8 rigged, textured bodies baked onto the crowd's
   // rig for the near (3.4k tris) and mid (0.77k) tiers; the procedural body stays as the far tier and the fallback (node, no
@@ -2255,7 +2446,7 @@ export function build(layout, ctx = {}) {
     avatars.tiers = Array.from({ length: nL }, (_, lod) => meta.avatars.map((av, ai) => {
       const mid = lod === nL - 1, L = av.lods[lod], g = avatarGeo(bin, L), cap = mid ? Math.ceil(LIFE.maxMid * 0.5) : Math.ceil(LIFE.maxNear * (nL === 3 && lod === 0 ? 0.3 : 0.5)), A = instAttrs(g, cap);
       const m = new THREE.Mesh(g, avatars.mats[ai]); m.frustumCulled = false; m.name = `crowd-${mid ? 'mid' : L.name || 'near'}-${av.name}`; group.add(m);
-      return { g, A, cap, mesh: m, tris: L.tris, n: 0, near: !mid };
+      return { g, A, cap, mesh: m, tris: L.tris, n: 0, near: !mid, pid: new Int32Array(cap) };
     }));
     avatars.male = meta.avatars.map((av, i) => (av.sex === 'm' ? i : -1)).filter((i) => i >= 0);
     avatars.female = meta.avatars.map((av, i) => (av.sex === 'f' ? i : -1)).filter((i) => i >= 0);
@@ -2296,6 +2487,12 @@ export function build(layout, ctx = {}) {
   // startled, LAG m a walker has fallen behind its sim position (slowed to 0.4x, then catches up), SX sidestep (m, signed
   // across the heading), FL s of flinch left
   const RX = new Float32Array(NP), LAG = new Float32Array(NP), SX = new Float32Array(NP), FL = new Float32Array(NP);
+  // (P5, life #4 / fpv #3: ghost walkers) where each person was drawn last frame (DST: that frame's number). A person drawn
+  // on consecutive frames follows the frame's position from where they were, carried by their own velocity, closing the
+  // gap at 6/s; the blur velocity is what they were actually drawn doing. P4 drew the crowd's avoidance as it came out
+  // (12 relaxation passes, re-sorted every frame: 6 % of near people jumped 0.06-0.25 m in a frame) and smeared them by
+  // the walk speed alone: in a hover, standing and side-stepping people streaked
+  const DXp = new Float32Array(NP), DZp = new Float32Array(NP), DST = new Int32Array(NP).fill(-9); let frameNo = 0;
   const filmer = people.map((a) => a.kind !== K_WALK && a.kind !== K_SEAT && a.kind !== K_PERF && seedOf[a.id] < 0.3);
 
   // ---- pocha furniture (plastic tables + stools), only if the site doesn't provide it
@@ -2391,7 +2588,7 @@ export function build(layout, ctx = {}) {
     LW.state = 'starting';
     // [P5 H, perf #2] warmTo: the worker reaches the warm clock before 'ready' (it used to pay that 75 s of traffic on its
     // first frame: 2.65-22 s with no frame back); until then, and after a seek until a post-seek frame lands, inline
-    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
+    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
   }
   function lwFrame(tNow, cam) {   // -> the worker frame to draw at tNow, or null (inline)
     const w = LW.w; if (!w) return null;
@@ -2412,6 +2609,8 @@ export function build(layout, ctx = {}) {
     if (typeof t === 'number') { clock = t; extClock = true; }
     if (camPos) camP.copy(camPos);
     sim.advanceTo(clock + W);
+    // (P5, life #6) pre-roll the later city a few steps a frame (~1 ms; done ~25 s after load), so retries can open on it
+    if (ctx.preroll !== false && !(sim.prerolled >= LIFE.warmMax + 15)) sim.preroll(ctx.prerollSteps ?? 8);
     const c1 = performance.now();
     uTime.value = clock + W;
     const dt = lastClock == null ? 0 : Math.max(0, Math.min(0.1, clock - lastClock)); lastClock = clock;   // (W: see warm below)
@@ -2422,6 +2621,7 @@ export function build(layout, ctx = {}) {
     const CF = lwFrame(clock + W, camE);   // [P4 H] the worker's frame, else the inline evaluate
     if (CF) { for (const e of CF.events) crowd.events.push(e); } else crowd.evaluate(clock + W, camE);
     const CA = CF || crowd;   // the frame's arrays: X, Z, YAW, PH, WALK, POSE, VIS
+    const dtF = CF ? Math.max(-0.25, Math.min(0.25, clock + W - CF.t)) : 0; frameNo++;
     stats.lifeWorker = LW.state; stats.lifeWorkerUsed = LW.used; stats.lifeWorkerInline = LW.inline;
     const c2 = performance.now();
     const X = CA.X, Z = CA.Z, VIS = CA.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
@@ -2448,22 +2648,39 @@ export function build(layout, ctx = {}) {
     near.doors = crowd.events;
     // the phone preset (seoul-light's qualityCap, crowd 'low') draws fewer, live
     const capP = ctx.scene?.userData?.seoulLight?.qualityCap, low = q === 'low' || (capP && capP.presets?.[capP.current]?.crowd === 'low'), maxD = low ? LIFE.maxDrawnLow : LIFE.maxDrawn;
-    let cut = 17, acc = 0; for (let b = 0; b <= 17; b++) { acc += hist[b]; if (acc > maxD) { cut = b - 1; break; } }
+    // (P5) the band where the budget runs out is thinned by a per-person hash, not dropped whole: P4 cut at whole 10 m bands,
+    // so ~115 far people popped in and out together as the total crossed maxDrawn (and the worker's frame, a frame apart,
+    // drew 7.9 % more or fewer than inline)
+    let cut = 17, acc = 0, part = 1; for (let b = 0; b <= 17; b++) { if (acc + hist[b] > maxD) { cut = b; part = (maxD - acc) / hist[b]; break; } acc += hist[b]; }
     const kL = 1 - Math.exp(-dt * 4);
     for (let i = 0; i < NP; i++) {
-      if (ab[i] > cut) { ATT[i] = 0; continue; }
+      if (ab[i] > cut || (ab[i] === cut && part < 1 && h32(i, 0x5eed) / 4294967296 >= part)) { ATT[i] = 0; continue; }
       const a = people[i];
       // ---- reaction (life #4): within 2.5 m of a drone flying under 2.5 m: walkers slow to 0.4x and sidestep 0.5 m away
       // from it, everyone near flinches for 0.4 s on the first moment; eased in 0.15 s, out over ~1 s
       { const rx = X[i] - camP.x, rz = Z[i] - camP.z, near = camH < 2.5 && camH > -0.5 && rx * rx + rz * rz < 6.25 && a.kind !== K_PERF && a.kind !== K_SEAT;
         const r0 = RX[i], tgt = near ? 1 : 0; RX[i] += (tgt - r0) * (1 - Math.exp(-dt * (near ? 7 : 1.2)));
-        if (near && r0 < 0.05 && dt > 0) FL[i] = 0.4; else if (FL[i] > 0) FL[i] = Math.max(0, FL[i] - dt);
+        // (P5) the duck is 1 person in 3 (P4: everyone near at once read as a hold-up)
+        if (near && r0 < 0.05 && dt > 0 && h32(i, 0xf11c) % 3 === 0) FL[i] = 0.4; else if (FL[i] > 0) FL[i] = Math.max(0, FL[i] - dt);
         if (a.kind === K_WALK) {
-          const sp = crowd.WALK[i] * crowd.units[a.unit].v; LAG[i] = Math.max(0, Math.min(3, LAG[i] + (sp * 0.6 * RX[i] - (RX[i] < 0.2 ? LAG[i] * 0.6 : 0)) * dt));
-          const hy = crowd.YAW[i], hx = Math.sin(hy), hz = Math.cos(hy), side = (rx * hz - rz * hx) >= 0 ? 1 : -1;   // the side away from the drone
+          // (P5) the frame's own arrays (CA): P4 read the inline crowd's, stale whenever the worker's frame was drawn, so the
+          // lag and the sidestep pushed people along an old heading
+          const sp = CA.WALK[i] * crowd.units[a.unit].v; LAG[i] = Math.max(0, Math.min(3, LAG[i] + (sp * 0.6 * RX[i] - (RX[i] < 0.2 ? LAG[i] * 0.3 : 0)) * dt));   // (P5: catch up at 0.3/s, a brisk walk, not 0.6/s, a sprint)
+          const hy = CA.YAW[i], hx = Math.sin(hy), hz = Math.cos(hy), side = (rx * hz - rz * hx) >= 0 ? 1 : -1;   // the side away from the drone
           if (near && Math.abs(SX[i]) < 0.01) SX[i] = side * 1e-3; SX[i] += ((near ? Math.sign(SX[i] || side) * 0.5 : 0) - SX[i]) * (1 - Math.exp(-dt * (near ? 6 : 1.5)));
         } else { LAG[i] *= Math.exp(-dt); SX[i] *= Math.exp(-dt * 1.5); } }
-      const hy0 = crowd.YAW[i], x = X[i] - Math.sin(hy0) * LAG[i] + Math.cos(hy0) * SX[i], z = Z[i] - Math.cos(hy0) * LAG[i] - Math.sin(hy0) * SX[i];
+      // (P5, life #4 / fpv #3: ghost walkers) a worker frame is evaluated at its own time (up to 0.25 s off the clock):
+      // carry each person along their velocity to the clock, so switching between worker and inline frames, or a late
+      // worker frame, never jumps anyone (P4 drew the frame's positions as they were; with the object blur a jump smears)
+      const walker0 = a.kind === K_WALK, sp0 = CA.WALK[i] * (walker0 ? crowd.units[a.unit].v : 1.25) * (1 - 0.6 * RX[i]), hy0 = CA.YAW[i], ex = dtF * sp0;
+      let x = X[i] + Math.sin(hy0) * (ex - LAG[i]) + Math.cos(hy0) * SX[i], z = Z[i] + Math.cos(hy0) * (ex - LAG[i]) - Math.sin(hy0) * SX[i];
+      let vx = Math.sin(hy0) * sp0, vz = Math.cos(hy0) * sp0;
+      if (DST[i] === frameNo - 1 && dt > 0 && dt < 0.1) {
+        const px = DXp[i] + vx * dt, pz = DZp[i] + vz * dt, gx = x - px, gz = z - pz;
+        const g2 = gx * gx + gz * gz;
+        if (g2 < 9) { let f = 1 - Math.exp(-dt * 6); const cm = 0.9 * dt; if (f * f * g2 > cm * cm) f = cm / Math.sqrt(g2); x = px + gx * f; z = pz + gz * f; vx = (x - DXp[i]) / dt; vz = (z - DZp[i]) / dt; }   // (closing <= 0.9 m/s)
+      }
+      DXp[i] = x; DZp[i] = z; DST[i] = frameNo;
       const dx = x - camP.x, dz = z - camP.z, h2 = dx * dx + dz * dz, d2 = h2 + camH * camH * 0.25;
       let T, k;
       let lod = d2 < nr2 && nN < tiers[0].cap ? 0 : d2 < mr2 && nM < tiers[1].cap ? 1 : nN + nM + nF < maxD ? 2 : -1;
@@ -2475,7 +2692,7 @@ export function build(layout, ctx = {}) {
         if (AT.n >= AT.cap) AT = null;
       }
       if (!AT) AT = tiers[lod];
-      T = AT.A; k = AT.n++;
+      T = AT.A; k = AT.n++; AT.pid[k] = i;
       if (lod < 2 && nC < capC) {   // contact footprint: full strength standing, a touch lighter and longer walking; fades out by 50 m
         const w = CA.WALK[i] > 0.5 ? 1 : 0, fade = 1 - Math.min(1, Math.max(0, (Math.sqrt(h2) - 38) / 12));
         contactA.setXYZW(nC, x, z, CA.YAW[i], w + Math.min(0.999, (a.kind === K_SEAT ? 0.45 : 0.62) * fade * (w ? 0.85 : 1))); contactY.setX(nC, groundAt(x, z)); nC++;
@@ -2502,7 +2719,7 @@ export function build(layout, ctx = {}) {
       T.iSkin.array.set(L.skin, o); T.iSkin.array[o + 3] = umbOf[i];
       T.iWear.array.set(L.wear, o); T.iWear.array[o + 3] = a.look.style;
       T.iLook.array[o] = LY[i]; T.iLook.array[o + 1] = LP[i]; T.iLook.array[o + 2] = accOf[i]; T.iLook.array[o + 3] = seedOf[i];
-      { const sp = CA.WALK[i] * (walker ? crowd.units[a.unit].v : 1.25) * (1 - 0.6 * RX[i]), ov = k * 3; T.instanceVelocity.array[ov] = Math.sin(yaw) * sp; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = Math.cos(yaw) * sp; }
+      { const vl = Math.hypot(vx, vz), c = vl > 2.5 ? 2.5 / vl : 1, ov = k * 3; T.instanceVelocity.array[ov] = vx * c; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = vz * c; }   // (P5: as drawn, <= 2.5 m/s)
       fill.at(x, z, tmpF); T.iFill.array[o] = tmpF[0]; T.iFill.array[o + 1] = tmpF[1]; T.iFill.array[o + 2] = tmpF[2]; T.iFill.array[o + 3] = tmpF[3];
     }
     let avTris = 0;
@@ -2540,7 +2757,16 @@ export function build(layout, ctx = {}) {
     if (life.audio && life.audio.feed) life.audio.feed(camP, fwd, clock + W);
   }
   const life = {
-    group, emitters, sim, stats, fill, motionMeshes, avatars, attachAvatars,
+    group, emitters, sim, stats, fill, motionMeshes, avatars, attachAvatars, tierPids: (lod) => tiers[lod].pid,
+    // (P5, life #6: every attempt opened on the same 75 s tableau) the take-tick offset a retry should start its drone clock
+    // at (main.js respawn: drone.tick = attemptTicks(n)): the city then opens warm + offset s in, 75-240 s, a hash of
+    // (seed, n), never past what the pre-roll has reached. Attempt 0 (and n <= 0) keeps 0. The offset rides in the drone's
+    // snapshot, so the input log, replays, ghosts and the movers all see the same city
+    attemptTicks: (n) => {
+      if (!(n > 0)) return 0;
+      const want = (LIFE.warmMax - W) * (h32(seed, n, 0x3a77) / 4294967296), have = Math.max(0, (sim.prerolled || 0) - W - 2);
+      return Math.round(Math.max(0, Math.min(want, have)) * 4) * 60;   // whole quarter seconds of 240 Hz ticks
+    },
     // F1 (design #5): vehicles are hard (crash), pedestrians soft (scrape); both pure functions of the take clock
     colliders: { at: (t, out) => sim.boxesAt(t + W, out), hit: (p, r, t) => sim.hit(p, r, t + W), people: (p, r, t) => sim.hitPeople(p, r, t + W), keyed: 'take-clock', warm: W },
     near, crowd,

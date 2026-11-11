@@ -100,6 +100,7 @@ async function ensureSpark() {
 }
 const fpv = new FPVCamera(renderer);
 const world = { scene: null, splatScene, colliderScene: null, bvh: null, mesh: null, bounds: null, spawn: new THREE.Vector3(), yaw: 0, def: null, lastDist: Infinity };
+let lifeAttempt = 0;   // [P5-G1] retries since the level loaded (seoul-life attemptTicks)
 const drone = new Drone('freestyle5');
 const audio = new MotorAudio();
 const controls = new Controls({
@@ -475,6 +476,7 @@ function clearWorld() {
   try { world.audio?.detach?.(); } catch (e) {}                                             // [integ6] S4 city sound off with its level
   world.depthScene = null; world.aoUniforms = null; world.dispose = null; world.level = null; world.audio = null;   // [S0]
   world.movers = null; world.tuning = null; world.setPieces = null;                          // [F1] movers hook
+  world.lifeTicks = null; lifeAttempt = 0;                                                    // [P5-G1] life #6
   world.places = null;                                                                       // [F2]
   world.qualityCap = null;                                                                   // [F2 for D] P3 perf #4/#6
 }
@@ -549,6 +551,7 @@ async function loadProcWorld(def) {
   // taxis crash, people are a SCRAPE + HEADS!), the level's take tuning (lines.json `tuning` over TAKE_TUNING) and E's set
   // pieces (lines coded against their ids fly once they exist). Each optional; bando has none.
   try { world.movers = w.movers || lifeMovers(w.parts?.life) || null; } catch (e) { console.warn('movers', e); world.movers = null; }
+  world.lifeTicks = typeof w.parts?.life?.attemptTicks === 'function' ? w.parts.life.attemptTicks : null;   // [P5-G1] life #6: a fresh city per retry
   world.tuning = w.tuning || null; world.setPieces = w.setPieces || w.parts?.dressing?.setPieces || null;
   world.qualityCap = w.qualityCap || w.scene?.userData?.seoulLight?.qualityCap || null;   // [F2 for D] P3 perf #4/#6 (applySettings)
   world.spawn.copy(w.spawn?.isVector3 ? w.spawn : w.spawn?.pos ? new THREE.Vector3(...(w.spawn.pos.toArray?.() ?? w.spawn.pos)) : new THREE.Vector3(0, 2, 0)); world.yaw = w.yaw ?? w.spawn?.yaw ?? 0;
@@ -749,6 +752,9 @@ function respawn(toStart = false, startName = null) {
   else if (rp) { drone.reset(rp.pos, rp.yaw); flightT = 0; }
   else { drone.reset(world.spawn, world.yaw); flightT = 0; }
   takeFrom = { pos: drone.pos.clone(), yaw: drone.heading };
+  // [P5-G1] life #6: each retry opens on a later city (75-240 s in, seoul-life attemptTicks): the drone's tick clock starts
+  // there, so it rides in the input log's start snapshot and every replay, ghost and mover sees the same city
+  if (world.lifeTicks) { try { drone.tick = world.lifeTicks(++lifeAttempt) | 0; } catch (e) { console.warn('life attempt', e); } }
   if (toStart || takeMode || named) safePts.length = 0;
   take.reset(); freeTake.reset();
   controls.resetThrottle(Math.sqrt(1 / drone.c.twr)); thrRef = controls.thr;

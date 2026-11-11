@@ -88,6 +88,8 @@ lw.dispose();
   const A = mk(lw2), B = mk(false), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4);
   ok(A.lifeWorker.state === 'on' && B.lifeWorker.state === 'off', `build() attaches a LifeWorker given in ctx.lifeWorker (state ${A.lifeWorker.state}; inline build ${B.lifeWorker.state})`);
   const NF = 90, tA = [], tB = [], dCount = [], dPos = [];
+  // (P5, fpv #3) ghost walkers: the worker build's near tier, frame to frame, never jumps (worker and inline frames mix)
+  let gPrev = new Map(), gN = 0, gJump = 0; const nearA = A.group.children.find((m) => m.name === 'crowd-near');
   const waitFrame = () => new Promise((r) => { const poll = () => (lw2.ready || lw2.error ? r() : setImmediate(poll)); poll(); });
   const tier = (L) => L.group.children.find((m) => /^crowd-near/.test(m.name) && m.geometry?.attributes?.iPos);
   for (let k = 0; k < NF; k++) {
@@ -95,6 +97,10 @@ lw.dispose();
     if (k === 0) ok(lw2.info.warmTo === lifeMod.LIFE.warm, `the worker warmed to ${lw2.info.warmTo} s before 'ready' (${lw2.info.warmMs?.toFixed(0)} ms in the worker; P4 paid it on the first frame)`);
     let a = performance.now(); A.update(t, cam, q); tA.push(performance.now() - a);
     a = performance.now(); B.update(t, cam, q); tB.push(performance.now() - a);
+    { const at = nearA.geometry.attributes, pid = A.tierPids(0), cur = new Map();
+      for (let s = 0; s < nearA.geometry.instanceCount; s++) { const i = pid[s], x = at.iPos.array[s * 4], z = at.iPos.array[s * 4 + 2]; cur.set(i, [x, z]); const p = gPrev.get(i);
+        if (p) { gN++; const walk = Math.hypot(x - p[0], z - p[1]) * 60; if (walk > 3.5 + Math.hypot(0.05, 0.08) * 60) gJump++; } }
+      gPrev = cur; }
     if (k > 0) {
       const sa = A.stats, sb = B.stats; dCount.push(Math.abs(sa.drawn - sb.drawn) / Math.max(1, sb.drawn));
       const ga = tier(A)?.geometry, gb = tier(B)?.geometry;
@@ -103,6 +109,7 @@ lw.dispose();
     await waitFrame();
   }
   const LWs = A.lifeWorker;
+  ok(gN > 1000 && gJump <= 0.001 * gN, `worker build: ${gJump} of ${gN} near-tier instance-frames jump (> 3.5 m/s past the camera's own 5.6 m/s; ghost walkers, fpv #3)`);
   ok(LWs.used >= NF - 2 && !lw2.error, `the wired build drew ${LWs.used} of ${NF} frames from the worker (inline ${LWs.inline}: until the first frame lands)`);
   ok(Math.max(...dCount) <= 0.02, `same people drawn as inline: tier totals within ${(Math.max(...dCount) * 100).toFixed(2)} % (<= 2 %)`);
   ok(dPos.length > NF / 2 && med(dPos) <= 0.05, `near-tier instances where inline puts them: median of the per-frame worst ${med(dPos)?.toFixed(4)} m over ${dPos.length} frames (one frame's walk is ~0.025 m)`);
