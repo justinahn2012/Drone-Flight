@@ -37,7 +37,12 @@ export const LIFE = {
   streetK: { '와우산로19길': 1.7 },
   // exit 9 (life #4): trains every ~140 s (Line 2 / Gyeongui / AREX alternate); each one sends 20-40 up the stairs in ~45 s
   train: { headway: 140, spread: 45, perTrain: 30 },
-  warm: 75, maxAgents: 15500, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 2500,
+  // road vehicles at reset: bumper gaps of roadGap[0] + U * roadGap[1] m per lane (P4: 20 + U 40; P3 10 + U 30 packed the
+  // widened carriageways past what the junctions pass)
+  roadGap: [20, 40],
+  // (P4 perf #2: people were 0.8-1.34 M main-pass triangles) the 3.4k avatar LOD only within nearR0, a 1.7k LOD to nearR;
+  // 1500 drawn on auto, 900 on the phone preset (crowd 'low'); the velocity pass sees only the near tiers
+  warm: 75, maxAgents: 15500, nearR0: 6, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 1500, maxDrawnLow: 900,
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
   phoneShare: 0.18,            // walkers looking at a phone
   sidewalk: (w) => Math.max(3, Math.min(6, w * 0.15)),
@@ -114,11 +119,13 @@ export function signalPhase(t, offset = 0) {   // mid-block crosswalk: -> { car:
 }
 // crosswalk c at take clock t. Intersections ('X') run two axis groups: axis 0 green 0-30 s, axis 1 green 35-65 s
 // (3 s amber, 2 s all-red); a crosswalk over an axis-g road walks while the other axis has its green.
+// (P4, life #3) the split follows the lanes: axis 0 gets c.g0 s of green (default 30), axis 1 the rest of 60 (P3: 30 / 30,
+// so six-lane Yanghwa-ro waited as long as two-lane Hongik-ro)
 export function crossPhase(c, t) {
   if (c.kind !== 'X') return signalPhase(t, c.offset);
-  const P = LIFE.signal.period, tc = (((t + c.offset) % P) + P) % P, g0 = c.axis ? 35 : 0, u = (tc - g0 + P) % P;
-  const car = u < 30 ? 'G' : u < 33 ? 'A' : 'R';
-  const w0 = c.axis ? 0 : 35, wlen = 27;
+  const P = LIFE.signal.period, G0 = c.g0 ?? 30, G = c.axis ? 60 - G0 : G0, tc = (((t + c.offset) % P) + P) % P, g0 = c.axis ? G0 + 5 : 0, u = (tc - g0 + P) % P;
+  const car = u < G ? 'G' : u < G + 3 ? 'A' : 'R';
+  const w0 = c.axis ? 0 : G0 + 5, wlen = (c.axis ? G0 : 60 - G0) - 3;
   return { car, walk: tc >= w0 && tc < w0 + wlen, tc, w0, wlen };
 }
 
@@ -137,13 +144,38 @@ export function buildNetwork(layout) {
     const m = [(l.frontage[0][0] + l.frontage[1][0]) / 2, (l.frontage[0][1] + l.frontage[1][1]) / 2], pr = st.path.project(m[0], m[1]);
     if (pr.dist < 40) sides.get(st)[pr.d >= 0 ? 'R' : 'L'].push(Math.abs(pr.d));
   }
+  // ---- one-way carriageways: st.oneway (1 = point order, -1 = reverse) or a same-named anti-parallel twin nearby, or (P4) a
+  // same-named continuation of one (Yanghwa-ro's 13 m pieces either side of the 월드컵북로 junction: P3 read them as 7 m
+  // of road inside pavements, so 4 lanes fed 2 and three lanes merged into one: 79 % of the main-road traffic stood)
+  const mains = streets.filter((s) => s.kind === 'main');
+  const o1 = {}, o2 = {};
+  for (const a of mains) {
+    if (a.oneway != null) { a.ow = a.oneway === true ? 1 : +a.oneway || 0; continue; }
+    a.ow = 0; a.path.at(a.path.len / 2, o1);
+    for (const b of mains) {
+      if (b === a || (b.ko || b.name) !== (a.ko || a.name) || !(a.ko || a.name)) continue;
+      const pr = b.path.project(o1.x, o1.z); if (pr.dist > (a.width + b.width) / 2 + 22 || pr.dist < 2) continue;
+      b.path.at(pr.s, o2); if (o1.tx * o2.tx + o1.tz * o2.tz < -0.8) { a.ow = 1; break; }
+    }
+  }
   const med = (a) => { if (!a.length) return null; const b = a.slice().sort((p, q) => p - q); return b[b.length >> 1]; };
+  for (let pass = 0; pass < 3; pass++) for (const a of mains) {
+    if (a.ow || a.oneway != null) continue;
+    for (const b of mains) {
+      if (b === a || !b.ow || (b.ko || b.name) !== (a.ko || a.name) || !(a.ko || a.name)) continue;
+      const pe = b.points[b.points.length - 1], ps = b.points[0], qs = a.points[0], qe = a.points[a.points.length - 1];
+      if (Math.hypot(pe[0] - qs[0], pe[1] - qs[1]) < 30 || Math.hypot(qe[0] - ps[0], qe[1] - ps[1]) < 30) { a.ow = 1; a.owCont = true; break; }
+    }
+  }
   for (const st of streets) {
     const sd = sides.get(st), bl = [med(sd.L), med(sd.R)], w2 = st.width / 2;
     if (st.kind === 'main') {
       // building line well beyond width/2: width is the carriageway (OSM). Else width spans the pavements (synthetic).
+      // (P4) a one-way carriageway is an OSM way: its width is the carriageway whatever the buildings say
       const known = bl.filter((v) => v != null), b = known.length ? Math.min(...known) : null;
-      const carriage = b != null && b > w2 + 1.8 ? w2 : st.sidewalk ? w2 - st.sidewalk : w2 - LIFE.sidewalk(st.width);
+      // (P4) so is any OSM way (st.osm): world-seoul paints the whole width as carriageway with round(w / 3.25) lanes; P3 put
+      // walkers on its outer lanes and squeezed 4 painted lanes into 2
+      const carriage = st.ow || st.osm != null || (b != null && b > w2 + 1.8) ? w2 : st.sidewalk ? w2 - st.sidewalk : w2 - LIFE.sidewalk(st.width);
       st.carHalf = Math.max(1.7, carriage);
       st.walk = [-1, 1].map((sg, i) => {
         const line = bl[i] ?? (b != null && b <= w2 + 1.8 ? w2 : null);
@@ -157,18 +189,6 @@ export function buildNetwork(layout) {
       st.walkHalf = Math.max(1.4, Math.min(Math.max(w2, b), w2 + 3) - 0.5);
     }
   }
-  // ---- one-way carriageways: st.oneway (1 = point order, -1 = reverse) or a same-named anti-parallel twin nearby
-  const mains = streets.filter((s) => s.kind === 'main');
-  const o1 = {}, o2 = {};
-  for (const a of mains) {
-    if (a.oneway != null) { a.ow = a.oneway === true ? 1 : +a.oneway || 0; continue; }
-    a.ow = 0; a.path.at(a.path.len / 2, o1);
-    for (const b of mains) {
-      if (b === a || (b.ko || b.name) !== (a.ko || a.name) || !(a.ko || a.name)) continue;
-      const pr = b.path.project(o1.x, o1.z); if (pr.dist > (a.width + b.width) / 2 + 22 || pr.dist < 2) continue;
-      b.path.at(pr.s, o2); if (o1.tx * o2.tx + o1.tz * o2.tz < -0.8) { a.ow = 1; break; }
-    }
-  }
   // ---- junction nodes: street end points clustered within 3 m
   const nodes = [];
   const nodeOf = (p) => { for (const n of nodes) if (Math.hypot(n.x - p[0], n.z - p[1]) < 3) return n; const n = { id: nodes.length, x: p[0], z: p[1], ends: [] }; nodes.push(n); return n; };
@@ -180,36 +200,63 @@ export function buildNetwork(layout) {
   if (half) { bx0 = Math.max(bx0, -half); bx1 = Math.min(bx1, half); bz0 = Math.max(bz0, -half); bz1 = Math.min(bz1, half); }
   for (const n of nodes) n.boundary = n.ends.length === 1 && (n.x < bx0 + 12 || n.x > bx1 - 12 || n.z < bz0 + 12 || n.z > bz1 - 12);
   // ---- crosswalks + signals
-  const crossings = []; let ci = 0;
+  const crossings = [], signals = []; let ci = 0;
   const addCross = (c) => {
-    c.main.path.at(c.sc, o1); c.x = o1.x; c.z = o1.z;
-    if (crossings.some((d) => Math.hypot(d.x - c.x, d.z - c.z) < 14)) return;
-    c.id = 'X' + ci++; c.cw = 5; c.halfSpan = c.main.carHalf + 0.9; crossings.push(c);
+    c.main.path.at(c.sc, o1); c.x = o1.x; c.z = o1.z; c.cw = 5; c.halfSpan = c.main.carHalf + 0.9;
+    // (P4) a junction approach whose crosswalk is merged into a neighbour's (< 14 m) still gets its stop line and signal
+    // (P3 dropped it: Yanghwa-ro westbound ran through the Hongik station junction unsignalled and never let the cross
+    // streets out)
+    if (crossings.some((d) => Math.hypot(d.x - c.x, d.z - c.z) < 14)) { if (c.kind === 'X') { c.id = 'S' + signals.length; c.stopOnly = true; signals.push(c); } return; }
+    c.id = 'X' + ci++; crossings.push(c);
   };
+  // (P4) junctions joined by a road piece under 25 m (the two carriageways of Yanghwa-ro) are one junction: one signal plan
+  // (offset and axes from the group's first node) and no stop line on the link inside it (P3 ran each node's lights on
+  // its own offset, so traffic released by one stopped on the median link at the other's red, holding the box)
+  const jr = new Map(nodes.map((n) => [n, n])), root = (n) => { while (jr.get(n) !== n) n = jr.get(n); return n; };
+  for (const st of mains) if (st.path.len < 25 && st.n[0] !== st.n[1]) { const a = root(st.n[0]), b = root(st.n[1]); if (a !== b) jr.set(a.id < b.id ? b : a, a.id < b.id ? a : b); }
+  const isJ = (n) => { const roads = n.ends.filter((e) => e.st.kind === 'main'), names = new Set(roads.map((e) => e.st.ko || e.st.name || e.st.id)); return roads.length >= 3 || (roads.length === 2 && names.size === 2); };
+  const ax0Of = new Map();
   for (const n of nodes) {   // intersections: >= 3 road pieces, or 2 of different names
     const roads = n.ends.filter((e) => e.st.kind === 'main');
-    const names = new Set(roads.map((e) => e.st.ko || e.st.name || e.st.id));
-    if (!(roads.length >= 3 || (roads.length === 2 && names.size === 2))) continue;
-    const ax0 = (() => { const e = roads[0]; e.st.path.at(e.k ? e.st.path.len : 0, o1); return [o1.tx, o1.tz]; })();
-    const off = (n.id * 17) % LIFE.signal.period;
+    if (!isJ(n)) continue;
+    const R0 = root(n);
+    if (!ax0Of.has(R0)) { const rr = (isJ(R0) ? R0 : n).ends.filter((e) => e.st.kind === 'main'), e = rr.find((q) => q.st.path.len >= 25) || rr[0]; e.st.path.at(e.k ? e.st.path.len : 0, o1); ax0Of.set(R0, [o1.tx, o1.tz]); }
+    const ax0 = ax0Of.get(R0);
+    const off = (R0.id * 17) % LIFE.signal.period;
     for (const e of roads) {
+      if (e.st.path.len < 25 && root(e.st.n[0]) === root(e.st.n[1])) continue;   // the link inside a junction
       const P = e.st.path; P.at(e.k ? P.len : 0, o1);
       const axis = Math.abs(o1.tx * ax0[1] - o1.tz * ax0[0]) < 0.5 ? 0 : 1;
       const r = Math.max(...n.ends.filter((q) => q !== e).map((q) => (q.st.carHalf ?? q.st.width / 2))) + 3.5;
       if (P.len < r + 3) continue;
-      addCross({ kind: 'X', node: n, main: e.st, sc: e.k ? P.len - r : r, toward: e.k ? 1 : -1, axis, offset: off });
+      addCross({ kind: 'X', node: n, main: e.st, sc: e.k ? P.len - r : r, toward: e.k ? 1 : -1, axis, offset: off, root: R0 });
     }
   }
+  // green split per junction group: lanes approaching on each axis (one-way pieces count whole, two-way half)
+  { const lanes = new Map(); for (const c of [...crossings, ...signals]) if (c.kind === 'X') { const L = lanes.get(c.root) || [0, 0]; L[c.axis] += Math.max(1, Math.round((c.main.ow ? 2 : 1) * c.main.carHalf / LIFE.laneW)); lanes.set(c.root, L); }
+    for (const c of [...crossings, ...signals]) if (c.kind === 'X') { const L = lanes.get(c.root); c.g0 = Math.max(20, Math.min(40, Math.round(60 * L[0] / (L[0] + L[1] || 1)))); } }
+  // (P4, life #4) where a crosswalk's kerb is the next carriageway (Yanghwa-ro's two halves), its crowd waits past that one too
+  // and crosses both in one go (P3 stood them on the other carriageway, between its crosswalk and stop line); and a junction's
+  // split gives them the walk (and its clearance) to do it at 1.4 m/s
+  for (const c of crossings) { const P = c.main.path.at(c.sc, {}); c.ext = [-1, 1].map((sd) => { let e = 0; while (e < 30) { const off = sd * (c.halfSpan + e + 0.6), q = offRoad(mains, P.x + P.nx * off, P.z + P.nz * off, 0.4, c.main); if (q.moved === 0) break; e += 0.5; } return e; }); }
+  { const need = new Map();
+    for (const c of crossings) if (c.kind === 'X') { const sp = 2 * c.halfSpan + c.ext[0] + c.ext[1], nd = need.get(c.root) || [0, 0]; nd[c.axis] = Math.max(nd[c.axis], Math.ceil(sp / 1.4) - 1); need.set(c.root, nd); }   // (walk + the 3 s amber and 2 s all-red after it, 1 s spare)
+    for (const c of [...crossings, ...signals]) if (c.kind === 'X' && need.has(c.root)) { const nd = need.get(c.root); c.g0 = Math.max(nd[1], Math.min(60 - nd[0], c.g0)); } }
   for (const m of mains) for (const o of streets) {   // mid-block: a walking or club street meets a road
     if (o.kind !== 'walking' && o.kind !== 'club') continue;
     const hits = pathCross(m.path, o.path).map(([sm]) => sm);
     for (const k of [0, o.points.length - 1]) { const pr = m.path.project(o.points[k][0], o.points[k][1]); if (pr.dist < m.carHalf + 8) hits.push(pr.s); }
     for (const sm of hits) {
       const sc = Math.max(3, Math.min(m.path.len - 3, sm + o.width / 2 + 3)); if (m.path.len < 8) continue;
-      addCross({ kind: 'T', main: m, sc, toward: 0, axis: 0, offset: (ci * 13) % LIFE.signal.period });
+      // (P4) mid-block crossings within 80 m of one another on the same road run together (P3 gave each its own offset:
+      // Wausan-ro's three crosswalks 17-30 m apart stopped a car at each in turn)
+      // and one within 60 m of a junction's crosswalk on the same road turns green with that approach
+      const P = LIFE.signal.period, nearX = crossings.find((d) => d.kind === 'X' && d.main === m && Math.abs(d.sc - sc) < 60);
+      const near = crossings.find((d) => d.kind === 'T' && d.main === m && Math.abs(d.sc - sc) < 80);
+      addCross({ kind: 'T', main: m, sc, toward: 0, axis: 0, offset: nearX ? (nearX.offset - (nearX.axis ? 35 : 0) + P) % P : near ? near.offset : (ci * 13) % P });
     }
   }
-  return { streets, mains, nodes, crossings, bounds: boundsOf(layout, streets) };
+  return { streets, mains, nodes, crossings, signals, bounds: boundsOf(layout, streets) };
 }
 function boundsOf(layout, streets) {
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -252,7 +299,7 @@ export class TrafficSim {
           const n = Math.max(1, Math.min(6, Math.round((2 * ch) / LW))), w = (2 * ch) / n;
           for (let k = 0; k < n; k++) this.lanes.push({ street: st, base: P, dir: st.ow, k, lat: st.ow * (-ch + (k + 0.5) * w), shared: false, bus: n >= 3 && k === 0, curb: k === n - 1, s0: 0, s1: P.len });
         } else {
-          const n = Math.max(1, Math.min(4, Math.round(ch / LW))), w = ch / n;
+          const n = Math.max(1, Math.min(4, Math.floor(ch / 2.9))), w = ch / n;   // (P4) lanes >= 2.9 m (P3: 2.45 m lanes, buses wider than their lane)
           for (const dir of [1, -1]) for (let k = 0; k < n; k++) this.lanes.push({ street: st, base: P, dir, k, lat: dir * (k + 0.5) * w * (n === 1 ? 1.15 : 1), shared: false, bus: n >= 3 && k === 0, curb: k === n - 1, s0: 0, s1: P.len });
         }
       } else if (st.kind !== 'pedestrian') {
@@ -270,7 +317,7 @@ export class TrafficSim {
       st.path.at(this.toBase(ln, ln.len), o); ln.h1 = [o.tx * ln.dir, o.tz * ln.dir];
       // stop lines: 2.5 m before each crosswalk this lane runs into
       ln.stops = [];
-      if (!ln.shared) for (const c of net.crossings) if (c.main === st && (c.toward === 0 || c.toward === ln.dir)) {
+      if (!ln.shared) for (const c of [...net.crossings, ...(net.signals || [])]) if (c.main === st && (c.toward === 0 || c.toward === ln.dir)) {
         const sc = ln.dir > 0 ? c.sc - ln.s0 : ln.s1 - c.sc, sl = sc - c.cw / 2 - 2.5;
         if (sl > 1) ln.stops.push({ s: sl, c });
       }
@@ -327,7 +374,7 @@ export class TrafficSim {
       ln.entry = Math.max(ln.len * 0.5, ln.len - otherHalf(ln.end, ln.street) - 0.6);
       ln.clear = Math.min(ln.len * 0.5, Math.max(3, otherHalf(ln.start, ln.street) + 0.6));
     }
-    this.mvGeo = new Map(); this.mvDist = new Map();
+    this.mvGeo = new Map(); this.mvDist = new Map(); this.mvEnd = new Map();
     // a lane's waiting line also stops short of every other movement's swept path through its node (the hand-off ease and
     // wide turns reach past the carriageway edges): front bumper 1 m before the first point any such path comes within
     // 2.45 m (a bus and a car side by side) of its centre line in its last 25 m
@@ -379,7 +426,7 @@ export class TrafficSim {
         v.v = v.v0 * (0.4 + 0.4 * R.next());
         ln.veh.push(v); this.vehicles.push(v);
         // alley lanes: one scooter or car per ~350 m of lane (life #6: ~40 scooters in all, P1 had 161)
-        s -= c.L + (ln.shared ? 220 + R.next() * 300 : (type === 'bus' ? 70 + R.next() * 90 : 10 + R.next() * 30));
+        s -= c.L + (ln.shared ? 220 + R.next() * 300 : (type === 'bus' ? 70 + R.next() * 90 : LIFE.roadGap[0] + R.next() * LIFE.roadGap[1]));
       }
     }
     for (const v of this.vehicles) v.next = this.pickNext(v.lane, v, R);
@@ -411,14 +458,32 @@ export class TrafficSim {
   // the lane v takes after ln: approaches weighted toward straight on; lane index kept (buses keep the bus lane)
   pickNext(ln, v, R) {
     if (!ln.succ.length) return null;
-    let tot = 0; const w = ln.succ.map((g) => { const c = Math.max(0, g.turn); const x = 0.25 + 3 * c * c; tot += x; return x; });
-    let r = R.next() * tot, g = ln.succ[ln.succ.length - 1];
+    // (P4, life #3) lane discipline on multi-lane roads: right turns from the kerb lane, left turns from the innermost
+    // general lane, the middle lanes straight on (P3 let any lane turn: a left-turner from a middle lane of Yanghwa-ro
+    // waited the whole green for a gap and held every car behind it)
+    const al = this.allowed(ln, v);
+    let tot = 0; const w = ln.succ.map((g, i) => { if (!al[i]) return 0; const c = Math.max(0, g.turn); const x = 0.25 + 3 * c * c; tot += x; return x; });
+    if (!tot) return null;
+    let r = R.next() * tot, g = ln.succ[w.findLastIndex((x) => x > 0)];
     for (let i = 0; i < w.length; i++) if ((r -= w[i]) < 0) { g = ln.succ[i]; break; }
     const L = g.lanes;
     if (v.type === 'bus') return L.find((m) => m.bus) || L[0];
     let k = Math.min(L.length - 1, ln.k); if (L[k].bus) k = Math.min(L.length - 1, k + 1);
     if (L[k].bus) return null;
     return L[k];
+  }
+  allowed(ln, v) {
+    const S = ln.succ, all = S.map(() => true);
+    // a car never turns into an alley too narrow to pass an oncoming scooter (P3 only kept them out at spawn)
+    if (ln.shared) { if (v.type !== 'car') return all; const ok = S.map((g) => (g.lanes[0].street.walkHalf ?? 0) >= 1.9); return ok; }
+    if (S.length < 2 || v.type === 'bus') return all;
+    if (!ln._allow) {   // per lane, once
+      const same = this.lanes.filter((m) => m.street === ln.street && m.dir === ln.dir && !m.shared), n = same.length;
+      const kmin = same.some((m) => m.bus) ? 1 : 0, side = S.map((g) => { const h0 = g.lanes[0].h0; return h0[0] * -ln.h1[1] + h0[1] * ln.h1[0]; });   // > 0: a right turn
+      const out = S.map((g, i) => n < 2 || g.turn > 0.7 ? true : side[i] > 0 ? ln.k === n - 1 : ln.k === kmin);
+      ln._allow = out.some(Boolean) ? out : S.map(() => true);
+    }
+    return ln._allow;
   }
   // (P3: s is a vehicle's centre; this compares rear bumpers, P2 took the whole length off)
   hasRoom(ln, need) { for (const o of ln.veh) if (!o.hidden && o.s - o.L / 2 < need) return false; return true; }
@@ -456,8 +521,10 @@ export class TrafficSim {
       if (v.hold >= 0) { let b = box.get(v.hold); if (!b) box.set(v.hold, (b = { hold: [], wait: [] })); b.hold.push(v); }
       if (v.tk >= 0 && v.hold < 0 && v.lane.end) { let b = box.get(v.lane.end.bid); if (!b) box.set(v.lane.end.bid, (b = { hold: [], wait: [] })); b.wait.push(v); }
     }
+    const easeBy = this._easeBy || (this._easeBy = new Map()); easeBy.clear();   // (P4) per lane, once per step
+    for (const l of easing) { let a = easeBy.get(l.lcFrom); if (!a) easeBy.set(l.lcFrom, (a = [])); a.push(l); }
     for (const ln of this.lanes) {
-      const vs = ln.veh; vs.sort((a, b) => b.s - a.s || a.id - b.id);
+      const vs = ln.veh; vs.sort((a, b) => b.s - a.s || a.id - b.id); const eL = easeBy.get(ln.idx);
       for (let i = 0; i < vs.length; i++) {
         const v = vs[i], c = VEH[v.type];
         if (v.stepped === N) continue;
@@ -467,7 +534,7 @@ export class TrafficSim {
         let gap = Infinity, dv = 0, ldr = null;
         // bumper to bumper (P3: s is the centre; P2's l.s - l.L - v.s let a bus run 3 m into a car ahead)
         for (let j = i - 1; j >= 0; j--) { const l = vs[j]; if (!l.hidden) { gap = l.s - v.s - (l.L + v.L) / 2; dv = v.v - l.v; ldr = l; break; } }
-        for (const l of easing) if (l.lcFrom === ln.idx && l.lane !== ln && l.s > v.s && !l.hidden) { const g = l.s - v.s - (l.L + v.L) / 2; if (g < gap) { gap = g; dv = v.v - l.v; ldr = l; } }   // still easing out of this lane
+        if (eL) for (const l of eL) if (l.lane !== ln && l.s > v.s && !l.hidden) { const g = l.s - v.s - (l.L + v.L) / 2; if (g < gap) { gap = g; dv = v.v - l.v; ldr = l; } }   // still easing out of this lane
         if (gap === Infinity && v.next) {
           let last = null; for (const o of v.next.veh) if (!o.hidden && (!last || o.s < last.s)) last = o;
           if (last) { gap = ln.len - v.s + last.s - (last.L + v.L) / 2; dv = v.v - last.v; ldr = last; }
@@ -569,10 +636,10 @@ export class TrafficSim {
     const b = this.box.get(node.bid), nx = v.next;
     if (!this.roomOut(v, nx)) return false;
     if (b) {
-      for (const h of b.hold) if (h !== v && h.hold === node.bid && h.hin !== ln.idx && this.conflict(ln.idx, nx.idx, h.hin, h.hout, v.W, h.W)) return false;   // (a holder respawned this step has let go)
+      for (const h of b.hold) if (h !== v && h.hold === node.bid && h.hin !== ln.idx && this.blocks(h, ln.idx, nx.idx, v.W)) return false;   // (a holder respawned this step has let go)
       // FIFO: an earlier conflicting ticket with room ahead that could go now (or has waited 15 s: the box drains for it) goes first
       for (const w of b.wait) if (w !== v && w.tk < v.tk && w.lane !== ln && w.next && w.lane.end && w.lane.end.bid === node.bid && this.conflict(ln.idx, nx.idx, w.lane.idx, w.next.idx, v.W, w.W) && this.roomOut(w, w.next)
-        && (N - w.tk > 15 * LIFE.trafficHz || !b.hold.some((h) => h !== w && h.hold === node.bid && h.hin !== w.lane.idx && this.conflict(w.lane.idx, w.next.idx, h.hin, h.hout, w.W, h.W)))) return false;
+        && (N - w.tk > 15 * LIFE.trafficHz || !b.hold.some((h) => h !== w && h.hold === node.bid && h.hin !== w.lane.idx && this.blocks(h, w.lane.idx, w.next.idx, w.W)))) return false;
     } else this.box.set(node.bid, { hold: [], wait: [] });
     // and its swept path must clear anyone queued at another entry line of this node (the hand-off ease reaches past the box)
     if (!this.pathClear(ln.idx, nx.idx, v, node)) return false;
@@ -604,9 +671,32 @@ export class TrafficSim {
     }
     return true;
   }
+  // (P4, life #3: AIM-style conflict cells) a holder blocks movement (a -> b) only until its rear bumper has cleared the last
+  // point of its own swept path that comes within reach of (a -> b): crossing flows follow each other through the box a
+  // car length apart instead of waiting for the whole box to empty (P3: 129 grants in 300 s at the Yanghwa-ro box, 79 %
+  // of main-road traffic standing). A conflict on an internal link's onward branches holds until the holder is past them.
+  blocks(h, a, b, w) {
+    if (!this.conflict(a, b, h.hin, h.hout, w, h.W)) return false;
+    const k = ((h.hin * 4096 + h.hout) * 4096 + a) * 4096 + b; let e = this.mvEnd.get(k);   // (numeric keys: no garbage in the step)
+    if (e === undefined) {
+      const P = this.mvPath(h.hin, h.hout), Q = this.mvPath(a, b), thr = (w + h.W) / 2 + 0.4, t2 = thr * thr; e = -1;
+      const near = (i) => { for (let j = 0; j < Q.length; j += 2) { const dx = P[i] - Q[j], dz = P[i + 1] - Q[j + 1]; if (dx * dx + dz * dz < t2) return true; } return false; };
+      for (let i = P.n0; i < P.length && e < 0; i += 2) if (near(i)) e = Infinity;   // onward branches first
+      for (let i = P.n0 - 2; i >= 0 && e < 0; i -= 2) if (near(i)) e = i >> 1;          // then the last conflicting sample
+      this.mvEnd.set(k, e);
+    }
+    return e === Infinity || this.rearIdx(h) <= e + 1;
+  }
+  // index of the primary path sample nearest the holder's rear bumper, once per step
+  rearIdx(h) {
+    if (h._riN === this.n && h._riM === h.hin * 4096 + h.hout) return h._ri;
+    const P = this.mvPath(h.hin, h.hout), o = this.pose(h, 1, this._rp || (this._rp = {})), rx = o.x - o.hx * h.L / 2, rz = o.z - o.hz * h.L / 2;
+    let best = 0, bd = Infinity; for (let i = 0; i < P.n0; i += 2) { const dx = P[i] - rx, dz = P[i + 1] - rz, d = dx * dx + dz * dz; if (d < bd) { bd = d; best = i >> 1; } }
+    h._riN = this.n; h._riM = h.hin * 4096 + h.hout; h._ri = best; return best;
+  }
   conflict(a, b, c, d, wa, wb) {
     if (a === c) return false;
-    const k = a < c ? `${a},${b},${c},${d}` : `${c},${d},${a},${b}`;
+    const k = a < c ? ((a * 4096 + b) * 4096 + c) * 4096 + d : ((c * 4096 + d) * 4096 + a) * 4096 + b;
     let m = this.mvDist.get(k);
     if (m === undefined) {
       const P = this.mvPath(a, b), Q = this.mvPath(c, d); m = Infinity;
@@ -621,7 +711,7 @@ export class TrafficSim {
     P = []; for (let s = Math.max(0, A.entry - 2); s < A.len; s += 0.75) P.push(...at(A, s));
     const e = at(A, A.len), b0 = at(B, 0), jx = e[0] - b0[0], jz = e[1] - b0[1];
     for (let s = 0; s <= (B.internal ? B.len : Math.min(B.len, B.clear + 4)); s += 0.75) { const f = s < 12 ? (1 - s / 12) ** 2 : 0, q = at(B, s); P.push(q[0] + jx * f, q[1] + jz * f); }
-    this.mvGeo.set(k, P);
+    this.mvGeo.set(k, P); P.n0 = P.length;
     // into a box's internal link: every way on out of it too (the grant covers the whole crossing)
     if (B.internal) for (const g of B.succ) for (const c of g.lanes) if (!c.internal) { const Q = this.mvPath(b, c.idx); for (const x of Q) P.push(x); }
     return P;
@@ -722,7 +812,7 @@ export class TrafficSim {
 //   cross     crowds that bunch at the kerb and surge over the crosswalk on the walk phase, cycle by cycle
 // Walkers sidestep each other and standing people (static discs) near the camera only (< 45 m), statelessly: the offset
 // is a smooth function of who is where at t, so it never pops. Hit tests use the un-avoided positions (camera-free).
-export const P_WALK = 0, P_PHONE = 1, P_IDLE = 2, P_SIT = 3, P_TALK = 4, P_SMOKE = 5, P_FILM = 6, P_DANCE = 7, P_SING = 8, P_CLAP = 9;
+export const P_WALK = 0, P_PHONE = 1, P_IDLE = 2, P_SIT = 3, P_TALK = 4, P_SMOKE = 5, P_FILM = 6, P_DANCE = 7, P_SING = 8, P_CLAP = 9, P_FLINCH = 10;
 export const K_WALK = 0, K_STAND = 1, K_QUEUE = 2, K_SEAT = 3, K_CROSS = 4, K_BUSK = 5, K_PERF = 6, K_DOOR = 7;
 export function h32(a, b = 0, c = 0) {
   let h = (Math.imul(a | 0, 0x9E3779B1) ^ Math.imul((b | 0) + 0x7f4a7c15, 0x85EBCA77) ^ Math.imul((c | 0) + 0x165667b1, 0xC2B2AE3D)) >>> 0;
@@ -788,6 +878,18 @@ export function crowdObstacles(obstacles, bs) {
   return out;
 }
 
+// (P4, life #4) a point pushed off every main carriageway to its kerb + margin -> [x, z] with .moved (m); skip: a road it may stand next to
+export function offRoad(mains, x, z, margin = 0.5, skip = null) {
+  let moved = 0;
+  for (const m of mains) {
+    if (m === skip) continue; const pr = m.path.project(x, z), lim = m.carHalf + margin;
+    if (pr.dist >= lim || pr.s <= 0.5 || pr.s >= m.path.len - 0.5) continue;
+    const o = m.path.at(pr.s, {}), sg = pr.d >= 0 ? 1 : -1, nx2 = o.x + o.nx * sg * lim, nz2 = o.z + o.nz * sg * lim;
+    moved += Math.hypot(nx2 - x, nz2 - z); x = nx2; z = nz2;
+  }
+  const out = [x, z]; out.moved = moved; return out;
+}
+
 export class CrowdSim {
   constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null } = {}) {
     this.net = net; this.layout = layout; this.seed = seed >>> 0; this.density = density; this.maxAgents = maxAgents;
@@ -843,6 +945,9 @@ export class CrowdSim {
     this.events = [];   // door in/out near the camera since the last evaluate (sound: shop chimes)
     this.t = -1; this.n = 0;
   }
+  // (P4, life #4) a standing spot pushed off every carriageway to its kerb + margin (deterministic: no extra draws).
+  // -> [x, z] with .moved = how far it went (skip: a road it may stand next to)
+  offRoad(x, z, margin = 0.5, skip = null) { return offRoad(this.net.mains, x, z, margin, skip); }
   // ---- portals: shop doors (by use), the exit 9 stair mouth, map-edge walkway ends
   buildDoors(layout) {
     const o = {}, byStreet = new Map();
@@ -938,7 +1043,7 @@ export class CrowdSim {
       }
       for (let q = 0; q < 24; q++) {
         const a = R.next() * 6.283, r = 2.5 + R.next() * 6.5, p = this.newPerson(R, K_STAND);
-        p.x = ex.x + pcos(a) * r; p.z = ex.z + psin(a) * r; p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
+        [p.x, p.z] = this.offRoad(ex.x + pcos(a) * r, ex.z + psin(a) * r); p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
         this.statics.push(p.id);
       }
     }
@@ -973,7 +1078,7 @@ export class CrowdSim {
         return;
       }
       if (R.next() > 0.85) return;
-      const u = 0.2 + 0.6 * R.next(), gx = a[0] + fx * u + nx * (1.0 + R.next() * 0.8), gz = a[1] + fz * u + nz * (1.0 + R.next() * 0.8);
+      const u = 0.2 + 0.6 * R.next(), [gx, gz] = this.offRoad(a[0] + fx * u + nx * (1.0 + R.next() * 0.8), a[1] + fz * u + nz * (1.0 + R.next() * 0.8), 1.0);
       if (this.inDress(gx, gz, 0.4 + 0.1 * n)) return;   // (life #6) not inside E's cart / tent / stall
       const smokers = n === 1 && R.next() < 0.5;
       for (let q = 0; q < n; q++) {
@@ -1010,6 +1115,8 @@ export class CrowdSim {
       const n = Math.round((c.kind === 'T' ? 30 : 14) * this.density);
       for (let q = 0; q < n; q++) { const p = this.newPerson(R, K_CROSS); p.cross = c; p.cside = q % 2 ? 1 : -1; p.v = 1.25 + R.next() * 0.35; this.statics.push(p.id); }
     });
+    // the slowest walkers speed up to make a long crossing inside its walk phase
+    for (const i of this.statics) { const p = this.people[i]; if (p.kind !== K_CROSS) continue; const c = p.cross, ph = crossPhase(c, 0), sp = 2 * c.halfSpan + (c.ext ? c.ext[0] + c.ext[1] : 0); p.v = Math.max(p.v, sp / Math.max(1, ph.wlen + 4)); }
     // static disc obstacles per walkway (standing, queues, busk audience, tables) for walker avoidance
     for (const w of this.ways) w.obst = [];
     const addObst = (x, z, r) => {
@@ -1188,20 +1295,20 @@ export class CrowdSim {
     }
     if (p.kind === K_CROSS) {
       const c = p.cross, Pd = LIFE.signal.period, ph = crossPhase(c, t), m = Math.floor((t + c.offset) / Pd), side = p.cside * (m & 1 ? -1 : 1);
-      const span = 2 * c.halfSpan, cu = (hu(p.id, m, 1) - 0.5) * (c.cw - 0.8), cw = 0.3 + hu(p.id, m, 2) * 2.2;
+      const hsp = (sd) => c.halfSpan + (c.ext ? c.ext[sd > 0 ? 1 : 0] : 0), span = hsp(1) + hsp(-1), cu = (hu(p.id, m, 1) - 0.5) * (c.cw - 0.8), cw = 0.3 + hu(p.id, m, 2) * 2.2;
       const delay = Math.min(0.3 + hu(p.id, m, 3) * hu(p.id, m, 4) * 4, Math.max(0, ph.wlen - span / p.v - 0.5));
       const P = c.main.path.at(c.sc, this._cp || (this._cp = {}));
       const at = (off, u) => [P.x + P.nx * off + P.tx * u, P.z + P.nz * off + P.tz * u];
       const w0 = ph.w0 + delay, w1 = w0 + span / p.v, tc = ph.tc;
       let x, z, yaw, walk = 0;
-      if (tc >= w0 && tc < w1) { const g = (tc - w0) / (w1 - w0), off = side * c.halfSpan * (1 - 2 * g); [x, z] = at(off, cu); yaw = Math.atan2(-P.nx * side, -P.nz * side); walk = 1; A.PH[i] = ((tc - w0) * p.v / 1.45 + p.ph0) % 1; }
+      if (tc >= w0 && tc < w1) { const g = (tc - w0) / (w1 - w0), off = side * hsp(side) * (1 - g) - side * hsp(-side) * g; [x, z] = at(off, cu); yaw = Math.atan2(-P.nx * side, -P.nz * side); walk = 1; A.PH[i] = ((tc - w0) * p.v / 1.45 + p.ph0) % 1; }
       else {
         // waiting on this cycle's side; right after arriving (previous cycle) they drift to the new waiting spot
         const wside = tc >= w1 ? -side : side, mm = tc >= w1 ? m + 1 : m, wcu = tc >= w1 ? (hu(p.id, mm, 1) - 0.5) * (c.cw - 0.8) : cu, wcw = tc >= w1 ? 0.3 + hu(p.id, mm, 2) * 2.2 : cw;
         const tArr = tc >= w1 ? tc - w1 : tc + Pd - (ph.w0 + Math.min(0.3 + hu(p.id, m - 1, 3) * hu(p.id, m - 1, 4) * 4, Math.max(0, ph.wlen - span / p.v - 0.5)) + span / p.v);
         const prevCu = tc >= w1 ? cu : (hu(p.id, m - 1, 1) - 0.5) * (c.cw - 0.8);
         const g = smooth(tArr / 3);
-        const a = at(wside * c.halfSpan, prevCu), b = at(wside * (c.halfSpan + wcw), wcu);
+        const a = at(wside * hsp(wside), prevCu), b = at(wside * (hsp(wside) + wcw), wcu);
         x = a[0] + (b[0] - a[0]) * g; z = a[1] + (b[1] - a[1]) * g; walk = g < 1 ? 0.6 : 0;
         yaw = Math.atan2(-P.nx * wside, -P.nz * wside) + (hu(p.id, mm, 5) - 0.5) * 0.6; if (walk) A.PH[i] = (tArr * 0.8 + p.ph0) % 1;
       }
@@ -1554,6 +1661,7 @@ attribute vec4 iFill;   // fill rgb (lux, linear), dir angle
 attribute vec4 iWear;   // headwear rgb, hair style
 attribute vec4 iLook;   // head yaw, head pitch (rad, look-at), accessory bits (1 scarf 2 backpack 4 mask 8 pockets), seed
 varying vec3 vAlb;
+varying vec3 vHairC;    // the person's hair colour (P4: an avatar's scalp texels take it, aux.png r)
 varying vec3 vFillE;
 varying float vScreen;
 varying vec3 vRest;
@@ -1615,9 +1723,12 @@ const HUMAN_ANIM = /* glsl */`
   float acc = iLook.z, seed = iLook.w, T = uTime + seed * 37.0, tex = uJC.w;
   float scarf = mod(acc, 2.0), backpack = mod(floor(acc / 2.0), 2.0), pocket = mod(floor(acc / 8.0), 2.0);
   float sitP = float(poseI == 3.0), phoneP = float(poseI == 1.0), talkP = float(poseI == 4.0), smokeP = float(poseI == 5.0);
-  float filmP = float(poseI == 6.0), danceP = float(poseI == 7.0), singP = float(poseI == 8.0), clapP = float(poseI == 9.0);
+  float filmP = float(poseI == 6.0), danceP = float(poseI == 7.0), singP = float(poseI == 8.0), clapP = float(poseI == 9.0), flinchP = float(poseI == 10.0);
   float style = floor(iWear.w + 0.5), coat = floor(iTop.w + 0.5);
   vec3 p = position, nrm = normal;
+  // (P4) 28 Rocketbox head vertices carry a zero normal (welded seams that cancel): normalize(0) put NaN pixels on heads
+  // (C: 63 px in walk0). Point them out from the head's centre instead.
+  if (dot(nrm, nrm) < 1e-4) { vec3 r = position - vec3(0.0, uJB.w + 0.12, 0.02); nrm = dot(r, r) > 1e-8 ? normalize(r) : vec3(0.0, 1.0, 0.0); }
   // ---- what this person doesn't have
   float hide = 0.0;
   if (bone > 9.5 && bone < 10.5) hide = 1.0 - max(max(phoneP, filmP), 0.0);
@@ -1680,13 +1791,16 @@ const HUMAN_ANIM = /* glsl */`
   float du = fract(T / 14.0 + seed * 1.7), drink = sitP * smoothstep(0.0, 0.06, du) * (1.0 - smoothstep(0.16, 0.22, du));
   hipL = mix(hipL, 1.45, sitP); hipR = mix(hipR, 1.35, sitP); knL = mix(knL, 1.5, sitP); knR = mix(knR, 1.4, sitP); anL *= 1.0 - sitP; anR *= 1.0 - sitP;
   sL = mix(sL, 0.5, sitP); sR = mix(sR, mix(0.55 + 0.25 * phoneP, 0.7, drink), sitP); eL = mix(eL, 1.1, sitP); eR = mix(eR, mix(1.3, 2.2, drink), sitP); headP -= 0.12 * drink;
+  // flinch (P4, life #4): a drone at head height within 2.5 m: forearms up in front of the face, head back and away
+  sL = mix(sL, 0.95, flinchP); sR = mix(sR, 0.95, flinchP); eL = mix(eL, 1.9, flinchP); eR = mix(eR, 1.9, flinchP);
+  abL = mix(abL, -0.28, flinchP); abR = mix(abR, -0.28, flinchP); headP -= 0.22 * flinchP; knL += 0.12 * flinchP; knR += 0.12 * flinchP;
   // look-at (CPU-side: people turn their heads to the drone, filmers aim up)
   headY += iLook.x; headP += iLook.y;
   // ---- skeleton: each vertex's bone (and, on an avatar, its second bone blended by weight bw)
   gHipL = hipL; gHipR = hipR; gKnL = knL; gKnR = knR; gAnL = anL; gAnR = anR; gSL = sL; gSR = sR; gEL = eL; gER = eR; gAbL = abL; gAbR = abR;
   gHeadP = headP; gHeadY = headY; gPelR = pelR; gThR = thR; gPelZ = pelZ; gSit = sitP;
   vec3 nA = nrm, pRest = p; p = rig(p, nA, bone, position.y);
-  if (bw > 0.004) { vec3 nB = nrm, pB = rig(pRest, nB, bone2, position.y); p = mix(p, pB, bw); nA = normalize(mix(nA, nB, bw)); }
+  if (bw > 0.004) { vec3 nB = nrm, pB = rig(pRest, nB, bone2, position.y); p = mix(p, pB, bw); vec3 nm = mix(nA, nB, bw); nA = dot(nm, nm) > 1e-8 ? normalize(nm) : nA; }
   nrm = nA;
   // body height from the stance leg (the longer of the two: the planted one), so the bob comes out of the gait itself
   float thighL = uJA.y - uJA.z, shinL = uJA.z - uJA.w;
@@ -1703,7 +1817,7 @@ const HUMAN_ANIM = /* glsl */`
   // On an avatar these are the tint targets for its texture classes (0 skin, 1 hair, 2 top, 3 bottom, 4 shoes).
   vec3 alb = region < 0.5 ? iSkin.rgb : region < 1.5 ? iHair.rgb : region < 2.5 ? iTop.rgb : region < 3.5 ? (tex < 0.5 && bone > 1.5 && bone < 5.5 && coat == 1.0 && position.y > 0.62 ? iTop.rgb : iBot.rgb)
     : region < 4.5 ? vec3(0.03) : region < 5.5 ? vec3(0.02) : region < 6.5 ? vec3(0.04, 0.035, 0.03) : region < 7.5 ? vec3(0.02, 0.02, 0.025) : region < 8.5 ? iWear.rgb : mix(iBot.rgb, vec3(0.32, 0.08, 0.07), 0.6);
-  vAlb = alb; vUv = auv;
+  vAlb = alb; vUv = auv; vHairC = iHair.rgb;
   vRest = position; vMisc = vec4(region, bone, coat, acc);
   vScreen = (region > 4.5 && region < 5.5) ? max(phoneP, filmP) : 0.0;
   // shopfront fill (lux) arriving from direction iFill.w, wrapped diffuse + a weak overhead/street term
@@ -1722,26 +1836,39 @@ const HUMAN_FS = /* glsl */`
   vec3 albD;
   if (uJC.w > 0.5 && reg < 4.5) {
     vec4 tx = reg == 1.0 ? texture2D(tHair, vUv) : texture2D(tAtlas, vUv);
-    if (reg == 1.0 && tx.a < 0.45) discard;
+    if (reg == 1.0) {
+      // hair cards: alpha sharpened by the mip level (graphics #3, P4), so coverage holds at distance instead of thinning
+      vec2 du = dFdx(vUv * vec2(1024.0, 512.0)), dv = dFdy(vUv * vec2(1024.0, 512.0));
+      tx.a *= 1.0 + 0.25 * max(0.0, 0.5 * log2(max(max(dot(du, du), dot(dv, dv)), 1e-8)));
+      if (tx.a < 0.45) discard;
+    }
     vec3 mean = reg < 0.5 ? uMean[0] : reg < 1.5 ? uMean[1] : reg < 2.5 ? uMean[2] : reg < 3.5 ? uMean[3] : uMean[4];
     float tint = reg < 0.5 ? 0.45 : reg < 1.5 ? 0.85 : reg < 2.5 ? 0.8 : reg < 3.5 ? 0.7 : 0.3;
     albD = mix(tx.rgb, vAlb * clamp(tx.rgb / max(mean, vec3(0.004)), 0.0, 3.0), tint);
-    if (reg == 0.0 && bn == 1.0) {   // black mask on some (accessory bit 4), over the lower face
-      // chin to under the nose: neck joint + 3 .. 12 cm on the Rocketbox skeleton (P3 browser check: + 7 .. 16 cm covered the eyes)
-      float hy = q.y - uJB.w;
-      float mask = mod(floor(ac / 4.0), 2.0) * smoothstep(0.045, 0.075, q.z) * (1.0 - smoothstep(0.065, 0.08, abs(q.x))) * smoothstep(0.025, 0.035, hy) * (1.0 - smoothstep(0.112, 0.122, hy));
-      albD = mix(albD, vec3(0.012), mask);
+    if (reg == 0.0) {
+      // the head map's own masks (P4, life #1 / graphics #3; seoul/people/aux.png from seoul/tools/people-aux.py): r = hair
+      // painted on the scalp, re-tinted to the person's hair colour like the cards (P3 tinted it toward the skin, so dark
+      // cards sat on brown or blond scalps: the black patches); g = the face mask, placed from each head's own nose, chin
+      // and eye line (P3's band at neck + 3..12 cm in rest space missed: a dot under the nose on the women)
+      float vt = 1.0 - vUv.y, rw = floor(vt * 2.0), loc = (vt - rw * 0.5 - 0.25) * 4.0;
+      if (loc > 0.0 && loc < 1.0) {
+        vec3 ax = texture2D(tAux, vec2(vUv.x, 1.0 - (rw * 0.5 + loc * 0.5))).rgb;
+        vec3 hairD = mix(tx.rgb, vHairC * clamp(tx.rgb / max(uMean[5], vec3(0.004)), 0.0, 3.0), 0.85);
+        albD = mix(albD, hairD, ax.r);
+        float mk = mod(floor(ac / 4.0), 2.0) * ax.g, white = mod(floor(ac / 16.0), 2.0);
+        albD = mix(albD, white > 0.5 ? vec3(0.62, 0.64, 0.66) * (0.92 + 0.08 * tx.g / max(mean.g, 0.004)) : vec3(0.016), mk);
+      }
     }
   } else {
   float hn = fract(sin(dot(floor(q * 180.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
   if (reg == 2.0) {
     if (ct == 2.0) { float band = abs(fract(q.y / 0.105) - 0.5) * 2.0; k *= mix(0.66, 1.06, smoothstep(0.05, 0.6, band)); }
     else if (ct == 1.0) k *= 0.94 + 0.08 * hn;
-    else k *= 0.93 + 0.1 * smoothstep(0.3, 0.7, fract(atan(q.z, q.x) * 14.0));
+    else k *= 0.93 + 0.1 * smoothstep(0.3, 0.7, fract(atan(q.z, q.x + 1e-5) * 14.0));
   } else if (reg == 3.0) {
     k *= 0.9 + 0.12 * fract((q.y + q.x * 0.6) * 140.0) * (0.6 + 0.4 * hn);
   } else if (reg == 1.0 || reg == 8.0) {
-    k *= reg == 1.0 ? 0.8 + 0.3 * fract(atan(q.z - 0.01, q.x) * 9.0 + hn * 0.3) : 0.92 + 0.08 * hn;
+    k *= reg == 1.0 ? 0.8 + 0.3 * fract(atan(q.z - 0.01, q.x + 1e-5) * 9.0 + hn * 0.3) : 0.92 + 0.08 * hn;
   } else if (reg == 0.0 && bn == 1.0 && q.y > 1.5) {
     vec3 h = q - vec3(0.0, 1.6, 0.01);
     float front = smoothstep(0.03, 0.08, h.z);
@@ -1753,7 +1880,7 @@ const HUMAN_FS = /* glsl */`
     float nose = front * (1.0 - smoothstep(0.004, 0.012, abs(h.x))) * step(-0.03, h.y) * step(h.y, 0.012);
     k *= (1.0 - 0.35 * sock) * (1.0 - 0.75 * eyes) * (1.0 - 0.6 * brow) * (1.0 - 0.4 * mouth) * (1.0 - 0.3 * chin) * (1.0 + 0.12 * nose);
     float mask = mod(floor(ac / 4.0), 2.0) * smoothstep(0.02, 0.05, h.z) * (1.0 - smoothstep(-0.012, -0.002, h.y)) * smoothstep(-0.105, -0.09, h.y);
-    k = mix(k, 0.06 / max(0.05, dot(vAlb, vec3(0.333))), mask);
+    k = mix(k, (mod(floor(ac / 16.0), 2.0) > 0.5 ? 0.62 : 0.016) / max(0.05, dot(vAlb, vec3(0.333))), mask);
   } else if (reg == 0.0 && bn == 1.0) k *= 0.72;   // neck in the shadow of the jaw
   albD = vAlb * k;
   }
@@ -1764,17 +1891,22 @@ const HUMAN_FS = /* glsl */`
 //      windscreen, roof, rear screen, boot) swept through rounded cross-sections with tumblehome, wheel arches cut into
 //      the sill, glass split from paint at the beltline; wheels are tyres with alloy faces. (No CC0/MIT car model was
 //      reachable: Kenney's are toys, glTF-Sample-Assets' cars are CC-BY.)
-function vehicleGeo(type) {
-  const P = [], N = [], C = [], I = [];
-  const box = (x0, y0, z0, x1, y1, z1, part, taper = 0) => {   // z forward; taper narrows the top face in x
+// (P4, life #2: P3's box() wound every face against its normal and the loft was wound inward, so 98 % of a car's body and
+// all its glass faced in: at 3 m a taxi showed its far panel's inside with the near wheels floating in front, and buses
+// were hollow. Everything is wound counter-clockwise seen from outside now, normals out; tests/seoul-life.mjs checks it
+// per primitive (g.userData.prims: triangle range, kind, centre).)
+export function vehicleGeo(type) {
+  const P = [], N = [], C = [], I = [], prims = [];
+  const prim = (kind, c, f) => { const t0 = I.length / 3; f(); prims.push({ kind, c, start: t0, count: I.length / 3 - t0 }); };
+  const box = (x0, y0, z0, x1, y1, z1, part, taper = 0) => prim('box', [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2], () => {   // z forward; taper narrows the top face in x
     const b = P.length / 3, t = taper;
     const v = [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [x0 + t, y1, z0], [x1 - t, y1, z0], [x1 - t, y1, z1], [x0 + t, y1, z1]];
     const F = [[0, 1, 2, 3, [0, -1, 0]], [7, 6, 5, 4, [0, 1, 0]], [3, 2, 6, 7, [0, 0, 1]], [1, 0, 4, 5, [0, 0, -1]], [0, 3, 7, 4, [-1, 0.2, 0]], [2, 1, 5, 6, [1, 0.2, 0]]];
     let q = 0;
-    for (const f of F) { for (let k = 0; k < 4; k++) { P.push(...v[f[k]]); N.push(...f[4]); C.push(part); } const o = b + q * 4; I.push(o, o + 2, o + 1, o, o + 3, o + 2); q++; }
-  };
+    for (const f of F) { for (let k = 0; k < 4; k++) { P.push(...v[f[k]]); N.push(...f[4]); C.push(part); } const o = b + q * 4; I.push(o, o + 1, o + 2, o, o + 2, o + 3); q++; }
+  });
   // a wheel: tyre (16-sided, rounded shoulders) + alloy face on the outside (part 10; spokes in the shader)
-  const wheel = (x, z, r, w) => {
+  const wheel = (x, z, r, w) => prim('wheel', [x, r, z], () => {
     const n = 16, out = Math.sign(x) || 1, xi = x - out * w / 2, xo = x + out * w / 2;
     const rings = [[xi, r * 0.78], [xi + out * w * 0.08, r * 0.97], [xo - out * w * 0.08, r * 0.97], [xo, r * 0.8]];
     const b = P.length / 3;
@@ -1782,8 +1914,8 @@ function vehicleGeo(type) {
     for (let j = 0; j < rings.length - 1; j++) for (let k = 0; k < n; k++) { const a = b + j * (n + 1) + k, c = a + n + 1; out > 0 ? I.push(a, c, a + 1, a + 1, c, c + 1) : I.push(a, a + 1, c, a + 1, c + 1, c); }
     const ci = P.length / 3; P.push(xo + out * 0.004, r, z); N.push(out, 0, 0); C.push(10);
     for (let k = 0; k <= n; k++) { const a = (k / n) * Math.PI * 2; P.push(xo + out * 0.002, r + Math.sin(a) * r * 0.8, z + Math.cos(a) * r * 0.8); N.push(out, 0, 0); C.push(10); }
-    for (let k = 0; k < n; k++) out > 0 ? I.push(ci, ci + 1 + k, ci + 2 + k) : I.push(ci, ci + 2 + k, ci + 1 + k);
-  };
+    for (let k = 0; k < n; k++) out > 0 ? I.push(ci, ci + 2 + k, ci + 1 + k) : I.push(ci, ci + 1 + k, ci + 2 + k);
+  });
   const c = VEH[type], L = c.L, W = c.W, H = c.H, hw = W / 2, hl = L / 2;
   if (type === 'car' || type === 'taxi') {
     const zf = hl - 0.95, zr = -hl + 0.88, wr = 0.33, ar = 0.385;            // wheel centres, tyre and arch radii
@@ -1821,12 +1953,13 @@ function vehicleGeo(type) {
     }
     const nS = st.length, side = nS * nr;
     for (let s2 = 0; s2 < 2; s2++) for (let i = 0; i < nS - 1; i++) for (let j = 0; j < nr - 1; j++) {
-      const a = base + s2 * side + i * nr + j, b2 = a + nr; s2 === 0 ? I.push(a, b2, a + 1, a + 1, b2, b2 + 1) : I.push(a, a + 1, b2, a + 1, b2 + 1, b2);
+      const a = base + s2 * side + i * nr + j, b2 = a + nr; s2 === 0 ? I.push(a, a + 1, b2, a + 1, b2 + 1, b2) : I.push(a, b2, a + 1, a + 1, b2, b2 + 1);
     }
     // end caps (bumper faces): fan between the two sides at the first and last station
     for (const [i, flip] of [[0, true], [nS - 1, false]]) for (let j = 0; j < nr - 1; j++) {
-      const a = base + i * nr + j, b2 = base + side + i * nr + j; flip ? I.push(a, b2, a + 1, a + 1, b2, b2 + 1) : I.push(a, a + 1, b2, a + 1, b2 + 1, b2);
+      const a = base + i * nr + j, b2 = base + side + i * nr + j; I.push(a, b2, a + 1, a + 1, b2, b2 + 1); void flip;
     }
+    prims.push({ kind: 'loft', c: [0, 0.8, 0], start: 0, count: I.length / 3 });
     // smooth normals over the shell
     { const g0 = new THREE.BufferGeometry(); g0.setAttribute('position', new THREE.Float32BufferAttribute(P.slice(base * 3), 3)); g0.setIndex(I.map((q) => q - base)); g0.computeVertexNormals(); const nn = g0.attributes.normal.array; for (let i = 0; i < nn.length; i++) N[base * 3 + i] = nn[i]; }
     // trim: grille, lower bumpers, mirrors, lamps (point-like cores in dark housings), plates
@@ -1840,6 +1973,7 @@ function vehicleGeo(type) {
     }
     box(-0.26, 0.4, hl + 0.012, 0.26, 0.51, hl + 0.025, 11); box(-0.26, 0.5, -hl - 0.025, 0.26, 0.61, -hl - 0.012, 11);
     for (const z of [zf, zr]) { wheel(hw - 0.12, z, wr, 0.22); wheel(-hw + 0.12, z, wr, 0.22); }
+    box(-hw * 0.82, 0.27, -hl + 0.35, hw * 0.82, 0.31, hl - 0.35, 2);   // (P4) underbody: a closed shell from a low drone
     if (type === 'taxi') { box(-0.3, H - 0.01, -0.28, 0.3, H + 0.19, -0.06, 6, 0.03); box(-0.34, H - 0.02, -0.3, 0.34, H + 0.01, -0.04, 2); }
   } else if (type === 'truck') {
     box(-hw, 0.4, hl - 1.6, hw, 1.05, hl, 0);
@@ -1859,6 +1993,7 @@ function vehicleGeo(type) {
     box(-hw + 0.18, 0.55, hl - 0.02, -hw + 0.38, 0.63, hl + 0.01, 3); box(hw - 0.38, 0.55, hl - 0.02, hw - 0.18, 0.63, hl + 0.01, 3);
     box(-hw + 0.1, 0.7, -hl - 0.02, -hw + 0.22, 0.95, -hl + 0.01, 4); box(hw - 0.22, 0.7, -hl - 0.02, hw - 0.1, 0.95, -hl + 0.01, 4);
     box(-hw - 0.01, 0.3, -hl + 0.2, -hw + 0.01, 0.38, hl - 0.2, 2); box(hw - 0.01, 0.3, -hl + 0.2, hw + 0.01, 0.38, hl - 0.2, 2);
+    box(-hw - 0.012, 0.42, -hl + 0.1, hw + 0.012, 0.62, hl - 0.05, 12);   // (P4) Seoul city-bus livery: the light skirt band under the colour
     for (const z of [hl - 2.3, -hl + 2.6]) { wheel(-hw + 0.16, z, 0.48, 0.3); wheel(hw - 0.16, z, 0.48, 0.3); }
   } else {   // scooter + rider + delivery box
     box(-0.16, 0.25, -0.7, 0.16, 0.62, 0.55, 0); box(-0.12, 0.62, -0.6, 0.12, 0.72, 0.05, 2);
@@ -1875,7 +2010,7 @@ function vehicleGeo(type) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
   g.setAttribute('part', new THREE.Float32BufferAttribute(C, 1));
-  g.setIndex(I); g.computeBoundingSphere();
+  g.setIndex(I); g.computeBoundingSphere(); g.userData.prims = prims;
   return g;
 }
 
@@ -1916,12 +2051,12 @@ vec3 cityEnv(vec3 R) {
 float pt = floor(vPart + 0.5);
 // B/C pillars and the window frames read through the glass band as black trim
 if (pt > 0.5 && pt < 1.5 && abs(vWN.y) < 0.75 && vLoc.y > 0.5 && vLoc.y < 2.0 && abs(vLoc.z) < 3.0 && abs(vLoc.z - 0.02) < 0.07) pt = 2.0;
-vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.012, 0.014, 0.016) : pt < 2.5 ? vec3(0.022) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.012, 0.014, 0.016) : pt < 6.5 ? vec3(0.02) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : pt < 9.5 ? vec3(0.55, 0.12, 0.08) : pt < 10.5 ? vec3(0.42, 0.43, 0.45) : vec3(0.75, 0.75, 0.72);
+vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.012, 0.014, 0.016) : pt < 2.5 ? vec3(0.022) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.012, 0.014, 0.016) : pt < 6.5 ? vec3(0.02) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : pt < 9.5 ? vec3(0.55, 0.12, 0.08) : pt < 10.5 ? vec3(0.42, 0.43, 0.45) : pt < 11.5 ? vec3(0.75, 0.75, 0.72) : vec3(0.62, 0.64, 0.66);
 if (pt > 9.5 && pt < 10.5) { float a = atan(vLoc.y - 0.33, vLoc.z), r = length(vec2(vLoc.y, vLoc.z)); float sp = smoothstep(0.55, 0.75, abs(sin(a * 2.5))); alb *= mix(0.25, 1.0, sp); }   // five spokes
-if (pt > 10.5) { float ch = step(0.45, fract(vLoc.x * 14.0)) * step(0.3, fract(vLoc.y * 18.0 + 0.2)); alb = mix(alb, vec3(0.03), ch * 0.8); }   // plate characters
+if (pt > 10.5 && pt < 11.5) { float ch = step(0.45, fract(vLoc.x * 14.0)) * step(0.3, fract(vLoc.y * 18.0 + 0.2)); alb = mix(alb, vec3(0.03), ch * 0.8); }   // plate characters
 diffuseColor.rgb = alb;`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-roughnessFactor = pt < 0.5 ? 0.24 : (pt < 1.5 || (pt > 4.5 && pt < 5.5)) ? 0.05 : pt > 9.5 && pt < 10.5 ? 0.3 : 0.6;`)
+roughnessFactor = pt < 0.5 || pt > 11.5 ? 0.24 : (pt < 1.5 || (pt > 4.5 && pt < 5.5)) ? 0.05 : pt > 9.5 && pt < 10.5 ? 0.3 : 0.6;`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 // nits (binding table, PLAN-P2): lamps are point sources (low-beam core ~3k off-axis, tail 250, brake 1500, hazard 600);
 // bodies are not emissive; the bus interior is 20-40 nits seen through dark glass, broken by window posts, seat backs
@@ -1954,27 +2089,32 @@ else if (pt > 5.5 && pt < 6.5) {
 }
 else if (pt > 6.5 && pt < 7.5) e = vec3(1.0, 0.45, 0.03) * 600.0 * vState.y * blink;
 // clearcoat and glass: Fresnel x the street they face
-if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5)) {
+if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5) || pt > 11.5) {
   vec3 Vw = normalize(cameraPosition - vWP), Nw = normalize(vWN), Rw = reflect(-Vw, Nw);
   float F = (pt < 0.5 ? 0.04 : 0.05) + 0.96 * pow(1.0 - clamp(dot(Nw, Vw), 0.0, 1.0), 5.0);
   e += cityEnv(Rw) * F * (pt < 0.5 ? 0.9 : 1.0);
 }
 totalEmissiveRadiance += e * uNit;`);
   };
-  m.customProgramCacheKey = () => 'seoul-vehicle-3';
+  m.customProgramCacheKey = () => 'seoul-vehicle-4';
   return m;
 }
 
-// headlight pool on the asphalt: additive quad ahead of each vehicle, elongated falloff. Peak 0.6 nit: low beams lift
-// lamp-lit asphalt (~1 nit at 20 lux, albedo 0.12) by at most ~1.5x (life #6; P1 drew 18-nit white wedges). ctx.pools = false
-// drops them (for a light model that lights the road from the vehicle emitters itself).
+// headlight pool on the asphalt: additive quad ahead of each vehicle. Low beams lift lamp-lit asphalt (~1 nit at 20 lux,
+// albedo 0.12) by at most ~1.4x (life #6; P1 drew 18-nit white wedges). (P4, graphics #4 / life bug: P3's pool read as a
+// uniform white rectangle at 3 m: its falloff leaned on smoothstep with edge0 > edge1, which GLSL leaves undefined.) Now a
+// soft gaussian beam: dark under the bumper, peak 3-6 m out, widening (sigma 0.45 -> 1.2 m) and fading by 14 m, zero at
+// every edge of the quad. ctx.pools = false drops them (for a light model that lights the road from the emitters itself).
 function poolMaterial(nit) {
   return new THREE.ShaderMaterial({
     uniforms: { uNit: nit },
     vertexShader: `attribute vec4 iPool; varying vec2 vUv; varying float vI; void main(){ vUv = uv; vI = iPool.w; vec3 p = position; float c = cos(iPool.z), s = sin(iPool.z);
       vec3 w = vec3(c * p.x + s * p.z, 0.0, -s * p.x + c * p.z) + vec3(iPool.x, 0.03, iPool.y); gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0); }`,
-    fragmentShader: `uniform float uNit; varying vec2 vUv; varying float vI; void main(){ vec2 q = vUv * 2.0 - 1.0; float r = length(vec2(q.x * 1.0, q.y));
-      float f = smoothstep(1.0, 0.0, r) * smoothstep(-1.0, -0.6, q.y); f *= f; gl_FragColor = vec4(vec3(1.0, 0.95, 0.85) * f * vI * 0.6 * uNit, 1.0); }`,
+    fragmentShader: `uniform float uNit; varying vec2 vUv; varying float vI; void main(){
+      float along = (1.0 - vUv.y) * 14.0, across = (vUv.x * 2.0 - 1.0) * 2.5, w = 0.45 + 0.055 * along;
+      float f = exp(-0.5 * across * across / (w * w)) * clamp((along - 0.6) / 2.4, 0.0, 1.0) * exp(-max(0.0, along - 5.0) / 3.5);
+      float ex = 1.0 - (vUv.x * 2.0 - 1.0) * (vUv.x * 2.0 - 1.0); f *= ex * ex;
+      gl_FragColor = vec4(vec3(1.0, 0.95, 0.85) * f * vI * 0.45 * uNit, 1.0); }`,
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
   });
 }
@@ -2029,7 +2169,8 @@ function buildFill(net, layout, emitters, cell = 4) {
 
 // ================================================================ build (contract L2)
 export function build(layout, ctx = {}) {
-  const seed = ctx.seed ?? 7, q = ctx.quality || 'auto';
+  const pq = typeof location !== 'undefined' && /[?&]preset=phone/.test(location.search || '') ? 'low' : null;   // (P4) ?preset=phone too
+  const seed = ctx.seed ?? 7, q = pq || ctx.quality || 'auto';
   const maxAgents = ctx.maxAgents ?? (q === 'low' ? Math.round(LIFE.maxAgents * 0.5) : LIFE.maxAgents);
   // E's set pieces and dressing discs (contract P3-G1/C: world-seoul passes ctx.setPieces = geo.setPieces and ctx.obstacles =
   // geo.dressingOut.obstacles; ctx.dressing (E's geometry output) is read too). Absent: the default rings, no discs.
@@ -2051,22 +2192,25 @@ export function build(layout, ctx = {}) {
   // one program for every body (procedural tiers and the Rocketbox avatars); per material: the joints (uJA/B/C), the atlases
   // and the class means (P3)
   const blank = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1); blank.needsUpdate = true;
+  const zero = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1); zero.needsUpdate = true;   // no aux.png: no scalp re-tint, no masks
   const JDEF = [new THREE.Vector4(0.095, 0.9, 0.48, 0.09), new THREE.Vector4(0.205, 1.38, 1.1, 1.46), new THREE.Vector4(0.01, 0.005, 1, 0)];
-  const makeHumanMat = (J = JDEF, atlas = blank, hair = blank, mean = null) => {
+  const makeHumanMat = (J = JDEF, atlas = blank, hair = blank, mean = null, aux = zero, scalp = null) => {
     const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 });
-    const U = { uJA: { value: J[0] }, uJB: { value: J[1] }, uJC: { value: J[2] }, tAtlas: { value: atlas }, tHair: { value: hair },
-      uMean: { value: (mean || [[0.2, 0.1, 0.07], [0.02, 0.015, 0.01], [0.06, 0.05, 0.05], [0.03, 0.03, 0.03], [0.02, 0.02, 0.02]]).map((c) => new THREE.Vector3(...c)) } };
+    const M = (mean || [[0.2, 0.1, 0.07], [0.02, 0.015, 0.01], [0.06, 0.05, 0.05], [0.03, 0.03, 0.03], [0.02, 0.02, 0.02]]).slice(0, 5);
+    M.push(scalp || M[1]);   // uMean[5]: the painted scalp hair's mean (people-aux.py), else the cards'
+    const U = { uJA: { value: J[0] }, uJB: { value: J[1] }, uJC: { value: J[2] }, tAtlas: { value: atlas }, tHair: { value: hair }, tAux: { value: aux },
+      uMean: { value: M.map((c) => new THREE.Vector3(...c)) } };
     m.userData.humanU = U;
     m.onBeforeCompile = (sh) => {
       sh.uniforms.uTime = uTime; sh.uniforms.uNit = nit; sh.uniforms.uFillK = fillK; Object.assign(sh.uniforms, U);
       sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\n' + HUMAN_VS)
         .replace('#include <beginnormal_vertex>', HUMAN_ANIM + '\nvec3 objectNormal = nrm;\n#ifdef USE_TANGENT\nvec3 objectTangent = vec3(1.0, 0.0, 0.0);\n#endif')
         .replace('#include <begin_vertex>', 'vec3 transformed = p;');
-      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vAlb; varying vec3 vFillE; varying float vScreen; varying vec3 vRest; varying vec4 vMisc; varying vec2 vUv; uniform float uNit; uniform float uFillK; uniform vec4 uJA; uniform vec4 uJB; uniform vec4 uJC; uniform sampler2D tAtlas; uniform sampler2D tHair; uniform vec3 uMean[5];')
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vAlb; varying vec3 vHairC; varying vec3 vFillE; varying float vScreen; varying vec3 vRest; varying vec4 vMisc; varying vec2 vUv; uniform float uNit; uniform float uFillK; uniform vec4 uJA; uniform vec4 uJB; uniform vec4 uJC; uniform sampler2D tAtlas; uniform sampler2D tHair; uniform sampler2D tAux; uniform vec3 uMean[6];')
         .replace('#include <color_fragment>', '#include <color_fragment>\n' + HUMAN_FS + '\ndiffuseColor.rgb = albD;')
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += albD * vFillE * uFillK + vec3(0.75, 0.85, 1.0) * 160.0 * uNit * vScreen;');
     };
-    m.customProgramCacheKey = () => 'seoul-human-3';
+    m.customProgramCacheKey = () => 'seoul-human-4';
     return m;
   };
   const humanMat = makeHumanMat();
@@ -2096,23 +2240,32 @@ export function build(layout, ctx = {}) {
     return g;
   };
   // people.json + people.bin (+ atlases): build the avatar tiers. data = { meta, bin, atlas?, hair? } (node tests pass it)
+  const avatarOf = (a, list) => {   // a person's own avatar, stable (hash of the id), weighted by avatars.w
+    let tot = 0; for (const i of list) tot += avatars.w ? avatars.w[i] : 1;
+    let u = (((a.id * 2654435761) >>> 7) / 33554432) * tot; for (const i of list) { u -= avatars.w ? avatars.w[i] : 1; if (u < 0) return i; } return list[list.length - 1];
+  };
   function attachAvatars(data) {
     const { meta, bin } = data; const nA = meta.avatars.length;
     avatars.mats = meta.avatars.map((av) => {
       const j = av.joints, J = [new THREE.Vector4(j.hipX, j.hipY, j.kneeY, j.ankleY), new THREE.Vector4(j.shX, j.shY, j.elY, j.neckY), new THREE.Vector4(j.kneeZ, j.elZ, 1.712 / j.top, 1)];
-      return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean);
+      return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean, data.aux || zero, av.meanScalp);
     });
-    avatars.tiers = [0, 1].map((lod) => meta.avatars.map((av, ai) => {
-      const L = av.lods[lod], g = avatarGeo(bin, L), cap = lod ? Math.ceil(LIFE.maxMid * 0.5) : Math.ceil(LIFE.maxNear * 0.5), A = instAttrs(g, cap);
-      const m = new THREE.Mesh(g, avatars.mats[ai]); m.frustumCulled = false; m.name = `crowd-${lod ? 'mid' : 'near'}-${av.name}`; group.add(m);
-      return { g, A, cap, mesh: m, tris: L.tris, n: 0 };
+    // tiers: [near, (lod1,) mid]; people.json from before P4 has no lod1 (then 0 near, 1 mid)
+    const nL = Math.min(3, meta.avatars[0].lods.length); avatars.nL = nL;
+    avatars.tiers = Array.from({ length: nL }, (_, lod) => meta.avatars.map((av, ai) => {
+      const mid = lod === nL - 1, L = av.lods[lod], g = avatarGeo(bin, L), cap = mid ? Math.ceil(LIFE.maxMid * 0.5) : Math.ceil(LIFE.maxNear * (nL === 3 && lod === 0 ? 0.3 : 0.5)), A = instAttrs(g, cap);
+      const m = new THREE.Mesh(g, avatars.mats[ai]); m.frustumCulled = false; m.name = `crowd-${mid ? 'mid' : L.name || 'near'}-${av.name}`; group.add(m);
+      return { g, A, cap, mesh: m, tris: L.tris, n: 0, near: !mid };
     }));
     avatars.male = meta.avatars.map((av, i) => (av.sex === 'm' ? i : -1)).filter((i) => i >= 0);
     avatars.female = meta.avatars.map((av, i) => (av.sex === 'f' ? i : -1)).filter((i) => i >= 0);
+    // (P4, life #5 / art #3: suits on 2 of 8 bodies put a quarter of Hongdae's Friday crowd in business wear) suit avatars
+    // are picked a tenth as often (~3 % of people); the rest share evenly
+    avatars.w = meta.avatars.map((av) => (/^Business/i.test(av.name) ? 0.1 : 1));
     avatars.n = nA; avatars.ready = true; avatars.patched = false;
-    for (const L of avatars.tiers) for (const t of L) motionMeshes.push(t.mesh);   // (the same array scene.userData.motionMeshes spreads: re-list)
+    for (const L of avatars.tiers) for (const t of L) if (t.near) motionMeshes.push(t.mesh);   // (the same array scene.userData.motionMeshes spreads: re-list; near tiers only, P4 perf #2)
     if (ctx.scene?.userData) ctx.scene.userData.motionMeshes = [...(ctx.scene.userData.motionMeshes || []).filter((m) => !motionMeshes.includes(m)), ...motionMeshes];
-    stats.avatars = nA; stats.trisNear = avatars.tiers[0][0].tris; stats.trisMid = avatars.tiers[1][0].tris;
+    stats.avatars = nA; stats.trisNear = avatars.tiers[0][0].tris; stats.trisMid = avatars.tiers[nL - 1][0].tris; stats.trisLod1 = nL === 3 ? avatars.tiers[1][0].tris : null;
   }
   // ---- contact shadows (lighting #6, P3): a soft dark footprint under every near and mid person (multiplied into what is
   // already on the ground; walkers' a little longer along their heading), so crowds stand on the street instead of floating
@@ -2133,11 +2286,16 @@ export function build(layout, ctx = {}) {
   // static per-person appearance, linearised once
   const people = crowd.people, NP = people.length;
   const look = people.map((a) => ({ top: lin(a.look.top), bot: lin(a.look.bottom), hair: lin(a.look.hair), skin: lin(a.look.skin), wear: lin(a.look.wear) }));
-  const accOf = people.map((a) => (a.look.acc & 7) | (a.look.pocket ? 8 : 0));
+  // (P4) 16: a white KF94 instead of a black one, on 35 % of the masks (a hash, so the look RNG stream is unchanged)
+  const accOf = people.map((a) => (a.look.acc & 7) | (a.look.pocket ? 8 : 0) | (a.look.acc & 4 && h32(a.id, 0x3a5c) % 100 < 35 ? 16 : 0));
   const seedOf = people.map((a) => ((a.id * 2654435761) >>> 0) / 4294967296);
   const umbOf = people.map((a, i) => (rain && a.kind !== K_SEAT && a.kind !== K_PERF && ((i * 2654435761) >>> 0) % 100 < 62 ? 1 : 0));   // ~60% under umbrellas in rain
   // look-at state (render side only): head yaw/pitch toward the drone, attention time (phones come up after ~1.2 s)
   const LY = new Float32Array(NP), LP = new Float32Array(NP), ATT = new Float32Array(NP);
+  // (P4, life #4) reaction to a low drone, render side only (the soft colliders stay where the sim puts people): RX 0-1 how
+  // startled, LAG m a walker has fallen behind its sim position (slowed to 0.4x, then catches up), SX sidestep (m, signed
+  // across the heading), FL s of flinch left
+  const RX = new Float32Array(NP), LAG = new Float32Array(NP), SX = new Float32Array(NP), FL = new Float32Array(NP);
   const filmer = people.map((a) => a.kind !== K_WALK && a.kind !== K_SEAT && a.kind !== K_PERF && seedOf[a.id] < 0.3);
 
   // ---- pocha furniture (plastic tables + stools), only if the site doesn't provide it
@@ -2171,12 +2329,12 @@ export function build(layout, ctx = {}) {
     vByType[ty] = { im, st, vel, env, cap, n: list.length };
   }
   // contract P2-A1: list the vehicle meshes for A's object blur (world.motionMeshes / scene.userData.motionMeshes)
-  const motionMeshes = [...Object.values(vByType).map((B) => B.im), ...tiers.map((t) => t.mesh)];
+  const motionMeshes = [...Object.values(vByType).map((B) => B.im), tiers[0].mesh];   // (P4 perf #2: the mid and far crowd move < 1 px per frame at 18+ m; no velocity proxies)
   group.userData.motionMeshes = motionMeshes;
   if (ctx.scene?.userData) ctx.scene.userData.motionMeshes = [...(ctx.scene.userData.motionMeshes || []), ...motionMeshes];
   const poolG = new THREE.InstancedBufferGeometry().copy(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2));
-  // plane in xz: x across (width 3.2 m), z ahead (length 14 m), starting at the bumper
-  { const p = poolG.attributes.position; for (let i = 0; i < p.count; i++) { p.setX(i, p.getX(i) * 3.4); p.setZ(i, (p.getZ(i) + 0.5) * 14); } }
+  // plane in xz: x across (width 5 m, the beam fades to 0 at its edges), z ahead (length 14 m), starting at the bumper
+  { const p = poolG.attributes.position; for (let i = 0; i < p.count; i++) { p.setX(i, p.getX(i) * 5.0); p.setZ(i, (p.getZ(i) + 0.5) * 14); } }
   const poolA = new THREE.InstancedBufferAttribute(new Float32Array(traffic.vehicles.length * 4), 4); poolA.setUsage(THREE.DynamicDrawUsage);
   poolG.setAttribute('iPool', poolA); poolG.instanceCount = 0;
   const pools = new THREE.Mesh(poolG, poolMaterial(nit)); pools.frustumCulled = false; pools.name = 'headlight-pools'; pools.renderOrder = 2; pools.visible = ctx.pools !== false; group.add(pools);
@@ -2204,10 +2362,12 @@ export function build(layout, ctx = {}) {
   else if (ctx.people !== false && typeof fetch === 'function' && typeof document !== 'undefined') {
     const base = ctx.peopleBase || new URL('./seoul/people/', import.meta.url).href;
     Promise.all([fetch(base + 'people.json').then((r) => r.json()), fetch(base + 'people.bin').then((r) => r.arrayBuffer()),
-      new THREE.TextureLoader().loadAsync(base + 'atlas.jpg'), new THREE.TextureLoader().loadAsync(base + 'hair.png')])
-      .then(([meta, bin, atlas, hair]) => {
+      new THREE.TextureLoader().loadAsync(base + 'atlas.jpg'), new THREE.TextureLoader().loadAsync(base + 'hair.png'),
+      new THREE.TextureLoader().loadAsync(base + 'aux.png').catch(() => null)])
+      .then(([meta, bin, atlas, hair, aux]) => {
         for (const t of [atlas, hair]) { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; t.needsUpdate = true; }
-        attachAvatars({ meta, bin, atlas, hair });
+        if (aux) { aux.colorSpace = THREE.NoColorSpace; aux.needsUpdate = true; }   // masks, not colour
+        attachAvatars({ meta, bin, atlas, hair, aux });
       }).catch((e) => { avatars.error = String(e?.message || e); console.warn('seoul-life: avatars', e); });
   }
   // ---- [P4 H, perf #1 / native #3] the crowd's per-frame evaluate off the main thread (seoul-life-worker.js): the worker
@@ -2281,19 +2441,32 @@ export function build(layout, ctx = {}) {
       ab[i] = b;
     }
     near.doors = crowd.events;
-    let cut = 17, acc = 0; for (let b = 0; b <= 17; b++) { acc += hist[b]; if (acc > LIFE.maxDrawn) { cut = b - 1; break; } }
+    // the phone preset (seoul-light's qualityCap, crowd 'low') draws fewer, live
+    const capP = ctx.scene?.userData?.seoulLight?.qualityCap, low = q === 'low' || (capP && capP.presets?.[capP.current]?.crowd === 'low'), maxD = low ? LIFE.maxDrawnLow : LIFE.maxDrawn;
+    let cut = 17, acc = 0; for (let b = 0; b <= 17; b++) { acc += hist[b]; if (acc > maxD) { cut = b - 1; break; } }
     const kL = 1 - Math.exp(-dt * 4);
     for (let i = 0; i < NP; i++) {
       if (ab[i] > cut) { ATT[i] = 0; continue; }
-      const a = people[i], x = X[i], z = Z[i];
+      const a = people[i];
+      // ---- reaction (life #4): within 2.5 m of a drone flying under 2.5 m: walkers slow to 0.4x and sidestep 0.5 m away
+      // from it, everyone near flinches for 0.4 s on the first moment; eased in 0.15 s, out over ~1 s
+      { const rx = X[i] - camP.x, rz = Z[i] - camP.z, near = camH < 2.5 && camH > -0.5 && rx * rx + rz * rz < 6.25 && a.kind !== K_PERF && a.kind !== K_SEAT;
+        const r0 = RX[i], tgt = near ? 1 : 0; RX[i] += (tgt - r0) * (1 - Math.exp(-dt * (near ? 7 : 1.2)));
+        if (near && r0 < 0.05 && dt > 0) FL[i] = 0.4; else if (FL[i] > 0) FL[i] = Math.max(0, FL[i] - dt);
+        if (a.kind === K_WALK) {
+          const sp = crowd.WALK[i] * crowd.units[a.unit].v; LAG[i] = Math.max(0, Math.min(3, LAG[i] + (sp * 0.6 * RX[i] - (RX[i] < 0.2 ? LAG[i] * 0.6 : 0)) * dt));
+          const hy = crowd.YAW[i], hx = Math.sin(hy), hz = Math.cos(hy), side = (rx * hz - rz * hx) >= 0 ? 1 : -1;   // the side away from the drone
+          if (near && Math.abs(SX[i]) < 0.01) SX[i] = side * 1e-3; SX[i] += ((near ? Math.sign(SX[i] || side) * 0.5 : 0) - SX[i]) * (1 - Math.exp(-dt * (near ? 6 : 1.5)));
+        } else { LAG[i] *= Math.exp(-dt); SX[i] *= Math.exp(-dt * 1.5); } }
+      const hy0 = crowd.YAW[i], x = X[i] - Math.sin(hy0) * LAG[i] + Math.cos(hy0) * SX[i], z = Z[i] - Math.cos(hy0) * LAG[i] - Math.sin(hy0) * SX[i];
       const dx = x - camP.x, dz = z - camP.z, h2 = dx * dx + dz * dz, d2 = h2 + camH * camH * 0.25;
       let T, k;
-      let lod = d2 < nr2 && nN < tiers[0].cap ? 0 : d2 < mr2 && nM < tiers[1].cap ? 1 : nN + nM + nF < LIFE.maxDrawn ? 2 : -1;
+      let lod = d2 < nr2 && nN < tiers[0].cap ? 0 : d2 < mr2 && nM < tiers[1].cap ? 1 : nN + nM + nF < maxD ? 2 : -1;
       if (lod < 0) continue;
       if (lod === 0) nN++; else if (lod === 1) nM++; else nF++;
       let AT = null;
       if (lod < 2 && avatars.ready) {   // the person's own avatar (by sex, then a hash), unless that avatar's buffer is full
-        const list = a.male ? avatars.male : avatars.female, av = list[((a.id * 2654435761) >>> 7) % list.length]; AT = avatars.tiers[lod][av];
+        const list = a.male ? avatars.male : avatars.female, av = avatarOf(a, list), al = lod === 0 ? (avatars.nL === 3 && d2 >= LIFE.nearR0 * LIFE.nearR0 ? 1 : 0) : avatars.nL - 1; AT = avatars.tiers[al][av];
         if (AT.n >= AT.cap) AT = null;
       }
       if (!AT) AT = tiers[lod];
@@ -2314,16 +2487,17 @@ export function build(layout, ctx = {}) {
         if (filmer[i] && ATT[i] > 1.2 && CA.WALK[i] < 0.3) { pose = P_FILM; tp -= 0.05; }
       } else ATT[i] = Math.max(0, ATT[i] - dt * 2);
       LY[i] += (ty - LY[i]) * kL; LP[i] += (tp - LP[i]) * kL;
+      if (FL[i] > 0 && a.kind !== K_PERF) pose = P_FLINCH;
       const o = k * 4, L = look[i];
       T.iPos.array[o] = x; T.iPos.array[o + 1] = groundAt(x, z) + (a.y0 || 0); T.iPos.array[o + 2] = z; T.iPos.array[o + 3] = yaw;
-      T.iAnim.array[o] = CA.PH[i]; T.iAnim.array[o + 1] = CA.WALK[i]; T.iAnim.array[o + 2] = pose; T.iAnim.array[o + 3] = a.scale;
+      T.iAnim.array[o] = CA.PH[i]; T.iAnim.array[o + 1] = CA.WALK[i] * (1 - 0.6 * RX[i]); T.iAnim.array[o + 2] = pose; T.iAnim.array[o + 3] = a.scale;
       T.iTop.array.set(L.top, o); T.iTop.array[o + 3] = a.look.coat;
       T.iBot.array.set(L.bot, o); T.iBot.array[o + 3] = a.look.bag;
       T.iHair.array.set(L.hair, o); T.iHair.array[o + 3] = a.wide;
       T.iSkin.array.set(L.skin, o); T.iSkin.array[o + 3] = umbOf[i];
       T.iWear.array.set(L.wear, o); T.iWear.array[o + 3] = a.look.style;
       T.iLook.array[o] = LY[i]; T.iLook.array[o + 1] = LP[i]; T.iLook.array[o + 2] = accOf[i]; T.iLook.array[o + 3] = seedOf[i];
-      { const sp = CA.WALK[i] * (walker ? crowd.units[a.unit].v : 1.25), ov = k * 3; T.instanceVelocity.array[ov] = Math.sin(yaw) * sp; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = Math.cos(yaw) * sp; }
+      { const sp = CA.WALK[i] * (walker ? crowd.units[a.unit].v : 1.25) * (1 - 0.6 * RX[i]), ov = k * 3; T.instanceVelocity.array[ov] = Math.sin(yaw) * sp; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = Math.cos(yaw) * sp; }
       fill.at(x, z, tmpF); T.iFill.array[o] = tmpF[0]; T.iFill.array[o + 1] = tmpF[1]; T.iFill.array[o + 2] = tmpF[2]; T.iFill.array[o + 3] = tmpF[3];
     }
     let avTris = 0;

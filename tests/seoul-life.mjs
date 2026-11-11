@@ -109,6 +109,12 @@ s2.advanceTo(140);
 // moving + stopping
 const mv = a.traffic.vehicles.filter((v) => v.v > 3).length, st = a.traffic.vehicles.filter((v) => v.v < 0.3 && !v.hidden).length;
 ok(mv > 5 && st > 0, `traffic flows and queues (moving ${mv}, stopped ${st})`);
+// life #3 (P4): traffic that streams. P3 passed the line above at 75 % stopped (79 % on the main roads, 3.7 km/h). Gate the
+// stopped share over 600 s and the speed of what moves between the lights.
+{ const F = new LifeSim(layout, { seed: 11 }); let n = 0, st2 = 0, mn = 0, mst = 0, mvs = 0, mvn = 0;
+  for (let t = 60; t <= 600; t += 10) { F.advanceTo(t + LIFE.warm); for (const v of F.traffic.vehicles) { if (v.hidden) continue; n++; if (v.v < 0.5) st2++; if (v.lane.street.kind === 'main') { mn++; if (v.v < 0.5) mst++; else { mvs += v.v; mvn++; } } } }
+  const all = st2 / n, main = mst / mn, kmh = mvs / mvn * 3.6;
+  ok(all <= 0.58 && main <= 0.66 && kmh >= 15 && kmh <= 30, `traffic streams: ${(100 * all).toFixed(0)} % stopped (main roads ${(100 * main).toFixed(0)} %), moving at ${kmh.toFixed(1)} km/h between the lights (P3: 72 % / 79 %, 3.7 km/h mean)`); }
 // liveness (life #2): P1 deadlocked (82 % of road vehicles stopped at 90 s, 100 % at 300 s). At 300 s fewer than 10 %
 // may have been stopped for more than 45 s (longer than any red), and the taxi/bus dwells must actually happen.
 {
@@ -147,28 +153,114 @@ const v0 = a.traffic.vehicles.find((v) => !v.hidden && v.type !== 'scooter'), B 
 ok(!!a.hit([bx.c[0], bx.c[1] + bx.half[1] + 0.1, bx.c[2]], 0.2, 90), 'sphere on a roof hits'); ok(!a.hit([bx.c[0], 40, bx.c[2]], 0.2, 90), 'sphere high above misses');
 // cost (traffic; the crowd is closed-form, costed above)
 const p = new LifeSim(layout, { seed: 11 }); let t0 = performance.now(); p.advanceTo(60); const ms = performance.now() - t0;
-const perStepT = (() => { const q = new LifeSim(layout, { seed: 12 }); const c0 = process.cpuUsage(); for (let i = 0; i < 600; i++) q.traffic.step(); const c = process.cpuUsage(c0); return (c.user + c.system) / 1000 / 600; })();
-console.log(`cost: 60 s of traffic in ${ms.toFixed(0)} ms; traffic step ${perStepT.toFixed(3)} ms CPU (60 Hz) -> ${(perStepT * 60).toFixed(2)} ms/s of sim`);
-ok(perStepT * 60 < 30, 'traffic cost < 30 ms per second of take');
+// (P4) per frame the game steps a warm sim (it opens at take clock + warm), so the step is costed after the first 10 s, when
+// the movement caches have filled; the warm start itself is a load cost, gated on its own
+const [perStepT, warmMs] = (() => { const q = new LifeSim(layout, { seed: 12 }); const w0 = process.cpuUsage(); for (let i = 0; i < LIFE.warm * LIFE.trafficHz; i++) q.traffic.step(); const w = process.cpuUsage(w0);
+  const c0 = process.cpuUsage(); for (let i = 0; i < 600; i++) q.traffic.step(); const c = process.cpuUsage(c0); return [(c.user + c.system) / 1000 / 600, (w.user + w.system) / 1000]; })();
+console.log(`cost: 60 s of traffic in ${ms.toFixed(0)} ms; warm start (${LIFE.warm} s) ${warmMs.toFixed(0)} ms CPU at load; traffic step ${perStepT.toFixed(3)} ms CPU (60 Hz) -> ${(perStepT * 60).toFixed(2)} ms/s of sim`);
+ok(perStepT * 60 < 30 && warmMs < 3000, 'traffic cost < 30 ms per second of take; warm start < 3 s at load');
 // rewinds are cheap: snapshots every 10 s
 { const q = new LifeSim(layout, { seed: 7 }); q.advanceTo(300); const h = q.hash(); const c0 = process.cpuUsage(); q.advanceTo(295); q.advanceTo(300); const c = process.cpuUsage(c0);
   ok(q.hash() === h, 'snapshot rewind reproduces the traffic bit for bit'); ok((c.user + c.system) / 1000 < 400, `rewind 5 s at t=300 costs ${((c.user + c.system) / 1000).toFixed(0)} ms CPU (P1: a full re-sim from 0)`); }
 // life #1 (P3): the Rocketbox avatar LODs (seoul/people) parse, fit their budgets and use only the crowd rig's bones
 if (existsSync('seoul/people/people.json')) {
   const meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), b = readFileSync('seoul/people/people.bin'), bin = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
-  let bad = 0; const tris = [[], []];
+  let bad = 0; const tris = [[], [], []];
   for (const av of meta.avatars) av.lods.forEach((L, k) => { tris[k].push(L.tris); const bd = new Uint8Array(bin, L.bone, L.verts * 4), ix = new Uint16Array(bin, L.index, L.tris * 3), p = new Float32Array(bin, L.pos, L.verts * 3);
     for (let i = 0; i < L.verts; i++) { const b1 = bd[i * 4], b2 = bd[i * 4 + 1], r = bd[i * 4 + 3]; if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b1) || ![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b2) || r > 6 || !isFinite(p[i * 3 + 1])) bad++; }
     for (const q of ix) if (q >= L.verts) bad++; });
-  ok(meta.avatars.length >= 8 && bad === 0 && Math.max(...tris[0]) <= 3600 && Math.max(...tris[1]) <= 900 && meta.avatars.every((a) => a.mean && a.joints.top > 1.6 && a.joints.top < 1.95),
-    `avatars: ${meta.avatars.length} (${meta.avatars.filter((a) => a.sex === 'm').length} men), near ${Math.max(...tris[0])} / mid ${Math.max(...tris[1])} tris, ${bad} bad vertices, ${(b.byteLength / 1024).toFixed(0)} KB (MIT, Microsoft Rocketbox)`);
+  ok(meta.avatars.length >= 8 && bad === 0 && Math.max(...tris[0]) <= 3600 && Math.max(...tris[1]) <= 1800 && Math.max(...tris[2]) <= 900 && meta.avatars.every((a) => a.mean && a.joints.top > 1.6 && a.joints.top < 1.95),
+    `avatars: ${meta.avatars.length} (${meta.avatars.filter((a) => a.sex === 'm').length} men), near ${Math.max(...tris[0])} / lod1 ${Math.max(...tris[1])} / mid ${Math.max(...tris[2])} tris, ${bad} bad vertices, ${(b.byteLength / 1024).toFixed(0)} KB (MIT, Microsoft Rocketbox)`);
   const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
   const L2 = lifeMod.build(layout, { audio: false, scene: new THREE.Scene(), peopleData: { meta, bin } }), cam = new THREE.Vector3(-36, 3, -23), qq = new THREE.Quaternion();
   for (let k = 0; k < 10; k++) L2.update(10 + k / 30, cam, qq);
-  const nAv = L2.avatars.tiers[0].reduce((a, t) => a + t.n, 0) + L2.avatars.tiers[1].reduce((a, t) => a + t.n, 0);
+  const nAv = L2.avatars.tiers.flat().reduce((a, t) => a + t.n, 0);
+  // perf #2 (P4): the people's triangles at the walk0 camera, by tier; suits <= 5 %
+  const triP = L2.avatars.tiers.flat().reduce((a, t) => a + t.n * t.tris, 0) + L2.stats.far * L2.stats.trisFar, suit = L2.avatars.tiers.flat().filter((t) => /Business/.test(t.mesh.name)).reduce((a, t) => a + t.n, 0);
+  const triV = L2.motionMeshes.filter((m) => !m.isInstancedMesh).reduce((a, m) => a + (m.geometry.instanceCount || 0) * (m.geometry.index.count / 3), 0);   // what A's velocity pass redraws
+  ok(L2.stats.drawn <= 1500 && triP + triV < 1.3e6 && suit / nAv <= 0.05, `people triangles at walk0: main ${(triP / 1e6).toFixed(2)} M (${L2.stats.drawn} drawn; near ${L2.avatars.tiers[0].reduce((a, t) => a + t.n, 0)} at 3.4k, lod1 ${L2.avatars.tiers[1].reduce((a, t) => a + t.n, 0)} at 1.7k) + velocity ${(triV / 1e6).toFixed(2)} M (P3: 0.8-1.34 M main, every tier redrawn for velocity); suits ${(100 * suit / nAv).toFixed(1)} % (P3 ~25 %)`);
   ok(L2.avatars.ready && nAv > 50 && nAv === L2.stats.near + L2.stats.mid && L2.stats.contacts === nAv && L2.motionMeshes.filter((m) => m.isInstancedMesh).length === 5 && L2.motionMeshes.some((m) => m.count > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 1))
     && L2.motionMeshes.some((m) => !m.isInstancedMesh && m.geometry.instanceCount > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 0.5)),
     `render path: ${nAv} near/mid people on avatars, ${L2.stats.contacts} contact shadows, ${L2.motionMeshes.length} meshes with instanceVelocity (5 vehicle types + crowd tiers; A's object blur)`);
+}
+// life #4 (P4): people react to a low drone (render side; the soft colliders stay on the sim's positions). A walker the drone
+// hovers beside at 1.5 m height is drawn slower (0.4x), stepped aside ~0.5 m away from it, and flinches on the first moment.
+{
+  const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
+  const L3 = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene() }), C3 = L3.crowd, q0 = new THREE.Quaternion();
+  C3.evaluate(140, null, { avoid: false }); let wi = -1;
+  for (let i = 0; i < C3.people.length; i++) if (C3.people[i].kind === K_WALK && C3.VIS[i] && C3.WALK[i] > 0.9 && Math.hypot(C3.X[i] + 36, C3.Z[i] + 23) < 40) { wi = i; break; }
+  let flinch = false, minD = 9, aside = 0, off = 0, sx = 0;
+  const posOf = () => { for (const T of [...L3.group.children]) { const g = T.geometry; if (!g?.isInstancedBufferGeometry || !g.attributes.iLook || !/crowd/.test(T.name)) continue; for (let k = 0; k < g.instanceCount; k++) if (g.attributes.iLook.array[k * 4 + 3] === Math.fround(((C3.people[wi].id * 2654435761) >>> 0) / 4294967296)) return [g.attributes.iPos.array[k * 4], g.attributes.iPos.array[k * 4 + 2], g.attributes.iAnim.array[k * 4 + 2], g.attributes.iAnim.array[k * 4 + 1]]; } return null; };
+  for (let k = 0; k < 60; k++) {   // 2 s at 30 fps, the camera 1.6 m beside the walker at 1.5 m
+    const t = 140 - LIFE.warm + k / 30; C3.evaluate(t + LIFE.warm, null, { avoid: false });
+    const yx = Math.sin(C3.YAW[wi]), yz = Math.cos(C3.YAW[wi]), cam = new THREE.Vector3(C3.X[wi] + yz * 1.6, 1.5, C3.Z[wi] - yx * 1.6);
+    L3.update(t, cam, q0); const P = posOf(); if (!P) continue;
+    C3.evaluate(t + LIFE.warm, null, { avoid: false });
+    if (P[2] === 10) flinch = true; off = Math.hypot(P[0] - C3.X[wi], P[1] - C3.Z[wi]); sx = (P[0] - C3.X[wi]) * yz - (P[1] - C3.Z[wi]) * yx; aside = Math.max(aside, -sx);
+    minD = Math.min(minD, Math.hypot(P[0] - cam.x, P[1] - cam.z));
+  }
+  ok(wi >= 0 && flinch && aside > 0.3 && off < 3.5, `a low drone 1.6 m off a walker: flinch ${flinch}, stepped ${aside.toFixed(2)} m away, drawn ${off.toFixed(2)} m from its collider (P3: walked into the lens at 1.65 m)`);
+}
+// life #2 (P4): vehicles right side out. P3's box() wound every face against its normal and the loft was wound inward (98 % of
+// a car's body faced in: a close taxi showed its far panel's inside, buses were hollow). Per primitive: >= 95 % of each part's
+// triangles face away from the primitive's centre (the loft: its spine) and agree with their vertex normals.
+{
+  const { vehicleGeo, VEH } = await import('../seoul-life.js');
+  const worst = []; let allOk = true;
+  for (const ty of ['car', 'taxi', 'truck', 'bus', 'scooter']) {
+    const g = vehicleGeo(ty), P = g.attributes.position.array, N = g.attributes.normal.array, I = g.index.array, part = g.attributes.part.array, hl = VEH[ty].L / 2, by = {};
+    for (const pr of g.userData.prims) for (let t = pr.start; t < pr.start + pr.count; t++) {
+      const a = I[t * 3], b = I[t * 3 + 1], c = I[t * 3 + 2];
+      const ux = P[b * 3] - P[a * 3], uy = P[b * 3 + 1] - P[a * 3 + 1], uz = P[b * 3 + 2] - P[a * 3 + 2], vx = P[c * 3] - P[a * 3], vy = P[c * 3 + 1] - P[a * 3 + 1], vz = P[c * 3 + 2] - P[a * 3 + 2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; if (Math.hypot(nx, ny, nz) < 1e-10) continue;
+      const mx = (P[a * 3] + P[b * 3] + P[c * 3]) / 3, my = (P[a * 3 + 1] + P[b * 3 + 1] + P[c * 3 + 1]) / 3, mz = (P[a * 3 + 2] + P[b * 3 + 2] + P[c * 3 + 2]) / 3;
+      const ref = pr.kind === 'loft' ? [0, 0.45, Math.max(-hl + 0.6, Math.min(hl - 0.6, mz))] : pr.c;
+      const k = part[a]; by[k] ??= [0, 0, 0]; by[k][0]++;
+      if ((mx - ref[0]) * nx + (my - ref[1]) * ny + (mz - ref[2]) * nz > 0) by[k][1]++;
+      if ((N[a * 3] + N[b * 3] + N[c * 3]) * nx + (N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1]) * ny + (N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2]) * nz > 0) by[k][2]++;
+    }
+    for (const [k, v] of Object.entries(by)) { const o = v[1] / v[0], n = v[2] / v[0]; worst.push([`${ty}:${k}`, o, n]); if (o < 0.95 || n < 0.95) allOk = false; }
+  }
+  worst.sort((p, q) => Math.min(p[1], p[2]) - Math.min(q[1], q[2]));
+  ok(allOk, `vehicles right side out: every part of car/taxi/truck/bus/scooter >= 95 % outward and normal-true (worst ${worst[0][0]} ${(100 * worst[0][1]).toFixed(0)} % / ${(100 * worst[0][2]).toFixed(0)} %; P3: car body 2 %, glass 0 %)`);
+}
+// life #1 (P4): masks where masks go, and no dark hair cards on a brown or blond scalp. seoul/people/aux.png (people-aux.py):
+// r = painted scalp hair (re-tinted like the cards), g = the face mask. Every avatar, near and mid LOD: the eyes are never
+// under the mask; the lower face between the nose tip and the chin is; the hair cards lie over scalp hair.
+if (existsSync('seoul/people/aux.png')) {
+  const { inflateSync } = await import('zlib');
+  const png = (buf) => {   // 8-bit RGB / RGBA, non-interlaced
+    let o = 8, w = 0, h = 0, ct = 0; const idat = [];
+    while (o < buf.length) { const len = buf.readUInt32BE(o), ty = buf.toString('ascii', o + 4, o + 8), d = buf.subarray(o + 8, o + 8 + len);
+      if (ty === 'IHDR') { w = d.readUInt32BE(0); h = d.readUInt32BE(4); ct = d[9]; } else if (ty === 'IDAT') idat.push(d); o += 12 + len; }
+    const bpp = ct === 6 ? 4 : ct === 2 ? 3 : ct === 0 ? 1 : 2, raw = inflateSync(Buffer.concat(idat)), out = new Uint8Array(w * h * bpp), st = w * bpp;
+    for (let y = 0; y < h; y++) { const f = raw[y * (st + 1)], src = raw.subarray(y * (st + 1) + 1, (y + 1) * (st + 1));
+      for (let x = 0; x < st; x++) { const a = x >= bpp ? out[y * st + x - bpp] : 0, b = y ? out[(y - 1) * st + x] : 0, c = x >= bpp && y ? out[(y - 1) * st + x - bpp] : 0;
+        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        out[y * st + x] = (src[x] + (f === 0 ? 0 : f === 1 ? a : f === 2 ? b : f === 3 ? (a + b) >> 1 : pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 255; } }
+    return { w, h, bpp, px: out };
+  };
+  const A = png(readFileSync('seoul/people/aux.png')), meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), bb = readFileSync('seoul/people/people.bin'), bin = bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength);
+  const aux = (u, v, ch) => { const vt = 1 - v, rw = Math.floor(vt * 2), loc = (vt - rw * 0.5 - 0.25) * 4; if (loc <= 0 || loc >= 1) return -1;
+    const x = Math.min(A.w - 1, Math.floor(u * A.w)), y = Math.min(A.h - 1, Math.floor((rw * 0.5 + loc * 0.5) * A.h)); return A.px[(y * A.w + x) * A.bpp + ch] / 255; };
+  const rows = []; let good = true;
+  for (const av of meta.avatars) for (const [li, L] of av.lods.entries()) {
+    const P = new Float32Array(bin, L.pos, L.verts * 3), UV = new Float32Array(bin, L.uv, L.verts * 2), Bn = new Uint8Array(bin, L.bone, L.verts * 4), F = av.face;
+    let eyes = 0, eyeHit = 0, low = 0, lowHit = 0, cards = 0, onHair = 0; const scalp = [];
+    for (let i = 0; i < L.verts; i++) { if (Bn[i * 4] !== 1) continue; const x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2], r = Bn[i * 4 + 3];
+      if (r === 0) { const g = aux(UV[i * 2], UV[i * 2 + 1], 1); if (g < 0) continue; scalp.push([x, y, z, aux(UV[i * 2], UV[i * 2 + 1], 0)]);
+        if (z > F.noseZ - 0.05 && Math.abs(Math.abs(x) - 0.032) < 0.012 && Math.abs(y - F.eyeY) < 0.008) { eyes++; if (g > 0.1) eyeHit++; }
+        if (z > F.noseZ - 0.04 && Math.abs(x) < 0.03 && y > F.chinY + 0.008 && y < F.noseY - 0.004) { low++; if (g > 0.5) lowHit++; } } }
+    for (let i = 0; i < L.verts; i++) { if (Bn[i * 4] !== 1 || Bn[i * 4 + 3] !== 1) continue; const x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2];
+      if (Math.abs(y - F.eyeY) < 0.02 && z > F.noseZ - 0.06) continue; cards++;   // (lashes are cards too)
+      let best = null, bd = 1e9; for (const q of scalp) { const d = (q[0] - x) ** 2 + (q[1] - y) ** 2 + (q[2] - z) ** 2; if (d < bd) { bd = d; best = q; } }
+      if (!best || best[3] > 0.5 || bd > 0.03 * 0.03) onHair++; }   // (a card standing off the head counts: nothing under it)
+    const e = eyes ? eyeHit / eyes : 0, m = low ? lowHit / low : 0, c = cards ? onHair / cards : 1;
+    rows.push(`${av.name.replace(/_Adult|usiness/g, '')}${li ? 'm' : 'n'} ${eyeHit}/${eyes} ${(100 * m).toFixed(0)}% ${(100 * c).toFixed(0)}%`);
+    if (!(eyes >= 1 && eyeHit === 0 && low >= 3 && m >= 0.9 && c >= 0.75)) good = false;
+  }
+  ok(good, `face masks and scalp (eyes under the mask / lower face masked / hair cards over scalp hair), all 8 avatars near+mid: ${rows.join(', ')}`);
 }
 // native export (H): life.json round-trips through JSON and carries the parity hash
 { const d = JSON.parse(JSON.stringify(exportData(layout, { seed: 7 }))); ok(d.lanes.length === a.traffic.lanes.length && d.walkways.length === a.crowd.ways.length && d.parity.trafficHash90 === ha[ha.length - 1], `exportData(): life.json with ${d.lanes.length} lanes, ${d.walkways.length} walkways, ${d.crowd.units.length} units, parity hash ${d.parity.trafficHash90}`); }
