@@ -8,10 +8,10 @@
   "commit": ""
  },
  "thumb": {
-  "sha256": "3ccd64a80851f0e67ed5fb861d7df48321ada5c281ec8a53c99a21fe12379fac",
-  "satBright": 0.0077,
-  "source": "station.jpg",
-  "crop": "0.36,0.2,1,0.84",
+  "sha256": "1e3af59869849318d1265e2811df95eff2a97c7d02b0709996bb7f26e570b7f9",
+  "satBright": 0.0648,
+  "source": "walk0.jpg",
+  "crop": "0,0,0.62,0.62",
   "pose": "",
   "commit": ""
  }
