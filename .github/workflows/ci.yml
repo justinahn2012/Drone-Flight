@@ -16,6 +16,8 @@
 # seoul-dressing, camera-night, movers, test-facades, seoul-ui, and seoul-audio (own job: node-web-audio-api + libasound).
 # Goldens: tests/golden.json, tests/golden-seoul-hongdae.json (re-baseline from a CI artifact: tests/browser.mjs
 # --golden-from). The Seoul browser job ends with the camera gate (tools/camgate.py: exposure + colour rows, retro 0 + shipped).
+# P4 (stream H, native #1): known failures are per shot and row with a ratchet (`limit`: a known row may improve, never get
+# worse); the audio job runs through ci/run.mjs too (G2's rows after G1's traffic merged).
 name: ci
 on:
   push:
@@ -125,8 +127,8 @@ jobs:
           npm ci --prefix ci --ignore-scripts --no-audit --no-fund
           ln -s ci/node_modules node_modules
           ldconfig -p | grep -q 'libasound.so.2 ' || { sudo apt-get update -qq && { sudo apt-get install -y -qq --no-install-recommends libasound2t64 || sudo apt-get install -y -qq --no-install-recommends libasound2; }; }
-      - name: Seoul audio (G2 - calibration, determinism, the HQ clip path)
-        run: node tests/seoul-audio.mjs
+      - name: Seoul audio (G2 - calibration, determinism, the HQ clip path; known failures in ci/known-failures.json)
+        run: node ci/run.mjs tests/seoul-audio.mjs
 
   browser:
     runs-on: ubuntu-latest
@@ -189,7 +191,7 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           python-version: '3.12'
-      - name: Camera gate (tools/camgate.py on the stills; [colour] rows tolerated until A lands, see ci/known-failures.json)
+      - name: Camera gate (tools/camgate.py on the stills; known rows per shot, ratcheted, in ci/known-failures.json)
         if: ${{ !cancelled() && hashFiles('browser-out-seoul/stills.json') != '' }}
         run: |
           python -m pip install --quiet --disable-pip-version-check numpy pillow scipy

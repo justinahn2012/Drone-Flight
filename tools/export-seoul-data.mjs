@@ -22,7 +22,7 @@
 //   dressing.json  E (through C's buildGeometry): setPieces + what stays runtime-only. Pending until E lands.
 //   look.json      the night camera look main.js applies to this level (GRADES.night + levels.json grade).
 // Formats: PORTING.md, "Neon Seoul". Every output is deterministic (no dates), so --check compares bytes.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { resolve, dirname, join } from 'node:path';
@@ -394,13 +394,98 @@ async function atlasFiles(root, files, mods, dressingData) {
 }
 
 // ================================================================================================================
+// [P4 H, native #2] phase-3 content: avatars, dressing card textures, menu art; the night lightmap; asset coverage
+// ================================================================================================================
+/** Whole folders the runtime fetches from, copied as is (every file but dotfiles): repo dir -> export dir. */
+export const CONTENT_DIRS = [
+  { from: 'seoul/people', to: 'people', id: 'people', what: 'G1\'s crowd bodies (Rocketbox, MIT): people.json + people.bin + atlas.jpg + hair.png (seoul-life.js attachAvatars)' },
+  { from: 'seoul/dressing', to: 'dressing', id: 'dressing', what: 'E\'s card textures (ginkgo_cards.png, ac_face.png: world.json materials[dr_*].mapFile) and label font' },
+  { from: 'seoul/ui', to: 'ui', id: 'ui', what: 'the level\'s menu art (levels.json thumb / backdrop) and the OFL hangul subset index.html loads' },
+];
+async function contentFiles(root, files, assetMap) {
+  const out = {};
+  for (const D of CONTENT_DIRS) {
+    const d = join(root, D.from); if (!existsSync(d)) continue;
+    const list = [];
+    for (const f of readdirSync(d).sort()) { if (f.startsWith('.')) continue; const p = join(d, f); if (!statSync(p).isFile()) continue;
+      files[`${D.to}/${f}`] = readFileSync(p); assetMap[`${D.from}/${f}`] = `${D.to}/${f}`; list.push(`${D.to}/${f}`); }
+    out[D.id] = { dir: D.to + '/', files: list, what: D.what };
+  }
+  const pj = join(root, 'seoul/people/people.json');
+  if (out.people && existsSync(pj)) {
+    const meta = JSON.parse(readFileSync(pj, 'utf8'));
+    out.people.avatars = (meta.avatars || []).map((a) => ({ name: a.name, sex: a.sex, lods: (a.lods || []).map((L) => ({ name: L.name, verts: L.verts, tris: L.tris })) }));
+    out.people.atlas = meta.atlas;
+    out.people.layout = 'people.bin, per avatar per LOD (people.json avatars[].lods[]: byte offsets): pos Float32 x3 (rest pose, metres, y up), nrm Int8 x4 (snorm xyz + pad), uv Float32 x2 (atlas.jpg; hair cards: hair.png), bone Uint8 x4 (crowd-rig bone ids + weights, seoul-life.js makeHumanMat), index Uint16 x3 per triangle';
+    out.people.textures = 'atlas.jpg (sRGB, body + head 512^2 tiles) and hair.png (sRGB + alpha cards). RGBA8 on the GPU as shipped: KTX2 / ASTC is a G1 + H follow-up (panel3 native.md bugs)';
+    out.people.rig = 'the crowd\'s procedural 13-bone rig (life.json LIFE, seoul-life.js) skins these meshes; joints per avatar in people.json';
+  }
+  return out;
+}
+
+/** The night lightmap the browser bakes in a Worker (D's seoul-nightlm.js), baked here in line: its RGBA16F atlas as
+ *  light/lightmap.bin; the lookup raster and edge table already ride in light/records.bin (extra rows). Keyed by the
+ *  layout's sha256 so a port can tell a stale map. A lightmap D ships in the repo (seoul/light/lightmap.*) is copied instead. */
+async function lightmapFile(root, ctl, files, layoutSha) {
+  for (const f of ['seoul/light/lightmap.bin', 'seoul/light/lightmap.json']) if (existsSync(join(root, f))) files[f.replace('seoul/', '')] = readFileSync(join(root, f));
+  if (files['light/lightmap.bin'] && existsSync(join(root, 'seoul/light/lightmap.json'))) return { file: 'light/lightmap.bin', meta: 'light/lightmap.json', source: 'seoul/light (D, shipped)', layoutSha256: layoutSha };
+  const st = ctl?.stats?.lightmap, tex = ctl?.uniforms?.tCityLM?.value, U = ctl?.uniforms || {};
+  if (!st?.ready || !tex?.image?.data || tex.image.width < 2) return { status: 'pending', note: `the headless bake did not land (mode ${st?.mode ?? 'none'})` };
+  const im = tex.image, d = im.data, bytes = new Uint8Array(d.buffer, d.byteOffset, d.byteLength).slice();
+  files['light/lightmap.bin'] = bytes;
+  const v4 = (k) => (U[k]?.value?.toArray ? U[k].value.toArray().map((x) => +x.toFixed(6)) : null);
+  return { file: 'light/lightmap.bin', format: 'RGBA16F (IEEE half, little-endian), rows bottom-up as a GL DataTexture (row 0 = v 0)', width: im.width, height: im.height, bytes: bytes.byteLength,
+    content: 'scene-linear irradiance x NITS (rgb) and alpha = valid; static emitters (no K limit, heightfield-occluded) + the volume\'s indirect part (seoul-nightlm.js)',
+    uniforms: { uCityLM: v4('uCityLM'), uCityLMG: v4('uCityLMG'), uCityLMA: v4('uCityLMA'), uCityLMR: v4('uCityLMR') },
+    lookup: 'the ground map sits at the atlas origin (uCityLMG: x0, z0, gw, gh); wall rects pack round it (uCityLMA: atlas w, h, raster w, h); the 1 m raster of the two nearest exposed edges and the edge table are rows uCityLMR.x.. of light/records.bin (seoul-light.js CITY_HEAD cityLM)',
+    plan: st.edges != null ? { edges: st.edges, atlas: st.atlas, ground: st.ground } : null, texels: st.texels, NIGHT_LM: (await import(pathToFileURL(join(root, 'seoul-nightlm.js')).href)).NIGHT_LM ?? null,
+    layoutSha256: layoutSha, source: 'baked headless at export (seoul-light attach with ctx.lightmap: the browser\'s Worker job, in line)' };
+}
+
+/** Asset coverage (native #2): every file a Seoul runtime module (or the level's levels.json entry) names that exists in
+ *  the repo must be in the export, byte for byte, or be listed in ASSET_EXCEPTIONS with a reason. A literal ending in an
+ *  asset extension resolves against the repo root, then against each 'seoul/<dir>/' base the same module names. */
+export const ASSET_EXCEPTIONS = {
+  'seoul/audio/crowd-chicken-yangjae-pd.mp3': 'opt-in ?beds A/B only (sound #1: Justin decides on recorded beds); the port synthesises the beds as the browser does',
+  'seoul/audio/crowd-restaurant-pd.mp3': 'opt-in ?beds A/B only (sound #1)',
+  'seoul/layout.provisional.json': 'fallback when layout.json is missing (it is not: layout.json ships)',
+  'levels.json': 'the game\'s level list; the level entry ships as world.json level',
+};
+const ASSET_EXT = /\.(png|jpe?g|bin|json|ktx2|woff2?|mp3|ogg|wav|glb|txt)$/i;
+export function assetRefs(root, modules) {
+  const refs = new Map();
+  for (const mm of modules) {   // a repo path, or { name, src } (the level's levels.json entry)
+    const m = mm.name ?? mm, p = join(root, m); if (mm.src == null && !existsSync(p)) continue;
+    const src = mm.src ?? readFileSync(p, 'utf8');
+    const lits = [...src.matchAll(/['"`]([^'"`\s${}()]+)['"`]/g)].map((x) => x[1]);
+    const bases = [...new Set(lits.filter((s) => /^(\.\/)?seoul\/[\w./-]*\/$/.test(s)).map((s) => s.replace(/^\.\//, '')))];
+    for (const s of lits) {
+      if (!ASSET_EXT.test(s) || /^https?:/.test(s)) continue;
+      const rel = s.replace(/^\.\//, ''), cands = rel.includes('/') ? [rel] : bases.map((b) => b + rel);
+      for (const c of cands) if (existsSync(join(root, c)) && statSync(join(root, c)).isFile()) { if (!refs.has(c)) refs.set(c, new Set()); refs.get(c).add(m); }
+    }
+  }
+  return refs;
+}
+export function assetCoverage(root, files, modules, warn) {
+  const bySha = new Map(); for (const [f, b] of Object.entries(files)) bySha.set(sha256(b), f);
+  const refs = assetRefs(root, modules), rows = [];
+  for (const [asset, by] of [...refs].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    const hit = bySha.get(sha256(readFileSync(join(root, asset)))), exc = ASSET_EXCEPTIONS[asset];
+    rows.push({ asset, by: [...by].sort(), export: hit ?? null, ...(exc && !hit ? { exception: exc } : {}) });
+    if (!hit && !exc) warn(`asset coverage: ${[...by].join(', ')} fetches ${asset}, which the export does not ship (add it to the export, or to ASSET_EXCEPTIONS in tools/export-seoul-data.mjs with a reason)`);
+  }
+  return rows;
+}
+
+// ================================================================================================================
 // exportSeoulData: called by export-world exportLevel (or this CLI). Returns files + the world.json `data` section.
 // ================================================================================================================
 export const SEOUL_COVERAGE = [
   { id: 'city', match: { mesh: 'world.glb' }, export: 'world.glb meshes[] (one per material key; vertex count + bounds equal a world.json meshes[] row)' },
   { id: 'signs', match: { name: '^signs-', ancestor: '^seoul-signs$' }, export: 'signs.json (spec table) + signs.glb (static sign geometry)', requires: 'data.signs.count' },
   { id: 'screens', match: { name: '^screen-', ancestor: '^seoul-signs$' }, export: 'screens.json (panel model, playlists, SCREEN_FRAG)', requires: 'data.screens.count' },
-  { id: 'crowd', match: { name: '^crowd-', ancestor: '^seoul-life$' }, export: 'life.json (crowd sim) + runtimeOnly.crowd (procedural human)', requires: 'data.life.count' },
+  { id: 'crowd', match: { name: '^crowd-', ancestor: '^seoul-life$' }, export: 'life.json (crowd sim) + people/ (avatar meshes, atlases: data.content.people) + runtimeOnly.crowd', requires: 'data.life.count' },
   { id: 'traffic', match: { name: '^traffic-', instanced: true, ancestor: '^seoul-life$' }, export: 'life.json (traffic sim, VEH, PAINT)', requires: 'data.life.count' },
   { id: 'life-props', match: { name: '^pocha-', instanced: true, ancestor: '^seoul-life$' }, export: 'life.json (pocha tables / stools at the tents)', requires: 'data.life.count' },
   { id: 'headlight-pools', match: { name: '^headlight-pools$', ancestor: '^seoul-life$' }, export: 'runtimeOnly.headlightPools (life.json vehicles + light.json)', requires: 'data.life.count' },
@@ -410,26 +495,27 @@ export const SEOUL_COVERAGE = [
   { id: 'dressing', match: { ancestor: '^seoul[-.]dressing' }, export: 'dressing.json (E: runtime parts, cable renderer)', requires: 'data.dressing.count' },
 ];
 export const SEOUL_RUNTIME_ONLY = {
-  crowd: 'CrowdSim (seoul-life.js) at 10 Hz, interpolated; one procedural 13-bone human, instanced in near / mid / far LODs (life.json LIFE)',
+  crowd: 'CrowdSim (seoul-life.js) at 10 Hz, interpolated; near / mid: 8 Rocketbox avatars x 2 LODs (people/: people.json + people.bin, atlas.jpg, hair.png; data.content.people), skinned on the crowd\'s procedural 13-bone rig and instanced; far: the procedural human (life.json LIFE)',
   traffic: 'TrafficSim at 60 Hz on the life.json lane graph; instanced low-poly bodies, emissive lamps (emitters.json source life = their t = 0 state)',
   screens: 'screen content is procedural per frame (screens.json playlists + SCREEN_FRAG); the emitter colour follows programMean',
   signsAtlas: 'sign glyphs: signs/msdf.png + signs/msdf.json (B\'s MSDF atlas); screen and scroller text: Canvas2D atlases painted at load from fonts/ (screens.json)',
   headlightPools: 'additive pools under each vehicle head lamp (life)',
   steam: 'steam puffs (Points), count QUALITY[q].steam (light)',
   airlight: 'closed-form single-scatter airlight sprites (one instanced quad) round the AIRLIGHT.n brightest emitters in view, re-picked every 3 frames (light)',
-  light: 'the clustered light grid is binned at load from emitters.json (light.json rules)',
+  light: 'the clustered light grid is binned at load from emitters.json (light.json rules); the night lightmap ships baked (light/lightmap.bin, light.json lightmap)',
 };
 
 export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = console.log, note = log, warn = log } = {}) {
   mods ||= await seoulModules(root, log);
   const ws = mods.files['world-seoul.js'], X = mods.X;
   const signsMod = mods.files[PARTNERS.signs], lightMod = mods.files[PARTNERS.light], lifeMod = mods.files[PARTNERS.life], dressMod = mods.files[PARTNERS.dressing];
-  const files = {}, data = {}, layout = geo.layout || (await ws.loadSeoulJSON('./seoul/layout.json'));
+  const files = {}, data = {}, layout = geo.layout || (await ws.loadSeoulJSON('./seoul/layout.json')), assetMap = {};
+  const layoutSha = existsSync(join(root, 'seoul/layout.json')) ? sha256(readFileSync(join(root, 'seoul/layout.json'))) : null;
   const put = async (name, obj, tables) => { files[name] = await jsonText(obj, tables); };
 
   // ---- the runtime build, headless: what the browser builds (emitters, signs, life, light)
   let world = null;
-  try { world = await headless(() => ws.buildSeoul(null, { seed, takeClock: () => 0, quality: 'auto' })); }
+  try { world = await headless(() => ws.buildSeoul(null, { seed, takeClock: () => 0, quality: 'auto', lightmap: true })); }   // [P4 H] lightmap: D's night bake, in line in node
   catch (e) { warn(`buildSeoul() failed in node (${e.message}): emitters from the geometry entry only, partner data from the modules`); }
   const parts = world?.parts || {};
   const ctx = { layout, seed, nitScale: ws.NITS ?? 0.1, NIT: ws.NITS ?? 0.1, quality: 'auto', headless: true, world, emitters: world?.emitters || geo.emitters };
@@ -486,12 +572,13 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
   const dx = lctl ? () => lctl.exportData() : exporterOf(lightMod);
   let light = null;
   if (dx) {
-    try { const r = await dx(layout, ctx); light = r?.['light.json'] ?? r; if (light && lctl) light = { ...(await lightTables(light, lctl, files)), source: 'seoul-light attach() -> exportData() (live controller, headless)' }; }
+    try { const r = await dx(layout, ctx); light = r?.['light.json'] ?? r; if (light && lctl) light = { ...(await lightTables(light, lctl, files)), source: 'seoul-light attach() -> exportData() (live controller, headless)' };
+      if (light && lctl) { light.lightmap = await lightmapFile(root, lctl, files, layoutSha); if (light.lightmap.status) warn(`light/lightmap.bin: ${light.lightmap.note}`); } }
     catch (e) { warn(`seoul-light exportData() threw: ${e.stack || e.message}; using the shim`); light = null; }
   }
   else note('seoul-light has no exportData() yet (D, native #2): light.json from the shim');
   light ||= lightShim(parts, X[PARTNERS.light] || {}, lightMod);
-  if (light) { await put('light.json', light); data.light = { file: 'light.json', count: light.count ?? 1, source: light.source ?? 'seoul-light exportData()' }; } else data.light = { status: 'pending', count: 0 };
+  if (light) { await put('light.json', light); data.light = { file: 'light.json', count: light.count ?? 1, source: light.source ?? 'seoul-light exportData()', ...(light.lightmap ? { lightmap: light.lightmap.file ?? light.lightmap.status } : {}) }; } else data.light = { status: 'pending', count: 0 };
 
   // ---- life.json
   const gx = exporterOf(lifeMod);
@@ -512,6 +599,9 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
   // ---- atlases and fonts the runtime paints with [P3 H, native #2]: B's MSDF glyph atlas, C's interior atlas, the fonts of
   // the Canvas2D atlases (screens / scrollers: B; E's labels, whose cells are dressing.json labels)
   try { data.atlases = await atlasFiles(root, files, mods, data.dressing); } catch (e) { warn(`atlases: ${e.stack || e.message}`); }
+
+  // ---- [P4 H, native #2] phase 3's content: avatars, dressing card textures, menu art (whole folders, as fetched)
+  try { data.content = await contentFiles(root, files, assetMap); } catch (e) { warn(`content: ${e.stack || e.message}`); }
 
   // ---- look.json
   const look = await lookOf(root, X, L, note);
@@ -534,7 +624,10 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
     else if (v?.data && v.width && v.height) files[k] = (await import('./png.mjs')).encodePNG(v.data, v.width, v.height);
     else files[k] = await jsonText(v);
   }
-  return { files, data, textures, coverage: SEOUL_COVERAGE, coverageObjects: ['Mesh', 'Points', 'Line'], runtimeOnly: SEOUL_RUNTIME_ONLY, scene: world?.scene || null, world };
+  // ---- [P4 H, native #2] asset coverage: every repo file a Seoul module (or the level entry) fetches is in `files`
+  const mods2 = ['world-seoul.js', ...readdirSync(root).filter((f) => /^seoul-.*\.js$/.test(f)).sort(), 'seoul/signs/msdf-meta.js', { name: 'levels.json#' + L.id, src: JSON.stringify(L) }];
+  data.assets = assetCoverage(root, files, mods2, warn);
+  return { files, data, textures, coverage: SEOUL_COVERAGE, coverageObjects: ['Mesh', 'Points', 'Line'], runtimeOnly: SEOUL_RUNTIME_ONLY, scene: world?.scene || null, world, assetMap };
 }
 
 // ================================================================================================================

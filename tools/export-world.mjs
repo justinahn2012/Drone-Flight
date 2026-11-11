@@ -485,7 +485,8 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
   }
   const matOut = Object.fromEntries(Object.entries(MATS).map(([k, m]) => {
     const tex = m?.id && m.maps ? Object.fromEntries(m.maps.map((map) => [map, { url: `https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/${m.id}/${m.id}_${map}_1k.jpg`, ktx2: D?.textures?.files?.[`${m.id}_${map}.ktx2`] ? `tex/${m.id}_${map}.ktx2` : null }])) : undefined;
-    return [k, { ...plain(m), ...(tex ? { textures: tex } : {}) }];
+    const mapFile = typeof m?.map === 'string' ? D?.assetMap?.[m.map.replace(/^\.\//, '')] : null;   // [P4 H] a repo-path texture (E's dr_* cards) -> its export path
+    return [k, { ...plain(m), ...(tex ? { textures: tex } : {}), ...(mapFile ? { mapFile } : {}) }];
   }));
   const L1 = geo.layout;
   const world = {
