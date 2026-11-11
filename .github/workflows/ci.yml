@@ -149,9 +149,11 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: pw-${{ runner.os }}-${{ hashFiles('ci/package-lock.json') }}
-      - name: Install Chromium (+ system libraries, 3 tries - the runners' apt mirrors drop DNS now and then)
-        run: |
-          for i in 1 2 3; do npx playwright install --with-deps chromium && exit 0; echo "::warning::playwright install failed (try $i)"; sleep 20; done; exit 1
+      - name: Install Chromium (from Playwright's CDN; system libraries from apt when apt answers)
+        run: |   # [P4 H] apt on the runners hung / failed resolving security.ubuntu.com (Nov 11): the browser download no longer waits on it
+          for i in 1 2 3; do npx playwright install chromium && break; echo "::warning::playwright install failed (try $i)"; sleep 20; [ $i = 3 ] && exit 1; done
+          timeout 420 npx playwright install-deps chromium || echo "::warning::playwright install-deps failed or timed out (apt): using the runner image's libraries"
+        timeout-minutes: 12
       - name: Build exports (coverage reads world.json)
         run: node tools/export-world.mjs --out exports
       - name: Game in headless Chromium (SwiftShader)
@@ -182,9 +184,11 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: pw-${{ runner.os }}-${{ hashFiles('ci/package-lock.json') }}
-      - name: Install Chromium (+ system libraries, 3 tries - the runners' apt mirrors drop DNS now and then)
-        run: |
-          for i in 1 2 3; do npx playwright install --with-deps chromium && exit 0; echo "::warning::playwright install failed (try $i)"; sleep 20; done; exit 1
+      - name: Install Chromium (from Playwright's CDN; system libraries from apt when apt answers)
+        run: |   # [P4 H] apt on the runners hung / failed resolving security.ubuntu.com (Nov 11): the browser download no longer waits on it
+          for i in 1 2 3; do npx playwright install chromium && break; echo "::warning::playwright install failed (try $i)"; sleep 20; [ $i = 3 ] && exit 1; done
+          timeout 420 npx playwright install-deps chromium || echo "::warning::playwright install-deps failed or timed out (apt): using the runner image's libraries"
+        timeout-minutes: 12
       - name: Build the Seoul export (coverage reads its world.json)
         run: node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae
       - name: Neon Seoul in headless Chromium (SwiftShader; still rows tolerated while A, C, F2, G1, G2 land, see ci/known-failures.json)
