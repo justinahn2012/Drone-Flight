@@ -176,7 +176,7 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   const f0 = flux(C0), f1 = flux(C1), face = 100 * Math.PI * 4;   // lm: L pi A
   console.log(`fascia spill: ground flux ${f0.toFixed(0)} -> ${f1.toFixed(0)} lm (face ${face.toFixed(0)} lm)`);
   ok(f1 - f0 > 0.17 * face && f1 - f0 < 0.27 * face, `spill puts ~0.2 of the face flux on the ground in front (${((f1 - f0) / face).toFixed(3)})`);
-  const u = C1.uniforms.tCityL.value.image.data; ok(((u[7] >>> 14) & 3) === 3 && Math.abs((u[7] >>> 26) / 63 - 0.15) < 0.01, 'record carries spill 0.3 and omni 0.15');
+  const u = C1.uniforms.tCityL.value.image.data; ok(((u[7] >>> 14) & 3) === 2 && Math.abs((u[7] >>> 26) / 63 - 0.3) < 0.01, 'record carries spill 0.3 (P5 code 2 of SPILL) and omni 0.3 (P5 lighting #4)');
   const nearWall = C1.probe(0, 4.3, 0.05, 0, 0, 1).direct, nearWall0 = attach(world(), [{ ...box(0), omni: 0 }], { layout: flat, steam: false, airlight: false, cull: false }).probe(0, 4.3, 0.05, 0, 0, 1).direct;
   ok(nearWall > nearWall0 + 1, `edge lobe lights the wall above the box: ${nearWall0.toFixed(1)} -> ${nearWall.toFixed(1)} lux`);
   ok(C1.probe(30, 12, 30).volume >= VOLUME.cityLux[4] * 0.9, 'urban floor on an open face at 12 m');
@@ -209,7 +209,7 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   }
 }
 // 9 P4 perf #3: the shipped night lightmap (seoul/light/night-lm.bin): it decodes; its key against this build (a stale
-// file is a WARN: re-run node tools/bakelm.mjs --night after merging), and when current it matches a fresh bake exactly
+// file FAILS since P5: re-run node tools/bakelm.mjs --night after merging), and when current it matches a fresh bake exactly
 {
   const R = new URL('..', import.meta.url).pathname, N = await import('../seoul-nightlm.js'), f = R + N.NIGHT_LM.file.replace(/^\.\//, '');
   if (fs.existsSync(f) && fs.existsSync(R + 'world-seoul.js')) {
@@ -219,7 +219,8 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
     ok(planes.length === F.header.w * F.header.h * 4 && D.some((v) => v), `night-lm.bin decodes (${F.header.w} x ${F.header.h}, ${(fs.statSync(f).size / 1048576).toFixed(2)} MB)`);
     const { bakeNight } = await import('../tools/bakelm-night.mjs');
     const fresh = await bakeNight({ log: () => {} });
-    if (fresh.header.key !== F.header.key) console.log(`WARN night-lm.bin is stale (file ${F.header.key}, this build ${fresh.header.key}): the game bakes in a Worker until node tools/bakelm.mjs --night is re-run`);
+    // [P5 D, native #2] a stale file fails (was a WARN: main shipped a stale map for a phase): the game would bake in a Worker
+    if (fresh.header.key !== F.header.key) ok(false, `night-lm.bin is current (file ${F.header.key}, this build ${fresh.header.key}): run node tools/bakelm.mjs --night and commit seoul/light/night-lm.bin`);
     else { const G = N.lmFileHeader(fresh.file), D2 = N.lmUnplanes(zlib.gunzipSync(G.payload), G.header.w, G.header.h); let diff = 0; for (let i = 0; i < D.length; i++) if (D[i] !== D2[i]) diff++; ok(diff === 0, `night-lm.bin is current (${F.header.key}) and bit-identical to a fresh bake (${diff} texels differ)`); }
     // the browser path in node (window, fetch, Worker stubbed): the current file is fetched, inflated (DecompressionStream)
     // and applied with no Worker; a stale file falls back to the Worker; the fetch never aborts
@@ -227,10 +228,11 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
       const { buildNightWorld } = await import('../tools/bakelm-night.mjs');
       const { fileURLToPath } = await import('node:url');
       const g0 = { window: globalThis.window, fetch: globalThis.fetch, Worker: globalThis.Worker };
-      let workers = 0; globalThis.window = {}; globalThis.Worker = class { constructor() { workers++; } postMessage() {} terminate() {} };
+      let workers = 0; globalThis.window = {}; globalThis.Worker = class { constructor(u) { if (/nightlm/.test(String(u))) workers++; } postMessage() {} terminate() {} };   // [P5 D] the bake's workers only (G1's life worker starts here too since P4)
       globalThis.fetch = async (u) => { const p = fileURLToPath(u); if (!fs.existsSync(p)) return new Response('', { status: 404 }); await new Promise((r) => setTimeout(r, 50)); return new Response(fs.readFileSync(p)); };
       try {
-        const run = async (file) => { const w = await buildNightWorld(); const c = attach(w, w.emitters, { layout: w.layout, lotInfo: w.lotInfo, nitScale: w.NITS, steam: false, airlight: false, cull: false, ...(file ? { lightmapFile: file } : {}) }); return c; };
+        // [P5 D] lightmapFileTimeout 600: the logic, not the box's load (a loaded runner passed the 30 s 'slow file' mark)
+        const run = async (file) => { const w = await buildNightWorld(); const c = attach(w, w.emitters, { layout: w.layout, lotInfo: w.lotInfo, nitScale: w.NITS, steam: false, airlight: false, cull: false, lightmapFileTimeout: 600, ...(file ? { lightmapFile: file } : {}) }); return c; };
         const c1 = await run(null), r1 = await Promise.race([c1.lightmapReady, new Promise((r) => setTimeout(() => r('timeout'), 20000))]);
         const st = c1.stats.lightmap, d1 = c1.lightmapData?.data; let diff = d1 ? 0 : -1; if (d1) for (let i = 0; i < D.length; i++) if (D[i] !== d1[i]) diff++;
         ok(r1 === true && st.mode === 'file' && workers === 0 && diff === 0, `browser path: the shipped file is applied (${r1}, mode ${st.mode}, ${workers} workers, ${diff} texels differ, key ${st.keyMs} ms)`);

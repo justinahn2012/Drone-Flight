@@ -22,7 +22,11 @@
 
 // version: the light model's revision (part of the shipped file's key: bump it whenever the model changes in a way the
 // constants hashed by lmKey() don't capture). P4: 2 (spill lobe, urban floor, wall packs, RGB9E5).
-export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 2, file: './seoul/light/night-lm.bin', dilate: 6 };
+// P5: 3 (store spill 0.5 and SPILL codes, omni 0.3 on signs, the falling urban floor, no floor within packFloorM of a wall
+// pack, the sign wash: a Lambert record with omni >= washOmni lights its own wall within washM as if the wall faced it at
+// washCos x (1 - d / washM)^2: the colour of a box or a letter on the wall round it).
+export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 3, file: './seoul/light/night-lm.bin', dilate: 6,
+  packFloorM: 3, washM: 1.5, washCos: 0.25, washOmni: 0.25 };
 
 // ---- lobes (seoul-light.js imports these: one copy for JS, the GLSL mirror lives there)
 export const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -131,7 +135,12 @@ export function planLM(layout, HF, B, P = NIGHT_LM) {
 // ---- bake. job = { plan, M (packed metas), cs/pe/po (per light-grid cell CSR: emitter ids + occlusion bits at YS),
 // grid {x0, z0, cell, gw, gh}, YS, H {H, nx, nz, res, x0, z0}, VI (indirect per probe: rgb + vertical L1, NP x 4) }
 export function bakeLM(job) {
-  const t0 = Date.now(), { plan, M, cs, pe, po, grid, YS, VI } = job, NL = YS.length, Hr = job.H;
+  const t0 = Date.now(), { plan, M, cs, pe, po, grid, YS, VI } = job, NL = YS.length, Hr = job.H, P = NIGHT_LM;
+  // P5: the wall packs in 4 m buckets (the urban floor is dropped within packFloorM of one)
+  const CF = job.CF || null, WP = job.WP || new Float32Array(0), WB = new Map(), wk = (x, z) => (Math.floor(x / 4) + 8192) * 16384 + Math.floor(z / 4) + 8192;
+  for (let i = 0; i < WP.length; i += 3) { const k = wk(WP[i], WP[i + 2]); if (!WB.has(k)) WB.set(k, []); WB.get(k).push(i); }
+  const floorW = (px, py, pz) => { let d2 = Infinity; const r = P.packFloorM; for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (const i of WB.get(wk(px + a * 4, pz + b * 4)) || []) d2 = Math.min(d2, (WP[i] - px) ** 2 + (WP[i + 1] - py) ** 2 + (WP[i + 2] - pz) ** 2);
+    return d2 >= r * r ? 1 : sstep(0.5 * r, r, Math.sqrt(d2)); };
   const at = (x, z) => { const i = Math.floor((x - Hr.x0) / Hr.res), j = Math.floor((z - Hr.z0) / Hr.res); return i < 0 || j < 0 || i >= Hr.nx || j >= Hr.nz ? 0 : Hr.H[j * Hr.nx + i]; };
   const layer = (y) => { if (y <= YS[0]) return 0; for (let k = 1; k < NL; k++) if (y < YS[k]) return k - 1 + (y - YS[k - 1]) / (YS[k] - YS[k - 1]); return NL - 1; };
   const L = [0, 0, 0], out = [0, 0, 0, 0];
@@ -144,12 +153,16 @@ export function bakeLM(job) {
       const ob = po[q], v = ((ob >> k0) & 1 ? 0 : 1 - u) + ((ob >> k1) & 1 ? 0 : u); if (v <= 0) continue;
       const i = pe[q]; if (M[i * MS + 18]) continue;
       const f = kAtP(M, i, px, py, pz, L); if (f <= 0) continue;
-      const cl = L[0] * nx + L[1] * ny + L[2] * nz; if (cl <= 0) continue;
+      let cl = L[0] * nx + L[1] * ny + L[2] * nz;
+      if (M[i * MS + 12] === 0 && M[i * MS + 4] >= P.washOmni) {   // P5 lighting #4: the sign's own colour on the wall round it
+        const o = i * MS, dw = Math.hypot(M[o] - px, M[o + 1] - py, M[o + 2] - pz); if (dw < P.washM) cl = Math.max(cl, P.washCos * (1 - dw / P.washM) ** 2); }
+      if (cl <= 0) continue;
       const w = f * cl * v, o = i * MS; out[0] += M[o + 8] * w; out[1] += M[o + 9] * w; out[2] += M[o + 10] * w;
     }
     // indirect: the column's probes at the bracketing layers, L1 vertical term on the normal
     const p0 = (c * NL + k0) * 4, p1 = (c * NL + k1) * 4;
     for (let j = 0; j < 3; j++) { const a = VI[p0 + j] * (1 - u) + VI[p1 + j] * u; out[j] += a * Math.max(0, 1 + (VI[p0 + 3] * (1 - u) + VI[p1 + 3] * u) * ny); }
+    if (CF && WP.length) { const w = floorW(px, py, pz); if (w < 1) for (let j = 0; j < 3; j++) out[j] = Math.max(0, out[j] - (1 - w) * (CF[k0 * 3 + j] * (1 - u) + CF[k1 * 3 + j] * u)); }   // P5 lighting #3
     out[3] = 1; return out;
   }
   // ground: the atlas's top-left gw x gh texels

@@ -61,13 +61,16 @@ const lumaOf = (c) => LUMA[0] * c[0] + LUMA[1] * c[1] + LUMA[2] * c[2];
 // P4 (lighting #1) spill: a ground-floor fascia box sends `spill` x its face flux down (soffit and canopy LEDs, the
 // underside of the box) as a Lambert lobe about an axis 31 deg out from straight down (~3/4 of it lands in front of the
 // wall, the rest on the facade's own foot); 0.1 steps up to 0.3 (2 record bits). Records may set e.spill.
+// P5 (lighting #2, shop light on the pavers): a shop's glass spills 0.5 of its face flux down the same way (the interior's
+// downlights through the glass: the bright trapezoid in front of each window). The 2 bits are now SPILL[]: 0, 0.15, 0.3, 0.5.
+// P5 (lighting #4): channel letters and light boxes carry 0.3 omni (was 0.15): their own colour onto the wall round them.
 export const SOURCE_TYPES = {
-  channel:  { nits: 1000,  rgb: [1.0, 1.0, 1.0],   omni: 0.15, range: 26 },   // LED channel-letter cores 600-2000
-  lightbox: { nits: 160,   rgb: [1.0, 0.97, 0.92], omni: 0.15, range: 24, spill: 0.3 },   // light-box faces 100-220
+  channel:  { nits: 1000,  rgb: [1.0, 1.0, 1.0],   omni: 0.3,  range: 26 },   // LED channel-letter cores 600-2000
+  lightbox: { nits: 160,   rgb: [1.0, 0.97, 0.92], omni: 0.3,  range: 24, spill: 0.3 },   // light-box faces 100-220
   neon:     { nits: 1000,  rgb: [1.0, 0.25, 0.55], omni: 0.7,  range: 18 },   // glass neon / LED flex 600-2000
   screen:   { nits: 260,   rgb: [0.8, 0.9, 1.0],   omni: 0.0,  range: 32 },   // LED video walls 180-350
   street:   { nits: 9000,  rgb: [1.0, 0.82, 0.62], omni: 0.0,  range: 34 },   // LED street head (flux from `lumens`)
-  store:    { nits: 80,    rgb: [0.9, 0.97, 1.0],  omni: 0.0,  range: 16 },   // shop interiors through glass 30-130
+  store:    { nits: 80,    rgb: [0.9, 0.97, 1.0],  omni: 0.0,  range: 16, spill: 0.5 },   // shop interiors through glass 30-130
   tent:     { nits: 120,   rgb: [1.0, 0.55, 0.25], omni: 0.4,  range: 12 },   // pojangmacha tarp lit from inside
   vehicle:  { nits: 20000, rgb: [1.0, 0.95, 0.88], omni: 0.0,  range: 40 },   // head lamps (beam lobe, 25 m pool); tails ~250-1500 red
   // P3 lighting #4 (main-road architecture; C places them, contract P3-CD): a tower's glazed podium lobby (80-150 nits,
@@ -87,7 +90,8 @@ export const NIGHT_SKY = { zenith: [0.07, 0.06, 0.05], horizon: [0.5, 0.32, 0.18
 export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
 // P4 lighting #4 (near air): sources from nearM = 2 m (was 4: close signs floated with no air round them), fading in over
 // fadeM, at nearGain (0.25) of their energy until fullM (4 m), so the halo never veils the lens.
-export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 2, fadeM: 0.5, nearGain: 0.25, fullM: 4, lampCap: 2 };
+// P5 lighting #6: nearGain 0.35 (was 0.25): the air round a sign 2-4 m away carries a little more of its glow.
+export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 2, fadeM: 0.5, nearGain: 0.35, fullM: 4, lampCap: 2 };
 // Irradiance volume (lighting #1): probe heights, albedos for the one bounce.
 // windowNits: the mean emission of the facades a probe faces at each probe height (lit windows are not L3 emitters: binding
 // table 55 % lit on floors 2-4, 12-20 % above, 5-25 nits, ~25 % of a wall is glass); multi: 1 / (1 - mean albedo) for the
@@ -98,8 +102,12 @@ export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 2, 
 // bounces past the volume's one) that a K-limited, one-bounce model drops. 2 lux at street level (1.5-3), 4.5-6 lux on the
 // upper floors (a wall at the city's ~0.2-0.35 effective albedo then reads 0.3-0.65 nits: the 0.3-0.8 nit floor above
 // 10 m, no black slabs); warm grey.
+// P5 lighting #1 (flip the urban floor): P4's floor grew with height (2 -> 6 lux), so with C's albedos and A's +0.5 EV the
+// upper walls were the brightest diffuse surface in a canyon whose light is at street level. Now it falls with height:
+// 2 lux at the pavers, 1.2 at 5 m, 0.6 above 18 m (the city's glow reaches the street through the shopfronts and the
+// lamps' bounce; the upper floors see mostly the dark sky). The lightmap also drops the floor near a wall pack (NIGHT_LM.packFloorM).
 export const VOLUME = { heights: [0.5, 2.5, 5, 8, 12, 18, 30, 50], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2, windowNits: [0.3, 1.2, 1.6, 1.5, 1.2, 0.8, 0.5, 0.3], windowRGB: [1.0, 0.86, 0.7], multi: 1.25,
-  cityLux: [2.0, 2.2, 2.6, 3.2, 4.5, 5.5, 6.0, 5.0], cityRGB: [1.0, 0.9, 0.78] };
+  cityLux: [2.0, 1.6, 1.2, 0.9, 0.7, 0.6, 0.6, 0.6], cityRGB: [1.0, 0.9, 0.78] };
 // fractional layer index of a height (piecewise linear between VOLUME.heights): JS and GLSL
 export function layerOf(y, H = VOLUME.heights) { if (y <= H[0]) return 0; for (let k = 1; k < H.length; k++) if (y < H[k]) return k - 1 + (y - H[k - 1]) / (H[k] - H[k - 1]); return H.length - 1; }
 const LAYER_GLSL = (H) => `float cityLayer(float y){ ${H.slice(1).map((h, k) => `if (y < ${h.toFixed(2)}) return ${k.toFixed(1)} + (y - ${H[k].toFixed(2)}) / ${(h - H[k]).toFixed(2)};`).join(' ')} return ${(H.length - 1).toFixed(1)}; }`;
@@ -123,6 +131,8 @@ const QUALITY = {
   high: { K: 12, Kd: 8, Nd: 96, refl: 0.33, steam: 200, air: 16 },
 };
 const LW = 256;             // lights per record-texture row (2 texels each)
+export const SPILL = [0, 0.15, 0.3, 0.5];   // P5: a record's 2 spill bits (GLSL citySpill)
+const spillCode = (v) => { let b = 0; for (let c = 1; c < 4; c++) if (Math.abs(SPILL[c] - v) < Math.abs(SPILL[b] - v)) b = c; return b; };
 const E_MIN = 0.01;         // irradiance (scene units, = 0.1 lux) below which a light is out of range
 const NONE = 0xffff;        // empty grid slot
 const DW = 48;              // dynamic window, cells per side (192 m at 4 m cells)
@@ -249,6 +259,7 @@ uniform vec4 uCityLMR;             // tCityL rows: edge table, raster
 uniform highp sampler2D tCityLM;
 bool cityLMOn = false;
 vec3 cityOct(vec2 e){ vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y)); if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * (step(0.0, v.xy) * 2.0 - 1.0); return normalize(v); }
+float citySpill(uint c){ return c == 3u ? 0.5 : float(c) * 0.15; }   // P5: SPILL[] (JS)
 float cityStreet(vec3 D, vec3 f){ float c = -D.y; if (c <= 1e-4) return 0.0; float hl = length(D.xz), t = hl / c;
   float fw = hl > 1e-5 ? dot(D.xz, f.xz) / hl : 0.0; float tc = fw >= 0.0 ? mix(3.1, 1.75, fw) : mix(3.1, 0.7, -fw);
   return min(1.0 / (c * c * c), 30.0) * (1.0 - smoothstep(tc * 0.8, tc * 1.15, t)); }
@@ -273,7 +284,7 @@ void cityOne(const in highp usampler2D tl, int idx, bool spec, bool lmSkip, vec3
   if (dOff && !spec) return;
   vec3 I = ci > 0u ? texelFetch(tCityLC, ivec2(int(ci - 1u) & 255, int(ci - 1u) >> 8), 0).rgb : vec3(unpackHalf2x16(rb.y), br.x);
   float ce = -dot(l, n), omni = float(m >> 26u) / 63.0;
-  float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, omni) + float((m >> 14u) & 3u) * 0.1 * max(0.857 * l.y + 0.515 * ce, 0.0) : ty == 1u ? cityStreet(-l, n) : cityBeam(-l, n);   // P4: + the spill (down, 31 deg out)
+  float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, omni) + citySpill((m >> 14u) & 3u) * max(0.857 * l.y + 0.515 * ce, 0.0) : ty == 1u ? cityStreet(-l, n) : cityBeam(-l, n);   // P4: + the spill (down, 31 deg out)
   float q = d / br.y; q = 1.0 - q * q * q * q;
   uint fh = (m >> 16u) & 63u; float fl = 1.0;
   if (fh != 0u) fl = 1.0 - float((m >> 22u) & 15u) / 15.0 * (0.5 + 0.5 * sin(6.2831853 * float(fh) * 0.25 * uCityTime + mod(float(idx) * 2.399, 6.2831853)));
@@ -639,8 +650,8 @@ export function attach(world, emitters = [], ctx = {}) {
     m.x = e.pos[0]; m.y = e.pos[1]; m.z = e.pos[2]; m.A = A; m.omni = e.omni ?? T.omni; m.n = n; m.I = I; m.range = range; m.ty = ty; m.peak = peak; m.flick = e.flicker;
     m.hl = hl; m.a = Math.abs(hl);
     // P4 spill (Lambert faces only): records' own e.spill, else the type's for a ground-floor fascia (box bottom under 3.4 m)
-    m.down = ty !== LT.lambert ? 0 : Math.max(0, Math.min(0.3, e.spill ?? (T.spill && Math.abs(n[1]) < 0.3 && e.pos[1] - (e.h || 0.5) / 2 < 3.4 ? T.spill : 0)));
-    m.down = Math.round(m.down * 10) / 10;
+    m.down = ty !== LT.lambert ? 0 : Math.max(0, Math.min(0.5, e.spill ?? (T.spill && Math.abs(n[1]) < 0.3 && e.pos[1] - (e.h || 0.5) / 2 < 3.4 ? T.spill : 0)));
+    m.down = SPILL[spillCode(m.down)];   // P5: the record's 2 bits (0, 0.15, 0.3, 0.5)
     if (hl > 0) { const tl = Math.hypot(n[2] + 1e-5, n[0]); m.tx = (n[2] + 1e-5) / tl; m.ty_ = 0; m.tz = -n[0] / tl; } else { m.tx = 0; m.ty_ = 1; m.tz = 0; }
     return m;
   }
@@ -665,13 +676,13 @@ export function attach(world, emitters = [], ctx = {}) {
     }
     return fe * q * q / (d2 + m.A * 0.3183);
   }
-  function pack(m, u32, i, ci = 0) {   // misc: lobe 2 | colour index 12 | spill x10 2 | flicker hz x4 6 | depth x15 4 | omni x63 6
+  function pack(m, u32, i, ci = 0) {   // misc: lobe 2 | colour index 12 | spill code 2 (SPILL) | flicker hz x4 6 | depth x15 4 | omni x63 6
     const k = ((i >> 8) * LW * 2 + (i & (LW - 1)) * 2) * 4;
     let hz = Math.min(63, Math.round((m.flick?.hz || 0) * 4)), dep = Math.min(15, Math.round(Math.min(1, m.flick?.depth || 0) * 15));
     if (!hz || !dep) hz = dep = 0;
     u32[k] = fbits(m.x); u32[k + 1] = fbits(m.y); u32[k + 2] = fbits(m.z); u32[k + 3] = h2(m.A, m.hl);
     u32[k + 4] = oct(m.n[0], m.n[1], m.n[2]); u32[k + 5] = h2(m.I[0], m.I[1]); u32[k + 6] = h2(m.I[2], m.range);
-    u32[k + 7] = (m.ty | (Math.min(4095, ci) << 2) | (Math.min(3, Math.round((m.down || 0) * 10)) << 14) | (hz << 16) | (dep << 22) | (Math.min(63, Math.round(m.omni * 63)) << 26)) >>> 0;
+    u32[k + 7] = (m.ty | (Math.min(4095, ci) << 2) | (spillCode(m.down || 0) << 14) | (hz << 16) | (dep << 22) | (Math.min(63, Math.round(m.omni * 63)) << 26)) >>> 0;
   }
   const recTex = (n, extra = 0) => {
     const w = LW * 2, h = Math.max(1, Math.ceil(n / LW)) + extra;
@@ -703,11 +714,11 @@ export function attach(world, emitters = [], ctx = {}) {
 
   // ------------------------------------------------------------------------------------- static bin + volume
   const tB0 = now(), marks = { pre: +(tB0 - T00).toFixed(0) };
-  const NC = gw * gh, kS = new Float32Array(NC * K), kI = new Int32Array(NC * K).fill(-1), kV = new Uint8Array(NC * K), kN = new Uint8Array(NC);
+  const NC = gw * gh; let kS = new Float32Array(NC * K), kI = new Int32Array(NC * K).fill(-1), kV = new Uint8Array(NC * K), kN = new Uint8Array(NC);
   // probe interior flags (inside a building at that height) and per-probe accumulators
-  const NP = NC * NL, inner = new Uint8Array(NP);
+  const NP = NC * NL; let inner = new Uint8Array(NP);
   for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) { const h = HF.at(x0 + (cx + 0.5) * cell, z0 + (cz + 0.5) * cell); for (let k = 0; k < NL; k++) if (h > YS[k]) inner[(cz * gw + cx) * NL + k] = 1; }
-  const tA = new Float32Array(NP * 3), tBv = new Float32Array(NP * 3), Eg = new Float32Array(NC * 3);
+  let tA = new Float32Array(NP * 3), tBv = new Float32Array(NP * 3), Eg = new Float32Array(NC * 3);
   const PROBE_H = YS, V4 = 1 << YS.reduce((b, h, k) => (Math.abs(h - 4) < Math.abs(YS[b] - 4) ? k : b), 0);   // the probe nearest 4 m
   // the hot loops live in their own closures (fresh JIT feedback per attach: a second visit to the level stays fast)
   let pc = new Int32Array(1 << 18), pi = new Int32Array(1 << 18), pb = new Uint8Array(1 << 18);   // every (cell, light, occ bits) pair (lightmap bake)
@@ -753,7 +764,7 @@ export function attach(world, emitters = [], ctx = {}) {
   return { pairs, occl };
   })();
   // write the grid (sorted by score) and the residual: total minus each cell's top-K (those are evaluated per fragment)
-  const rA = tA.slice(), rB = tBv.slice();
+  let rA = tA.slice(), rB = tBv.slice();
   let used = 0, full = 0, cellsUsed = 0;
   { const gd = tG.image.data, rowW = gw * K4 * 4, ord = new Int32Array(K);
     for (let c = 0; c < NC; c++) {
@@ -780,8 +791,8 @@ export function attach(world, emitters = [], ctx = {}) {
 
   // bounce + sky, then fill the interior probes from their neighbours, then pack (RGBA16F 3D textures)
   const tV0 = now();
-  const roadMask = new Uint8Array(NC);   // 1 = asphalt road, 2 = walking-street pavers, 0 = sidewalk
-  const hazeK = new Float32Array(NC), HK = { ...HAZE.byKind, ...(ctx.haze?.byKind || {}) }, hd0 = ctx.haze?.density ?? HAZE.density;
+  let roadMask = new Uint8Array(NC);   // 1 = asphalt road, 2 = walking-street pavers, 0 = sidewalk
+  let hazeK = new Float32Array(NC); const HK = { ...HAZE.byKind, ...(ctx.haze?.byKind || {}) }, hd0 = ctx.haze?.density ?? HAZE.density;
   for (const s of ctx.layout?.streets || []) {
     const w = s.width || 6, P = s.points, hk = (HK[s.kind] ?? hd0) / hd0;
     for (let i = 0; i + 1 < P.length; i++) {
@@ -812,13 +823,13 @@ export function attach(world, emitters = [], ctx = {}) {
     return out;
   };
   // the ground a probe sees widens with its height: blur radius (cells) ~ height / 2 cells, capped at 6 (P3: per layer)
-  const blurR = YS.map((h) => Math.min(6, Math.round(h / (2 * cell)))), blurs = new Map();
-  const EgL = blurR.map((r) => { if (!blurs.has(r)) blurs.set(r, blur(Eg, r)); return blurs.get(r); }); marks.blur = +(now() - tV0).toFixed(0);
+  const blurR = YS.map((h) => Math.min(6, Math.round(h / (2 * cell)))); let blurs = new Map();
+  let EgL = blurR.map((r) => { if (!blurs.has(r)) blurs.set(r, blur(Eg, r)); return blurs.get(r); }); marks.blur = +(now() - tV0).toFixed(0);
   const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.zenith[j] + NIGHT_SKY.horizon[j]) * NS * Math.PI);   // pi L of the dome
   const skyLum = lumaOf(skyL);
   const cityF = new Float32Array(NL * 3); { const CL = ctx.cityLux ?? VOLUME.cityLux, cr = VOLUME.cityRGB, cl = lumaOf(cr); for (let k = 0; k < NL; k++) for (let j = 0; j < 3; j++) cityF[k * 3 + j] = (CL[k] ?? CL[CL.length - 1]) * NS * cr[j] / cl; }
-  const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4), ok = new Uint8Array(NP);
-  const VI = new Float32Array(NP * 4);   // P3: the indirect part alone (bounce, windows, sky) + its vertical L1, for the lightmap bake
+  const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4); let ok = new Uint8Array(NP);
+  let VI = new Float32Array(NP * 4);   // P3: the indirect part alone (bounce, windows, sky) + its vertical L1, for the lightmap bake
   const oo = new Float32Array(NL), cc = new Float32Array(NL);
   (function assemble() {
   for (let cz = 0; cz < gh; cz++) for (let cx = 0; cx < gw; cx++) {
@@ -914,7 +925,9 @@ export function attach(world, emitters = [], ctx = {}) {
     const tK = now();
     lm.key = lmKey({ consts: { v: NIGHT_LM.version, NIGHT_LM: { ...NIGHT_LM, file: 0 }, VOLUME, NIGHT_SKY, HAZE, SOURCE_TYPES, OMEGA, E_MIN, NS }, M, n: stat.length, layout: ctx.layout, grid: [x0, z0, cell, gw, gh, plan.atlasW, plan.atlasH, plan.nE] });
     lm.keyMs = +(now() - tK).toFixed(1);
-    let job = { plan: { ...plan, raster: null }, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI };
+    // P5 lighting #3: the bake drops the urban floor (cityF, per layer) near the wall packs (WP: x, y, z each)
+    const WP = new Float32Array(packs.length * 3); packs.forEach((e, i) => WP.set(e.pos, i * 3));
+    let job = { plan: { ...plan, raster: null }, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI, CF: cityF.slice(), WP };
     uLMG.value.set(plan.x0, plan.z0, plan.gw, plan.gh); uLMA.value.set(plan.atlasW, plan.atlasH, plan.rw, plan.rh);
     lm.plan = { edges: plan.nE, atlas: [plan.atlasW, plan.atlasH], ground: [plan.gw, plan.gh], planMs: +lmPlanMs.toFixed(0) };
     lm.size = [plan.atlasW, plan.atlasH];
@@ -940,7 +953,7 @@ export function attach(world, emitters = [], ctx = {}) {
         const kill = lm.kill = setTimeout(() => { w.terminate(); lm.worker = null; fail('timeout', `the worker bake ran past ${ctx.lightmapWorkerTimeout ?? 60} s`); }, (ctx.lightmapWorkerTimeout ?? 60) * 1000);
         w.onmessage = (ev) => { clearTimeout(kill); w.terminate(); lm.worker = null; if (lm.ready) return; if (apply({ ...ev.data, ms: Math.round(now() - t0) })) lm.mode = 'worker'; else fail('failed', 'the worker sent a malformed map'); };
         w.onerror = (e) => { clearTimeout(kill); w.terminate(); lm.worker = null; fail('failed', 'worker error ' + (e?.message || e)); };
-        w.postMessage(job, [job.M.buffer, job.cs.buffer, job.pe.buffer, job.po.buffer, job.H.H.buffer]);
+        w.postMessage(job, [job.M.buffer, job.cs.buffer, job.pe.buffer, job.po.buffer, job.H.H.buffer, job.WP.buffer]);
       } catch (e) { fail('failed', 'no worker (' + (e?.message || e) + ')'); }
     }
     async function fromFile() {   // the shipped bake. A miss starts the worker; so does a slow file (lightmapFileTimeout s),
@@ -973,6 +986,10 @@ export function attach(world, emitters = [], ctx = {}) {
   // volume statistics (exterior probes at 0.5 m on streets): irradiance on an up and a side face, lux
   const volStat = (() => { let n = 0, up = 0, side = 0; for (let c = 0; c < NC; c++) { if (!roadMask[c] || inner[c * NL]) continue; const p = c * NL; const a = lumaOf([VA[p * 4], VA[p * 4 + 1], VA[p * 4 + 2]]); up += a * Math.max(0, 1 + VB[p * 4 + 1]); side += a; n++; } return { streetProbes: n, upLux: +(up / Math.max(1, n) / NS).toFixed(2), sideLux: +(side / Math.max(1, n) / NS).toFixed(2) }; })();
 
+  // P5 perf #1 (the heap): every closure of attach() shares one context, so these build arrays (~60 MB at the Seoul grid)
+  // lived as long as the controller did. The volume (VA, VB: probe(), exportData()) and the bake job (VI rides in it
+  // until the lightmap lands) stay; the rest goes now.
+  kS = kI = kV = kN = inner = tA = tBv = Eg = rA = rB = pc = pi = pb = roadMask = hazeK = blurs = EgL = VI = ok = null;
   // ------------------------------------------------------------------------------------- uniforms
   const aoU = world.aoUniforms || scene.userData?.aoUniforms || null;
   const blackTex = (() => { const t = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1); t.needsUpdate = true; return t; })();
@@ -1122,6 +1139,20 @@ export function attach(world, emitters = [], ctx = {}) {
     cull.ms = +(now() - tc0).toFixed(0);
   }
 
+  // P5 perf #1 (the heap): the partners' static meshes drop their CPU copy on upload too: B's sign faces (~40 MB in
+  // ~45 cell meshes), E's ring and every other static attribute of 64 KB or more under the scene. Bounds are computed first
+  // (three's culling would recompute them from the arrays). Instanced, dynamic, Points and small attributes stay (the
+  // partners re-write some of those per frame); nothing in the browser reads these arrays after the build (physics,
+  // the take and the bake use the collider, the BVHs and the layout). ctx.freeArrays === false keeps them.
+  if (renderer && scene && ctx.freeArrays !== false) {
+    const big = (a) => a && !a.isInstancedBufferAttribute && !a.isInterleavedBufferAttribute && a.usage === THREE.StaticDrawUsage && a.array?.byteLength >= 65536;
+    scene.traverse((o) => {
+      const g = o.geometry; if (!o.isMesh || o.isInstancedMesh || o.isBatchedMesh || o.isSkinnedMesh || !g || g.isInstancedBufferGeometry || o.userData?.keepArrays || g.userData?.keepArrays) return;
+      const as = [...Object.values(g.attributes), g.index].filter(big); if (!as.length || g.morphAttributes && Object.keys(g.morphAttributes).length) return;
+      if (!g.boundingSphere) g.computeBoundingSphere(); if (!g.boundingBox) g.computeBoundingBox();
+      for (const a of as) if (!a.onUploadCallback?.__d) { const f = function () { this.array = new this.array.constructor(0); cull.freed += 1; }; f.__d = 1; a.onUpload(f); }
+    });
+  }
   // P4: the wall-pack fixtures (housings are patched below with the city)
   const packMesh = scene ? wallPackMesh(packs, NS) : null;
   if (packMesh) scene.add(packMesh.housing, packMesh.lens);
@@ -1665,12 +1696,12 @@ export function exportParams() {
   return {
     version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
     lobes: {
-      lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni) + spill max(0.857 (-D.y) + 0.515 ce, 0); ce = dot(lamp->point D, normal); spill = record bits 14-15 x 0.1 (P4: a fascia box\'s soffit light, a Lambert lobe 31 deg out from straight down)' },
+      lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni) + spill max(0.857 (-D.y) + 0.515 ce, 0); ce = dot(lamp->point D, normal); spill = SPILL[record bits 14-15] = 0, 0.15, 0.3, 0.5 (P5; P4: a fascia box\'s soffit light, a Lambert lobe 31 deg out from straight down)' },
       street: { id: 1, omega: OM.street, f: 'min(1/cos^3, 30) x (1 - smoothstep(0.8 tc, 1.15 tc, tan)); tc = 3.1 along the road, 1.75 forward, 0.7 back', flux: 'lumens' },
       beam: { id: 2, omega: OM.beam, f: 'exp(-(th/0.42)^2) exp(-((tv+0.035)/sv)^2) (1 - smoothstep(-0.02, 0.015, tv)); sv 0.05 up, 0.16 down', flux: 'beam.lumens (1400) x min(1, nits/20000)' },
     },
     geometry: 'point: E = I fe / (d^2 + A/pi); line (long faces, |w-h| > 0.5 m): representative point, E = I fe (atan((a-x)/r) + atan((a+x)/r)) / (2 a r), r^2 = perp^2 + hs^2/pi',
-    record: '2 x RGBA32UI: [pos.xyz f32, half(area, signed half length)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe 2 | colour idx 12 | spill x10 2 | flicker hz x4 6 | depth x15 4 | omni x63 6]',
+    record: '2 x RGBA32UI: [pos.xyz f32, half(area, signed half length)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe 2 | colour idx 12 | spill code 2 (0, 0.15, 0.3, 0.5) | flicker hz x4 6 | depth x15 4 | omni x63 6]',
     lightmap: 'P4: night lightmap atlas RGB9E5 (seoul/light/night-lm.bin: NLM2 header + gzip of 4 byte planes, row-delta; key = lmKey over the bake inputs); ground map at the atlas origin (gres m), wall rects per exposed footprint edge (fres m); lookup raster + edge table in tCityL rows uCityLMR',
     volumeFloor: 'P4: VOLUME.cityLux (lux per layer, isotropic, colour VOLUME.cityRGB) is added to every probe (the urban ambient floor)',
     volume: 'probes at cell centres x VOLUME.heights; A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + haze extinction factor (x HAZE.density, by street kind); E(n) = A.rgb max(0, 1 + B.n) x SSAO',
