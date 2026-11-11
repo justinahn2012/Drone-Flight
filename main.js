@@ -139,20 +139,28 @@ const MODE_HINT = {
 };
 // take rules for the copy, read live from C's TAKE_TUNING (cutT 3.0 / bankT 5.0 at integration)
 const TT = () => TakeLib.TAKE_TUNING || {};
+// [F2] P3 ux #6: the take rules of a level: its lines file's `tuning` merged over TAKE_TUNING, as the take merges it
+// (Seoul banks at 10 s, bando at 5). Before the level's lines are known: TAKE_TUNING.
+function LT(id = progLevel) { return dataFor(id)?.tuning || TT(); }
 const secs = (v, d) => { const x = +v > 0 ? +v : d; return (Math.round(x * 10) / 10).toString(); };
 // C: CUT = 3 s hands-off hover, or 0.6 s touched down (TAKE_TUNING.cutT / landT)
 // ux #4: a thumb resting on the glass counts as hands on, so the copy says "lift both thumbs"
-const cutRule = () => `lift both thumbs and hover ${secs(TT().cutT, 3)} s, or touch down for ${secs(TT().landT, 0.6)} s,`;
+const cutRule = (T = TT()) => `lift both thumbs and hover ${secs(T.cutT, 3)} s, or touch down for ${secs(T.landT, 0.6)} s,`;
 const GAME_HINT = {
-  take: () => `One take: fly through named lines to build FLOW. ${secs(TT().bankT, 5)} s without a line banks it; a crash loses what isn't banked. To CUT, ${cutRule().replace(/,$/, '')}.`,
+  take: () => { const T = LT(selLevel().id); return `One take: fly through named lines to build FLOW. ${secs(T.bankT, 5)} s without a line banks it; a crash loses what isn't banked. To CUT, ${cutRule(T).replace(/,$/, '')}.`; },
   free: () => 'No clock, no take. Lines still caption. Crash and you fly on from where you last flew clear.',
 };
 const STICK_LBL = { cine: ['CLIMB · TURN', 'SPEED · CARVE'], angle: ['THROTTLE · YAW', 'PITCH · ROLL'], acro: ['THROTTLE · YAW', 'PITCH · ROLL'] };
 function applySettings() {
   const q = QUALITY[S.quality];
-  fpv.setQualityRange(q.min, q.max);
+  // [F2 for D] P3 perf #4/#6: a level's quality cap (seoul-light's world.qualityCap: render scale <= 1.0, presets auto | phone).
+  // Quality Low (or ?preset=phone) runs the phone preset: MSAA 2, crowd and light low. No cap (bando): unchanged.
+  const cap = world.qualityCap, pq = params.get('preset'), pn = cap ? (cap.presets?.[pq] ? pq : S.quality === 'low' ? 'phone' : 'auto') : null;
+  if (cap && cap.current !== pn && cap.presets?.[pn]) cap.apply?.(pn);
+  const P = cap ? cap.presets?.[pn] || cap : null;
+  fpv.setQualityRange(q.min, P && +P.max > 0 ? Math.min(q.max, +P.max) : q.max);
   fpv.look.maxSamples = q.samples;
-  fpv.look.msaa = q.msaa ?? 4; fpv.look.ssao = q.ao ?? 1;   // [D]
+  fpv.look.msaa = P && P.msaa != null ? Math.min(q.msaa ?? 4, P.msaa) : q.msaa ?? 4; fpv.look.ssao = q.ao ?? 1;   // [D]
   if (spark) spark.maxStdDev = q.std;
   fpv.look.lens = LENSES[S.lens] || LENSES.ref;
   fpv.look.shutter = (SHUTTERS[S.shutter] || SHUTTERS.nd16).t;
@@ -195,7 +203,8 @@ function buildWorlds() {
     if (L?.ui?.hairline) b.style.setProperty('--hairC', L.ui.hairline);
     // [F2] ui #1: still, name + tag, hangul subtitle, note
     b.innerHTML = (L?.thumb ? `<span class="th" style="background-image:url('${encodeURI(L.thumb)}')"></span>` : '') +
-      `<b>${esc(w.name)}${w.tag ? `<em>${esc(w.tag)}</em>` : ''}</b>${L?.subtitle ? `<i class="ko" lang="ko">${esc(L.subtitle)}</i>` : ''}<small>${esc(w.note)} · ${CRAFTS[w.craft]?.label || ''}</small>`;
+      `<b>${esc(w.name)}${w.tag ? `<em>${esc(w.tag)}</em>` : ''}</b>${L?.subtitle ? `<i class="ko" lang="ko">${esc(L.subtitle)}</i>` : ''}<small>${esc(w.note)} · ${CRAFTS[w.craft]?.label || ''}</small>` +
+      `<span class="meta">${esc(cardMeta(L))}</span>`;   // [F2] P3 ui #6
     b.onclick = () => { S.world = w.id; buildWorlds(); $('custom').classList.remove('open'); save(); };
     box.appendChild(b);
   }
@@ -359,10 +368,10 @@ const STICK_COACH = {
 // [F2] ux #3: bando's lines and chimney only on bando; a level's own tips (levels.json tips.take / tips.free: <b> only,
 // {bankT} and {cut} filled from TAKE_TUNING) replace the game's list
 const LOAD_TIPS = {
-  take: (L) => [
-    isBando(L) ? '<b>Lines</b> are named gaps, holes and dives. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(TT().bankT, 5) + ' s without a line banks it.'
-      : '<b>Lines</b> are named runs through the level. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(TT().bankT, 5) + ' s without a line banks it.',
-    `<b>CUT</b>: ${cutRule()} to end the take and keep everything. The ring in the middle counts it down; touch a stick to cancel.`,
+  take: (L, T = TT()) => [
+    isBando(L) ? '<b>Lines</b> are named gaps, holes and dives. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(T.bankT, 5) + ' s without a line banks it.'
+      : '<b>Lines</b> are named runs through the level. Each one adds FLOW. Fly close to structure to keep the chain alive; ' + secs(T.bankT, 5) + ' s without a line banks it.',
+    `<b>CUT</b>: ${cutRule(T)} to end the take and keep everything. The ring in the middle counts it down; touch a stick to cancel.`,
     'A crash loses the <b>unbanked</b> chain. The bar under FLOW shows when it banks. Bank it or push on: your call.',
     `<b>RESET</b> restarts the take ${isBando(L) ? 'at the chimney' : 'where it began'}, or where you chose to START AT on the pause menu; hold it to go back to the spawn.`,
   ],
@@ -372,10 +381,17 @@ const LOAD_TIPS = {
   ],
   any: () => ['<b>CLIP</b> saves the last 20 s, the full take, or a captioned 9:16 <b>SHORT</b> of your lines to your camera roll.'],
 };
-const tipHTML = (s) => esc(String(s).replace(/\{bankT\}/g, secs(TT().bankT, 5)).replace(/\{cut\}/g, cutRule())).replace(/&lt;(\/?)b&gt;/g, '<$1b>');
+const tipHTML = (s, T = TT()) => esc(String(s).replace(/\{bankT\}/g, secs(T.bankT, 5)).replace(/\{cut\}/g, cutRule(T))).replace(/&lt;(\/?)b&gt;/g, '<$1b>');
 function levelTips(L, game) {
-  const own = L?.tips?.[game];
-  return Array.isArray(own) && own.length ? own.map(tipHTML) : LOAD_TIPS[game]?.(L) || [];
+  const own = L?.tips?.[game], T = LT(L?.id || 'bando');
+  return Array.isArray(own) && own.length ? own.map((s) => tipHTML(s, T)) : LOAD_TIPS[game]?.(L, T) || [];
+}
+// [F2] P3 ui #5: the build's steps ("Hongdae: signs") through the level's loadSteps {signs: '간판 · SIGNS', start: ...};
+// a step the level doesn't name shows nothing, never an internal name. Bando keeps its own copy.
+function stepText(L, t) {
+  if (!L?.loadSteps || typeof t !== 'string') return t;
+  const k = t.replace(/^[^:]*:\s*/, '').trim().toLowerCase();
+  return L.loadSteps[k] ?? '';
 }
 let loadN = 0, ldLevel = null;   // ldLevel: the level being loaded (its tips, still, kicker); null = a splat world
 try { loadN = +localStorage.getItem('onetake.loads') || 0; } catch (e) {}
@@ -399,7 +415,7 @@ function setLoad(title, frac, text) {
   }
   if (title) $('ldTitle').textContent = title;
   if (frac !== null) $('ldBar').style.width = Math.round(frac * 100) + '%';
-  if (text !== undefined) $('ldText').textContent = text;
+  if (text !== undefined) $('ldText').innerHTML = koHTML(text ?? '');   // [F2] P3: hangul steps in the KR face
 }
 async function fetchBytes(url, onProgress) {
   const res = await fetch(url);
@@ -452,6 +468,7 @@ function clearWorld() {
   world.depthScene = null; world.aoUniforms = null; world.dispose = null; world.level = null; world.audio = null;   // [S0]
   world.movers = null; world.tuning = null; world.setPieces = null;                          // [F1] movers hook
   world.places = null;                                                                       // [F2]
+  world.qualityCap = null;                                                                   // [F2 for D] P3 perf #4/#6
 }
 
 // [S0] the camera look of a level (contract L5). 'day' = bando's HDR look line below (unchanged); 'night' = S3's
@@ -505,7 +522,7 @@ async function loadProcWorld(def) {
   // asked at, carried in snapshots), at the rendered pose's time (tick - 1 + physAlpha: the pose is lerped between the last
   // two ticks), so the bus you see is the bus you hit; the input log restarting (10 min) no longer rewinds the city
   const scene0 = new THREE.Scene(), opts = { takeClock: () => hqClock ?? Math.max(0, (drone.tick ?? (inputLog?.ticks ?? 0) + 1) - 1 + physAlpha) * PHYS,   // [integ6] deterministic: sim ticks ([P3-G2] hqClock: an HQ sub-frame)
-    sky: def.sky, quality: S.quality, level: level.id, layout: level.layout, onProgress: (f, t) => setLoad(null, f, t) };
+    sky: def.sky, quality: S.quality, level: level.id, layout: level.layout, onProgress: (f, t) => setLoad(null, f, stepText(level, t)) };   // [P3-F2] real loading status
   const args = (Array.isArray(level.args) ? level.args : ['renderer', 'scene', 'opts']).map((a) => (a === 'renderer' ? renderer : a === 'scene' ? scene0 : a === 'opts' ? opts : undefined));
   const w = await build(...args);
   if (!w || !(w.scene || scene0.children.length)) throw new Error(`${level.build}() returned no world`);
@@ -522,6 +539,7 @@ async function loadProcWorld(def) {
   // pieces (lines coded against their ids fly once they exist). Each optional; bando has none.
   try { world.movers = w.movers || lifeMovers(w.parts?.life) || null; } catch (e) { console.warn('movers', e); world.movers = null; }
   world.tuning = w.tuning || null; world.setPieces = w.setPieces || w.parts?.dressing?.setPieces || null;
+  world.qualityCap = w.qualityCap || w.scene?.userData?.seoulLight?.qualityCap || null;   // [F2 for D] P3 perf #4/#6 (applySettings)
   world.spawn.copy(w.spawn?.isVector3 ? w.spawn : w.spawn?.pos ? new THREE.Vector3(...(w.spawn.pos.toArray?.() ?? w.spawn.pos)) : new THREE.Vector3(0, 2, 0)); world.yaw = w.yaw ?? w.spawn?.yaw ?? 0;
   // scene-linear HDR in: the camera meters real light levels, with a GoPro-like ISO range
   fpv.setHDR(true);
@@ -547,7 +565,7 @@ async function loadWorld(def) {
   state = 'loading';
   ldLevel = def.proc ? levelOf(def.level || 'bando') || LEVEL_BANDO : null;   // [F2] the loading card's tips and art
   try {
-    setLoad(def.name, 0, def.proc ? (isBando(ldLevel) ? 'Building site…' : `Building ${ldLevel.name || 'the level'}…`) : 'Fetching world…');
+    setLoad(def.name, 0, def.proc ? (isBando(ldLevel) ? 'Building site…' : ldLevel.loadSteps?.start || `Building ${ldLevel.name || 'the level'}…`) : 'Fetching world…');
     if (def.proc) {
       setProgressLevel(def.level || 'bando');   // [S0] this level's PROG / BEST / stars
       await loadProcWorld(def);
@@ -1719,10 +1737,26 @@ function warn(text, secs = 1.6) {
   clearTimeout(warnTm); warnTm = setTimeout(() => w.classList.remove('show'), secs * 1000);
 }
 // imp: also shown over the Clean overlay (body.nohud hides the rest, e.g. LOW POWER)
+let toastTxt = '', toastEnd = 0;
 function toast(text, secs = 1.8, imp = false) {
   const t = $('toast'); t.textContent = text; t.classList.toggle('warn', !!imp); t.classList.add('show');
+  toastTxt = String(text).toUpperCase(); toastEnd = performance.now() + secs * 1000;
   clearTimeout(toastTm); toastTm = setTimeout(() => t.classList.remove('show'), secs * 1000);
 }
+const toastSays = (s) => !!s && toastTxt === String(s).toUpperCase() && performance.now() < toastEnd;
+// [F2] P3 ui #3 / ux #1: a person hit is HEADS! in the caption face, hot pink, a 12-way stroke, held 0.9 s, at any FLOW
+// (at ×1 it was silent: the SCRAPE warning only shows when FLOW was lost). The sub-line says what it cost.
+let headsTm = 0;
+function headsStamp(e) {
+  const h = $('heads'); if (!h) { warn('HEADS!'); return; }
+  h.querySelector('small').textContent = e.lost ? `FLOW ×${e.flow || 1} · −${e.lost}` : 'SCRAPE';   // what it cost
+  h.classList.remove('show'); void h.offsetWidth; h.classList.add('show');
+  clearTimeout(headsTm); headsTm = setTimeout(() => h.classList.remove('show'), 1250);
+  try { navigator.vibrate?.(20); } catch (er) {}   // Android; iOS Safari has none (native: a haptic tick)
+}
+// [F2] P3 ui #3: what a crash hit (take.js crash.by, flight.js crashBy: the world.movers body's type)
+const BY = { bus: 'A BUS', taxi: 'A TAXI', car: 'A CAR', truck: 'A TRUCK', van: 'A VAN', scooter: 'A SCOOTER', moped: 'A SCOOTER', motorbike: 'A MOTORBIKE', bike: 'A BIKE', bicycle: 'A BIKE', pedestrian: 'SOMEONE', person: 'SOMEONE', vehicle: 'TRAFFIC' };
+const byText = (b) => { const k = String(b || '').trim().toLowerCase(); if (!k) return ''; const u = k.toUpperCase().replace(/[^A-Z0-9 -]/g, ''); return 'HIT ' + (BY[k] || `${/^[AEIOU]/.test(u) ? 'AN' : 'A'} ${u}`); };
 
 function updateHud(dt) {
   hudFast(dt);
@@ -1773,7 +1807,7 @@ function updateHud(dt) {
   const live = state === 'fly' && !summaryUp() && ts !== 'done' && !drone.crashed;
   nextNow = live ? nextLine() : null;
   armNow = live ? armedLine(curTake()) : null;
-  const gu = levelOf(world.level)?.guideUntil ?? 3, arm = armNow;
+  const gu = levelOf(world.level)?.guideUntil ?? 3, arm = armNow; let bk = false;
   const nx = arm ? (nextNow?.name === arm.name ? nextNow : armTarget(arm)) : nextNow;
   const guide = !!nx && (!!arm || (flownCount() < gu && !(readyNow && ts === 'ready'))), dir = nx ? octant(nx) : 0, vt = nx ? vertOf(nx) : null;
   guideNow = guide;
@@ -1783,10 +1817,13 @@ function updateHud(dt) {
     else $('oNextA').style.transform = `rotate(${dir * 45}deg)`;
     $('oNextN').textContent = arm ? arm.name : nx.name;
     const D = $('oNextD');
-    D.textContent = arm ? (arm.left != null ? `· ${fmtS(Math.ceil(arm.left))}` : '') : `${Math.round(nx.dist)}M${vt ? '' : elevTxt(nx)}`;
+    // [F2] P3 ui #4 / ux #5: the target is bracketed on screen: the bracket's label names it, so the guide keeps its arrow
+    // (and, armed, the countdown) and drops the repeat ("THE GAP 9M" twice, 16 px apart)
+    bk = bracketed(arm ? arm.name : nx.name);
+    D.textContent = arm ? (arm.left != null ? `${bk ? '' : '· '}${fmtS(Math.ceil(arm.left))}` : '') : `${Math.round(nx.dist)}M${vt ? '' : elevTxt(nx)}`;
     D.classList.toggle('low', !!arm && arm.left != null && arm.left <= 5);
   }
-  $('oNext').classList.toggle('on', guide); $('oNext').classList.toggle('armed', guide && !!arm);
+  $('oNext').classList.toggle('on', guide); $('oNext').classList.toggle('armed', guide && !!arm); $('oNext').classList.toggle('bk', guide && bk);
   brCands = live ? bracketCands(arm) : [];
   // --- radio OLED (portrait)
   $('oMd').textContent = { cine: 'CINE', angle: 'ANGLE', acro: 'ACRO' }[S.mode]; $('oT').textContent = fmt(time); $('oS').textContent = `${kmh} KM/H`;
@@ -1831,7 +1868,7 @@ function hudFast(dt = 0) {
   // CUT countdown, decision 10. C: take.cutIn = s until the CUT while the ring shows (after cutShow 1 s of hands-off
   // hover, or at once on a touchdown), else 0; take.cutFrac = ring fill 0..1; take.cutKind 'hover' | 'land'.
   // Any stick cancels it (C resets the hover). Without C: the round-2 hover timer, ring from 1 s.
-  const cutT = +TT().cutT || 3, from = Math.max(0.3, cutT - 1);
+  const cutT = +LT().cutT || 3, from = Math.max(0.3, cutT - 1);
   let ci = 0, frac = 0;
   if (t && ts === 'live' && state === 'fly') {
     if (typeof t.cutIn === 'number') { if (t.cutIn > 0) { ci = t.cutIn; frac = typeof t.cutFrac === 'number' ? t.cutFrac : 1 - ci / from; } }
@@ -1843,13 +1880,13 @@ function hudFast(dt = 0) {
   if (!ci && t && ts === 'live' && state === 'fly' && !drone.crashed && !summaryUp()) {
     const tn = controls.touches?.size ?? 0, eps = 0.02;
     const centred = Math.max(Math.abs(tickInp.pitch), Math.abs(tickInp.roll), Math.abs(tickInp.yaw)) <= eps && (S.mode !== 'cine' || Math.abs(tickInp.climb) <= eps);
-    const hov = drone.vel.length() < (+TT().cutSpeed || 1) && (t.total || 0) + (t.unbanked || 0) > 0;
+    const hov = drone.vel.length() < (+LT().cutSpeed || 1) && (t.total || 0) + (t.unbanked || 0) > 0;
     restT = tn > 0 && centred && hov ? restT + dt : 0;
   } else restT = 0;
   const rest = restT >= 2;
   // the countdown is the 64 px ring at the centre of the view (design #3); the tag keeps saying REC until the CUT lands.
   // Ready at the retry start: the tag's second line says how to begin (UX #3, readyHint).
-  const rh = ts === 'ready' ? readyNow : '';
+  const rh = ts === 'ready' && !toastSays(readyNow) ? readyNow : '';   // [F2] P3: said once, by the toast, while it shows
   const txt = !ts ? '' : crashedTake() ? 'CRASHED' : ts === 'live' ? 'REC' : ts === 'done' ? 'CUT' : 'READY';
   const cls = 'o tl' + (ts ? ' on' : '') + (ts === 'live' ? ' live' : '') + (rh ? ' hint' : '');
   const key = cls + txt + rh + (ci ? (cutLand ? '|L' : '|' + Math.ceil(ci)) : rest ? '|R' : '');
@@ -1866,7 +1903,7 @@ function hudFast(dt = 0) {
   }
   // bank drain bar under the live chain: bankIn / bankT. C's take.holding (hugging structure keeps the chain alive) glows it.
   const L = $('live'), d = $('drain');
-  const k = L.classList.contains('show') && t && typeof t.bankIn === 'number' ? Math.max(0, Math.min(1, t.bankIn / (+TT().bankT || 5))) : -1;
+  const k = L.classList.contains('show') && t && typeof t.bankIn === 'number' ? Math.max(0, Math.min(1, t.bankIn / (+(t.tuning || LT()).bankT || 5))) : -1;   // [F2] P3: the level's bankT (Seoul 10 s)
   if (k !== drainK) {
     if ((k < 0) !== (drainK < 0)) d.style.display = k < 0 ? 'none' : '';
     drainK = k;
@@ -1977,17 +2014,29 @@ function gateOccluded(cd, d) {
   brOcc.set(cd.g, { t: now, occ }); if (brOcc.size > 64) brOcc.clear();
   return occ;
 }
-let brEls = null;
+// [F2] P3 ui #4 / ux #5: collision rules. Nearest first; a farther bracket whose box overlaps a nearer one's by more than
+// 30 % (of the smaller box) is skipped (cable_lat: CABLE THREAD nested in CABLE LATTICE); a label that would overlap a
+// nearer label by more than 30 % is dropped, its ticks stay. The guide's text steps aside for a bracketed target (updateHud).
+const ovl = (a, b) => {
+  const w = Math.min(a[2], b[2]) - Math.max(a[0], b[0]), h = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+  return w > 0 && h > 0 ? (w * h) / Math.max(1, Math.min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))) : 0;
+};
+let brEls = null, brPx = 0, brPxH = 0;
+const brSeenT = new Map();
 function drawBrackets() {
   brEls ||= { G: $('oBr').children, L: document.querySelectorAll('#osd .brl') };
   const G = brEls.G, labels = brEls.L;
-  let n = 0;
+  let n = 0; const boxes = [], tags = [], now = performance.now();
   if (state === 'fly' && brCands.length && !summaryUp()) {
+    if (brPxH !== viewH) { brPxH = viewH; brPx = parseFloat(getComputedStyle(labels[0]).fontSize) || 12; }   // label px (calc(--cell * .78), vh-based)
     const C = brCands.map((cd) => ({ cd, d: dist3(cd.g.c) })).filter((x) => x.d <= BR_R).sort((a, b) => a.d - b.d);
     for (const { cd, d } of C) {
       if (n >= BR_N) break;
       const c = cd.g.c; if (!projectView({ x: c[0], y: c[1], z: c[2] }) || gateOccluded(cd, d)) continue;
       const P = gateCorners(cd.g); if (!P) continue;
+      const bx = [Math.min(P[0].x, P[1].x, P[2].x, P[3].x), Math.min(P[0].y, P[1].y, P[2].y, P[3].y), Math.max(P[0].x, P[1].x, P[2].x, P[3].x), Math.max(P[0].y, P[1].y, P[2].y, P[3].y)];
+      if (boxes.some((b) => ovl(b, bx) > 0.3)) continue;
+      boxes.push(bx); brSeenT.set(cd.name, now);
       let path = '';
       for (let i = 0; i < 4; i++) {
         const a = P[i], pv = P[(i + 3) % 4], nx = P[(i + 1) % 4];
@@ -1998,17 +2047,26 @@ function drawBrackets() {
       const g = G[n], near = d < 8;
       g.children[0].setAttribute('d', path); g.children[1].setAttribute('d', path);
       if (!g.classList.contains('on')) g.classList.add('on'); g.classList.toggle('near', near);
-      const lb = labels[n], top = Math.min(P[0].y, P[1].y, P[2].y, P[3].y), cx = (P[0].x + P[1].x + P[2].x + P[3].x) / 4;
-      const txt = cd.end ? `${Math.round(d)}M` : `${cd.name} ${Math.round(d)}M`;
-      if (lb.textContent !== txt) lb.textContent = txt;
-      lb.style.transform = `translate(${cx.toFixed(1)}px,${Math.max(14, top - 4).toFixed(1)}px) translate(-50%,-100%)`;
-      if (!lb.classList.contains('on')) lb.classList.add('on'); lb.classList.toggle('near', near);
+      const lb = labels[n], top = bx[1], cx = (P[0].x + P[1].x + P[2].x + P[3].x) / 4;
+      const txt = `${cd.name} ${Math.round(d)}M`;                     // the armed end gate is named too ("HONGIK-RO 8M")
+      // the label's box from its text (mono, ~0.64 em a glyph with the tracking): no layout read per frame
+      const ly = Math.max(14, top - 4), lw = txt.length * brPx * 0.64 + 6, tg = [cx - lw / 2, ly - brPx * 1.25, cx + lw / 2, ly];
+      if (tags.some((b) => ovl(b, tg) > 0.3)) { lb.classList.remove('on'); }
+      else {
+        tags.push(tg);
+        if (lb.textContent !== txt) lb.textContent = txt;
+        lb.style.transform = `translate(${cx.toFixed(1)}px,${ly.toFixed(1)}px) translate(-50%,-100%)`;
+        if (!lb.classList.contains('on')) lb.classList.add('on'); lb.classList.toggle('near', near);
+      }
       n++;
     }
   }
   for (let i = n; i < Math.max(brOn, n); i++) { G[i].classList.remove('on'); labels[i].classList.remove('on'); }
   brOn = n;
 }
+// a line bracketed on screen in the last 0.3 s (the guide's text steps aside; the hold keeps it from flickering)
+const bracketed = (name) => now3() - (brSeenT.get(name) ?? -1e9) < 300;
+const now3 = () => performance.now();
 // bearing of a world point relative to the view's heading, + = right. YXZ yaw ignores pitch, so it stays put while
 // you look up at the sky or straight down a shaft.
 const _eu = new THREE.Euler();
@@ -2055,6 +2113,51 @@ function readyHint() {
 // C (take.js) keeps the record (localStorage onetake.lines) and serves it as take.lineList(world)
 // [{name, micro, flown, n, bestFlow, ...}] and take.progress(world). The UI also keeps a copy from the take events
 // (onetake.ui.progress) so it works on its own; both are read (union), so nothing is lost either way.
+// [F2] P3 ux #2: one source for the line list. A level's lines are its lines file (levels.json `lines`, seoul/lines.json:
+// names in world order, tuning, start points): the menu fetches it when the level is picked (the build loads the same
+// file), the take flies world.lines once loaded (set-piece lines only while their piece exists). The copy is levels.json
+// `lineCopy` {NAME: {hint, group}} keyed by those names ({w} in a hint = the line's narrowest gate, m); `lineGroups`
+// [[id, LABEL], ...] heads the LINES grid. A line's own `hint` (lines.json) wins over the copy.
+const lvData = new Map();               // level id -> digest | 0 (fetching) | null (none / failed)
+function digestLines(src, L, pieces = null) {
+  const by = new Map(), has = Array.isArray(pieces) ? new Set(pieces.map((p) => p && p.id)) : null;
+  for (const l of src?.lines || []) {
+    if (!l || !l.name || isMicro(l) || l.carve || (l.piece && has && !has.has(l.piece))) continue;
+    let e = by.get(l.name);
+    if (!e) by.set(l.name, (e = { name: l.name, piece: l.piece || null, run: !!l.pre?.length, w: Infinity, own: l.hint || '' }));
+    for (const g of [l, ...(l.pre || [])]) if (+g.w > 0) e.w = Math.min(e.w, +g.w);
+  }
+  const copy = L?.lineCopy || {}, legacy = Array.isArray(L?.lineNames) ? L.lineNames : [];
+  const names = [...by.values()].map((e) => {
+    const c = copy[e.name] || {}, raw = e.own || c.hint || legacy.find((x) => x?.name === e.name)?.hint || '';
+    const w = isFinite(e.w) ? (Math.round(e.w * 10) / 10).toFixed(1) : '';
+    return { name: e.name, piece: e.piece, group: c.group || (e.piece ? 'pieces' : e.run ? 'streets' : 'gaps'), hint: String(raw).replace(/\{w\}/g, w) };
+  });
+  const tun = src?.tuning || (src?.lines || []).find((l) => l && l.tuning)?.tuning || null;
+  const tip = src?.takeStart?.hint?.text || src?.startPoints?.[0]?.hint?.text || '';
+  return { names, tuning: TakeLib.mergeTuning ? TakeLib.mergeTuning(tun) : TT(), firstTip: tip };
+}
+function levelData(L) {
+  if (!L?.lines) return null;
+  const d = lvData.get(L.id);
+  if (d !== undefined) return d || null;
+  lvData.set(L.id, 0);
+  fetch(new URL(L.lines, import.meta.url)).then((r) => (r.ok ? r.json() : null)).then((j) => {
+    lvData.set(L.id, j && Array.isArray(j.lines) ? digestLines(j, L) : null);
+    if (state === 'menu') { baseSrc = null; buildWorlds(); renderProgress(); $('gameHint').textContent = GAME_HINT[S.game]?.() || ''; }
+  }).catch((e) => { lvData.set(L.id, null); console.warn('[F2] level lines', L.lines, e?.message || e); });
+  return null;
+}
+let wdK = null, wdP = null, wdV = null;
+function worldData() {                  // the loaded level's lines as the take flies them
+  if (!loadedId || !world.level || !Array.isArray(world.lines) || !world.lines.length) return null;
+  if (wdK !== world.lines || wdP !== world.setPieces) {
+    wdK = world.lines; wdP = world.setPieces;
+    wdV = digestLines({ lines: world.lines, tuning: world.tuning, takeStart: world.takeStart, startPoints: world.startPoints }, levelOf(world.level), world.setPieces);
+  }
+  return wdV;
+}
+const dataFor = (id) => (world.level === id ? worldData() : null) || levelData(levelOf(id));
 const LINE_HINT = {
   'CHIMNEY DIVE': 'in at the top of the chimney, out of its door', 'DROP IN': 'into the chimney mouth',
   'UNDER THE RACK': 'under the pipe rack, end to end', 'TRIPLE POP': 'up through the hall\'s three stacked holes',
@@ -2100,6 +2203,11 @@ function noteLine(e) {
 const isMicro = (l) => !!l.micro || (typeof l.pts === 'number' && l.pts > 0 && l.pts < 1000);
 let baseCache = null, baseSrc = null;
 function baseLines() {                  // checklist names in world order (cached for the menu before the next load)
+  const d = dataFor(progLevel);          // [F2] P3: the level's own lines (loaded world, else its fetched lines file)
+  if (d) {
+    if (baseSrc !== d) { baseSrc = d; baseCache = d.names.map((x) => x.name); try { localStorage.setItem(lkey('onetake.ui.lineList'), JSON.stringify(baseCache)); } catch (e) {} }
+    return baseCache;
+  }
   if (Array.isArray(world.lines) && world.lines.length) {
     if (baseSrc !== world.lines) {
       baseSrc = world.lines; const m = new Set();
@@ -2130,7 +2238,8 @@ function lineList() {
 }
 const flownCount = () => lineList().filter((l) => l.flown).length;
 // [S0] a level's lines may carry their own hint; [F2] else its levels.json lineNames hint; bando's LINE_HINT only on bando
-const hintFor = (name) => (progLevel === 'bando' && LINE_HINT[name]) || (Array.isArray(world.lines) && world.level === progLevel ? world.lines.find((l) => l?.name === name && l.hint)?.hint : '') ||
+const hintFor = (name) => (progLevel === 'bando' && LINE_HINT[name]) || dataFor(progLevel)?.names.find((x) => x.name === name)?.hint ||
+  (Array.isArray(world.lines) && world.level === progLevel ? world.lines.find((l) => l?.name === name && l.hint)?.hint : '') ||
   levelOf(progLevel)?.lineNames?.find?.((x) => x?.name === name)?.hint || '';
 // the nearest never-flown line's first gate. C: take.nextHint(drone, world) -> {name, caption, pos:[x,y,z], dist, bearing
 // (rad from the nose, + right), elev, fresh} or null. The arrow uses pos against the view (so it follows the camera).
@@ -2166,7 +2275,7 @@ function nextLine(from = null) {
   return nearestGate(null, at);
 }
 // 3-star targets per take (C's TAKE_TUNING.stars; round 4: 60k / 150k / 260k)
-function starTargets() { const s = TT().stars; return Array.isArray(s) && s.length ? s : [60000, 150000, 260000]; }
+function starTargets(id) { const s = LT(id).stars; return Array.isArray(s) && s.length ? s : [60000, 150000, 260000]; }
 const starCount = (total) => starTargets().filter((v) => total >= v).length;
 const starsHTML = (n, of) => Array.from({ length: of }, (_, i) => `<svg viewBox="0 0 16 16"${i < n ? ' class="on"' : ''} aria-hidden="true"><path d="${STAR}"/></svg>`).join('');
 const fmtBT = (t) => (t >= 60 ? `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}` : `${t.toFixed(t < 10 ? 2 : 1)} S`);   // best line time
@@ -2177,17 +2286,49 @@ function renderProgress() {
   $('mStrip').innerHTML = `<span>BEST <b>${best ? fmtN(best) : '—'}</b></span><i>·</i><span class="stars">${starsHTML(starCount(best), starTargets().length)}</span><i>·</i><span>LINES <b>${fl}/${L.length}</b></span>`;
   const nx = loadedId ? nextLine() : null;
   $('lnCount').textContent = `${fl}/${L.length}`;
-  $('lnGrid').innerHTML = L.map((l) => {
+  const cell = (l) => {
     const next = !l.flown && nx?.name === l.name;
     const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.hint, bt = l.flown && l.bt > 0 ? `<i> · ${fmtBT(l.bt)}</i>` : '';
     return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}${bt}</small></div>`;
-  }).join('');
+  };
+  // [F2] P3 ui #2 / ux #3: the level's groups (lineGroups) under 11 px mono heads, each with its own count; a line in no
+  // listed group goes last, under no head
+  const G = levelOf(progLevel)?.lineGroups, D = dataFor(progLevel);
+  if (Array.isArray(G) && G.length && D) {
+    const grp = new Map(D.names.map((x) => [x.name, x.group])), ids = new Set(G.map((g) => g[0]));
+    const rest = L.filter((l) => !ids.has(grp.get(l.name)));
+    $('lnGrid').innerHTML = [...G, ['', '']].map(([id, label]) => {
+      const ls = id ? L.filter((l) => grp.get(l.name) === id) : rest;
+      return ls.length ? `<section class="lgrp">${label ? `<div class="lg"><span>${esc(label)}</span><i>${ls.filter((l) => l.flown).length}/${ls.length}</i></div>` : ''}<div class="lgg">${ls.map(cell).join('')}</div></section>` : '';
+    }).join('');
+    $('lnGrid').classList.add('grouped');
+  } else { $('lnGrid').innerHTML = L.map(cell).join(''); $('lnGrid').classList.remove('grouped'); }
+  fitLines();
   // START AT (C: world.startPoints [{name, pos, yaw}] + respawn(false, name)); hidden until C provides them. C keeps the
   // choice for retries in its module-level `startAt`; the active one is lit. Hold RESET (back to the spawn) clears it.
   const sp = Array.isArray(world.startPoints) && loadedId ? world.startPoints.filter((s) => s && s.name) : [];
   const cur = typeof startAt === 'string' ? startAt.toLowerCase() : '';
   $('startSec').classList.toggle('hidden', !sp.length || !document.body.classList.contains('paused'));
   $('starts').innerHTML = sp.map((s) => `<button data-n="${esc(s.name)}"${s.name.toLowerCase() === cur ? ' class="on"' : ''}>${esc(s.name)}</button>`).join('');
+}
+// [F2] P3 ui #2 / ux #3: short landscape (< 500 px tall) the LINES grid scrolls inside itself and stops 16 px above the
+// FLY / RESUME bar, so no row hides under it (paused it sits right under START AT: it gets the rest of the screen)
+const SHORT_LAND = window.matchMedia?.('(orientation:landscape) and (max-height:500px)');
+function fitLines() {
+  const g = $('lnGrid'); if (!g) return;
+  if (!SHORT_LAND?.matches || $('menu').classList.contains('hidden')) { g.style.maxHeight = ''; g.classList.remove('scroll'); return; }
+  const bar = document.querySelector('#menu .cta')?.offsetHeight || 62, paused = document.body.classList.contains('paused');
+  const top = paused ? g.getBoundingClientRect().top + $('menu').scrollTop : 40;
+  g.style.maxHeight = Math.max(96, Math.round(window.innerHeight - top - bar - 16)) + 'px';
+  g.classList.toggle('scroll', g.scrollHeight > g.clientHeight + 2);
+}
+window.addEventListener('resize', () => { if (state === 'menu') setTimeout(fitLines, 60); });
+// [F2] P3 ui #6: a level card's second line: "18 LINES · 3★ 150K" (its lines file: the count and the 3-star target), with
+// the flown count once there is one
+function cardMeta(L) {
+  const d = L && dataFor(L.id); if (!d || !d.names.length) return '';
+  const s = d.tuning?.stars, top = Array.isArray(s) && s.length ? s[s.length - 1] : 0, fl = L.id === progLevel ? flownCount() : 0;
+  return `${fl ? fl + '/' : ''}${d.names.length} LINES${top ? ` · ${s.length}★ ${kfmt(top)}` : ''}`;
 }
 $('starts').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) goStartAt(b.dataset.n); });
 // (not `startAt`: that name is C's sticky START AT choice in respawn)
@@ -2200,7 +2341,7 @@ function goStartAt(name) {
 // F1 test hooks (uishots), kept off window.__onetake so that shared object stays merge-clean
 window.__onetakeUI = { uiProg, lineList, nextLine, renderProgress, goStartAt, projectView, retryFrom, readyHint, vertOf, get hint() { return nextNow; },
   // [F2] test hooks: armed line, brackets on screen, the caption meter, place names, the level UI
-  armedLine, placeAt, applyLevelUI, get armed() { return armNow; }, get brackets() { return { n: brOn, cands: brCands.length, labels: [...document.querySelectorAll('#osd .brl.on')].map((e) => e.textContent) }; },
+  armedLine, placeAt, applyLevelUI, dataFor, fitLines, byText, headsStamp, showSummary, get armed() { return armNow; }, get brackets() { return { n: brOn, cands: brCands.length, labels: [...document.querySelectorAll('#osd .brl.on')].map((e) => e.textContent) }; },
   get capMeter() { return { luma: capM.luma, plate: capM.plate }; },
   // the live frame composited as one 1080x1920 clip frame with a caption (no recording): the burned-in caption + plate
   capTest(text, place = '', lay = 'radio') {
@@ -2222,7 +2363,8 @@ function onTakeEvent(e) {
   // F1: line progress / NEW badges, CLEAN on the caption, SCRAPE warning (C: scrape {impact, flow, lost})
   if (e.type === 'start') newLines.clear();
   if (e.type === 'line' || e.type === 'repeat') { noteLine(e); lineTag = e.clean && !e.free ? ' · <b>CLEAN</b>' : ''; }
-  if (e.type === 'scrape' && e.lost) warn(`SCRAPE · FLOW ×${e.flow || 1}`, 1.2);
+  if (e.type === 'scrape' && e.heads) headsStamp(e);                  // [F2] P3: HEADS! at any FLOW
+  else if (e.type === 'scrape' && e.lost) warn(`SCRAPE · FLOW ×${e.flow || 1}`, 1.2);
   switch (e.type) {
     case 'start':
       hideSummary(); sum.kind = sum.data = null; pendingSum = null; clipEndT = null;
@@ -2263,7 +2405,8 @@ function showSummary(kind, e) {
   sum.kind = kind; sum.data = e || null;
   // C12 (D5): gold PERFECT on a CUT with every line CLEAN and no scrapes (cut.perfect, else take.perfect)
   const tk = curTake(), perfect = kind === 'cut' && !!(e?.perfect ?? st.perfect ?? (tk && 'perfect' in tk ? tk.perfect : false));
-  const T = $('bTitle'); T.className = kind; T.innerHTML = kind === 'cut' ? 'CUT<em>.</em>' + (perfect ? '<span class="perf">PERFECT</span>' : '') : 'CRASHED';
+  const by = kind === 'crash' ? byText(e?.by) : '';                  // [F2] P3 ui #3: "CRASHED  HIT A BUS"
+  const T = $('bTitle'); T.className = kind; T.innerHTML = kind === 'cut' ? 'CUT<em>.</em>' + (perfect ? '<span class="perf">PERFECT</span>' : '') : 'CRASHED' + (by ? `<span class="by">${esc(by)}</span>` : '');
   const lost = kind === 'crash' && e?.lost > 0 ? `Chain lost −${fmtN(e.lost)}` : 'Take ended';   // the CHAIN LOST warning hides under the card
   const cutHow = e?.how === 'land' ? 'Landed · that\'s a take' : 'That\'s a take';   // C: cut.how 'hover' | 'land'
   const pace = kind === 'cut' && typeof e?.pace === 'number' && e.pace > 0 ? ` · PACE ×${(Math.round(e.pace * 100) / 100).toFixed(2)}` : '';   // ui #3: in the subtitle
@@ -2334,7 +2477,9 @@ function coachStart(fresh) {
   if (!rotateTipped && portrait) { rotateTipped = true; setTimeout(() => toast('ROTATE FOR FULL SCREEN', 2.5), 900); }
   // first flight ever, from the spawn: where the first line is (UX #2). The OSD arrow takes over from there.
   // [F2] ux #3: the level's own firstTip (levels.json); bando's built-in one only on bando
-  const L = levelOf(world.level), tip = L?.firstTip ?? (world.level === 'bando' ? 'FIRST LINE: FOLLOW THE TRACK INTO THE HALL\'S OPEN BAY · STAY LOW' : '');
+  // [F2] P3 ux #6: one first instruction: a level without its own firstTip says its take start's hint (lines.json
+  // takeStart.hint.text, the READY tag's words), so the toast and the tag never disagree
+  const L = levelOf(world.level), tip = L?.firstTip ?? (world.level === 'bando' ? 'FIRST LINE: FOLLOW THE TRACK INTO THE HALL\'S OPEN BAY · STAY LOW' : worldData()?.firstTip || '');
   if (fresh && !firstTipped.has(world.level) && S.game !== 'free' && !flownCount() && tip) {
     firstTipped.add(world.level);
     setTimeout(() => { if (state === 'fly') toast(String(tip).toUpperCase(), 4.5); }, portrait ? 3600 : 1200);

@@ -26,7 +26,7 @@
     "args": ["renderer", "scene", "opts"],
     "look": "night",
     "sky": "night",
-    "grade": { "retro": 0.3 },
+    "grade": {"retro": 0.3},
     "craft": "freestyle5",
     "tag": "NIGHT",
     "thumb": "seoul/ui/thumb.jpg",
@@ -39,7 +39,29 @@
     "ui": {"accent": "#3de0ff", "accentInk": "#00171c", "ghost": "#3de0ff", "hairline": "linear-gradient(90deg,#ff3d9a,#3de0ff)"},
     "placeNames": true,
     "guideUntil": 99,
-    "firstTip": "FIRST LINE: THE WALKING STREET · THROUGH THE BRACKETS, OVER THE HEADS",
+    "lines": "seoul/lines.json",
+    "lineGroups": [["streets", "STREETS"], ["pieces", "SET PIECES"], ["gaps", "GAPS & ROOFS"]],
+    "lineCopy": {
+      "WALKING STREET": {"group": "streets", "hint": "Eoulmadang-ro, end to end over the crowd"},
+      "BAR ALLEY": {"group": "streets", "hint": "Wausan-ro 21-gil, the bar and club alley"},
+      "CLUB STREET": {"group": "streets", "hint": "Wausan-ro 19-gil, under the club signs"},
+      "HONGIK-RO": {"group": "streets", "hint": "down Hongik-ro, over the traffic"},
+      "CROSSING": {"group": "streets", "hint": "across Yanghwa-ro at Exit 9"},
+      "SCREEN CANYON": {"group": "streets", "hint": "between the LED screens on Yanghwa-ro"},
+      "CABLE LATTICE": {"group": "streets", "hint": "Hongik-ro 3-gil, under the cable web"},
+      "NARROW ALLEY": {"group": "streets", "hint": "the {w} m alley off Eoulmadang-ro"},
+      "STATION STAIRS": {"group": "pieces", "hint": "down the steps into Exit 9"},
+      "BUS SHELTER": {"group": "pieces", "hint": "through the median bus shelter on Yanghwa-ro"},
+      "UNDER THE STAGE": {"group": "pieces", "hint": "under the busking stage, over the crowd"},
+      "CABLE THREAD": {"group": "pieces", "hint": "between the hanging cable drops"},
+      "ROOF SLOT": {"group": "pieces", "hint": "the {w} m slot between a water tank and a stair house"},
+      "THE GAP": {"group": "gaps", "hint": "the {w} m slot off Wausan-ro 23-gil"},
+      "SCREEN PASS": {"group": "gaps", "hint": "the slot by the screens on Yanghwa-ro"},
+      "SIGN STACK": {"group": "gaps", "hint": "straight up the stack of signs"},
+      "ROOF DROP": {"group": "gaps", "hint": "down the gap between two roofs"},
+      "ROOFLINE": {"group": "gaps", "hint": "along the roofs over the walking street"}
+    },
+    "loadSteps": {"start": "지도 · STREETS", "survey": "지도 · STREETS", "buildings": "건물 · BUILDINGS", "materials": "재질 · SURFACES", "signs": "간판 · SIGNS", "life": "사람 · PEOPLE", "light": "불빛 · LIGHTS", "ready": "출발 · READY"},
     "tips": {
       "take": [
         "<b>Lines</b> are named streets, alleys and gaps. Corner <b>brackets</b> mark the start gate of one you haven't flown; the arrow at the top points to the nearest.",
@@ -49,21 +71,6 @@
         "<b>RESET</b> restarts the take on the walking street, or where you chose to START AT on the pause menu; hold it to go back to the spawn."
       ]
     },
-    "lineNames": [
-      {"name": "WALKING STREET", "hint": "Eoulmadang-ro, end to end over the crowd"},
-      {"name": "BAR ALLEY", "hint": "Wausan-ro 21-gil, the bar and club alley"},
-      {"name": "CLUB STREET", "hint": "Wausan-ro 19-gil, under the club signs"},
-      {"name": "HONGIK-RO", "hint": "down Hongik-ro, over the traffic"},
-      {"name": "CROSSING", "hint": "across Yanghwa-ro at Exit 9"},
-      {"name": "SCREEN CANYON", "hint": "between the LED screens on Yanghwa-ro"},
-      {"name": "THE GAP", "hint": "the 1.15 m slot off Wausan-ro 23-gil"},
-      {"name": "CABLE LATTICE", "hint": "Hongik-ro 3-gil, under the cable web"},
-      {"name": "NARROW ALLEY", "hint": "the 3.4 m alley off Eoulmadang-ro"},
-      {"name": "SCREEN PASS", "hint": "the slot by the screens on Yanghwa-ro"},
-      {"name": "SIGN STACK", "hint": "straight up the stack of signs"},
-      {"name": "ROOF DROP", "hint": "down the gap between two roofs"},
-      {"name": "ROOFLINE", "hint": "along the roofs over the walking street"}
-    ],
     "foot": "Streets and building footprints © OpenStreetMap contributors (ODbL). Hangul faces: SIL Open Font License."
   }
 ]

@@ -7,5 +7,7 @@ seoul/layout.json, and with a fresh still from the build for backdrop.jpg / thum
                    so the family is renamed "OT KR". Same face as seoul/fonts/S2-NotoSansKR800 (B's signs), subset apart
                    so the sign atlas can change without breaking the UI.
                    Original copyright: Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
-  backdrop.jpg     1600x900 menu / loading still (interim: phase-1 seoulsnap 'station', graded; the integrator re-shoots)
-  thumb.jpg        480x270 level card still (interim: phase-1 seoulsnap 'w21', cropped and graded)
+  backdrop.jpg     1600x900 menu / loading still: phase-2 build (bfe39b1) seoulsnap 'w21' (review/seoul/game2), graded.
+                   Re-shoot when the look changes (tests/seoul-ui.mjs checks the stills are newer than it).
+  thumb.jpg        480x270 level card still: the same 'w21' still, --thumb-crop 0.36,0.2,1,0.84 (the vertical hangul
+                   signs over the walking street), graded.
