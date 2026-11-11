@@ -54,7 +54,7 @@ function frame(m) {
   sim.advanceTo(t);
   const t1 = now();
   C.events.length = 0;
-  C.evaluate(t, m.cam ? { x: m.cam[0], y: m.cam[1], z: m.cam[2] } : null);
+  C.evaluate(t, m.cam ? { x: m.cam[0], y: m.cam[1], z: m.cam[2], fx: m.cam[3] ?? null, fz: m.cam[4] ?? null } : null);   // (P5: with the forward, as inline)
   const t2 = now();
   const b = pool.pop() || alloc();
   b.X.set(C.X); b.Z.set(C.Z); b.YAW.set(C.YAW); b.PH.set(C.PH); b.WALK.set(C.WALK); b.POSE.set(C.POSE); b.VIS.set(C.VIS);

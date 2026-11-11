@@ -114,7 +114,8 @@ ok(mv > 5 && st > 0, `traffic flows and queues (moving ${mv}, stopped ${st})`);
 { const F = new LifeSim(layout, { seed: 11 }); let n = 0, st2 = 0, mn = 0, mst = 0, mvs = 0, mvn = 0;
   for (let t = 60; t <= 600; t += 10) { F.advanceTo(t + LIFE.warm); for (const v of F.traffic.vehicles) { if (v.hidden) continue; n++; if (v.v < 0.5) st2++; if (v.lane.street.kind === 'main') { mn++; if (v.v < 0.5) mst++; else { mvs += v.v; mvn++; } } } }
   const all = st2 / n, main = mst / mn, kmh = mvs / mvn * 3.6;
-  ok(all <= 0.58 && main <= 0.66 && kmh >= 15 && kmh <= 30, `traffic streams: ${(100 * all).toFixed(0)} % stopped (main roads ${(100 * main).toFixed(0)} %), moving at ${kmh.toFixed(1)} km/h between the lights (P3: 72 % / 79 %, 3.7 km/h mean)`); }
+  // (P5, life #1) the panel's gate: main roads 35-50 % stopped (P4 passed at 62 % against a 66 % line)
+  ok(all <= 0.5 && main >= 0.35 && main <= 0.5 && kmh >= 15 && kmh <= 30, `traffic streams: ${(100 * all).toFixed(0)} % stopped (main roads ${(100 * main).toFixed(0)} %, gate 35-50), moving at ${kmh.toFixed(1)} km/h between the lights (P4: 55 % / 62 %, 20.5 km/h; P3: 72 % / 79 %)`); }
 // liveness (life #2): P1 deadlocked (82 % of road vehicles stopped at 90 s, 100 % at 300 s). At 300 s fewer than 10 %
 // may have been stopped for more than 45 s (longer than any red), and the taxi/bus dwells must actually happen.
 {
@@ -125,8 +126,9 @@ ok(mv > 5 && st > 0, `traffic flows and queues (moving ${mv}, stopped ${st})`);
   }
   // (P3: junction boxes queue the Yanghwa-ro median crossings for up to a second cycle, so > 45 s may reach ~15 %; a jam
   // shows as > 90 s, two full cycles)
-  const road = T.vehicles.filter((v) => !v.hidden && !v.lane.shared), s45 = road.filter((v) => still.get(v.id) > 45).length, s90 = road.filter((v) => still.get(v.id) > 90).length;
-  ok(s45 < 0.15 * road.length && s90 < 0.03 * road.length, `liveness at 300 s: ${s45}/${road.length} road vehicles stopped > 45 s (< 15 %), ${s90} > 90 s (< 3 %)`);
+  // (P5: the 120 s cycle's longest red is 82 s, so the lines are one red (90 s) and two (180 s))
+  const road = T.vehicles.filter((v) => !v.hidden && !v.lane.shared), s45 = road.filter((v) => still.get(v.id) > 90).length, s90 = road.filter((v) => still.get(v.id) > 180).length;
+  ok(s45 < 0.15 * road.length && s90 < 0.03 * road.length, `liveness at 300 s: ${s45}/${road.length} road vehicles stopped > 90 s (< 15 %), ${s90} > 180 s (< 3 %)`);
   ok((ev.kneel || 0) >= 5, `buses kneel at stops (${ev.kneel || 0} in 300 s: the hiss has something to play)`);
   ok((ev.unstick || 0) <= 12, `watchdog rarely needed (${ev.unstick || 0} unsticks in 300 s)`);
   const ty = {}; for (const v of T.vehicles) if (!v.hidden) ty[v.type] = (ty[v.type] || 0) + 1;

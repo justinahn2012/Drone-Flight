@@ -13,6 +13,10 @@
 // Node (tests/life-worker.mjs): worker_threads, the same worker file.
 export const VEH_STRIDE = 8;
 
+// (P5 G1) the camera goes over whole: [x, y, z, fx, fz] (its horizontal forward, or null). P4 sent only x, y, z, so the worker
+// evaluated without the forward and kept every unit behind the camera that the inline path staggers: 7.9 % more people
+// drawn than inline (tests/life-worker.mjs gates 2 %)
+const camArr = (c) => (c ? [c.x ?? c[0], c.y ?? c[1], c.z ?? c[2], c.fx !== undefined ? c.fx : c[3] ?? null, c.fz !== undefined ? c.fz : c[4] ?? null] : null);
 export class LifeWorker {
   static supported() { return typeof Worker !== 'undefined'; }
 
@@ -64,13 +68,13 @@ export class LifeWorker {
   _send(t, cam) {
     const seq = ++this.seq, recycle = this.free; this.free = null;
     this.busy = true; this._sent = performance.now(); this.stats.requests++;
-    this._post({ type: 'frame', seq, t, cam: cam ? [cam.x ?? cam[0], cam.y ?? cam[1], cam.z ?? cam[2]] : null, recycle }, recycle ? bufs(recycle) : []);
+    this._post({ type: 'frame', seq, t, cam: camArr(cam), recycle }, recycle ? bufs(recycle) : []);
   }
 
   /** Ask for the crowd and traffic at take clock t seen from cam ({x,y,z} or [x,y,z]). Never blocks. */
   request(t, cam = null) {
     if (this.error) return false;
-    if (this.busy) { if (this.pending) this.stats.dropped++; this.pending = { t, cam: cam ? [cam.x ?? cam[0], cam.y ?? cam[1], cam.z ?? cam[2]] : null }; return false; }
+    if (this.busy) { if (this.pending) this.stats.dropped++; this.pending = { t, cam: camArr(cam) }; return false; }
     this._send(t, cam); return true;
   }
   /** The newest finished frame (yours until release(f)), or null. */
