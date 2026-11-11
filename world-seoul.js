@@ -74,9 +74,9 @@ export const SEOUL_MATS = {
 const USE_LOOK = {
   club: { nits: [30, 40], rgb: [1.0, 0.42, 0.9], room: [3, 4], shut: 0.15 }, bar: { nits: [30, 42], cct: 2700, room: [3], shut: 0.1 },
   pocha: { nits: [40, 55], cct: 3100, room: [2], front: [4, 0.7], shut: 0.05 }, restaurant: { nits: [36, 52], cct: 4500, room: [2, 1], front: [6, 0.2], shut: 0.25 },
-  cafe: { nits: [34, 50], cct: 4000, room: [1], shut: 0.35 }, shop: { nits: [40, 58], cct: 5000, room: [5, 6, 5], shut: 0.45 },
-  conv: { nits: [52, 60], cct: 5600, room: [0], shut: 0 }, karaoke: { nits: [35, 50], rgb: [0.85, 0.6, 1.0], room: [4], shut: 0.05 },
-  pc: { nits: [38, 52], cct: 5600, room: [7], shut: 0.05 }, motel: { nits: [35, 45], rgb: [1.0, 0.62, 0.7], room: [4], shut: 0.1 },
+  cafe: { nits: [34, 50], cct: 5200, room: [1], shut: 0.35 }, shop: { nits: [40, 58], cct: 5800, room: [5, 6, 5], shut: 0.45 },
+  conv: { nits: [52, 60], cct: 6200, room: [0], shut: 0 }, karaoke: { nits: [35, 50], rgb: [0.85, 0.6, 1.0], room: [4], shut: 0.05 },
+  pc: { nits: [38, 52], cct: 6000, room: [7], shut: 0.05 }, motel: { nits: [35, 45], rgb: [1.0, 0.62, 0.7], room: [4], shut: 0.1 },
   office: { nits: [35, 50], cct: 5000, room: [8], shut: 0.8 }, hotel: { nits: [42, 58], cct: 3200, room: [1], shut: 0.1 },
   lobby: { nits: [85, 110], cct: 4300, room: [9] },
 };
@@ -611,16 +611,19 @@ export function buildSeoulGeometry(layout, opts = {}) {
   // ---------------- street lights. [P2-C] (lighting #6) nits from lumens for a Lambertian head (nits = lm / (pi x area)), so
   // the L3 records are self-consistent (12 klm cobra head: ~28,000 nits; phase 1 had 9,000, a third of its flux); main roads
   // get opposite pairs every 32 m (was staggered), pedestrian posts 4 klm, and every second alley pole a 3000 K security lamp.
-  const LAMP = { main: { lumens: 12000, cct: 4000, w: 0.56, h: 0.24 }, ped: { lumens: 6000, cct: 3500, w: 0.56, h: 0.24 }, security: { lumens: 3000, cct: 3000, w: 0.3, h: 0.15 } };
+  // [P5-A] colour #4 (mixed white balance): road and pedestrian posts are half 3000 K (old high-pressure sodium refits) and half
+  // 4000 K LED, per pole by a hash of its position; security lamps stay 3000 K.
+  const LAMP = { main: { lumens: 12000, cct: 4000, w: 0.56, h: 0.24, mix: [3000, 4000] }, ped: { lumens: 6000, cct: 3500, w: 0.56, h: 0.24, mix: [3000, 4000] }, security: { lumens: 3000, cct: 3000, w: 0.3, h: 0.15 } };
   const lampHead = (x, z, ox, oz, h, arm, spec = LAMP.main, pole = true) => {
-    const px = x + ox * arm, pz = z + oz * arm, nits = Math.round(spec.lumens / (Math.PI * spec.w * spec.h)), rgb = lightRGB(spec.cct), hw = spec.w / 2, hd = spec.h / 2;
+    const cct = spec.mix ? spec.mix[hash(`lamp:${x.toFixed(1)}:${z.toFixed(1)}`) < 0.5 ? 0 : 1] : spec.cct;
+    const px = x + ox * arm, pz = z + oz * arm, nits = Math.round(spec.lumens / (Math.PI * spec.w * spec.h)), rgb = lightRGB(cct), hw = spec.w / 2, hd = spec.h / 2;
     if (pole) A('pole').tube([[x, 0, z], [x, h, z], [x + ox * 0.4, h + 0.3, z + oz * 0.4], [px, h + 0.35, pz]], 0.09, 6);
     else A('pole').tube([[x, h + 0.35, z], [px, h + 0.35, pz]], 0.04, 4);
     A('pole').box([px, h + 0.3, pz], [hw + 0.04, 0.08, hd + 0.06], Math.atan2(-oz, ox), false);
     Acc.win = [spec.w, spec.h, 16, 0];   // [P3-C] kind 4: a flat emitter inside the glass mesh
     A('lamp').quad([px - ox * hw - oz * hd, h + 0.215, pz - oz * hw + ox * hd], [px + ox * hw - oz * hd, h + 0.215, pz + oz * hw + ox * hd], [px + ox * hw + oz * hd, h + 0.215, pz + oz * hw - ox * hd], [px - ox * hw + oz * hd, h + 0.215, pz - oz * hw - ox * hd], [0, -1, 0], undefined, [rgb[0] * nits * NIT, rgb[1] * nits * NIT, rgb[2] * nits * NIT, 0]);
     Acc.win = WIN0;
-    emitters.push({ id: 'street:' + emitters.length, pos: [+px.toFixed(2), +(h + 0.2).toFixed(2), +pz.toFixed(2)], normal: [0, -1, 0], w: spec.w, h: spec.h, rgb: rgb.map((v) => +v.toFixed(3)), nits, kind: 'street', animated: false, lumens: spec.lumens, cct: spec.cct, ...(spec === LAMP.security ? { role: 'security' } : spec === LAMP.ped ? { role: 'pedestrian' } : {}) });
+    emitters.push({ id: 'street:' + emitters.length, pos: [+px.toFixed(2), +(h + 0.2).toFixed(2), +pz.toFixed(2)], normal: [0, -1, 0], w: spec.w, h: spec.h, rgb: rgb.map((v) => +v.toFixed(3)), nits, kind: 'street', animated: false, lumens: spec.lumens, cct, ...(spec === LAMP.security ? { role: 'security' } : spec === LAMP.ped ? { role: 'pedestrian' } : {}) });
     facts.streetLights++;
   };
   const along = (pts, step, fn) => { let carry = step / 2; for (let i = 0; i < pts.length - 1; i++) { const [ax, az] = pts[i], [bx, bz] = pts[i + 1], L = Math.hypot(bx - ax, bz - az); if (L < 0.1) continue; const tx = (bx - ax) / L, tz = (bz - az) / L; let s = carry; for (; s < L; s += step) fn(ax + tx * s, az + tz * s, tx, tz); carry = s - L; } };

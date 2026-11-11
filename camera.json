@@ -3,10 +3,10 @@
   "generator": "tools/camera-profile.mjs",
   "source": {
     "fpvcam.js": {
-      "sha256": "08ec59eed9f2cce9dad206a91eec610fbf24bd6b5026923f8d3be1ab6644349e"
+      "sha256": "a803dff8df6d862b0ef78c95b8a73e6ed09551afa400d8ef466b5b0b8204bf90"
     },
     "main.js": {
-      "sha256": "b4fa9daa9b3043ad764e001a2e301295b2382c9eaca01dccbcb828f9fe3ba2fb"
+      "sha256": "d9688e4a3087ff5419fe27cca62d9be3596501c607689d1f0046095df96f3bef"
     },
     "profileFn": true
   },
@@ -412,8 +412,9 @@
             "halo": 0.013,
             "haloR": 1.4,
             "haloTint": [1,0.75,0.6],
-            "haloM": [0.025,1.4,1],
+            "haloM": [0.04,1.6,2],
             "haloMTint": [1,1,1],
+            "haloW": [0.01,2.2,3],
             "ghosts": [
               [
                 -0.55,
@@ -912,8 +913,9 @@
             "halo": 0.013,
             "haloR": 1.4,
             "haloTint": [1,0.75,0.6],
-            "haloM": [0.025,1.4,1],
+            "haloM": [0.04,1.6,2],
             "haloMTint": [1,1,1],
+            "haloW": [0.01,2.2,3],
             "ghosts": [
               [
                 -0.55,
@@ -1412,8 +1414,9 @@
             "halo": 0.013,
             "haloR": 1.4,
             "haloTint": [1,0.75,0.6],
-            "haloM": [0.025,1.4,1],
+            "haloM": [0.04,1.6,2],
             "haloMTint": [1,1,1],
+            "haloW": [0.01,2.2,3],
             "ghosts": [
               [
                 -0.55,
@@ -1618,8 +1621,9 @@
       "halo": 0.013,
       "haloR": 1.4,
       "haloTint": [1,0.75,0.6],
-      "haloM": [0.025,1.4,1],
+      "haloM": [0.04,1.6,2],
       "haloMTint": [1,1,1],
+      "haloW": [0.01,2.2,3],
       "ghosts": [
         [
           -0.55,
