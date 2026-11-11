@@ -223,12 +223,14 @@ const stagePiece = (geo.setPieces || []).find((p) => p.id === 'under-the-stage')
 const stageExit = (() => { const Gs = stagePiece?.gates; if (!Gs?.gate?.c || !Gs?.pre?.c) return null;
   const a = arcOf(WP, Gs.pre.c[0], Gs.pre.c[2]), b = arcOf(WP, Gs.gate.c[0], Gs.gate.c[2]);
   return b > a ? { s: b, G: Gs.gate, n: Gs.gate.n, pre: Gs.pre } : { s: a, G: Gs.pre, n: Gs.pre.n.map((v) => -v), pre: Gs.gate }; })();
-const WS0 = stageExit ? Math.round(stageExit.s + 5) : 12;
-const WS = run({ path: WP, name: 'WALKING STREET', caption: 'THE WALKING *STREET*!', value: 2500, s0: WS0, s1: -6, y0: 2.2, y1: 5.2, a0: stageExit ? 2.0 : 2.2, w: walk.width - 1, first: !stageExit,
+// [integ9] only when the stage sits near the spawn end (P4-F1's assumption, ~30 m); E's p4 stage is further up the street -> phase 3's start
+const stageNear = stageExit && stageExit.s < 60 ? stageExit : null;
+const WS0 = stageNear ? Math.round(stageNear.s + 5) : 12;
+const WS = run({ path: WP, name: 'WALKING STREET', caption: 'THE WALKING *STREET*!', value: 2500, s0: WS0, s1: -6, y0: 2.2, y1: 5.2, a0: stageNear ? 2.0 : 2.2, w: walk.width - 1, first: !stageNear,
   // [P4-F1 design #4] the first piece ends 15 m past the start gate (the first x2 caption by 20 s for a careful pilot: the
   // stage's x2 at ~12 s, then 20 m; at 22 m the sims' median was 21.9 s), the next half way to the 23-gil cut; then phase
   // 3's cuts at the side streets
-  cuts: stageExit ? (() => { const c = [138, 180, 222, 264].map((v) => v + WL - 312), c1 = WS0 + 15; return [c1, Math.round((c1 + c[0]) / 2), ...c]; })()
+  cuts: stageNear ? (() => { const c = [138, 180, 222, 264].map((v) => v + WL - 312), c1 = WS0 + 15; return [c1, Math.round((c1 + c[0]) / 2), ...c]; })()
     : [54, 96, 138, 180, 222, 264].map((v) => v + WL - 312), label: 'WALKING STREET', feats: [
     { name: 'OVER THE CROWD', caption: 'OVER THE *CROWD*!', s: 24, ...HEADS, w: 8, pts: 750, what: 'the walking street crowd, 17 m from the spawn (head height)' },
     ...(tentG ? [{ name: 'OVER THE TENT', caption: 'OVER THE *TENT*!', s: WL - 178, gate: tentG, what: 'a pocha tent' }] : []),
@@ -236,10 +238,10 @@ const WS = run({ path: WP, name: 'WALKING STREET', caption: 'THE WALKING *STREET
   ] });
 // the stage's exit line through the start gate: where it crosses (across the gate from its centre, height), so a pilot who
 // keeps the stage's line flies the start gate
-if (stageExit) { const A = WS.A, n = norm3(A.n), u = norm3(A.u), c = stageExit.G.c, d = norm3(stageExit.n), den = d[0] * n[0] + d[2] * n[2];
+if (stageNear) { const A = WS.A, n = norm3(A.n), u = norm3(A.u), c = stageNear.G.c, d = norm3(stageNear.n), den = d[0] * n[0] + d[2] * n[2];
   const k = ((A.c[0] - c[0]) * n[0] + (A.c[2] - c[2]) * n[2]) / (den || 1e-9), q = [c[0] + d[0] * k, c[1], c[2] + d[2] * k];
   const off = (q[0] - A.c[0]) * u[0] + (q[2] - A.c[2]) * u[2];
-  report.push(`  (WALKING STREET: starts ${(WS.sa - stageExit.s).toFixed(1)} m past UNDER THE STAGE's exit; its line crosses the ${A.w.toFixed(1)} x ${A.h.toFixed(1)} m start gate ${k.toFixed(1)} m on, ${off.toFixed(1)} m off centre (half width ${(A.w / 2).toFixed(1)}), gate ${(A.c[1] - A.h / 2).toFixed(2)}-${(A.c[1] + A.h / 2).toFixed(2)} m, stage ${(c[1] - stageExit.G.h / 2).toFixed(2)}-${(c[1] + stageExit.G.h / 2).toFixed(2)} m)`);
+  report.push(`  (WALKING STREET: starts ${(WS.sa - stageNear.s).toFixed(1)} m past UNDER THE STAGE's exit; its line crosses the ${A.w.toFixed(1)} x ${A.h.toFixed(1)} m start gate ${k.toFixed(1)} m on, ${off.toFixed(1)} m off centre (half width ${(A.w / 2).toFixed(1)}), gate ${(A.c[1] - A.h / 2).toFixed(2)}-${(A.c[1] + A.h / 2).toFixed(2)} m, stage ${(c[1] - stageNear.G.h / 2).toFixed(2)}-${(c[1] + stageNear.G.h / 2).toFixed(2)} m)`);
   if (Math.abs(off) > A.w / 2 - 0.8) report.push('  WARNING: the stage exit is near the start gate\'s edge'); }
 // 1b. RED ROAD: the s065 fork of Eoulmadang-ro (phase 2's walking street: the Red Road busking stretch), 2.2-5.2 m, cut at the
 // side streets (55, 100, 160 of 226 m); micros: the first blade stack (22 m) and the densest blade stretch (58-79 m) at
