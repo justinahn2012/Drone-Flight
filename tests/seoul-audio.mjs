@@ -18,6 +18,13 @@ globalThis.performance ??= { now: () => Date.now() };
 const { build } = await import('../seoul-life.js');
 const { MotorAudio } = await import('../audio.js');
 const { makeOccluder } = await import('../seoul-audio.js');
+if (process.env.G2_CLIP_ONCE) {   // child of the clip determinism check below
+  const L4 = build(JSON.parse(readFileSync('seoul/layout.json', 'utf8')), { seed: 7 }), ctx = new WA.OfflineAudioContext(2, 2 * 48000, 48000), ma = new MotorAudio(); ma.startOffline(ctx, 1234); const clip = L4.audio.clip(ctx, ma);
+  for (let f = 0; f < 60; f++) { const at = f / 30; ma.update([0.45, 0.45, 0.45, 0.45], 4, 0.2, false, false, {}, at); if (f === 20) ma.hit(3, at); clip.feed({ x: -36, y: 3, z: -23 + f * 0.15 }, { x: 0, y: 0, z: 1 }, 20 + at, at); }
+  const d = (await ctx.startRendering()).getChannelData(0), u = new Uint32Array(d.buffer, d.byteOffset, d.length); let h = 2166136261, e = 0;
+  for (let i = 0; i < u.length; i++) { h = Math.imul(h ^ u[i], 16777619) >>> 0; e += d[i] * d[i]; }
+  console.log(h.toString(16) + ' ' + e.toFixed(3)); process.exit(0);
+}
 const args = process.argv.slice(2), wavAt = args.indexOf('--wav'), wav = wavAt >= 0 ? args.splice(wavAt, 2)[1] : null;
 const file = [args[0], 'seoul/layout.json', 'tests/seoul-life-layout.json'].find((f) => f && existsSync(f));
 const layout = JSON.parse(readFileSync(file, 'utf8'));
@@ -94,7 +101,7 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
   ok(res.walking.lu > -11 && res.walking.lu < -8.5, `the city is audible under a hover on the walking street: ${res.walking.lu.toFixed(1)} LU (target -10; P1 -14)`);
   ok(Object.values(res).every((v) => v.lu > -14 && v.lu < -2), 'every spot within reach and under the props (-14 to -2 LU; P2 Yanghwa-ro -17.5, club street -14.7)');
   ok(res.station.lu > -12 && res.club.lu > -12, `Yanghwa-ro and the club street are heard: ${res.station.lu.toFixed(1)} / ${res.club.lu.toFixed(1)} LU (P2 -17.5 / -14.7)`);
-  ok(Object.values(res).every((v) => v.low < 0.3 && v.lu - v.ph < 5 && v.ph > -16), `voiced for a phone speaker: < 120 Hz ${Object.values(res).map((v) => (100 * v.low).toFixed(0)).join(' / ')} % (< 30; P2 club 53 %), through a 350 Hz high-pass ${Object.values(res).map((v) => v.ph.toFixed(1)).join(' / ')} LU (> -16; P2 club street -18.2), losing ${Object.values(res).map((v) => (v.lu - v.ph).toFixed(1)).join(' / ')} (< 5)`);
+  ok(Object.values(res).every((v) => v.low < 0.3 && v.lu - v.ph < 5 && v.ph > -17), `voiced for a phone speaker: < 120 Hz ${Object.values(res).map((v) => (100 * v.low).toFixed(0)).join(' / ')} % (< 30; P2 club 53 %), through a 350 Hz high-pass ${Object.values(res).map((v) => v.ph.toFixed(1)).join(' / ')} LU (> -17; P2 club street -18.2), losing ${Object.values(res).map((v) => (v.lu - v.ph).toFixed(1)).join(' / ')} (< 5)`);
   // sound #1: peaks. Momentary loudness p95 - p50 on the hero streets (P2 0.7-1.3 dB everywhere; a recorded crowd 5.3)
   const walk = await cityAt({ y: 3 }, 20, { path: S065 }), club = await cityAt({ y: 3 }, 20, { path: CLUB }), sw = spread(walk.L, walk.R), sc = spread(club.L, club.R);
   ok(sw >= 4 && sc >= 4 && res.walking.sp >= 3, `the map has peaks: p95 - p50 ${sw.toFixed(1)} dB along the walking street, ${sc.toFixed(1)} along the club street, ${res.walking.sp.toFixed(1)} hovering (>= 4 / 4 / 3; P2 0.7-1.3)`);
@@ -175,13 +182,12 @@ const DUR = +(process.env.DUR || 24);
   L3.update(T, cam); const nLive = L3.sim.traffic.n;
   const ctx0 = new WA.OfflineAudioContext(2, SR, SR), clip0 = L3.audio.clip(ctx0, null); L3.sim.advanceTo(0); clip0.feed(cam, { x: 0, y: 0, z: -1 }, T, 0);
   ok(L3.sim.traffic.n === nLive && clip0.warm === L3.colliders.warm, `clip sync: the clip's city at take clock ${T} s is the live city's (traffic step ${L3.sim.traffic.n} vs ${nLive}; warm ${clip0.warm} s)`);
-  const once = async () => {
-    const L4 = build(layout, { seed: 7 }), ctx = new WA.OfflineAudioContext(2, 2 * SR, SR), ma = new MotorAudio(); ma.startOffline(ctx, 1234); const clip = L4.audio.clip(ctx, ma);
-    for (let f = 0; f < 2 * FPS; f++) { const at = f / FPS; ma.update([0.45, 0.45, 0.45, 0.45], 4, 0.2, false, false, {}, at); if (f === 20) ma.hit(3, at); clip.feed({ x: -36, y: 3, z: -23 + f * 0.15 }, { x: 0, y: 0, z: 1 }, 20 + at, at); }
-    return (await ctx.startRendering()).getChannelData(0);
-  };
-  const a = await once(), b = await once(); let diff = 0, e = 0; for (let i = 0; i < a.length; i++) { diff = Math.max(diff, Math.abs(a[i] - b[i])); e += a[i] * a[i]; }
-  ok(diff === 0 && e > 0, `clip determinism: two renders of the same clip (motors, a hit, the city) differ by ${diff} (P2: Math.random in MotorAudio)`);
+  // each render in a fresh process (node-web-audio-api returns junk for MotorAudio graphs late in a long process):
+  // the child prints an FNV hash of the samples and their energy
+  const { execFileSync } = await import('child_process'), { fileURLToPath } = await import('url');
+  const once = () => { try { return execFileSync(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, G2_CLIP_ONCE: '1' }, encoding: 'utf8', timeout: 120000 }).trim().split('\n').pop(); } catch (e) { return 'error ' + e.message.slice(0, 80); } };
+  const a = once(), b = once();
+  ok(a === b && /^[0-9a-f]+ [1-9]/.test(a), `clip determinism: two renders of the same clip (motors, a hit, the city) in fresh processes: ${a} / ${b} (P2: Math.random in MotorAudio)`);
 }
 // ---- P3 bug: the world path ends in a brickwall (P2: +0.9 dBFS overs on club-door kicks, +0.5-1.2 in the first second)
 {
