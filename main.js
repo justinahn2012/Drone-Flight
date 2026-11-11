@@ -2376,6 +2376,7 @@ function fitLines() {
   const bar = document.querySelector('#menu .cta')?.offsetHeight || 62, paused = document.body.classList.contains('paused');
   const top = paused ? g.getBoundingClientRect().top + $('menu').scrollTop : 40;
   g.style.maxHeight = Math.max(96, Math.round(window.innerHeight - top - bar - 16)) + 'px';
+  g.classList.remove('scroll');                                       // measured without the scroller's 10 px of padding
   g.classList.toggle('scroll', g.scrollHeight > g.clientHeight + 2);
   moreCue();
 }

@@ -17,8 +17,8 @@ export function gridPlan(counts, width, { minCell = 92, gap = 5, gapG = 8, maxRo
 }
 
 // the compact cell (index.html, short landscape): 12.5 px Barlow Condensed 700, .02em tracking, two lines at most, 22 + 5 px
-// of padding. The glyph advance is an upper bound for the caps the line names use (measured ~0.47-0.53 em).
-export const CELL = { font: 12.5, adv: 0.56, track: 0.02, padX: 27, lineH: 1.1, padY: 8, minH: 32, head: 16 };
+// of padding, 1 px borders, the head 18 px with its margin. The glyph advance is an upper bound for the caps the line names use (measured ~0.47-0.53 em).
+export const CELL = { font: 12.5, adv: 0.56, track: 0.02, padX: 27, lineH: 1.05, padY: 10, minH: 32, head: 18 };   // padY: 4 + 4 + the 1 px border
 // how many lines a name wraps to in a cell `w` px wide (greedy, word by word; a word wider than the line breaks anywhere)
 export function nameLines(name, w, C = CELL) {
   const em = C.font * (C.adv + C.track), avail = Math.max(1, w - C.padX), words = String(name).split(/\s+/).filter(Boolean);

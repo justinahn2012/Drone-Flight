@@ -500,13 +500,19 @@ body.dev .dev{display:revert!important}
   .ln b{font-size:12.5px;line-height:1.1;letter-spacing:.02em;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
   body.paused #linesSec>.sec{display:none}   /* paused: the strip says LINES 3/18 and each group head its own count */
   #startSec{display:flex;align-items:center;gap:12px}   /* START AT on one row with its starts */
-  #startSec .sec{margin:0!important}
+  #startSec .sec{margin:0!important;flex:none;white-space:nowrap}
+  /* [F2] P4: six starts (RED ROAD added) wrapped to a second row at 844 px with the iPhone's 47 px insets, pushing the grid
+     44 px down: 15 px type, 10 px sides, one row (a narrower screen scrolls the row sideways, never wraps) */
+  #starts{flex-wrap:nowrap;min-width:0;overflow-x:auto;scrollbar-width:none}
+  #starts::-webkit-scrollbar{display:none}
+  #starts button{flex:none;min-height:40px;padding:8px 10px;font-size:15px}
   body.paused #startSec{margin:8px 0 10px}
   .ln.on small{font-size:9.5px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   /* [F2] P4 ui #3 / ux #2: grouped, the columns come from main.js gridPlan (STREETS 3 across, SET PIECES and GAPS 2: 19 lines
      in 3 rows). A cell is its name (two lines at most); a flown one says ×N under its tick, not on a third line */
   .lines.grouped .ln.on small{display:none}
   .lines.grouped .ln.on svg{top:5px;margin-top:0}
+  .lines.grouped .ln b{line-height:1.05}
   .lines.grouped .ln .fx{display:block;position:absolute;left:1px;bottom:4px;width:20px;text-align:center;text-decoration:none;
     font:700 9px/1 var(--mono);letter-spacing:0;color:var(--amber)}
   .ln.next b::after{content:none}
