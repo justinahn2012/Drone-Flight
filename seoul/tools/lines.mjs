@@ -239,8 +239,13 @@ run({ path: club.points, name: 'BAR ALLEY', caption: 'THE BAR *ALLEY*!', value: 
 // horizontal portal at 9 m over the park, crossed climbing
 // [P3-F1 design #5] anchored: a 4 x 4 m portal 7 m straight over the Playground's busker (layout hero 'playground', where
 // seoul-life's acoustic ring stands), not phase 2's 10 x 10 m square in the air
-{ const pg = (layout.hero || []).find((h) => h.id === 'playground')?.pos || [80, 2, 97];
-  const G = fit(g([pg[0], 7, pg[2]], [0, 1, 0], 4, 4, [1, 0, 0]), 'PLAYGROUND POP'); add('PLAYGROUND POP', 'PLAYGROUND *POP*!', 500, G, { micro: true, feature: 'over the Playground busker' }); }
+// [P4-E design #6] between a light mast and a zelkova crown: E's dressing plants the Playground (two 10.5 m masts, zelkovas)
+// and hands over the slot as anchors['playground-pop'] (mast, crown edge toward it at the crown's widest height, the gate
+// 0.65 m clear of both); without it, phase 3's 4 x 4 m square over the busker
+{ const A = geo.dressingOut?.anchors?.['playground-pop'], pg = (layout.hero || []).find((h) => h.id === 'playground')?.pos || [80, 2, 97];
+  const G = fit(A ? g(A.gate.c, A.gate.n, A.gate.w, A.gate.h, A.gate.u) : g([pg[0], 7, pg[2]], [0, 1, 0], 4, 4, [1, 0, 0]), 'PLAYGROUND POP');
+  add('PLAYGROUND POP', 'PLAYGROUND *POP*!', 500, G, { micro: true, feature: A ? 'between the light mast and the zelkova over the Playground busker' : 'over the Playground busker' });
+  if (A) report.push(`  (PLAYGROUND POP: ${G.w.toFixed(1)} x ${G.h.toFixed(1)} m at ${G.c[1]} m between the mast at [${A.mast[0]}, ${A.mast[2]}] and the crown ${A.crownEdge} m off its trunk, slot ${A.gap} m)`); }
 // 3. HONGIK-RO: down the main road from the station to the university, 5-8 m: over the buses, under the lamp arms' reach
 const hong = longest('홍익로', 'main'); const HL = len(hong.points);
 run({ path: hong.points, name: 'HONGIK-RO', caption: 'DOWN *HONGIK-RO*!', value: 1500, s0: 10, s1: -10, y0: 5.0, y1: 8.0, w: hong.width });
@@ -365,9 +370,11 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
   }
 }
 // 7. SCREEN PASS: along the face of the biggest facade LED screen, 1-7 m off it (either way)
+// [P4-E design #6] phase 3's gate was 6 x 15.8 m (1-7 m off, the screen's full height): open air. Now 3 m off the face (1.4-4.6 m)
+// and 4 m tall about the screen's centre, so the pass is along the picture, not anywhere in front of it
 { const sc = layout.screens.find((s) => s.id === 'Y151') || layout.screens.filter((s) => s.kind === 'facade').sort((a, b) => b.w * b.h - a.w * a.h)[0];   // the 14 x 15.8 m screen facing exit 9
-  const [nx, , nz] = sc.normal, c = [sc.pos[0] + nx * 4, sc.pos[1], sc.pos[2] + nz * 4];
-  add('SCREEN PASS', 'SCREEN *PASS*!', 1000, g(c, [-nz, 0, nx], 6, sc.h, [nx, 0, nz]), { two: true });
+  const [nx, , nz] = sc.normal, c = [sc.pos[0] + nx * 3, sc.pos[1], sc.pos[2] + nz * 3];
+  add('SCREEN PASS', 'SCREEN *PASS*!', 1000, g(c, [-nz, 0, nx], 3.2, Math.min(4, sc.h), [nx, 0, nz]), { two: true });
   report.push(`  (SCREEN PASS: ${sc.id} on ${sc.lot}, ${sc.w} x ${sc.h} m, centre ${sc.pos[1]} m up)`); }
 // 8. SIGN STACK (up funnel): climb a 6+ storey facade on the walking / club street, 2.5 m off the wall, street to roof
 { const cands = layout.lots.filter((l) => l.floors >= 5 && ['walking', 'club'].includes(byId.get(l.street).kind)).sort((a, b) => b.floors - a.floors);
@@ -506,6 +513,40 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
   { const S = lines.find((x) => x.name === 'SIGN STACK'), R = lines.find((x) => x.name === 'ROOFLINE' && x.pre);
     const ends = R ? [R.pre[0], R] : [], to = S && ends.sort((a, b) => dist3(a, S) - dist3(b, S))[0];
     hop('TO THE ROOFLINE', S, to); }
+  // ---- [P4-E design #5] the last transit holes (panel 3: THE FORK -> SIGN STACK 21.5 / 26.4 s on the careful long route; the
+  // sims also show BAR ALLEY -> CABLE LATTICE at 15.4-16.2 s and CABLE LATTICE -> THE FORK up to 15.6 s). Gate: no caption gap
+  // over 15 s. connectN: n connector micros evenly along the street path (as connect(), but a set count, returned for a via).
+  // THE FORK -> SIGN STACK: two (Red Road north to the s038 junction, then s038 east to the stack); SIGN STACK gets a `via` at
+  // the second one (the straight line from the fork crosses a block of 4-6 storeys), skipped once on s038 east of the junction.
+  { const connectN = (label, from, to, n, frac = null) => {
+      const out = []; if (!from || !to) { report.push(`  (${label}: no line to connect)`); return out; }
+      const R = route(nearestV(from.c), nearestV(to.c)); if (!R) { report.push(`  (${label}: no street path)`); return out; }
+      const pts = [[from.c[0], from.c[2]], ...R.map((v) => [v.x, v.z]), [to.c[0], to.c[2]]], L = len(pts);
+      for (let i = 1; i <= n; i++) {
+        const sv = frac ? L * frac[i - 1] : L * i / (n + 1), q = at(pts, sv), st = R.reduce((b, v) => (Math.hypot(v.x - q.x, v.z - q.z) < Math.hypot(b.x - q.x, b.z - q.z) ? v : b), R[0]).st;
+        const [y0, y1] = st.kind === 'main' ? [5.0, 8.0] : [2.5, 5.0];
+        let G = null; for (const dd of [0, 3, -3, 6, -6, 9, -9]) { const T = bestAcross(pts, [sv + dd], Math.max(2.5, st.width - 1), y0, y1); if (clearOf({ ...T, w: Math.min(T.w, 2), h: T.h * 0.8 }).ok && T.w >= 2.2) { G = T; break; } }
+        if (!G) { report.push(`  (${label}: no clear gate near ${sv.toFixed(0)} m)`); continue; }
+        add(`${label} ${out.length + 1}`, `${label.replace(/ (\S+)$/, ' *$1*')}`, 500, G, { two: true, micro: true, connector: true }); out.push(G);
+      }
+      report.push(`  (${label}: ${L.toFixed(0)} m by the streets (${[...new Set(R.map((v) => v.st.ko || v.st.id))].join(' > ')}), ${out.length} connector micros)`);
+      return out;
+    };
+    const fork = lines.find((x) => x.name === 'THE FORK'), stacks = lines.filter((x) => x.name === 'SIGN STACK');
+    const C = connectN('TO THE SIGN STACK', fork, stacks[0]?.pre?.[0], 2);
+    if (C.length) { const v = C[C.length - 1].c, S0 = stacks[0]?.pre?.[0]?.c || v;
+      // skip the via once past it toward the stack: a 30 m box round the stack's base, on the stack's side of the via
+      const box = [Math.min(v[0], S0[0]) - 6, Math.max(v[0], S0[0]) + 30, -1, 40, Math.min(v[2], S0[2]) - 20, Math.max(v[2], S0[2]) + 20];
+      if (S0[0] < v[0]) { box[0] = Math.min(v[0], S0[0]) - 30; box[1] = Math.max(v[0], S0[0]) + 6; }
+      for (const S of stacks) S.via = [{ p: v.map(r3), r: 5, unless: box.map(r3) }];
+      report.push(`  (SIGN STACK via [${v.map((x) => x.toFixed(1))}], skipped inside [${box.map((x) => x.toFixed(0))}])`); }
+    // past the corner onto Hongik-ro 3-gil (at the middle it sat before the turn: 15.0 s on to CABLE LATTICE 1/2)
+    connectN('TO THE CABLE LATTICE', last('BAR ALLEY'), first('CABLE LATTICE'), 1, [0.7]);
+    connectN('TO THE FORK', last('CABLE LATTICE'), fork, 1);
+    // TO THE BAR ALLEY 1 -> BAR ALLEY 1/4 ran 13.7-15.6 s (the turn off Wausan-ro, then the alley's first 32 m): one more, at the
+    // alley's mouth
+    { const T1 = lines.find((x) => x.name === 'TO THE BAR ALLEY 1'); if (T1) connectN('INTO THE BAR ALLEY', T1, first('BAR ALLEY'), 1, [0.75]); }
+  }
 }
 
 // ---- [P2-F1 design #2] set pieces (stream E's seoul-dressing.js, contract P2-1): lines coded against E's setPieces ids.

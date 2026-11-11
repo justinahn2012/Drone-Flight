@@ -44,9 +44,13 @@ export const DRESS_MATS = {
   // [P3-E graphics #2] the AC unit's face (tools/seoul-ac-face.py: louvres, fan grille, plate, grime), tinted per unit
   dr_ac: { color: [0.62, 0.62, 0.6], rough: 0.55, vcol: true, map: 'seoul/dressing/ac_face.png', noCol: true, albedo: [0.42, 0.42, 0.4] },
   // [P3-E fpv #3] background massing (procedural facades: the ring's building shader; uv = metres, colour = floorH, seed, H)
-  dr_mass: { color: [1, 1, 1], rough: 0.9, vcol: true, mass: true, albedo: [0.2, 0.19, 0.18] },
+  // [P4-E bug] fold: false (+ shader) so C's groupMeshes keeps it out of the city atlas group: folded, its colour attribute
+  // (floorH, seed, H) became a vertex tint of (3, 0.5, 12) and the 222 villas rendered violet (41, 28, 61) in the horizon still
+  dr_mass: { color: [1, 1, 1], rough: 0.9, vcol: true, mass: true, fold: false, shader: true, albedo: [0.2, 0.19, 0.18] },
   // [P3-E] clear vinyl (pocha fronts)
-  dr_vinyl: { color: [0.32, 0.30, 0.28], rough: 0.12, transparent: true, opacity: 0.22, double: true, noCol: true, albedo: [0.05, 0.05, 0.05] },
+  // [P4-E art #6] fogged vinyl: the inside light scatters in its condensation (aEm per vertex; seen x opacity), so the front
+  // reads as a lit sheet with the tables behind it instead of an open box
+  dr_vinyl: { color: [0.32, 0.30, 0.28], rough: 0.12, transparent: true, opacity: 0.4, double: true, noCol: true, emissive: true, vcol: true, albedo: [0.05, 0.05, 0.05] },
 };
 // S1/C keys this module writes into (attribute layout: position, normal, uv)
 const C_KEYS = new Set(['concrete', 'tile', 'walk', 'metal', 'white', 'dark', 'pole', 'brick', 'plaster']);
@@ -56,8 +60,9 @@ const specOf = (k) => DRESS_MATS[k] || { emissive: false, vcol: false };
 export function material(key, renderer) {
   const m = DRESS_MATS[key]; if (!m) return null;
   if (m.mass) {   // [P3-E] procedural facades (not lit by the city grid: their light is in the shader, like the ring's)
-    const mat = new THREE.ShaderMaterial({ uniforms: { uNits: { value: NITS }, uHaze: { value: new THREE.Vector3(1.0, 0.64, 0.4).multiplyScalar(0.11 * NITS) }, uHazeD: { value: 1900 } },
-      vertexShader: 'attribute vec3 color; varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW; void main(){ vUV = uv; vB = vec4(color.x, color.z > 24.0 ? 2.0 : 0.0, color.y, color.z); vN = normal; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+    // [P4-E] the ring's shared uniforms (haze on the sky's horizon, the take clock); kind from H: > 24 m a tower, < 3.2 m a rooftop room
+    const mat = new THREE.ShaderMaterial({ uniforms: RING_U,
+      vertexShader: 'attribute vec3 color; varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW; void main(){ vUV = uv; vB = vec4(color.x, color.z > 24.0 ? 2.0 : color.z < 3.2 ? 3.0 : 0.0, color.y, color.z); vN = normal; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
       fragmentShader: BEYOND_HZ + BEYOND_BLD_FS });
     mat.userData.cityLight = false; mat.name = 'seoul:' + key; return mat;
   }
@@ -110,6 +115,7 @@ function texOf(file, renderer, rep) {
 const hash = (s) => { let h = 2166136261; for (const c of String(s)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return (h >>> 0) / 4294967296; };
 function rng(seed) { let s = (typeof seed === 'number' ? seed : Math.floor(hash(seed) * 4294967296)) >>> 0 || 1; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; }; }
 const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep01 = (x, a, b) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const pip = (x, z, P) => { let c = false; for (let i = 0, j = P.length - 1; i < P.length; j = i++) { const [xi, zi] = P[i], [xj, zj] = P[j]; if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) c = !c; } return c; };
 const segD = (px, pz, ax, az, bx, bz) => { const vx = bx - ax, vz = bz - az, l2 = vx * vx + vz * vz || 1e-9; const t = Math.max(0, Math.min(1, ((px - ax) * vx + (pz - az) * vz) / l2)); return Math.hypot(px - ax - t * vx, pz - az - t * vz); };
@@ -225,7 +231,7 @@ export function geometry(layout, opts = {}) {
   const dens = clamp(opts.density ?? 1, 0, 3);   // clutter density (scooters, stools, bags): a perf knob, 1 = the reference look
   const acc = {}; const A = (k) => (acc[k] ||= new Acc(specOf(k)));
   const col = new FBuf(1 << 16);       // collider positions (non-indexed)
-  const emitters = [], setPieces = [], holes = [], cables = [], labels = [], lamps = [];
+  const emitters = [], setPieces = [], holes = [], cables = [], labels = [], lamps = [], anchors = {};   // [P4-E] anchors: real objects a line hangs off (lines.mjs)
   const spPush = setPieces.push.bind(setPieces);
   setPieces.push = (...sps) => { for (const sp of sps) gates.push(...spGates(sp)); return spPush(...sps); };
   const msParts = {}, triParts = {}; let tLap = Date.now(), nLap = 0; const lap = (k) => { const t = Date.now(); msParts[k] = t - tLap; tLap = t; let n = 0; for (const a of Object.values(acc)) n += a.p.length / 9; triParts[k] = Math.round(n - nLap); nLap = n; };
@@ -326,7 +332,7 @@ export function geometry(layout, opts = {}) {
   const occRect = (F, x0, x1, z0, z1, pad = 0) => { for (let x = x0; x <= x1 + 1e-6; x += Math.max(0.5, (x1 - x0) / Math.ceil((x1 - x0) / 1.5))) for (let z = z0; z <= z1 + 1e-6; z += Math.max(0.5, (z1 - z0) / Math.ceil((z1 - z0) / 1.5 || 1))) { const p = W(F, x, 0, z); occAdd(p[0], p[2], 0.9 + pad); } };
   const rectFree = (F, x0, x1, z0, z1, test) => { for (let x = x0; x <= x1 + 1e-6; x += (x1 - x0) / Math.max(1, Math.ceil((x1 - x0) / 0.5))) for (let z = z0; z <= z1 + 1e-6; z += (z1 - z0) / Math.max(1, Math.ceil((z1 - z0) / 0.5))) { const p = W(F, x, 0, z); if (!test(p[0], p[2])) return false; } return true; };
   // keep clear of C's street-light poles and utility poles
-  for (const e of opts.emitters || []) if (e.kind === 'street' && e.pos) occAdd(e.pos[0], e.pos[2], 1.8);
+  for (const e of opts.emitters || []) if (e.kind === 'street' && e.pos && !String(e.id).startsWith('dress:')) occAdd(e.pos[0], e.pos[2], 1.8);   // [P4-E] not E's own (fed back by a caller)
   for (const p of opts.poles || []) occAdd(p.x, p.z, 0.5);
 
   const emit = (o) => { emitters.push({ animated: false, ...o, pos: r3(o.pos), normal: r3(v3.norm(o.normal)) }); };
@@ -808,13 +814,14 @@ export function geometry(layout, opts = {}) {
         quad([c[0] - dx - ox, c[1] - hy, c[2] - dz - oz], [c[0] + dx - ox, c[1] - hy, c[2] + dz - oz], [c[0] + dx + ox, c[1] + hy, c[2] + dz + oz], [c[0] - dx + ox, c[1] + hy, c[2] - dz + oz], [-Math.sin(a), 0, Math.cos(a)], uv);
       }
     };
-    const ginkgo = (x, z, tx, tz, H, Rt) => {
+    // [P4-E design #6] o.wide: crown radius x (a park zelkova, 느티나무), o.park: no grate, o.rust: November zelkova colour; returns the leaf clusters
+    const ginkgo = (x, z, tx, tz, H, Rt, o = {}) => {
       const F = frameH([x, 0, z], tx, tz);
-      set('dr_steel'); boxMM(F, -0.62, 0, -0.62, 0.62, 0.02, 0.62, ['ny']);                 // cast grate
-      set('dr_steel'); for (const e of [-0.62, 0.62]) boxMM(F, e - 0.02, 0, -0.64, e + 0.02, 0.05, 0.64, ['ny']);
+      if (!o.park) { set('dr_steel'); boxMM(F, -0.62, 0, -0.62, 0.62, 0.02, 0.62, ['ny']);                 // cast grate
+        set('dr_steel'); for (const e of [-0.62, 0.62]) boxMM(F, e - 0.02, 0, -0.64, e + 0.02, 0.05, 0.64, ['ny']); }
       const turn = clamp(0.35 + Rt() * 0.75, 0, 1), bare = Rt() < 0.12, yB = 2.6 + Rt() * 0.7;   // crown base (pruned for buses)
       const lean = [(Rt() - 0.5) * 0.18, (Rt() - 0.5) * 0.18], ax = (y) => [x + lean[0] * y / H, y, z + lean[1] * y / H];
-      const Rmax = (bare ? 1.4 : 1.7) + Rt() * 0.8, Rof = (y) => { const t = clamp((y - yB) / (H - yB), 0, 1); return Rmax * Math.max(0.12, Math.sin(Math.min(1, t * 1.6 + 0.15) * Math.PI * 0.5) * (1 - t ** 1.6)); };
+      const Rmax = ((bare ? 1.4 : 1.7) + Rt() * 0.8) * (o.wide || 1), Rof = (y) => { const t = clamp((y - yB) / (H - yB), 0, 1); return Rmax * Math.max(0.12, Math.sin(Math.min(1, t * 1.6 + 0.15) * Math.PI * 0.5) * (1 - t ** 1.6)); };
       // trunk (bark), straight leader to the top
       set('dr_bark');
       { const n = 4; for (let i = 0; i < n; i++) { const y0 = H * 0.92 * i / n, y1 = H * 0.92 * (i + 1) / n, r0 = lerp(0.17, 0.035, i / n), r1 = lerp(0.17, 0.035, (i + 1) / n), p0 = ax(y0), p1 = ax(y1);
@@ -841,7 +848,8 @@ export function geometry(layout, opts = {}) {
         const hT = clamp((c[1] - yB) / (H - yB), 0, 1), n = v3.norm([dx / R1, 0.45 + 0.4 * hT, dz / R1]);
         const ao = 0.5 + 0.5 * Math.min(1, out) * (0.8 + 0.2 * hT);                       // inner cards sit in the crown's shade
         const g = clamp(turn + (out - 0.6) * 0.35 + (hT - 0.5) * 0.25 + (Rt() - 0.5) * 0.35, 0, 1);
-        const col = (bare ? mixc(GOLD, BROWN, Rt() * 0.6) : g < 0.35 ? mixc(GRN, YEL, g / 0.35) : mixc(YEL, GOLD, (g - 0.35) / 0.65)).map((v) => v * ao * (0.85 + Rt() * 0.3));
+        let col = (bare ? mixc(GOLD, BROWN, Rt() * 0.6) : g < 0.35 ? mixc(GRN, YEL, g / 0.35) : mixc(YEL, GOLD, (g - 0.35) / 0.65)).map((v) => v * ao * (0.85 + Rt() * 0.3));
+        if (o.rust) col = mixc(col, [0.5 * ao, 0.22 * ao, 0.06 * ao], 0.7 + 0.25 * g);   // November zelkova: rust to brown (pop1: pale cream under the floods)
         card(c, (bare ? 0.75 : 1.05) + Rt() * 0.5, Rt() * Math.PI, (Rt() - 0.5) * 0.8, n, col, Math.floor(Rt() * 8));
       }
       // fallen leaves: flat cards on the pavement round the pit (more under a bare tree), off the carriageway
@@ -854,6 +862,7 @@ export function geometry(layout, opts = {}) {
         set('dr_leafcard', { c: mixc(GOLD, BROWN, Rt() * 0.5).map((v) => v * 0.8), n: [0, 1, 0] });
         quad([fx - cx + cz, y, fz - cz - cx], [fx + cx + cz, y, fz + cz - cx], [fx + cx - cz, y, fz + cz + cx], [fx - cx - cz, y, fz - cz + cx], [0, 1, 0], [[u0, vt - 0.5], [u0 + 0.25, vt - 0.5], [u0 + 0.25, vt], [u0, vt]]);
       }
+      return clusters;
     };
     for (const st of mainStreets) {
       if (st.width < 9) continue;
@@ -870,6 +879,48 @@ export function geometry(layout, opts = {}) {
           item(() => { ginkgo(x, z, q.tx, q.tz, H + 1.2, Rt); occAdd(x, z, 1.1); facts.trees++; }, { margin: 0.4 });
         }
       }
+    }
+    // ---- [P4-E design #6] Hongdae Playground (홍대 놀이터): zelkovas round the square and two light masts (10.5 m, twin LED
+    // floods aimed at the busking ring), so PLAYGROUND POP hangs between a mast and a crown instead of 7 m up in open air.
+    // anchors['playground-pop']: the slot between mast M1 and tree T1's crown at 7 m (lines.mjs makes the gate from it).
+    const pg = (layout.hero || []).find((h) => h.id === 'playground')?.pos;
+    if (pg) {
+      const Rp = rng('playground' + seed), cx = pg[0], cz = pg[2];
+      const okAt = (x, z, r) => !M.lotAt(x, z) && M.lotClear(x, z, r) && M.ribbonD(x, z) > r && occFree(x, z, r * 0.6);
+      const mast = (x, z, aim) => item(() => {
+        const F = frameH([x, 0, z], aim[0], aim[1]), Hm = 10.5;
+        set('concrete'); boxMM(F, -0.35, 0, -0.35, 0.35, 0.35, 0.35, ['ny']);
+        set('dr_galv'); cyl(F, [0, 0.35 + (Hm - 0.35) / 2, 0], 'y', 0.14, Hm - 0.35, 10, 0.08);
+        set('dr_galv'); boxMM(F, -0.06, Hm - 0.12, -0.75, 0.06, Hm, 0.75);                                   // the cross-arm
+        for (const zz of [-0.55, 0.55]) {                                                                  // twin floods, 30 deg down toward the ring
+          set('dr_steel'); boxMM(F, 0.05, Hm - 0.48, zz - 0.26, 0.42, Hm - 0.14, zz + 0.26);
+          set('dr_glow', { em: NI([1.0, 0.9, 0.78], 17000), col: false }); quad(W(F, 0.43, Hm - 0.44, zz - 0.22), W(F, 0.43, Hm - 0.44, zz + 0.22), W(F, 0.43, Hm - 0.18, zz + 0.22), W(F, 0.43, Hm - 0.18, zz - 0.22), D(F, 0.87, -0.5, 0));
+        }
+        emit({ id: 'dress:pgmast:' + x.toFixed(1), kind: 'street', pos: W(F, 0.45, Hm - 0.31, 0), normal: D(F, 0.5, -0.87, 0), w: 0.44, h: 0.52, rgb: [1.0, 0.9, 0.78], nits: 17000, lumens: 12000, cct: 4000 });
+        occAdd(x, z, 0.5); facts.pgMasts = (facts.pgMasts || 0) + 1;
+      }, { noGate: true });
+      const zelkova = (x, z, H) => { let cl = null; const Rt = rng('zelkova' + seed + ':' + x.toFixed(2) + ':' + z.toFixed(2));
+        const ok = item(() => { cl = ginkgo(x, z, 1, 0, H, Rt, { wide: 2.5, park: true, rust: true }); occAdd(x, z, 0.6); facts.trees++; facts.pgTrees = (facts.pgTrees || 0) + 1; }, { noGate: true });
+        return ok ? cl : null; };
+      // the pair over the busking ring: mast M1 west of the busker, tree T1 east, ~9 m apart
+      const M1 = [cx - 2.6, cz + 1.8], T1 = [cx + 4.6, cz - 1.8];
+      let pair = null;
+      if (okAt(...M1, 0.6) && okAt(...T1, 1.0)) {
+        mast(M1[0], M1[1], [T1[0] - M1[0], T1[1] - M1[1]]);
+        const cl = zelkova(T1[0], T1[1], 11.2);
+        if (cl) { const L = Math.hypot(T1[0] - M1[0], T1[1] - M1[1]), ux = (T1[0] - M1[0]) / L, uz = (T1[1] - M1[1]) / L;
+          // the crown's widest band toward the mast between 6 and 8.5 m (leaf clusters + half a card), the gate at that height
+          const edgeAt = (y) => { let e = 0; for (const c of cl) if (Math.abs(c[1] - y) < 0.9) e = Math.max(e, -((c[0] - T1[0]) * ux + (c[2] - T1[1]) * uz) + 0.6); return e; };
+          let gy = 7, e = edgeAt(7); for (let y = 6; y <= 8.5; y += 0.5) { const ey = edgeAt(y); if (ey > e + 0.05) { e = ey; gy = y; } }
+          const gap = L - 0.2 - e;
+          if (gap > 3.2) { const w = Math.min(4.2, gap - 1.3), c0 = 0.2 + (gap - w) / 2 + w / 2;
+            pair = { mast: r3([M1[0], 10.5, M1[1]]), tree: r3([T1[0], 11.2, T1[1]]), crownEdge: +e.toFixed(2), gap: +gap.toFixed(2),
+              gate: { c: r3([M1[0] + ux * c0, gy, M1[1] + uz * c0]), n: [0, 1, 0], u: r3([ux, 0, uz]), w: +w.toFixed(2), h: 3.0 } }; } }
+      }
+      // round the square: zelkovas on the edges, the second mast to the north-east
+      for (const [dx, dz, H] of [[-13, 9, 10.4], [-12, -8, 9.6], [15, 10, 10.8], [2, 15, 9.8], [-3, -14, 10.2], [16, -8, 9.4]]) { const x = cx + dx + (Rp() - 0.5) * 2, z = cz + dz + (Rp() - 0.5) * 2; if (okAt(x, z, 1.0)) zelkova(x, z, H); }
+      { const x = cx + 9, z = cz + 7; if (okAt(x, z, 0.6)) mast(x, z, [cx - x, cz - z]); }
+      if (pair) anchors['playground-pop'] = pair;
     }
   }
 
@@ -978,49 +1029,68 @@ export function geometry(layout, opts = {}) {
   // bulb inside (per-vertex: 90-110 nits luminance round the bulb, 40-60 on the walls, darker toward the ground), sewn
   // panels (dark seams where the steel frame shows through), the roof sagging between the rafters, a clear vinyl front with
   // its roll at the top, the lit inside seen through it (a steel table, green bottles, stools), stools and crates outside.
+  // [P4-E art #6] phase 3's tarp glowed as a flat box (tent8). Now the bulb makes a hot spot: emission = fill + I cos(theta) / d^2
+  // from the bulb, per vertex on a 6-8 x 5-6 grid (the roof over the bulb ~100 nits, the walls ~22, the low corners ~5), seams
+  // where the frame shows through at a quarter of the tarp around them (2 stops) and 6 cm wide, a fogged vinyl front that
+  // scatters the inside light (foggy below, clearer at the top, overlapping strips), and the inside lit by the bulb (table top,
+  // bottles, stools), so the vinyl shows the tables.
   function tent(F, xo, w, d, R, idx) {
     const eave = 2.1, ridge = 2.62, hz = d / 2, hx = w / 2 - 0.05;
     const tarp = [srgb(0xff7a1a), srgb(0xf0641a), srgb(0xe8541c), srgb(0xff8a24)][idx % 4];
-    const lumOf = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], Nb = 300 * (0.353 / lumOf(tarp)) ** 0.5;
+    const lumOf = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], Nb = 22 / lumOf(tarp);   // 22 nits where k = 1 (60 clipped flat: tent0 at EV -2.25)
     const bulb = W(F, xo, 1.95, -0.1);
-    const emAt = (p) => { const dd = Math.hypot(p[0] - bulb[0], p[1] - bulb[1], p[2] - bulb[2]); const k = (0.32 + 0.78 / (1 + (dd / 0.8) ** 2)) * (0.62 + 0.38 * clamp(p[1] / eave, 0, 1)); return NI(tarp, Nb * k); };
+    const kAt = (p, n) => { const v = [p[0] - bulb[0], p[1] - bulb[1], p[2] - bulb[2]], d2 = v3.dot(v, v), cs = n ? Math.max(0.15, v3.dot(v, n) / Math.sqrt(d2)) : 0.7;
+      return 0.15 + 1.4 * cs / (d2 + 0.12); };
+    const emAt = (p, n) => NI(tarp, Nb * kAt(p, n));
     // a bilinear patch, nu x nv cells, per-vertex glow, optional sag (m) toward -nrm
     const patch = (P, nu, nv, nrm, sag = 0, kE = 1, col = tarp.map((v) => v * 0.55)) => {
       const at = (u, v) => { const q = [0, 1, 2].map((i) => lerp(lerp(P[0][i], P[1][i], u), lerp(P[3][i], P[2][i], u), v)); if (sag) { const sg = sag * Math.sin(Math.PI * u) * Math.sin(Math.PI * v); q[0] -= nrm[0] * sg; q[1] -= nrm[1] * sg; q[2] -= nrm[2] * sg; } return q; };
       set('dr_tarp', { c: col });
       for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
         const q = [at(i / nu, j / nv), at((i + 1) / nu, j / nv), at((i + 1) / nu, (j + 1) / nv), at(i / nu, (j + 1) / nv)];
-        quad(q[0], q[1], q[2], q[3], nrm, uvDef, q.map((v) => emAt(v).map((e) => e * kE)));
+        quad(q[0], q[1], q[2], q[3], nrm, uvDef, q.map((v) => emAt(v, nrm).map((e) => e * kE)));
       }
     };
-    const seam = (a, b, out) => { set('dr_tarp', { c: tarp.map((v) => v * 0.3), em: NI(tarp, Nb * 0.12) }); const t = v3.norm(v3.sub(b, a)), sd = v3.mul(v3.norm(v3.cross(t, out)), 0.025), o = v3.mul(out, 0.008);
-      quad(v3.add(v3.add(a, sd), o), v3.add(v3.sub(a, sd), o), v3.add(v3.sub(b, sd), o), v3.add(v3.add(b, sd), o), out); };
+    // a seam: the frame behind the tarp, 6 cm wide, 2 stops under the tarp around it (per end)
+    const seam = (a, b, out) => { set('dr_tarp', { c: tarp.map((v) => v * 0.2) }); const t = v3.norm(v3.sub(b, a)), sd = v3.mul(v3.norm(v3.cross(t, out)), 0.03), o = v3.mul(out, 0.008);
+      const ea = emAt(a, out).map((e) => e * 0.25), eb = emAt(b, out).map((e) => e * 0.25), m = v3.mul(v3.add(a, b), 0.5), em = emAt(m, out).map((e) => e * 0.25);
+      quad(v3.add(v3.add(a, sd), o), v3.add(v3.sub(a, sd), o), v3.add(v3.sub(m, sd), o), v3.add(v3.add(m, sd), o), out, uvDef, [ea, ea, em, em]);
+      quad(v3.add(v3.add(m, sd), o), v3.add(v3.sub(m, sd), o), v3.add(v3.sub(b, sd), o), v3.add(v3.add(b, sd), o), out, uvDef, [em, em, eb, eb]); };
     const L = (x, y, z) => W(F, xo + x, y, z), N = (x, y, z) => D(F, x, y, z);
     // walls: the back (kerb side) and both ends, tarp; seams where the posts and a mid rail stand
-    patch([L(-hx, 0.02, -hz), L(hx, 0.02, -hz), L(hx, eave, -hz), L(-hx, eave, -hz)], 4, 3, N(0, 0, -1));
-    for (const sx of [-1, 1]) patch([L(sx * hx, 0.02, hz), L(sx * hx, 0.02, -hz), L(sx * hx, eave, -hz), L(sx * hx, eave, hz)].map((p, i, A) => (sx > 0 ? p : A[[1, 0, 3, 2][i]])), 3, 3, N(sx, 0, 0));
+    patch([L(-hx, 0.02, -hz), L(hx, 0.02, -hz), L(hx, eave, -hz), L(-hx, eave, -hz)], 8, 6, N(0, 0, -1));
+    for (const sx of [-1, 1]) patch([L(sx * hx, 0.02, hz), L(sx * hx, 0.02, -hz), L(sx * hx, eave, -hz), L(sx * hx, eave, hz)].map((p, i, A) => (sx > 0 ? p : A[[1, 0, 3, 2][i]])), 6, 6, N(sx, 0, 0));
     for (const sx of [-1, 0, 1]) seam(L(sx * hx * 0.999, 0.02, -hz - 0.002), L(sx * hx * 0.999, eave, -hz - 0.002), N(0, 0, -1));
     seam(L(-hx, 1.05, -hz - 0.002), L(hx, 1.05, -hz - 0.002), N(0, 0, -1));
     for (const sx of [-1, 1]) { seam(L(sx * (hx + 0.002), 0.02, 0), L(sx * (hx + 0.002), eave + 0.25, 0), N(sx, 0, 0)); seam(L(sx * (hx + 0.002), 1.05, -hz), L(sx * (hx + 0.002), 1.05, hz), N(sx, 0, 0)); }
     // gables (tarp triangles over the ends) and the roof: two pitches sagging between three rafters
-    for (const sx of [-1, 1]) { set('dr_tarp', { c: tarp.map((v) => v * 0.55) }); const p0 = L(sx * (hx + 0.06), eave, -hz - 0.08), p1 = L(sx * (hx + 0.06), eave, hz + 0.08), p2 = L(sx * (hx + 0.06), ridge, 0);
-      tri(p0, p1, p2, [0, 0], [1, 0], [0.5, 1], [emAt(p0), emAt(p1), emAt(p2)]); tri(p0, p2, p1, [0, 0], [0.5, 1], [1, 0], [emAt(p0), emAt(p2), emAt(p1)]); }
+    for (const sx of [-1, 1]) { set('dr_tarp', { c: tarp.map((v) => v * 0.55) }); const p0 = L(sx * (hx + 0.06), eave, -hz - 0.08), p1 = L(sx * (hx + 0.06), eave, hz + 0.08), p2 = L(sx * (hx + 0.06), ridge, 0), nG = N(sx, 0, 0);
+      tri(p0, p1, p2, [0, 0], [1, 0], [0.5, 1], [emAt(p0, nG), emAt(p1, nG), emAt(p2, nG)]); tri(p0, p2, p1, [0, 0], [0.5, 1], [1, 0], [emAt(p0, nG), emAt(p2, nG), emAt(p1, nG)]); }
     for (const sz of [-1, 1]) {
       const e0 = L(-hx - 0.08, eave, sz * (hz + 0.1)), e1 = L(hx + 0.08, eave, sz * (hz + 0.1)), r1 = L(hx + 0.08, ridge, 0), r0 = L(-hx - 0.08, ridge, 0);
       const up = v3.norm(v3.cross(v3.sub(e1, e0), v3.sub(r0, e0))), nU = up[1] > 0 ? up : v3.mul(up, -1);
       for (const half of [0, 1]) { const u0 = half * 0.5, u1 = u0 + 0.5, P = (u, v) => [0, 1, 2].map((i) => lerp(lerp(e0[i], e1[i], u), lerp(r0[i], r1[i], u), v));
-        patch([P(u0, 0), P(u1, 0), P(u1, 1), P(u0, 1)], 3, 3, nU, 0.07, 1.1, tarp.map((v) => v * 0.62)); }
+        patch([P(u0, 0), P(u1, 0), P(u1, 1), P(u0, 1)], 6, 5, nU, 0.07, 1.0, tarp.map((v) => v * 0.62)); }
       for (const u of [0, 0.5, 1]) seam(v3.add([0, 1, 2].map((i) => lerp(e0[i], e1[i], u)), v3.mul(nU, 0.004)), v3.add([0, 1, 2].map((i) => lerp(r0[i], r1[i], u)), v3.mul(nU, 0.004)), nU);
     }
-    // the front: a tarp valance (the lettering band), the clear vinyl, its roll; the inside lit behind it
-    patch([L(-hx, eave - 0.27, hz), L(hx, eave - 0.27, hz), L(hx, eave, hz), L(-hx, eave, hz)], 3, 1, N(0, 0, 1), 0, 1.05);
-    set('dr_vinyl', { col: true }); quad(L(-hx, 0.3, hz - 0.01), L(hx, 0.3, hz - 0.01), L(hx, eave - 0.36, hz - 0.01), L(-hx, eave - 0.36, hz - 0.01), N(0, 0, 1));
+    // the front: a tarp valance (the lettering band), the fogged vinyl (condensation below, clearer at the top; overlapping strips
+    // every ~0.75 m scatter more), its roll; the inside lit behind it
+    patch([L(-hx, eave - 0.27, hz), L(hx, eave - 0.27, hz), L(hx, eave, hz), L(-hx, eave, hz)], 6, 1, N(0, 0, 1), 0, 1.05);
+    { const y0 = 0.3, y1 = eave - 0.36, nV = N(0, 0, 1), nu = 8, nv = 4, strip = 0.75;
+      const vin = (x, y) => { const fog = 1 - smoothstep01((y - y0) / (y1 - y0), 0.45, 0.95), fr = ((x + hx) / strip) % 1, edge = fr < 0.08 || fr > 0.92 ? 1.6 : 1;
+        const kb = kAt(L(x, y, hz - 0.01), v3.mul(nV, -1)); return NI([1.0, 0.72, 0.45], (10 + 34 * fog) * edge * Math.min(1.6, 0.35 + 0.55 * kb)); };
+      set('dr_vinyl', { c: [0.6, 0.58, 0.55] });
+      for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+        const xa = -hx + 2 * hx * i / nu, xb = -hx + 2 * hx * (i + 1) / nu, ya = y0 + (y1 - y0) * j / nv, yb = y0 + (y1 - y0) * (j + 1) / nv;
+        quad(L(xa, ya, hz - 0.01), L(xb, ya, hz - 0.01), L(xb, yb, hz - 0.01), L(xa, yb, hz - 0.01), nV, uvDef, [vin(xa, ya), vin(xb, ya), vin(xb, yb), vin(xa, yb)]);
+      } }
     set('dr_prop', { c: [0.5, 0.48, 0.44], col: false }); cyl(F, [xo, eave - 0.32, hz - 0.03], 'x', 0.045, 2 * hx - 0.1, 8);
     set('dr_steel'); for (const sx of [-1, 1]) for (const sz of [-1, 1]) boxMM(F, xo + sx * hx - 0.025, 0, sz * hz - 0.025, xo + sx * hx + 0.025, eave, sz * hz + 0.025, ['ny']);   // the frame's corner posts
-    // inside: a round steel table, green soju bottles, stools; the bare bulb on its cord
-    set('dr_galv'); cyl(F, [xo - 0.2, 0.7, 0.1], 'y', 0.42, 0.04, 12); cyl(F, [xo - 0.2, 0.35, 0.1], 'y', 0.04, 0.66, 6, 0.04, false);
-    set('dr_prop', { c: srgb(0x1f8a3a), col: false }); for (let k = 0; k < 3; k++) cyl(F, [xo - 0.35 + k * 0.13, 0.82, 0.05 + (k % 2) * 0.12], 'y', 0.032, 0.2, 6);
-    for (const [sx, sc] of [[-0.75, 0x2f6fd6], [0.35, 0xd23a2a], [-0.2, 0x2f6fd6]]) { set('dr_prop', { c: srgb(sc) }); boxMM(F, xo + sx - 0.15, 0, (sx > 0 ? -0.55 : 0.6) - 0.15, xo + sx + 0.15, 0.43, (sx > 0 ? -0.55 : 0.6) + 0.15); }
+    // inside, lit by the bulb 1.2 m over the table (~150 lux): a round steel table, green soju bottles, stools; the bare bulb
+    set('dr_glow', { em: NI([1.0, 0.8, 0.6], 22), col: true }); cyl(F, [xo - 0.2, 0.7, 0.1], 'y', 0.42, 0.04, 12);
+    set('dr_galv'); cyl(F, [xo - 0.2, 0.35, 0.1], 'y', 0.04, 0.66, 6, 0.04, false);
+    set('dr_glow', { em: NI(srgb(0x2fbf55), 18), col: false }); for (let k = 0; k < 3; k++) cyl(F, [xo - 0.35 + k * 0.13, 0.82, 0.05 + (k % 2) * 0.12], 'y', 0.032, 0.2, 6);
+    for (const [sx, sc] of [[-0.75, 0x2f6fd6], [0.35, 0xd23a2a], [-0.2, 0x2f6fd6]]) { set('dr_glow', { em: NI(srgb(sc), 9), col: true }); boxMM(F, xo + sx - 0.15, 0, (sx > 0 ? -0.55 : 0.6) - 0.15, xo + sx + 0.15, 0.43, (sx > 0 ? -0.55 : 0.6) + 0.15); }
     set('dark'); boxMM(F, xo - 0.006, 1.98, -0.106, xo + 0.006, ridge - 0.02, -0.094);
     set('dr_glow', { em: NI(srgb(0xffc27a), 1500), col: false }); blob(bulb, 0.045, 0.055, 0.045, R, 0, 0.05);
     // tarp lettering band on the front (runtime label)
@@ -1382,7 +1452,30 @@ export function geometry(layout, opts = {}) {
         for (let k = 0; k < 4; k++) { const a = cn[k], b = cn[(k + 1) % 4], L = Math.hypot(b[0] - a[0], b[2] - a[2]), out = v3.norm([b[2] - a[2], 0, -(b[0] - a[0])]);
           const o2 = v3.dot(out, [a[0] - px, 0, a[2] - pz]) > 0 ? out : v3.mul(out, -1);
           quad(a, b, [b[0], H, b[2]], [a[0], H, a[2]], o2, [[u0, 0], [u0 + L, 0], [u0 + L, H], [u0, H]]); u0 += L; }
-        quad(...cn.map((q) => [q[0], H, q[2]]), [0, 1, 0], [[0, 0], [0, 0], [0, 0], [0, 0]]);
+        // [P4-E art #6] lit roofs in the block's interior: a stair house (옥탑, 3 x 2.6 x 3.2 m) on 70 % of the villas, its door
+        // lit, a 900 lm wall pack over it whose pool the roof shades (roof uv = metres from the lamp; 1e3 = no lamp); its
+        // walls are the same shader (kind 3 from H < 3.2 m: one window, lit on half). Own stream per villa: placement stays put.
+        const Rr = rng('mroof' + px.toFixed(2) + ':' + pz.toFixed(2)), stair = H < 24 && Rr() < 0.7;
+        let lamp = [1e3, 1e3];
+        if (stair) {
+          const sx = (Rr() < 0.5 ? -1 : 1) * (hw - 2.0), sz = (Rr() < 0.5 ? -1 : 1) * (hd - 2.1), o = W(F, sx, H, sz), G = { o, x: F.x, y: F.y, z: F.z }, sd2 = Rr();
+          const dz = -Math.sign(sz) * 1.6, dp = W(G, 0, 2.3, dz + Math.sign(dz) * 0.12); lamp = [dp[0], dp[2]];
+          set('dr_mass', { c: [2.6, sd2, 2.6] });
+          const rc = [[-1.5, -1.6], [1.5, -1.6], [1.5, 1.6], [-1.5, 1.6]].map(([a, b]) => W(G, a, 0, b));
+          let v0 = sd2 * 5;
+          for (let k = 0; k < 4; k++) { const a = rc[k], b = rc[(k + 1) % 4], L = Math.hypot(b[0] - a[0], b[2] - a[2]), out = v3.norm([b[2] - a[2], 0, -(b[0] - a[0])]);
+            const o2 = v3.dot(out, [a[0] - o[0], 0, a[2] - o[2]]) > 0 ? out : v3.mul(out, -1);
+            quad(a, b, [b[0], H + 2.6, b[2]], [a[0], H + 2.6, a[2]], o2, [[v0, 0], [v0 + L, 0], [v0 + L, 2.6], [v0, 2.6]]); v0 += L; }
+          quad(...rc.map((q) => [q[0], H + 2.6, q[2]]), [0, 1, 0], rc.map((q) => [q[0] - lamp[0], q[2] - lamp[1]]));
+          const nD = D(G, 0, 0, Math.sign(dz));
+          set('dr_glow', { em: NI([1.0, 0.8, 0.58], 14), col: false });                                     // the lit door (glass, a stair light behind)
+          quad(W(G, -0.45, 0.02, dz + Math.sign(dz) * 0.01), W(G, 0.45, 0.02, dz + Math.sign(dz) * 0.01), W(G, 0.45, 2.05, dz + Math.sign(dz) * 0.01), W(G, -0.45, 2.05, dz + Math.sign(dz) * 0.01), nD);
+          set('dr_glow', { em: NI([1.0, 0.78, 0.52], 9000), col: false });                                 // the wall pack's lens (900 lm / pi / 0.022 m2)
+          boxMM(G, -0.11, 2.26, dz + Math.sign(dz) * 0.02 - 0.05, 0.11, 2.34, dz + Math.sign(dz) * 0.02 + 0.05);
+          facts.massRoofs = (facts.massRoofs || 0) + 1;
+        }
+        set('dr_mass', { c: [fh, sd, H] });
+        quad(...cn.map((q) => [q[0], H, q[2]]), [0, 1, 0], cn.map((q) => [q[0] - lamp[0], q[2] - lamp[1]]));
         occAdd(px, pz, r); nM++;
       }, { margin: 0.5 });
     }
@@ -1396,7 +1489,7 @@ export function geometry(layout, opts = {}) {
   facts.tris = tris; facts.colTris = col.length / 9; facts.emitters = emitters.length; facts.holes = holes.length; facts.cables = cables.length; facts.labels = labels.length; facts.lamps = lamps.length; facts.setPieces = setPieces.map((s) => s.id); facts.ms = Date.now() - t0; facts.msParts = msParts; facts.triParts = triParts;
   // ground footprints of what E placed (discs x, z, r): for G's crowd to walk around
   const obstacles = []; for (const v of occ.values()) for (const d of v) if (d[2] > 0.2) obstacles.push([+d[0].toFixed(2), +d[1].toFixed(2), +d[2].toFixed(2)]);
-  const out = { merged, colTris, emitters, setPieces, holes, cables, labels, lamps, obstacles, facts, materials: DRESS_MATS };
+  const out = { merged, colTris, emitters, setPieces, holes, cables, labels, lamps, obstacles, anchors, facts, materials: DRESS_MATS };
   CACHE.set(layout, out);
   return out;
 }
@@ -1410,40 +1503,96 @@ export function geometry(layout, opts = {}) {
 // tower beacons. Walls 0.5-2 nits with procedural windows (12-25 % lit, 5-25 nits) and ground-floor sign bands; all of it
 // non-colliding, past the flight bounds (box + 60). Returns typed arrays (also for H's export) and facts.
 // ================================================================================================================
-// [P3-E fpv #3] shared by the ring's buildings and the in-block massing (dr_mass)
-const BEYOND_HZ = `uniform vec3 uHaze; uniform float uHazeD; uniform float uNits;
+// [P3-E fpv #3] shared by the ring's buildings and the in-block massing (dr_mass).
+// [P4-E art #6 / fpv #4 / lighting bug] the ring was self-lit: walls 0.5-2 nits, 13-25 % of windows lit at random (a starfield
+// up close, a flat grey block at the horizon: (89, 85, 79), 4-8x the near facades). Now: walls 0.05-0.15 nits (sky glow and
+// city bounce, x a villa / tower tint), street spill on the lowest floors only; windows lit by UNIT (villas 2 bays, apartments
+// 3, offices and shop buildings the whole floor) in three colour temperatures (2700 / 4000 / 6500 K, a few TVs), 18-26 % of
+// residential windows and 11 % of office floors at 1 am; apartment corridors (north faces) and brand crowns, villa pilotis
+// lights, closed shutters on half the shops; dark glass 0.035 nits. Far LOD in two steps: a window under ~1/2 px takes its
+// cell's mean (lit cells stay dots), a cell under ~1 px the row's mean. Roofs: green paint or concrete at 0.5-1.1 lux, and the
+// pool of a 900 lm wall pack over the stair-house door (uv = metres from the lamp). Haze toward the sky's own horizon
+// radiance (RING_U.uHaze, copied from seoul-light's sky at runtime), so the ring sinks into the skyglow with distance.
+const BEYOND_HZ = `uniform vec3 uHaze; uniform float uHazeD; uniform float uNits; uniform float uTime;
 float h1(vec2 p){ p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
 vec3 haze(vec3 c, float d){ return mix(c, uHaze, 1.0 - exp(-d / uHazeD)); }`;
+// the far-LOD means, also used by tests/seoul-dressing.mjs (ringMean) to hold the ring's luminance budget
+export const RING_LOOK = {
+  wall: [0.07, 0.16], spill: { villa: 0.35, comm: 0.6, tower: 0.25 }, unlit: 0.035,
+  villa: { A: 0.26, p: 0.3 * 0.62, nits: 5.25 }, apt: { A: 0.588, p: 0.22 * 0.62, nits: 6.5 }, office: { A: 0.594, p: 0.1 * 0.88, nits: 11 }, comm: { A: 0.488, p: 0.13 * 0.88, nits: 10 },
+  hazeD: 1600, horizon: [0.5, 0.32, 0.18], hazeK: 0.85,
+};
+const RL = RING_LOOK, gf = (v) => v.toFixed(4);
 const BEYOND_BLD_FS = `
 varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW;
+vec3 cctC(float t){ return t < 0.5 ? vec3(1.0, 0.64, 0.36) : t < 0.82 ? vec3(1.0, 0.85, 0.68) : vec3(0.84, 0.92, 1.0); }   // 2700 / 4000 / 6500 K
 void main(){
-  float fh = vB.x, kind = vB.y, sd = vB.z, H = vB.w; vec3 c;
-  if (vN.y > 0.5) c = vec3(0.3, 0.29, 0.27) * (0.5 + 0.6 * h1(vec2(sd * 91.0, 3.0)));                        // roofs, ~0.3 nit
-  else {
-    float bay = 2.6 + 1.2 * h1(vec2(sd * 17.0, 1.0)) + (kind > 1.5 ? 0.0 : 0.5);
+  float fh = vB.x, kind = vB.y, sd = vB.z, H = vB.w;
+  float tower = step(1.5, kind) * step(kind, 2.5), comm = step(0.5, kind) * step(kind, 1.5), room = step(2.5, kind), villa = clamp(1.0 - tower - comm - room, 0.0, 1.0);
+  float apt = tower * step(h1(vec2(sd * 7.7, 2.0)), 0.55), office = tower - apt, work = clamp(office + comm, 0.0, 1.0);
+  float ts = h1(vec2(sd * 23.0, 5.0));
+  vec3 tint = ts < 0.42 ? vec3(0.70, 0.44, 0.34) : ts < 0.72 ? vec3(0.86, 0.80, 0.68) : ts < 0.9 ? vec3(0.66, 0.66, 0.64) : vec3(0.92, 0.91, 0.88);   // brick, beige tile, grey, white
+  if (tower > 0.5) tint = apt > 0.5 ? vec3(0.88, 0.86, 0.80) : vec3(0.46, 0.50, 0.55);
+  vec3 c;
+  if (vN.y > 0.5) {
+    float rs = h1(vec2(sd * 91.0, 3.0));
+    vec3 rc = (villa + room > 0.5 && rs < 0.6) ? vec3(0.30, 0.50, 0.36) : vec3(0.52, 0.51, 0.48);   // green waterproof paint (villas), concrete
+    float E = 0.5 + 0.6 * h1(vec2(sd * 13.0, 9.0)) + 1518.0 / pow(dot(vUV, vUV) + 5.29, 1.5);   // lux: skyglow + the wall pack's pool (290 cd, 2.3 m up)
+    c = rc * 0.3 * E / 3.14159;
+  } else {
+    float amb = ${gf(RL.wall[0])} + ${gf(RL.wall[1] - RL.wall[0])} * h1(vec2(sd * 13.0, 7.0));
+    float spill = room > 0.5 ? 0.0 : (tower > 0.5 ? ${gf(RL.spill.tower)} : comm > 0.5 ? ${gf(RL.spill.comm)} : ${gf(RL.spill.villa)}) * exp(-vUV.y / 5.0);
+    vec3 wallC = tint * (amb + spill);
+    float bay = office > 0.5 ? 1.5 + 0.5 * h1(vec2(sd * 17.0, 1.0)) : apt > 0.5 ? 2.9 : room > 0.5 ? 3.0 : 2.6 + 1.2 * h1(vec2(sd * 17.0, 1.0));
     vec2 g = vec2(vUV.x / bay, vUV.y / fh), cell = floor(g), f = fract(g), fw = fwidth(g);
-    float wall = (0.5 + 1.5 * h1(vec2(sd * 13.0, 7.0))) * (1.0 + 1.3 * exp(-vUV.y / 7.0));                   // 0.5-2 nits, street spill low down
-    vec3 wallC = vec3(1.0, 0.92, 0.84) * wall;
-    float litF = kind > 1.5 ? 0.25 : 0.13, r = h1(cell + sd * vec2(31.7, 17.3));
-    vec3 lc = mix(vec3(1.0, 0.7, 0.42), vec3(0.86, 0.93, 1.0), step(0.62, h1(cell * 1.7 + sd))) * (5.0 + 20.0 * h1(cell * 2.3 + sd * 3.1));
-    vec3 uc = vec3(0.75, 0.8, 0.95) * 0.8;
-    float wx = smoothstep(0.17, 0.17 + fw.x * 1.5, f.x) * (1.0 - smoothstep(0.83 - fw.x * 1.5, 0.83, f.x));
-    float wy = smoothstep(0.3, 0.3 + fw.y * 1.5, f.y) * (1.0 - smoothstep(0.86 - fw.y * 1.5, 0.86, f.y));
-    float win = wx * wy; vec3 wc = r < litF ? lc : uc;
-    if (vUV.y > H - 0.9) win = 0.0;                                                                           // parapet
-    if (cell.y < 0.5) {                                                                                       // ground floor: shops and signs
-      float s = h1(cell + sd * 5.0);
-      wc = kind > 0.5 ? (s < 0.32 ? vec3(1.0, 0.36, 0.12) : s < 0.58 ? vec3(1.0, 0.78, 0.42) : s < 0.74 ? vec3(1.0, 0.95, 0.88) : s < 0.84 ? vec3(0.95, 0.2, 0.22) : s < 0.93 ? vec3(0.3, 0.75, 1.0) : vec3(1.0, 0.3, 0.75)) * (25.0 + 45.0 * h1(cell * 3.0 + sd))
-                      : vec3(1.0, 0.8, 0.6) * (r < 0.45 ? 6.0 : 0.6);
-      win = wx * smoothstep(0.08, 0.16, f.y) * (1.0 - smoothstep(0.9, 0.96, f.y));
-    } else if (kind > 0.5 && cell.y < 2.5 && h1(vec2(cell.x, sd)) < 0.3) {                                  // 2F-3F fascia signs
-      float s = h1(cell * 1.3 + sd); wc = (s < 0.5 ? vec3(1.0, 0.55, 0.2) : s < 0.78 ? vec3(1.0, 0.95, 0.85) : vec3(0.95, 0.25, 0.3)) * (25.0 + 35.0 * s); win = max(win, wx * 0.9);
+    float north = step(vN.z, -0.5), south = step(0.5, vN.z), face = floor(atan(vN.z, vN.x) * 0.6366 + 2.5);
+    vec4 wr = office > 0.5 ? vec4(0.05, 0.95, 0.2, 0.86) : apt > 0.5 ? vec4(0.08, 0.92, 0.14, 0.84) : comm > 0.5 ? vec4(0.1, 0.9, 0.25, 0.86) : vec4(0.24, 0.76, 0.32, 0.82);
+    vec2 unit = vec2(floor(cell.x / (work > 0.5 ? 64.0 : apt > 0.5 ? 3.0 : 2.0)), cell.y);
+    float pU = office > 0.5 ? ${gf(RL.office.p / 0.88)} : comm > 0.5 ? ${gf(RL.comm.p / 0.88)} : apt > 0.5 ? ${gf(RL.apt.p / 0.62)} : ${gf(RL.villa.p / 0.62)}, pW = work > 0.5 ? 0.88 : 0.62;
+    float ru = h1(unit * vec2(1.37, 2.71) + sd * vec2(31.7, 17.3) + face * 7.1), rw = h1(cell * vec2(0.93, 1.71) + sd * vec2(5.1, 9.3) + face * 3.3);
+    float tc = h1(unit * 3.3 + sd * 7.0 + face), sB = apt * south > 0.5 ? 1.4 : 1.0;
+    vec3 lc = work > 0.5 ? (tc < 0.6 ? vec3(0.86, 0.93, 1.0) : vec3(1.0, 0.9, 0.78)) : cctC(tc);
+    float ln = office > 0.5 ? 7.0 + 8.0 * h1(unit + 4.0) : comm > 0.5 ? 8.0 + 4.0 * h1(unit + 4.0) : (2.5 + 5.5 * h1(cell * 2.3 + sd * 3.1)) * sB;
+    float on = step(ru, pU) * step(rw, pW);
+    vec3 unlit = vec3(0.8, 0.85, 1.0) * ${gf(RL.unlit)};
+    vec3 wc = mix(unlit, lc * ln, on);
+    if (on > 0.5 && work < 0.5 && h1(unit + sd * 11.0) < 0.05) wc = vec3(0.55, 0.7, 1.0) * ln * (0.7 + 0.3 * sin(uTime * 6.0 + ru * 40.0));   // a TV
+    vec3 rowMean = mix(unlit, work > 0.5 ? vec3(0.92) * (office > 0.5 ? ${gf(RL.office.nits)} : ${gf(RL.comm.nits)}) : vec3(0.95, 0.8, 0.62) * (apt > 0.5 ? ${gf(RL.apt.nits)} : ${gf(RL.villa.nits)}) * sB, pU * pW);
+    float A0 = (wr.y - wr.x) * (wr.w - wr.z);
+    if (room > 0.5) {                                                                                         // rooftop room: one window, lit on half
+      wr = mod(cell.x, 2.0) < 0.5 ? vec4(0.3, 0.7, 0.3, 0.75) : vec4(0.0); wc = mix(unlit, cctC(h1(vec2(sd, 4.0)) * 0.8) * 9.0, step(h1(vec2(sd * 3.7, face)), 0.5));
+    } else if (cell.y < 0.5) {                                                                                // ground floor
+      float s = h1(cell + sd * 5.0), open = step(h1(cell * 0.7 + sd * 2.0), 0.5);
+      if (comm > 0.5) { wr = vec4(0.06, 0.94, 0.08, 0.92);
+        wc = mix(tint * 0.25, (s < 0.32 ? vec3(1.0, 0.36, 0.12) : s < 0.58 ? vec3(1.0, 0.78, 0.42) : s < 0.74 ? vec3(1.0, 0.95, 0.88) : s < 0.84 ? vec3(0.95, 0.2, 0.22) : s < 0.93 ? vec3(0.3, 0.75, 1.0) : vec3(1.0, 0.3, 0.75)) * (20.0 + 25.0 * h1(cell * 3.0 + sd)), open); }
+      else if (tower > 0.5) { wr = vec4(0.04, 0.96, 0.06, 0.94); wc = mix(unlit, vec3(1.0, 0.86, 0.68) * (office > 0.5 ? 30.0 : 14.0), step(s, office > 0.5 ? 0.5 : 0.3)); }
+      else { wr = vec4(0.02, 0.98, 0.0, 0.86); wc = mix(tint * 0.06, vec3(0.86, 0.93, 1.0) * 5.0, step(h1(vec2(sd * 4.1, face)), 0.35)); }   // pilotis parking, a tube on 35 %
+    } else if (comm > 0.5 && cell.y < 2.5 && h1(vec2(cell.x, sd)) < 0.3) {                                  // 2F-3F fascia signs
+      float s = h1(cell * 1.3 + sd); wc = (s < 0.5 ? vec3(1.0, 0.55, 0.2) : s < 0.78 ? vec3(1.0, 0.95, 0.85) : vec3(0.95, 0.25, 0.3)) * (20.0 + 15.0 * s); wr = vec4(0.04, 0.96, 0.2, 0.8);
+    } else if (apt > 0.5 && north > 0.5 && h1(vec2(sd * 5.5, 3.0)) < 0.5) {                                 // corridor-type (복도식): a lit band per floor
+      wr = vec4(0.0, 1.0, 0.58, 0.9); wc = vec3(0.86, 0.93, 1.0) * (5.0 + 3.0 * h1(vec2(sd, cell.y))) * step(h1(vec2(cell.y, sd * 9.0)), 0.85);
+    } else if (apt > 0.5 && vUV.y > H - fh * 1.6 && vUV.y < H - 0.9 && abs(vN.x) > 0.5 && h1(vec2(sd * 2.9, 6.0)) < 0.6) {   // the brand crown
+      wr = vec4(0.1, 0.9, 0.1, 0.9); wc = (h1(vec2(sd, 8.0)) < 0.5 ? vec3(1.0, 0.97, 0.92) : vec3(0.3, 0.6, 1.0)) * 30.0 * step(0.35, h1(vec2(cell.x * 0.37, sd)));
     }
-    vec3 det = mix(wallC, wc, win), avg = mix(wallC, litF * vec3(0.95, 0.85, 0.72) * 15.0 + (1.0 - litF) * uc, 0.37);
-    c = mix(det, avg, smoothstep(0.35, 0.9, max(fw.x, fw.y)));                                              // windows below a pixel: their mean
+    if (vUV.y > H - 0.9) wr = vec4(0.0);                                                                       // parapet
+    float A = (wr.y - wr.x) * (wr.w - wr.z);
+    vec2 aa = fw * 1.5 + 1e-4;
+    float win = smoothstep(wr.x, wr.x + aa.x, f.x) * (1.0 - smoothstep(wr.y - aa.x, wr.y, f.x)) * smoothstep(wr.z, wr.z + aa.y, f.y) * (1.0 - smoothstep(wr.w - aa.y, wr.w, f.y)) * step(1e-4, A);
+    vec3 det = mix(wallC, wc, win), cellC = mix(wallC, wc, A), far = mix(tint * amb, rowMean, room > 0.5 ? 0.0 : A0);
+    float px = max(fw.x, fw.y);
+    c = mix(det, cellC, smoothstep(0.25, 0.6, px));
+    c = mix(c, far, smoothstep(0.75, 1.5, px));
   }
   gl_FragColor = vec4(haze(c, length(vW - cameraPosition)) * uNits, 1.0);
 }`;
+// one uniform set for every ring material and dr_mass (build() keeps uHaze on the sky's horizon and uTime on the take clock)
+const RING_U = { uNits: { value: NITS }, uHaze: { value: new THREE.Vector3(...RL.horizon).multiplyScalar(RL.hazeK) }, uHazeD: { value: RL.hazeD }, uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1280, 720) } };
+// the facade's far-LOD mean luminance (nits) for a building record, before haze (mirrors BEYOND_BLD_FS's `far` term)
+export function ringMean(kind, H, apt = false) {
+  const amb = (RL.wall[0] + RL.wall[1]) / 2, tint = kind === 2 ? (apt ? 0.86 : 0.5) : 0.75, k = kind === 2 ? (apt ? RL.apt : RL.office) : kind === 1 ? RL.comm : RL.villa;
+  const lit = k.p * k.nits * (kind === 2 && !apt || kind === 1 ? 0.92 : 0.82) + (1 - k.p) * RL.unlit;
+  return tint * amb * (1 - k.A) + lit * k.A;
+}
 const BEYOND_CACHE = new WeakMap();
 export function beyond(layout, opts = {}) {
   const dens = clamp(opts.density ?? 1, 0.25, 2), key = layout;
@@ -1467,13 +1616,18 @@ export function beyond(layout, opts = {}) {
     for (let i = 0; i <= n; i++) { const t = i / n, x = ax + (bx - ax) * t, z = az + (bz - az) * t, k = keep(x, z);
       if (k && !run) run = [x, z]; if ((!k || i === n) && run) { const ex = k ? x : ax + (bx - ax) * (i - 1) / n, ez = k ? z : az + (bz - az) * (i - 1) / n; if (Math.hypot(ex - run[0], ez - run[1]) > 30) roads.push([run[0], run[1], ex, ez, hw, kind]); run = null; } }
   };
-  // the modelled main roads, carried on straight from where they leave the block
+  // the modelled main roads, carried on from where they leave the block. [P4-E fpv bug] no longer dead straight for 3 km: a
+  // bend of 4-12 deg every 260-420 m (Yanghwa-ro swings west at Hapjeong, Sinchon-ro east), so 150 lamps and the car streams
+  // don't stack on one vanishing point (the white "fountain" at the end of the street in the horizon still)
+  const Rb = rng('beyondBend' + (opts.seed ?? 11));
   for (const st of layout.streets) {
     if (st.kind !== 'main') continue;
     for (const end of [0, 1]) {
-      const P = st.points, a = end ? P[P.length - 2] : P[1], b = end ? P[P.length - 1] : P[0], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, dx = (b[0] - a[0]) / L, dz = (b[1] - a[1]) / L;
+      const P = st.points, a = end ? P[P.length - 2] : P[1], b = end ? P[P.length - 1] : P[0], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
       if (!(b[0] < B.x0 + 5 || b[0] > B.x1 - 5 || b[1] < B.z0 + 5 || b[1] > B.z1 - 5)) continue;   // ends inside the block
-      addClipped(b[0], b[1], b[0] + dx * RMAX * 1.2, b[1] + dz * RMAX * 1.2, Math.max(6, st.width * 0.6), 0);
+      let x = b[0], z = b[1], ang = Math.atan2(b[1] - a[1], b[0] - a[0]), run = 0, turn = Rb() < 0.5 ? -1 : 1;
+      while (run < RMAX * 1.2) { const seg = 260 + Rb() * 160, nx = x + Math.cos(ang) * seg, nz = z + Math.sin(ang) * seg;
+        addClipped(x, z, nx, nz, Math.max(6, st.width * 0.6), 0); x = nx; z = nz; run += seg; if (Rb() < 0.3) turn = -turn; ang += turn * (4 + Rb() * 8) * Math.PI / 180; }
     }
   }
   // the local grid: arterials ~380 m, streets ~95 m (some broken: Mapo's grid is not a lattice)
@@ -1510,26 +1664,35 @@ export function beyond(layout, opts = {}) {
     const floors = tower ? 12 + Math.floor(R() * 18 + 10 * east) : onArt ? 4 + Math.floor(R() * 7) : 3 + Math.floor(R() * 3.2);
     put(x, z, hw, hd, th + (R() - 0.5) * 0.06, floors, tower ? 2 : onArt ? 1 : 0, tower ? 3.4 : 3.0);
   }
-  // ---- lamps [x, y, z, r, g, b, cd]  (cd toward the viewer; a 1-2 px sprite in the renderer)
-  const lamps = [], LED = [1.0, 0.9, 0.78], WARM = [1.0, 0.72, 0.42];
+  // ---- lamps [x, y, z, r, g, b, cd]  (cd toward the viewer; a 1-2 px sprite in the renderer; the renderer applies the
+  // cut-off optics). [P4-E] roadLamps [phase, spacing] per road: the ground shader draws each lamp's pool on the road
+  const lamps = [], LED = [1.0, 0.9, 0.78], WARM = [1.0, 0.72, 0.42], roadLamps = [];
   for (const r of roads) {
-    const L = Math.hypot(r[2] - r[0], r[3] - r[1]), dx = (r[2] - r[0]) / L, dz = (r[3] - r[1]) / L, art = r[5] !== 1, sp = art ? 32 : 26, y = art ? 9 : 6.5;
-    for (let s0 = R() * sp; s0 < L; s0 += sp) for (const sd of art ? [-1, 1] : [R() < 0.5 ? -1 : 1]) {
+    const L = Math.hypot(r[2] - r[0], r[3] - r[1]), dx = (r[2] - r[0]) / L, dz = (r[3] - r[1]) / L, art = r[5] !== 1, sp = art ? 32 : 26, y = art ? 9 : 6.5, ph = R() * sp;
+    roadLamps.push(ph, sp);
+    for (let s0 = ph; s0 < L; s0 += sp) for (const sd of art ? [-1, 1] : [R() < 0.5 ? -1 : 1]) {
       const x = r[0] + dx * s0 - dz * sd * (r[4] + 0.5), z = r[1] + dz * s0 + dx * sd * (r[4] + 0.5); if (art || R() < 0.75) lamps.push(x, y, z, ...(art ? LED : WARM), art ? 1400 : 500);
       if (r[5] === 3) lamps.push(x, -2 * 6 - y, z, ...LED, 260);   // bridge lamps mirrored in the river
     }
   }
-  // ---- car streams on the arterials, expressway and bridges: [ax, y, az, dx, dz, L, phase, speed]
-  const cars = [];
-  for (const r of roads) { if (r[5] === 1) continue; const L = Math.hypot(r[2] - r[0], r[3] - r[1]), dx = (r[2] - r[0]) / L, dz = (r[3] - r[1]) / L, nPer = Math.max(1, Math.round(L / (r[5] === 2 ? 28 : 55) * dens));
-    for (const sd of [-1, 1]) for (let k = 0; k < nPer; k++) { const off = sd * r[4] * 0.45, ax = sd > 0 ? r[0] : r[2], az = sd > 0 ? r[1] : r[3]; cars.push(ax - dz * off, 0.75, az + dx * off, dx * sd, dz * sd, L, R() * L, (r[5] === 2 ? 17 : 9) + R() * 5); } }
-  // ---- red church crosses on low roofs, tower beacons: [x, y, z, kind (0 cross, 1 beacon), phase]
-  const marks = [];
+  // ---- car streams: [ax, y, az, dx, dz, L, phase, speed]. [P4-E fpv #4] on every road (phase 3: arterials only): the
+  // arterials every 55 m per direction, the expressway 28 m, the local streets one car per ~150 m at 5-8 m/s
+  const cars = [], Rc = rng('beyondCars' + (opts.seed ?? 11));
+  for (const r of roads) { const L = Math.hypot(r[2] - r[0], r[3] - r[1]), dx = (r[2] - r[0]) / L, dz = (r[3] - r[1]) / L, loc = r[5] === 1;
+    const nPer = loc ? Math.round(L / 150 * dens + Rc() * 0.8) : Math.max(1, Math.round(L / (r[5] === 2 ? 28 : 55) * dens));
+    for (const sd of [-1, 1]) for (let k = 0; k < nPer; k++) { const off = sd * r[4] * 0.45, ax = sd > 0 ? r[0] : r[2], az = sd > 0 ? r[1] : r[3]; cars.push(ax - dz * off, 0.75, az + dx * off, dx * sd, dz * sd, L, Rc() * L, loc ? 5 + Rc() * 3 : (r[5] === 2 ? 17 : 9) + Rc() * 5); } }
+  // ---- red church crosses on low roofs, tower beacons, [P4-E art #6] rooftop wall packs: [x, y, z, kind (0 cross, 1 beacon,
+  // 2 roof lamp), phase]. roofLamp [x, z] per building (1e5: none): the building shader draws its pool on the roof.
+  const marks = [], roofLamp = new Float32Array(bld.length / 9 * 2).fill(1e5), Rr = rng('beyondRoofs' + (opts.seed ?? 11));
   for (let i = 0; i < bld.length; i += 9) { const k = bld[i + 7], H = bld[i + 5];
     if (k === 0 && R() < 0.022) marks.push(bld[i], H + 3.2, bld[i + 1], 0, R());
-    if (k === 2 && H > 55) marks.push(bld[i], H + 1.5, bld[i + 1], 1, R()); }
-  const out = { version: 1, bearing: th, rmax: RMAX, pad: PAD, bank: BANK, roads: new Float32Array(roads.flat()), buildings: new Float32Array(bld), lamps: new Float32Array(lamps), cars: new Float32Array(cars), marks: new Float32Array(marks),
-    facts: { roads: roads.length, buildings: bld.length / 9, lamps: lamps.length / 7, cars: cars.length / 8, crosses: marks.filter((_, i) => i % 5 === 3).filter((v) => v === 0).length } };
+    if (k === 2 && H > 55) marks.push(bld[i], H + 1.5, bld[i + 1], 1, R());
+    if (k < 2 && Rr() < 0.45) { const hw = bld[i + 2], hd = bld[i + 3], yw = bld[i + 4], a = (Rr() < 0.5 ? -1 : 1) * hw * 0.55, c2 = (Rr() < 0.5 ? -1 : 1) * hd * 0.5;
+      const x = bld[i] + Math.cos(yw) * a - Math.sin(yw) * c2, z = bld[i + 1] + Math.sin(yw) * a + Math.cos(yw) * c2;
+      marks.push(x, H + 2.3, z, 2, Rr()); roofLamp[i / 9 * 2] = x; roofLamp[i / 9 * 2 + 1] = z; } }
+  const out = { version: 2, bearing: th, rmax: RMAX, pad: PAD, bank: BANK, roads: new Float32Array(roads.flat()), roadLamps: new Float32Array(roadLamps), buildings: new Float32Array(bld), lamps: new Float32Array(lamps), cars: new Float32Array(cars), marks: new Float32Array(marks), roofLamp,
+    look: RING_LOOK,
+    facts: { roads: roads.length, buildings: bld.length / 9, lamps: lamps.length / 7, cars: cars.length / 8, crosses: marks.filter((_, i) => i % 5 === 3).filter((v) => v === 0).length, roofLamps: marks.filter((_, i) => i % 5 === 3).filter((v) => v === 2).length } };
   BEYOND_CACHE.set(key, { dens, out });
   return out;
 }
@@ -1663,16 +1826,18 @@ varying float vCov; varying float vSide; varying float vHw;`)
   updateLamps(0);
 
   // ---- 4. [P3-E fpv #3] the city beyond the block: beyond() as three draws (ground + roads + river, buildings, light points)
+  // [P4-E fpv #4] one uniform set (RING_U, shared with dr_mass): uHaze follows the sky's horizon radiance (update()), roads
+  // carry their lamps' pools, street lamps and head lamps have cut-off optics (seen from above they drop to ~7-10 %),
+  // rooftop wall packs, cars on every road.
   let beyondU = null; const beyondStats = {};
   if (ctx.beyond !== false) {
     const BY = beyond(layout, { seed: ctx.seed ?? 11, density: ctx.quality === 'low' ? 0.6 : 1 });
-    const HAZE = new THREE.Vector3(1.0, 0.64, 0.4).multiplyScalar(0.11 * nit);   // lamp-lit air over Mapo, ~0.1 nit, brown-orange
-    beyondU = { uNits: { value: nit }, uHaze: { value: HAZE }, uHazeD: { value: 1900 }, uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1280, 720) } };
+    RING_U.uNits.value = nit; beyondU = RING_U;
     const HZ = BEYOND_HZ;
-    // ground tiles (80 m, off C's ground and off the river), roads, the river
-    { const P = [], C = [], B0 = layout.box || layout.core, x0 = B0.x0 - 78, x1 = B0.x1 + 78, z0 = B0.z0 - 78, z1 = B0.z1 + 78, cxx = (B0.x0 + B0.x1) / 2, czz = (B0.z0 + B0.z1) / 2, T = 80;
+    // ground tiles (80 m, off C's ground and off the river), roads (aRd: s along, lamp phase, spacing), the river
+    { const P = [], C = [], RDa = [], B0 = layout.box || layout.core, x0 = B0.x0 - 78, x1 = B0.x1 + 78, z0 = B0.z0 - 78, z1 = B0.z1 + 78, cxx = (B0.x0 + B0.x1) / 2, czz = (B0.z0 + B0.z1) / 2, T = 80;
       const bz = (x) => { const K = BY.bank; for (let i = 0; i < K.length - 1; i++) if (x >= K[i][0] && x <= K[i + 1][0]) return K[i][1] + (K[i + 1][1] - K[i][1]) * (x - K[i][0]) / (K[i + 1][0] - K[i][0]); return 1e9; };
-      const q = (a, b, c2, d, y, col) => { for (const v of [a, b, c2, a, c2, d]) { P.push(v[0], y, v[1]); C.push(...col); } };
+      const q = (a, b, c2, d, y, col, rd = null) => { const V = [a, b, c2, a, c2, d], S = rd ? [rd[0], rd[1], rd[1], rd[0], rd[1], rd[0]] : null; V.forEach((v, j) => { P.push(v[0], y, v[1]); C.push(...col); RDa.push(S ? S[j] : 0, rd ? rd[2] : 0, rd ? rd[3] : 0); }); };
       const G0 = [0.13, 0.12, 0.11];
       for (let x = cxx - BY.rmax - 200; x < cxx + BY.rmax + 200; x += T) for (let z = czz - BY.rmax - 200; z < czz + BY.rmax + 200; z += T) {
         const ins = (px, pz) => px > x0 && px < x1 && pz > z0 && pz < z1; if (ins(x, z) && ins(x + T, z) && ins(x, z + T) && ins(x + T, z + T)) continue;
@@ -1683,37 +1848,50 @@ varying float vCov; varying float vSide; varying float vHw;`)
         if (xa < xb && za < zb) { for (const [p0, p1, p2, p3] of [[[x, z], [x + T, z], [x + T, za], [x, za]], [[x, zb], [x + T, zb], [x + T, z + T], [x, z + T]], [[x, za], [xa, za], [xa, zb], [x, zb]], [[xb, za], [x + T, za], [x + T, zb], [xb, zb]]]) if (Math.abs((p1[0] - p0[0]) * (p3[1] - p0[1])) > 1) q(p0, p3, p2, p1, -0.03, G0); }
         else q([x, z], [x, z + T], [x + T, z + T], [x + T, z], -0.03, G0);
       }
-      const RD = BY.roads; for (let i = 0; i < RD.length; i += 6) { const ax = RD[i], az = RD[i + 1], bx2 = RD[i + 2], bz2 = RD[i + 3], hw = RD[i + 4], k = RD[i + 5], L = Math.hypot(bx2 - ax, bz2 - az), nx = -(bz2 - az) / L * hw, nz = (bx2 - ax) / L * hw;
-        const col = [[1.0, 0.92, 0.82].map((v) => v * 1.4), [1.0, 0.82, 0.62].map((v) => v * 0.55), [1.0, 0.92, 0.82].map((v) => v * 1.7), [0.9, 0.9, 0.9].map((v) => v * 1.1)][k];
-        q([ax + nx, az + nz], [bx2 + nx, bz2 + nz], [bx2 - nx, bz2 - nz], [ax - nx, az - nz], k === 3 ? 0.4 : 0.0, col); }
+      // road means in nits (0.6 on the arterials, 0.3 on the local streets: horizon1 still read the carried-on road as a white
+      // streak at 0.9); the pools add the shape
+      const RD = BY.roads, RLp = BY.roadLamps || null;
+      for (let i = 0, ri = 0; i < RD.length; i += 6, ri++) { const ax = RD[i], az = RD[i + 1], bx2 = RD[i + 2], bz2 = RD[i + 3], hw = RD[i + 4], k = RD[i + 5], L = Math.hypot(bx2 - ax, bz2 - az), nx = -(bz2 - az) / L * hw, nz = (bx2 - ax) / L * hw;
+        const col = [[1.0, 0.92, 0.82].map((v) => v * 0.6), [1.0, 0.82, 0.62].map((v) => v * 0.3), [1.0, 0.92, 0.82].map((v) => v * 0.8), [0.9, 0.9, 0.9].map((v) => v * 0.6)][k];
+        q([ax + nx, az + nz], [bx2 + nx, bz2 + nz], [bx2 - nx, bz2 - nz], [ax - nx, az - nz], k === 3 ? 0.4 : 0.0, col, RLp ? [0, L, RLp[ri * 2], RLp[ri * 2 + 1]] : null); }
       { const K = BY.bank; for (let i = 0; i < K.length - 1; i++) q([K[i][0], K[i][1]], [K[i + 1][0], K[i + 1][1]], [K[i + 1][0], 4200], [K[i][0], 4200], -0.6, [0.02, 0.025, 0.03]); }
-      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(C, 3)); g.boundingSphere = new THREE.Sphere(new THREE.Vector3(cxx, 0, czz), BY.rmax + 600);
-      const m = new THREE.ShaderMaterial({ uniforms: beyondU, vertexShader: 'attribute vec3 color; varying vec3 vC; varying vec3 vW; void main(){ vC = color; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
-        fragmentShader: HZ + '\nvarying vec3 vC; varying vec3 vW; void main(){ gl_FragColor = vec4(haze(vC, length(vW - cameraPosition)) * uNits, 1.0); }', side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(C, 3)); g.setAttribute('aRd', new THREE.Float32BufferAttribute(RDa, 3)); g.boundingSphere = new THREE.Sphere(new THREE.Vector3(cxx, 0, czz), BY.rmax + 600);
+      const m = new THREE.ShaderMaterial({ uniforms: beyondU, vertexShader: 'attribute vec3 color; attribute vec3 aRd; varying vec3 vC; varying vec3 vW; varying vec3 vR; void main(){ vC = color; vR = aRd; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+        fragmentShader: HZ + `
+varying vec3 vC; varying vec3 vW; varying vec3 vR;
+void main(){
+  vec3 c = vC;
+  if (vR.z > 0.5) { float a = (fract((vR.x - vR.y) / vR.z + 0.5) - 0.5) * vR.z, sg = 0.16 * vR.z; c *= 0.35 + 1.7 * exp(-a * a / (2.0 * sg * sg)); }   // lamp pools, mean ~1
+  gl_FragColor = vec4(haze(c, length(vW - cameraPosition)) * uNits, 1.0);
+}`, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
       m.userData.cityLight = false; const mesh = new THREE.Mesh(g, m); mesh.name = 'seoul:beyondGround'; mesh.matrixAutoUpdate = false; mesh.renderOrder = -2; group.add(mesh); disposables.push(g, m); beyondStats.groundTris = P.length / 9; }
-    // buildings: boxes (4 walls + roof), u along the face and height in metres, per-building (floorH, kind, seed, H)
-    { const Bd = BY.buildings, n = Bd.length / 9, P = new Float32Array(n * 30 * 3), N = new Float32Array(n * 30 * 3), U = new Float32Array(n * 30 * 2), A4 = new Float32Array(n * 30 * 4); let v = 0;
+    // buildings: boxes (4 walls + roof), u along the face and height in metres, per-building (floorH, kind, seed, H); the roof's
+    // uv = metres from its wall pack (BY.roofLamp; 1e3 away: none)
+    { const Bd = BY.buildings, RLm = BY.roofLamp, n = Bd.length / 9, P = new Float32Array(n * 30 * 3), N = new Float32Array(n * 30 * 3), U = new Float32Array(n * 30 * 2), A4 = new Float32Array(n * 30 * 4); let v = 0;
       const push = (p, nn, u, b) => { P.set(p, v * 3); N.set(nn, v * 3); U.set(u, v * 2); A4.set(b, v * 4); v++; };
       for (let i = 0; i < n; i++) { const [x, z, hw, hd, yaw, H, fh, kind, sd] = Bd.subarray(i * 9, i * 9 + 9), cs = Math.cos(yaw), sn = Math.sin(yaw), b = [fh, kind, sd, H];
         const cn = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]].map(([a, c2]) => [x + cs * a - sn * c2, z + sn * a + cs * c2]);
+        const lx = RLm && RLm[i * 2] < 1e4 ? RLm[i * 2] : x + 1e3, lz = RLm && RLm[i * 2] < 1e4 ? RLm[i * 2 + 1] : z + 1e3;
         let u0 = sd * 37 % 11;
         for (let k = 0; k < 4; k++) { const a = cn[k], c2 = cn[(k + 1) % 4], L = Math.hypot(c2[0] - a[0], c2[1] - a[1]), nn = [(c2[1] - a[1]) / L, 0, -(c2[0] - a[0]) / L];
           const out = (nn[0] * (a[0] - x) + nn[2] * (a[1] - z)) > 0 ? nn : [-nn[0], 0, -nn[2]];
           const V = [[a[0], 0, a[1], u0, 0], [c2[0], 0, c2[1], u0 + L, 0], [c2[0], H, c2[1], u0 + L, H], [a[0], H, a[1], u0, H]];
           for (const j of [0, 1, 2, 0, 2, 3]) push([V[j][0], V[j][1], V[j][2]], out, [V[j][3], V[j][4]], b); u0 += L; }
-        for (const j of [0, 2, 1, 0, 3, 2]) push([cn[j][0], H, cn[j][1]], [0, 1, 0], [0, 0], b); }
+        for (const j of [0, 2, 1, 0, 3, 2]) push([cn[j][0], H, cn[j][1]], [0, 1, 0], [cn[j][0] - lx, cn[j][1] - lz], b); }
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setAttribute('normal', new THREE.BufferAttribute(N, 3)); g.setAttribute('aUV', new THREE.BufferAttribute(U, 2)); g.setAttribute('aB', new THREE.BufferAttribute(A4, 4));
       g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
       const m = new THREE.ShaderMaterial({ uniforms: beyondU, side: THREE.DoubleSide,
         vertexShader: 'attribute vec2 aUV; attribute vec4 aB; varying vec2 vUV; varying vec4 vB; varying vec3 vN; varying vec3 vW; void main(){ vUV = aUV; vB = aB; vN = normal; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
         fragmentShader: BEYOND_HZ + BEYOND_BLD_FS });
       m.userData.cityLight = false; const mesh = new THREE.Mesh(g, m); mesh.name = 'seoul:beyondCity'; mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; group.add(mesh); disposables.push(g, m); beyondStats.buildingTris = v / 3; }
-    // light points: lamps, cars (moving, white toward the camera / red away), crosses (a cross-shaped sprite), beacons (blink)
+    // light points: lamps, cars (moving, white toward the camera / red away), crosses (a cross-shaped sprite), beacons (blink),
+    // [P4-E] roof wall packs (aEx.x 4: a warm dot, no cut-off)
     { const Lm = BY.lamps, Cr = BY.cars, Mk = BY.marks, n = Lm.length / 7 + Cr.length / 8 + Mk.length / 5;
       const P = new Float32Array(n * 3), Col = new Float32Array(n * 4), Mv = new Float32Array(n * 4), Ex = new Float32Array(n * 2); let v = 0;
       for (let i = 0; i < Lm.length; i += 7) { P.set([Lm[i], Lm[i + 1], Lm[i + 2]], v * 3); Col.set([Lm[i + 3], Lm[i + 4], Lm[i + 5], Lm[i + 6]], v * 4); Ex.set([0, 0], v * 2); v++; }
       for (let i = 0; i < Cr.length; i += 8) { P.set([Cr[i], Cr[i + 1], Cr[i + 2]], v * 3); Col.set([1, 1, 1, 2500], v * 4); Mv.set([Cr[i + 3], Cr[i + 4], Cr[i + 5], Cr[i + 7]], v * 4); Ex.set([1, Cr[i + 6]], v * 2); v++; }
-      for (let i = 0; i < Mk.length; i += 5) { P.set([Mk[i], Mk[i + 1], Mk[i + 2]], v * 3); Col.set(Mk[i + 3] ? [1, 0.08, 0.04, 900] : [1, 0.12, 0.08, 260], v * 4); Ex.set([Mk[i + 3] ? 3 : 2, Mk[i + 4]], v * 2); v++; }
+      for (let i = 0; i < Mk.length; i += 5) { const k = Mk[i + 3]; P.set([Mk[i], Mk[i + 1], Mk[i + 2]], v * 3);
+        Col.set(k === 2 ? [1, 0.76, 0.5, 120] : k === 1 ? [1, 0.08, 0.04, 900] : [1, 0.12, 0.08, 260], v * 4); Ex.set([k + 2, Mk[i + 4]], v * 2); v++; }
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setAttribute('aCol', new THREE.BufferAttribute(Col, 4)); g.setAttribute('aMove', new THREE.BufferAttribute(Mv, 4)); g.setAttribute('aEx', new THREE.BufferAttribute(Ex, 2));
       g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
       const m = new THREE.ShaderMaterial({ uniforms: beyondU, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
@@ -1723,11 +1901,14 @@ void main(){
   vec3 p = position; float I = aCol.w; vec3 col = aCol.rgb; vK = aEx.x;
   if (aEx.x > 0.5 && aEx.x < 1.5) {                                   // a car on its lane: head lamps toward the camera, tail lamps away
     float s = mod(aEx.y + uTime * aMove.w, aMove.z); p.xz += aMove.xy * s;
-    float f = dot(normalize(vec3(aMove.x, 0.0, aMove.y)), normalize(cameraPosition - p));
-    float head = smoothstep(-0.05, 0.6, f), tail = smoothstep(0.05, -0.6, f);
-    col = (vec3(1.0, 0.93, 0.82) * 2500.0 * head + vec3(1.0, 0.06, 0.03) * 90.0 * tail) / max(1.0, 2500.0 * head + 90.0 * tail); I = 2500.0 * head + 90.0 * tail;
+    vec3 tc = cameraPosition - p; float dl = max(length(tc), 1.0);
+    float f = dot(normalize(vec3(aMove.x, 0.0, aMove.y)), tc / dl);
+    float lowBeam = mix(1.0, 0.1, smoothstep(0.0, 0.08, tc.y / dl));  // low beams: little light above the horizontal
+    float head = smoothstep(-0.05, 0.6, f) * lowBeam, tail = smoothstep(0.05, -0.6, f);
+    col = (vec3(1.0, 0.93, 0.82) * 2500.0 * head + vec3(1.0, 0.06, 0.03) * 90.0 * tail) / max(1e-3, 2500.0 * head + 90.0 * tail); I = 2500.0 * head + 90.0 * tail;
   }
-  if (aEx.x > 2.5) I *= step(0.82, fract(uTime / 1.6 + aEx.y));        // tower beacons blink
+  if (aEx.x < 0.5) { float vy = (cameraPosition.y - p.y) / max(length(cameraPosition - p), 1.0); I *= mix(1.0, 0.07, smoothstep(-0.03, 0.06, vy)); }   // cut-off optics: nothing above ~3 deg over the horizontal
+  if (aEx.x > 2.5 && aEx.x < 3.5) I *= step(0.82, fract(uTime / 1.6 + aEx.y));   // tower beacons blink
   vec4 mv = modelViewMatrix * vec4(p, 1.0); gl_Position = projectionMatrix * mv;
   float d = max(1.0, -mv.z), pa = 2.0 / (projectionMatrix[1][1] * uRes.y);                // radians per pixel
   float s = aEx.x > 1.5 && aEx.x < 2.5 ? clamp(2.4 / (d * pa), 2.5, 28.0) : 3.0;             // crosses: their true size (2.4 m), at least a dot
@@ -1735,7 +1916,7 @@ void main(){
   float foot = aEx.x > 1.5 && aEx.x < 2.5 ? 0.22 * s * s : 0.098 * s * s;
   float L = I / (d * d * pa * pa * foot);                                                    // nits: the source's light spread over its sprite
   if (aEx.x > 1.5 && aEx.x < 2.5) L = min(L, 260.0);                                        // a resolved neon cross is its own luminance
-  vC = col * min(L, 40000.0) * exp(-d / (uHazeD * 1.3)) * uNits;
+  vC = col * min(L, 40000.0) * exp(-d / uHazeD) * uNits;
 }`,
         fragmentShader: `varying vec3 vC; varying float vK;
 void main(){
@@ -1754,7 +1935,11 @@ void main(){
   // cable material: make sure S3's grid reaches it (if seoulLight.attach ran before us)
   let patched = false;
   const ensureLit = () => { if (patched || !lineMesh) return; const L = ctx.scene?.userData?.seoulLight; if (L?.patchMaterial) { L.patchMaterial(lineMesh.material); patched = true; } };
-  const update = (t = 0) => { ensureLit(); updateLamps(t); if (beyondU) beyondU.uTime.value = t; };
+  // [P4-E fpv #4] haze toward the sky's own horizon (seoul-light's 'seoul.sky' uHor, scene units): the ring fades into the skyglow
+  let skyHor = null;
+  const update = (t = 0) => { ensureLit(); updateLamps(t); RING_U.uTime.value = t;
+    if (!skyHor) skyHor = ctx.scene?.getObjectByName?.('seoul.sky')?.material?.uniforms?.uHor?.value || null;
+    if (skyHor) RING_U.uHaze.value.copy(skyHor).multiplyScalar(RING_LOOK.hazeK / nit); };
   return {
     group, update, emitters: [], setPieces: geo.setPieces,
     stats: { cables: polys.length, cableSegs: lineMesh ? lineMesh.geometry.index.count / 6 : 0, labels: geo.labels.length, lamps: geo.lamps.length, beyond: beyondStats, ...geo.facts },
@@ -1807,7 +1992,8 @@ export function exportData(layout, opts = {}) {
   const g = CACHE.get(layout) || geometry(layout, opts);
   const by = beyond(layout, opts);   // [P3-E fpv #3] the city ring as plain arrays (layouts in beyond()'s header)
   return { version: 1, setPieces: g.setPieces, emitters: g.emitters, holes: g.holes, cables: g.cables, labels: g.labels, lamps: g.lamps, obstacles: g.obstacles, materials: DRESS_MATS, facts: g.facts,
-    beyond: { bearing: by.bearing, rmax: by.rmax, bank: by.bank, roads: [...by.roads], buildings: [...by.buildings], lamps: [...by.lamps], cars: [...by.cars], marks: [...by.marks], facts: by.facts } };
+    beyond: { version: by.version, bearing: by.bearing, rmax: by.rmax, bank: by.bank, roads: [...by.roads], roadLamps: [...by.roadLamps], buildings: [...by.buildings], roofLamp: [...by.roofLamp], lamps: [...by.lamps], cars: [...by.cars], marks: [...by.marks], look: by.look,
+      notes: 'P4: roadLamps [phase, spacing] per road (lamp pools on the road, mean = the road colour); roofLamp [x, z] per building (1e5 none: the roof pool); marks kind 2 = rooftop wall pack; lamps dim to 7 % seen from above (cut-off), head lamps to 10 % (low beam); haze toward the sky horizon x look.hazeK over look.hazeD m', facts: by.facts } };
 }
 
 export const acKit = true;   // [P3-E1] C hands its AC placements to E (lotInfo .ac) when this is set
