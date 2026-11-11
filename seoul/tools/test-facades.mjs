@@ -46,8 +46,11 @@ ok(unlitN.every((n) => n >= 0.5 && n <= 5), `unlit windows 0.5-5 nits (${Math.mi
   ok(!fs.readFileSync(new URL('../../world-seoul.js', import.meta.url), 'utf8').includes('texLoader.load('), 'no JPG hot-link on the main path'); }
 
 // 2. shops
-const stores = geo.emitters.filter((e) => e.kind === 'store');
-ok(stores.length === geo.facts.shopsLit && stores.length > 150, `store emitters ${stores.length} = lit shops ${geo.facts.shopsLit}`);
+const stores = geo.emitters.filter((e) => e.kind === 'store'), lobbies = geo.emitters.filter((e) => e.kind === 'lobby');
+ok(stores.length + lobbies.length === geo.facts.shopsLit && stores.length > 150, `store + lobby emitters ${stores.length} + ${lobbies.length} = lit shops ${geo.facts.shopsLit}`);
+ok(lobbies.every((e) => e.nits >= 80 && e.nits <= 150), `tower lobbies 80-150 nits (contract P3-CD, ${lobbies.length})`);
+{ const cr = geo.emitters.filter((e) => e.kind === 'crown'); ok(cr.length > 0 && cr.every((e) => e.normal[1] > 0.5 && e.nits >= 15 && e.nits <= 40), `crown wash records face up the wall (${cr.length})`); }
+ok(geo.emitters.filter((e) => e.role === 'roof').length === geo.facts.roofLamps && geo.facts.roofLamps > 100, `roof wall packs ${geo.facts.roofLamps} (art #6)`);
 // [P3-C] coloured rooms (club, karaoke, motel) are a filter on 30-130 white-equivalent nits: luminance x lum(filter) >= 15
 const isCol = (e) => { const L = layout.lots.find((l) => l.id === e.lot); return ['club', 'karaoke', 'motel'].includes(L?.use); };
 ok(stores.every((e) => e.nits >= (isCol(e) ? 15 : 30) && e.nits <= 130), `shop interiors 30-130 nits, coloured >= 15 (${Math.min(...stores.map((e) => e.nits))}-${Math.max(...stores.map((e) => e.nits))})`);

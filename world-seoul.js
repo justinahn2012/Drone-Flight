@@ -222,6 +222,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
   const streets = layout.streets, lots = layout.lots, streetById = new Map(streets.map((s) => [s.id, s]));
   const grid = lotGrid(lots);
   const B = boxOf(layout);
+  const acE = opts.dressing !== false && !!(opts.dressing || DRESSING)?.acKit;   // [P3-E1] E's AC kit draws the condensers C places
 
   // ---------------- ground: sidewalk pavers everywhere, streets on top by kind
   { const x0 = B.x0 - 80, x1 = B.x1 + 80, z0 = B.z0 - 80, z1 = B.z1 + 80; A('walk').quad([x0, 0, z1], [x1, 0, z1], [x1, 0, z0], [x0, 0, z0], [0, 1, 0], [[x0, z1], [x1, z1], [x1, z0], [x0, z0]]); }
@@ -446,9 +447,9 @@ export function buildSeoulGeometry(layout, opts = {}) {
           facts.ac++; const sd = Q() < 0.5 ? -1 : 1, sa = W.s + (W.w / 2 + 0.55) * sd; if (sa < 0.5 || sa > L - 0.5) continue;
           const ax = a[0] + tx * sa + nx * 0.2, az = a[1] + tz * sa + nz * 0.2, ac = 0.8 + Q() * 0.25, ay = W.y0 - 0.25;
           Acc.tint = [ac, ac * 0.99, ac * (0.9 + Q() * 0.1)];
-          A('white').box([ax, ay, az], [0.42, 0.32, 0.17], yaw, false);   // outdoor unit
+          if (acE) (info.ac ||= []).push({ c: [+ax.toFixed(3), +ay.toFixed(3), +az.toFixed(3)], n: [nx, 0, nz], size: [0.84, 0.64, 0.34], tint: Acc.tint.slice() });   // [P3-E1] E draws it
+          else { A('white').box([ax, ay, az], [0.42, 0.32, 0.17], yaw, false); acFront(a, t2, n2, sa, ay, 0.37); }   // outdoor unit + its face (no E kit)
           Acc.tint = tint;
-          acFront(a, t2, n2, sa, ay, 0.37);
           wallDecal(a, t2, n2, sa - 0.06, sa + 0.06, Math.max(0.2, W.y0 - 1.6), W.y0 - 0.6, 0.8, 1.0);
         }
       }
@@ -459,14 +460,14 @@ export function buildSeoulGeometry(layout, opts = {}) {
       // ---- ground floor: shopfront bays (interior-mapped), a framed door, posters; or a shutter. Sign bed above.
       if (sideShop) R = R2;
       const look = USE_LOOK[l.use] || USE_LOOK.shop;
-      const shut = R() < look.shut * (sideShop ? 0.7 : 1); if (front) { info.shutter = shut; info.shopLit = !shut; } else facts.sideShops++;
+      const shut = R() < look.shut * (sideShop ? 0.4 : 1); if (front) { info.shutter = shut; info.shopLit = !shut; } else facts.sideShops++;
       const w0 = 0.4, w1 = L - 0.4, gw = w1 - w0, Pt = (s, y, o = 0) => [a[0] + tx * s + nx * o, y, a[1] + tz * s + nz * o];
       if (gw > 0.8) {
         if (shut) {
           facts.shutters++;
           const p0 = Pt(w0, 0, 0.04), p1 = Pt(w1, 0, 0.04);
           A(front ? 'shutter' : 'shutterR').quad([p0[0], 0.02, p0[2]], [p1[0], 0.02, p1[2]], [p1[0], K.shopTop, p1[2]], [p0[0], K.shopTop, p0[2]], [nx, 0, nz], [[0, 0], [gw, 0], [gw, K.shopTop], [0, K.shopTop]]);
-          A(front ? 'metal' : 'pipe').box(Pt((w0 + w1) / 2, K.shopTop + 0.15, 0.19), [gw / 2, 0.15, 0.15], yaw, false);   // the shutter box above (corner faces: render only)
+          A(front ? 'metal' : 'shutterR').box(Pt((w0 + w1) / 2, K.shopTop + 0.15, 0.19), [gw / 2, 0.15, 0.15], yaw, false);   // the shutter box above (corner faces: render only)
         } else {
           facts.shopsLit++;
           const nitsS = lerp(look.nits[0], look.nits[1], R()), cu = R(), room = look.room[Math.floor(R() * look.room.length)];
@@ -493,8 +494,10 @@ export function buildSeoulGeometry(layout, opts = {}) {
           A('frame').box(Pt((w0 + w1) / 2, 2.32, 0.08), [gw / 2, 0.03, 0.05], yaw, false);   // transom bar
           A('frame').box(Pt((w0 + w1) / 2, 0.1, 0.06), [gw / 2, 0.1, 0.025], yaw, false);   // kick plate
           const c = Pt((w0 + w1) / 2, K.shopTop / 2, 0.05), col = colourOf(look, cu), cY = lumOf(col);   // L3: rgb at luminance 1, nits = luminance
-          emitters.push({ id: 'store:' + l.id + (front ? '' : ':' + i), pos: [+c[0].toFixed(2), +c[1].toFixed(2), +c[2].toFixed(2)], normal: [+nx.toFixed(3), 0, +nz.toFixed(3)], w: +gw.toFixed(2), h: K.shopTop,
-            rgb: col.map((v) => +(v / cY).toFixed(3)), nits: Math.round(nitsS * cY), kind: 'store', animated: false, lot: l.id });
+          // [P3-C] contract P3-CD (D's lighting #4): a main-road tower's podium glass is a 'lobby' record (80-150 nits)
+          const lob = tower && front, lobN = lob ? Math.max(80, Math.min(150, nitsS * cY * 1.4)) : nitsS * cY;
+          emitters.push({ id: (lob ? 'lobby:' : 'store:') + l.id + (front ? '' : ':' + i), pos: [+c[0].toFixed(2), +c[1].toFixed(2), +c[2].toFixed(2)], normal: [+nx.toFixed(3), 0, +nz.toFixed(3)], w: +gw.toFixed(2), h: K.shopTop,
+            rgb: col.map((v) => +(v / cY).toFixed(3)), nits: Math.round(lobN), kind: lob ? 'lobby' : 'store', animated: false, lot: l.id });
         }
         // sign bed (aluminium composite panel), 2.9-4.0 m, 8 cm proud: charcoal on most lots, grey or dull white on some
         const [fy, fh, fd] = K.fascia, fc = [(a[0] + b[0]) / 2 + nx * fd / 2, fy + fh / 2, (a[1] + b[1]) / 2 + nz * fd / 2], fr2 = hash(l.id + 'bed');
@@ -552,12 +555,16 @@ export function buildSeoulGeometry(layout, opts = {}) {
     // [P3-C] main-road towers: an LED wash line under the coping on their street faces (architectural lighting, 600 nits)
     if (tower) for (const e of info.edges) { if (!(e.front || e.streetSide) || e.L < 3) continue;
       const c = [(e.a[0] + e.b[0]) / 2 + e.nx * 0.05, (e.a[1] + e.b[1]) / 2 + e.nz * 0.05], lc = lightRGB(4300);
-      pane('lamp', c, [e.tx, e.tz], [e.nx, e.nz], e.L - 0.3, 0.07, H + K.parapet - 0.2, [lc[0] * 600 * NIT, lc[1] * 600 * NIT, lc[2] * 600 * NIT, 0], [e.L - 0.3, 0.07, 16, 0]); }
+      pane('lamp', c, [e.tx, e.tz], [e.nx, e.nz], e.L - 0.3, 0.07, H + K.parapet - 0.2, [lc[0] * 600 * NIT, lc[1] * 600 * NIT, lc[2] * 600 * NIT, 0], [e.L - 0.3, 0.07, 16, 0]);
+      // contract P3-CD: the crown wash on the top two floors, a record 1.5 m off the wall facing it, tilted up 35 degrees
+      const bh = 2 * l.floorH, by = H - bh / 2, cw = lightRGB(4300), up = 0.574, hz = 0.819;
+      emitters.push({ id: 'crown:' + l.id + ':' + e.tx.toFixed(2), pos: [+(c[0] + e.nx * 1.45).toFixed(2), +(by - bh / 2).toFixed(2), +(c[1] + e.nz * 1.45).toFixed(2)], normal: [+(-e.nx * hz).toFixed(3), up, +(-e.nz * hz).toFixed(3)],
+        w: +(e.L - 0.4).toFixed(2), h: +bh.toFixed(2), rgb: cw.map((v) => +v.toFixed(3)), nits: 25, kind: 'crown', animated: false, lot: l.id }); facts.crowns = (facts.crowns || 0) + 1; }
     if (area > 40 && l.floors <= 8 && R() < 0.55) { const s = roofSpot(1.6); if (s) { // water tank on a steel stand (FRP / stainless)
       facts.tanks++; const r = 0.6 + R() * 0.5, h = 1.2 + R() * 0.6;
       A('metal').box([s[0], H + 0.25, s[1]], [r + 0.1, 0.25, r + 0.1], 0, false);
       A(R() < 0.5 ? 'white' : 'metal').cyl([s[0], H + 0.5, s[1]], r, h, 10); info.roof.push({ kind: 'tank', x: s[0], z: s[1], top: H + 0.5 + h }); } }
-    if (area > 80 && R() < 0.5) { const s = roofSpot(1.2); if (s) { facts.ac++; A('white').box([s[0], H + 0.55, s[1]], [0.5, 0.55, 0.35], R() * 3); } }   // condenser
+    if (area > 80 && R() < 0.5) { const s = roofSpot(1.2); if (s) { facts.ac++; const ya = R() * 3; if (acE) (info.ac ||= []).push({ c: [s[0], H + 0.55, s[1]], n: [Math.sin(ya), 0, Math.cos(ya)], size: [1.0, 1.1, 0.7], roof: true }); else A('white').box([s[0], H + 0.55, s[1]], [0.5, 0.55, 0.35], ya); } }   // condenser ([P3-E1] E draws it)
   }
 
   // ---------------- street lights. [P2-C] (lighting #6) nits from lumens for a Lambertian head (nits = lm / (pi x area)), so
@@ -1187,7 +1194,8 @@ export async function buildSeoul(renderer, a, b) {
   const emitters = geo.emitters.slice();
   const uniforms = { uTime: { value: 0 } };
   const ctx = { THREE, renderer, scene, layout, NIT, NITS, nitScale: NITS, LUX, rng, hash, seed: opts.seed ?? 11, quality: opts.quality || 'auto', bvh: geo.bvh, lotInfo: geo.lotInfo, poles: geo.poles, cables: geo.cables, uniforms,
-    streetById: new Map(layout.streets.map((s) => [s.id, s])), lotById: new Map(layout.lots.map((l) => [l.id, l])), takeClock: opts.takeClock || null };
+    streetById: new Map(layout.streets.map((s) => [s.id, s])), lotById: new Map(layout.lots.map((l) => [l.id, l])), takeClock: opts.takeClock || null,
+    setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null };   // [P3-G1] life #5/#6: busk under E's stage, walk round E's dressing
   // partner modules (each optional)
   prog(0.65, 'Hongdae: signs');
   const parts = {};
@@ -1216,7 +1224,7 @@ export async function buildSeoul(renderer, a, b) {
   const world = {
     scene, colliderScene: colScene, depthScene, bvh: geo.bvh, skimBvh: geo.skimBvh, update, hdr: true, stats,
     spawn: new THREE.Vector3(...sp.pos), yaw: sp.yaw,
-    takeStart: geo.takeStart ? { pos: new THREE.Vector3(...geo.takeStart.pos), yaw: geo.takeStart.yaw } : { pos: new THREE.Vector3(...sp.pos), yaw: sp.yaw },
+    takeStart: geo.takeStart ? { pos: new THREE.Vector3(...geo.takeStart.pos), yaw: geo.takeStart.yaw, ...(geo.takeStart.hint ? { hint: geo.takeStart.hint } : {}) } : { pos: new THREE.Vector3(...sp.pos), yaw: sp.yaw },
     startPoints: geo.startPoints.map((s) => ({ name: s.name, pos: new THREE.Vector3(...s.pos), yaw: s.yaw, ...(s.hint ? { hint: s.hint } : {}) })),
     funnels: geo.funnels, lines: geo.lines,
     bounds: new THREE.Box3(new THREE.Vector3(B.x0 - 60, -5, B.z0 - 60), new THREE.Vector3(B.x1 + 60, 200, B.z1 + 60)),
