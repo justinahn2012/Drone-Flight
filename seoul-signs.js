@@ -4,6 +4,8 @@
 //   const signs = await seoulSigns.build(layout, { seed, neonPush, nitScale, renderer, quality });
 //   scene.add(signs.group);  lights.attach(world, signs.emitters);  each frame: signs.update(t, camPos);
 //   seoulSigns.exportData(layout, opts) -> { signs, screens }   (pure, node-safe: signs.json / screens.json for native)
+//   seoulSigns.colliderTris(layout, { seed, lotInfo }) -> Float32Array xyz soup of the housings that collide (world-seoul's BVH)
+//   opts / ctx.lotInfo: world-seoul's per-lot slots (phase 4: signs sit on C's beds, spandrels, glass and roof frames)
 //
 // Phase 2 (panel 1: art #1, graphics #2, lighting #2, colour #2/#5, perf #6, native #2):
 //   * The letters are the light, not the box. Every face is a list of elements: a box ground (light-box diffuser at
@@ -1005,11 +1007,12 @@ export function buildData(layout, opts = {}) {
       continue;
     }
     const fw = s.type === 'stand' ? G.w * 0.92 : G.w, fhh = s.type === 'stand' ? G.h * 0.94 : G.h;
-    const D = designFace(s, fw, fhh);
+    const D = opts.boxesOnly ? { els: [], nits: 0, rgb: [1, 1, 1] } : designFace(s, fw, fhh);
     const fk = s.flicker ? [s.flicker.hz, (s.seed % 1000) / 1000] : [0, 0];
     const lit = s.lit && s.style !== 'banner' && s.type !== 'vinyl' && D.nits > 0;   // window film: the pane is C's emitter
     let nf = 0;
     const face = (c, m) => {
+      if (opts.boxesOnly) return;
       faces.push({ id: s.id, c: r3(c), m: r3(m), w: fw, h: fhh, els: D.els, flk: fk });
       glyphs += D.els.filter((e) => e.glyph).length; elements += D.els.length;
       if (lit) emitters.push({ id: `${s.id}${nf ? ':' + (nf + 1) : ''}`, pos: r3(c), normal: r3(m), w: +fw.toFixed(3), h: +fhh.toFixed(3),
@@ -1077,6 +1080,27 @@ export function buildData(layout, opts = {}) {
   const stats = { ...signStats(specs), faces: faces.length, elements, glyphs, boxes: boxes.length, emitters: emitters.length, screens: scr.length,
     scrollers: scrollers.length, missingGlyphs: [...missingGlyphs].join(''), msdf: { size: MSDF.size[0], pxPerEm: MSDF.px, range: MSDF.range } };
   return { specs, faces, boxes, emitters, screens: scr, scrollers, stats };
+}
+
+// a housing box -> its 6 quads (H: [quad, colour] pairs for the render tiles) and / or 12 triangles (P: xyz soup)
+function boxInto(H, b, P) {
+  const { c, r, n, hw, hh, hd, col } = b;
+  const Pt = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
+  const Fc = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]],
+    [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]],
+    [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]]];
+  Fc.forEach((fc, i) => { const q = fc.map((v) => Pt(...v));
+    if (H && !(b.noFront && i === 0)) H.push(q, col);
+    if (P) for (const j of [0, 1, 2, 0, 2, 3]) P.push(q[j][0], q[j][1], q[j][2]); });
+}
+// native #5 (phase 4): the sign housings that collide (blades, light boxes, stands, raceways, roof steel, screen cabinets)
+// as a triangle soup, pure and node-safe, from the same placement as build(): world-seoul merges it into colGeo / the BVH
+// at geometry time, so the game, the node sims (lines, take-sim, parity) and the native export share one collider, and
+// the collider depth pass (SSAO) sees the signs. opts as generateSigns (seed, lotInfo).
+export function colliderTris(layout, opts = {}) {
+  const D = buildData(layout, { ...opts, boxesOnly: true }), P = [];
+  for (const b of D.boxes) if (b.collide) boxInto(null, b, P);
+  return new Float32Array(P);
 }
 
 // screen state at time t (pure): program, local time, cut, palette, rows, emitter mean colour / nits
@@ -1315,16 +1339,6 @@ export async function build(layout, ctx = {}) {
   const tileOf = (p) => { const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`; let t = tiles.get(k); if (!t) { t = { key: k, faces: [], nq: 0, h: [] }; tiles.set(k, t); } return t; };
   for (const f of D.faces) { const t = tileOf(f.c); t.faces.push(f); t.nq += f.els.length; }
   const colP = [];
-  const boxInto = (H, b, P) => {
-    const { c, r, n, hw, hh, hd, col } = b;
-    const Pt = (sx, sy, sz) => [c[0] + r[0] * sx * hw + n[0] * sz * hd, c[1] + sy * hh, c[2] + r[2] * sx * hw + n[2] * sz * hd];
-    const Fc = [[[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1], n], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1], [-n[0], 0, -n[2]]],
-      [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1], [r[0], 0, r[2]]], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1], [-r[0], 0, -r[2]]],
-      [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1], [0, 1, 0]], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1], [0, -1, 0]]];
-    Fc.forEach((fc, i) => { const q = fc.slice(0, 4).map((s) => Pt(...s));
-      if (H && !(b.noFront && i === 0)) { H.push(q, col); }
-      if (P) for (const j of [0, 1, 2, 0, 2, 3]) P.push(...q[j]); });
-  };
   // housings ride in the face meshes as unlit PANEL quads (one material, one draw per tile: phase 3 perf, was 2 per tile)
   for (const b of D.boxes) { const t = tileOf(b.c); const n0 = t.h.length; boxInto(t.h, b, b.collide ? colP : null); t.nq += (t.h.length - n0) / 2; }
   // fill typed arrays directly (two passes: count, then write) — this runs once at load on the phone
@@ -1375,7 +1389,8 @@ export async function build(layout, ctx = {}) {
     }
   }
   tiles.clear();   // the closures below keep this scope alive: drop the staging arrays (the meshes own their attributes)
-  // collider triangles for the integrator (blades, boxes, stands, cabinets): not added to any collider here
+  // collider triangles (blades, boxes, stands, cabinets): world-seoul merges colliderTris() into its BVH at geometry time;
+  // this copy stays for tools that read signs.collider
   const collider = new THREE.BufferGeometry(); collider.setAttribute('position', new THREE.Float32BufferAttribute(colP, 3));
 
   // --- text atlases for screens + scrollers (Canvas2D, small) ---
@@ -1487,5 +1502,5 @@ export async function build(layout, ctx = {}) {
   };
 }
 
-export const seoulSigns = { build, buildData, exportData, generateSigns, signStats, designFace, loadFonts, NIT_SCALE, NITS, CENSUS, SHIPPED, PUSH_BY_KIND, K };
+export const seoulSigns = { build, buildData, exportData, generateSigns, signStats, designFace, colliderTris, loadFonts, NIT_SCALE, NITS, CENSUS, SHIPPED, PUSH_BY_KIND, K };
 export default seoulSigns;

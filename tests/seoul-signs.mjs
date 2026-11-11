@@ -158,6 +158,8 @@ const scr = w.emitters.filter((e) => e.kind === 'screen' && e.screenKind); const
 w.update(3.7); const n1 = scr.map((e) => e.nits + e.rgb.join()).join(); w.update(3.7); const n2 = scr.map((e) => e.nits + e.rgb.join()).join();
 ok(n0 !== n1 && n1 === n2, 'screen emitters animate and are a pure function of t');
 ok(w.collider.attributes.position.count > 1000, `collider triangles exported (${w.collider.attributes.position.count / 3})`);
+{ // [P4-B] native #5: the pure collider soup is the build's own housings (world-seoul's depth pass / BVH read it)
+  const ct = M.colliderTris(layout, { seed: 1, ...LI }); ok(ct.length === w.collider.attributes.position.count * 3 && ct.every(Number.isFinite), `colliderTris = build's collider (${ct.length / 9} tris)`); }
 const nonAscii = [...JSON.stringify(a.specs.map((s) => s.name))].filter((c) => c.charCodeAt(0) >= 0xac00 && c.charCodeAt(0) <= 0xd7a3).length;
 ok(nonAscii > 100, 'names are hangul');
 
