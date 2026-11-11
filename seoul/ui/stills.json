@@ -1,0 +1,18 @@
+{
+ "backdrop": {
+  "sha256": "7cdf87d30b2172f16c2d2304ed2678b04d7a5e6fbfb648e3f6023944b29474c2",
+  "satBright": 0.0282,
+  "source": "w21.jpg",
+  "crop": "0.4,0,1,0.6",
+  "pose": "seoulsnap w21: o.tp(-66.7,3,88,0,4-camTilt), cropped above the crowd (interim, no face > 30 px)",
+  "commit": "c00b936"
+ },
+ "thumb": {
+  "sha256": "6f81531b8419bf6dfe877778b7ea7555e1fcec76c47be82ba9e0e11cc1b30aaf",
+  "satBright": 0.0356,
+  "source": "walk0.jpg",
+  "crop": "0.45,0.15,1,0.7",
+  "pose": "seoulsnap walk0: o.tp(-36,3,-23,0,4-camTilt), right half (the sign column and the crowd's depth)",
+  "commit": "c00b936"
+ }
+}

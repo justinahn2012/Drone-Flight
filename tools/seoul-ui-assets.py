@@ -12,7 +12,20 @@
   white cards behind the type), a slight lift of the blacks' blue and a vignette. Re-run with a fresh still from the build
   (seoulsnap) once the other streams land.
 - glyphs.txt: the code points in the font (tests/seoul-ui.mjs checks every hangul string the UI can show against it).
-Re-run after adding hangul to levels.json or new street names to the layout."""
+- stills.json ([P4] ui #1 / #2): per still its sha256, source and pose, and the share of saturated-bright pixels (HSV
+  s >= 0.5 and v >= 0.6: lit neon, not white boxes). tests/seoul-ui.mjs checks the hashes and the thumb's share (>= 3 %).
+Re-run after adding hangul to levels.json or new street names to the layout.
+
+Re-shooting the stills ([P4]). The P4 stills are crops of phase-3 seoulsnap stills (stills.json says which): the backdrop
+is w21 above the crowd (no face, so no mask-band dots or hair hoods), the thumb walk0's sign column (3.6 % saturated-
+bright; the Yanghwa-ro crossing had 0.4 %). Re-shoot once G1's mask fix lands (tests/seoul-ui.mjs fails until the stills
+are newer than seoul-life.js): from a seoulsnap run of the build, 1280x720 or more, HUD off, quality auto, acro, held still.
+Proposed poses, not yet shot (both P4 world runs were OOM-killed in the shared cgroup):
+  thumb     o.tp(224.9, 3.2, -334.2, 107, 4 - camTilt): the walking street at the spawn, signs on both sides
+  backdrop  o.tp(224.9, 7.5, -334.2, 107, -10 - camTilt): the same street from 7.5 m, so no face is over ~30 px at 1600 wide
+            (or keep a crop above the crowd, as now)
+  python3 tools/seoul-ui-assets.py --backdrop BD.jpg [--backdrop-crop ..] --backdrop-pose "..." --thumb TH.jpg --thumb-pose "..." --commit SHA
+The thumb must keep >= 3 % saturated-bright pixels (crop to the signs if a pose falls short)."""
 import argparse, json, os, re, sys
 from fontTools import subset
 from fontTools.ttLib import TTFont
@@ -24,6 +37,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument('--font'); ap.add_argument('--backdrop'); ap.add_argument('--thumb')
 ap.add_argument('--backdrop-crop', default='0,0,1,1', help='x0,y0,x1,y1 (fractions) of the source still')
 ap.add_argument('--thumb-crop', default='0,0,1,1')
+ap.add_argument('--backdrop-pose', default=''); ap.add_argument('--thumb-pose', default='')
+ap.add_argument('--commit', default='', help='the build the stills were shot from (stills.json)')
 a = ap.parse_args()
 os.makedirs(OUT, exist_ok=True)
 
@@ -48,6 +63,15 @@ if a.font:
     open(os.path.join(OUT, 'glyphs.txt'), 'w', encoding='utf8').write(''.join(chr(c) for c in have) + '\n')
     print(f'OT-KR800.woff2 {os.path.getsize(p) / 1024:.1f} KB, {len(have)} code points')
 
+def sat_bright(path):
+    """share of pixels with HSV s >= 0.5 and v >= 0.6 (lit, saturated: neon) in an image"""
+    from PIL import Image
+    import numpy as np
+    a = np.asarray(Image.open(path).convert('RGB')).astype(np.float32) / 255.0
+    mx, mn = a.max(axis=2), a.min(axis=2)
+    s = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0)
+    return float(((s >= 0.5) & (mx >= 0.6)).mean())
+
 def grade(src, size, crop, out, kb):
     from PIL import Image, ImageFilter
     import numpy as np
@@ -71,3 +95,18 @@ def grade(src, size, crop, out, kb):
 
 if a.backdrop: grade(a.backdrop, (1600, 900), a.backdrop_crop, os.path.join(OUT, 'backdrop.jpg'), 172)
 if a.thumb: grade(a.thumb, (480, 270), a.thumb_crop, os.path.join(OUT, 'thumb.jpg'), 40)
+
+# stills.json: refreshed for every still on disk (a still not re-shot keeps its pose / source / commit)
+import hashlib
+sp = os.path.join(OUT, 'stills.json')
+rec = json.load(open(sp, encoding='utf8')) if os.path.exists(sp) else {}
+for k, src, crop, pose in (('backdrop', a.backdrop, a.backdrop_crop, a.backdrop_pose), ('thumb', a.thumb, a.thumb_crop, a.thumb_pose)):
+    f = os.path.join(OUT, k + '.jpg')
+    if not os.path.exists(f): continue
+    r = rec.get(k, {})
+    if src: r.update({'source': os.path.basename(src), 'crop': crop, 'pose': pose, 'commit': a.commit})
+    r['sha256'] = hashlib.sha256(open(f, 'rb').read()).hexdigest()
+    r['satBright'] = round(sat_bright(f), 4)
+    rec[k] = r
+    print(f'{k}.jpg saturated-bright {100 * r["satBright"]:.1f} %')
+if rec: open(sp, 'w', encoding='utf8').write(json.dumps(rec, indent=1, ensure_ascii=False) + '\n')

@@ -182,6 +182,7 @@ body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 #pop::before{content:"";position:absolute;inset:-5px -14px -4px;border-radius:10px;background:rgba(0,0,0,.35);opacity:0;transition:opacity .15s;z-index:-1}
 #pop.plate::before{opacity:1}
 #pop .sub b{font-weight:600;color:var(--amber)}
+#pop .sub b.fast{padding:0 .3em;border-radius:3px;background:var(--amber);color:#1a1300;text-shadow:none;box-shadow:0 0 0 1px #000}   /* [F2] P4 ux #6 */
 #pop.show{animation:popA var(--popDur,1.3s) cubic-bezier(.2,.8,.2,1) forwards}
 @keyframes popA{0%{transform:translateX(-50%) scale(1.25);opacity:0}12%{transform:translateX(-50%) scale(1);opacity:1}80%{opacity:1}100%{transform:translateX(-50%) scale(1);opacity:0}}
 /* warnings: Betaflight-style blinking centre text */
@@ -255,8 +256,14 @@ body.coaching:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 .stats b em,.blines em{font-style:normal;color:#fff;background:var(--acc);padding:0 .3em;border-radius:3px;text-shadow:none}
 /* NEW / NEXT badges: white on #C9450C is 4.8:1 (the accent gave 3.7:1); [F2] a level accent brings its own ink (cyan: dark) */
 .stats b em,.blines em,.ln.next b::after{background:var(--accBadge);color:var(--accInk)}
-.blines{margin-top:8px;font:600 12px var(--mono);color:#e2dfd9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.blines{margin-top:8px;font:600 12px/1.45 var(--mono);color:#e2dfd9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .blines em{font-size:10px;letter-spacing:.06em;vertical-align:1px}
+/* [F2] P4 ui #4 / ux #1: the named lines once each (×N in amber), then "+30 BEATS" in the card's grey; two lines at most
+   (main.js fitBLines drops names from the end into "+2 LINES" before the clamp would cut the count) */
+.blines{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;max-height:calc(2 * 1.45em + 2px)}
+.blines .nm{white-space:nowrap}
+.blines .nm i{font-style:normal;color:var(--amber);margin-left:.35em}
+.blines .bt{color:#a29f99;white-space:nowrap}
 .bnext{margin-top:6px;font:500 14px/1.35 var(--body);color:#c6c3bc}
 .bnext b{font:700 15px var(--cond);letter-spacing:.04em;color:#fff}
 .bnext:empty{display:none}
@@ -392,6 +399,10 @@ body.paused .lede,body.paused .a2hs{display:none}
 .ln.on small i{font-style:normal;color:#c6c3bc}
 .ln.on svg rect{fill:var(--ink);stroke:var(--ink)}
 .ln.on svg path{display:block}
+.ln .fx{display:none}
+#lnMore{display:none;position:relative;z-index:1;margin:-17px 0 0;height:17px;text-align:right;pointer-events:none;
+  font:600 10px/17px var(--mono);letter-spacing:.12em;color:var(--ink);text-shadow:0 1px 2px #000}
+#lnMore.on{display:block}
 .ln.next{border-color:var(--acc)}
 .ln.next b::after{content:"NEXT";margin-left:7px;padding:1px 5px;border-radius:3px;background:var(--acc);color:#fff;font:600 10px var(--mono);letter-spacing:.08em;vertical-align:2px}
 .brand h1{margin:0;font-weight:800;font-size:clamp(44px,min(13vw,15vh),104px);line-height:.86;letter-spacing:-.01em}
@@ -489,9 +500,21 @@ body.dev .dev{display:revert!important}
   .ln b{font-size:12.5px;line-height:1.1;letter-spacing:.02em;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
   body.paused #linesSec>.sec{display:none}   /* paused: the strip says LINES 3/18 and each group head its own count */
   #startSec{display:flex;align-items:center;gap:12px}   /* START AT on one row with its starts */
-  #startSec .sec{margin:0!important}
+  #startSec .sec{margin:0!important;flex:none;white-space:nowrap}
+  /* [F2] P4: six starts (RED ROAD added) wrapped to a second row at 844 px with the iPhone's 47 px insets, pushing the grid
+     44 px down: 15 px type, 10 px sides, one row (a narrower screen scrolls the row sideways, never wraps) */
+  #starts{flex-wrap:nowrap;min-width:0;overflow-x:auto;scrollbar-width:none}
+  #starts::-webkit-scrollbar{display:none}
+  #starts button{flex:none;min-height:40px;padding:8px 10px;font-size:15px}
   body.paused #startSec{margin:8px 0 10px}
   .ln.on small{font-size:9.5px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* [F2] P4 ui #3 / ux #2: grouped, the columns come from main.js gridPlan (STREETS 3 across, SET PIECES and GAPS 2: 19 lines
+     in 3 rows). A cell is its name (two lines at most); a flown one says ×N under its tick, not on a third line */
+  .lines.grouped .ln.on small{display:none}
+  .lines.grouped .ln.on svg{top:5px;margin-top:0}
+  .lines.grouped .ln b{line-height:1.05}
+  .lines.grouped .ln .fx{display:block;position:absolute;left:1px;bottom:4px;width:20px;text-align:center;text-decoration:none;
+    font:700 9px/1 var(--mono);letter-spacing:0;color:var(--amber)}
   .ln.next b::after{content:none}
   .ln.next::after{content:"NEXT";position:absolute;right:-1px;top:-1px;padding:1px 4px;border-radius:0 8px 0 5px;background:var(--accBadge);color:var(--accInk);font:600 8px/1.3 var(--mono);letter-spacing:.08em}
   .wrap{padding-bottom:calc(78px + var(--sb))}   /* bar height + 16 px: the end of the scroll clears the sticky FLY bar */
@@ -687,6 +710,7 @@ body.dev .dev{display:revert!important}
     <div id="linesSec">
       <div class="sec">Lines <span id="lnCount"></span></div>
       <div class="lines" id="lnGrid"></div>
+      <div id="lnMore" aria-hidden="true"></div>
     </div>
 
     <div class="cta">

@@ -6,13 +6,21 @@
 // - [P3] the identity stills were committed after the last change to the look (world-seoul.js, seoul-signs.js, fpvcam.js)
 // - tips use <b> and the {bankT} / {cut} tokens only; the OSM credit is on Seoul's foot line (ODbL)
 // - every hangul the UI can show (levels.json strings, the layout's street / landmark `ko` names for the captions'
-//   place line) is in the UI font (seoul/ui/glyphs.txt, written by tools/seoul-ui-assets.py)
+//   place line, levels.json placeKo) is in the UI font (seoul/ui/glyphs.txt, written by tools/seoul-ui-assets.py)
+// - [P4] the stills record (seoul/ui/stills.json): hashes match the files, the thumb reads as neon (>= 3 % saturated-bright
+//   pixels; phase 3's dark crossing had 0.4 %); the stills are newer than seoul-life.js too (the backdrop shows the crowd)
+// - [P4] the short-landscape LINES grid (seoul/ui/fit.js gridPlan, as main.js lays it out) fits every line on the iPhone
+//   landscape screens with their safe areas: no name over two lines, no cell under the scroller's fade
+// - [P4] the end card's line row (fit.js takeSummary): named lines once, micros as a count, CLEAN over named flights;
+//   the OSD label rule (labelSpot): a bracket label in the top band goes under its bracket
 import { readFileSync, existsSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const { gridPlan, nameLines, cellH, CELL, takeSummary, labelSpot } = await import(new URL('../seoul/ui/fit.js', import.meta.url).href);
 let fails = 0;
 const ok = (c, msg) => { if (c) console.log('  ok  ' + msg); else { fails++; console.log('  FAIL ' + msg); } };
 const levels = JSON.parse(readFileSync(join(ROOT, 'levels.json'), 'utf8'));
@@ -60,6 +68,7 @@ for (const L of levels) {
 
 console.log('Seoul');
 const S = levels.find((l) => l.id === 'seoul-hongdae');
+const lay0 = JSON.parse(readFileSync(join(ROOT, 'seoul', 'layout.json'), 'utf8'));
 ok(!!S, 'seoul-hongdae is in levels.json');
 if (S) {
   for (const k of ['subtitle', 'thumb', 'backdrop', 'kicker', 'tips', 'lines', 'lineCopy', 'lineGroups', 'loadSteps', 'foot']) ok(k in S, `seoul has ${k}`);
@@ -75,8 +84,28 @@ if (S) {
   ok(!noCopy.length, `every named line in lines.json has a hint (${named.length - noCopy.length}/${named.length})${noCopy.length ? ': missing ' + noCopy.join(', ') : ''}`);
   ok(!stale.length, `lineCopy names only lines.json lines${stale.length ? ': stale ' + stale.join(', ') : ''}`);
   ok(Object.values(copy).every((c) => groups.has(c.group)), 'every lineCopy group is in lineGroups');
+  const noGroup = named.filter((n) => !copy[n]?.group);
+  ok(!noGroup.length, `every named line has a lineCopy group (its grid section)${noGroup.length ? ': missing ' + noGroup.join(', ') : ''}`);
+  // [P4] ui #5: street-name overrides for the caption's place line (layout ids -> hangul)
+  if (S.placeKo) {
+    const ids = new Set([...(lay0.streets || []), ...(lay0.hero || [])].map((x) => x.id));
+    ok(typeof S.placeKo === 'object' && Object.entries(S.placeKo).every(([k, v]) => ids.has(k) && /^[가-힣 0-9]+$/.test(v)), `placeKo names layout ids, in hangul (${Object.entries(S.placeKo).map(([k, v]) => k + ' ' + v).join(', ')})`);
+    for (const v of Object.values(S.placeKo)) strings.push(v);
+  }
   for (const [n, c] of Object.entries(copy)) { strings.push(c.hint); ok(!/\{(?!w\})/.test(c.hint) && !/[<>]/.test(c.hint), `${n} hint: plain text, {w} only`); }
-  ok(named.length >= 18, `lines.json has ${named.length} named lines (the grid is laid out for 18)`);
+  ok(named.length >= 18, `lines.json has ${named.length} named lines`);
+  // [P4] ui #3 / ux #2: the short-landscape grid, paused (START AT on one row above it: the grid starts 144 px down at 390
+  // tall, measured), the RESUME bar 62 px + the home-indicator inset, 16 px clear above it. Phase 3 hid 3 of 19 at 390.
+  console.log('Short-landscape LINES grid (fit.js gridPlan, iPhone safe areas)');
+  const byG = (S.lineGroups || []).map(([id]) => named.filter((n) => copy[n]?.group === id)).filter((g) => g.length);
+  for (const [W, H, side, sb, tag] of [[844, 390, 47, 21, 'iPhone 13/14'], [852, 393, 59, 21, 'iPhone 15/16 Pro'], [932, 430, 59, 21, 'Pro Max'], [932, 390, 0, 0, 'headless']]) {
+    const gw = Math.min(860, W - 40 - 2 * side), plan = gridPlan(byG.map((g) => g.length), gw);
+    if (!plan) { ok(false, `${tag} ${W}x${H}: no plan fits ${gw} px`); continue; }
+    const nl = Math.max(...byG.flat().map((n) => nameLines(n, plan.cell))), long = byG.flat().filter((n) => nameLines(n, plan.cell) > 2);
+    const h = CELL.head + plan.rows * cellH(nl) + (plan.rows - 1) * 5, avail = H - (144 + 0.4 * (H - 390)) - (62 + sb) - 16;
+    ok(!long.length && h <= avail, `${tag} ${W}x${H}: ${plan.cols.join(' + ')} cells across (${plan.cell.toFixed(0)} px), ${plan.rows} rows, ${h} of ${avail.toFixed(0)} px: every line shows` +
+      (long.length ? `; over two lines: ${long.join(', ')}` : ''));
+  }
   const tip = LJ.takeStart?.hint?.text || LJ.startPoints?.[0]?.hint?.text || '';
   ok(!!tip, `the first instruction comes from lines.json takeStart.hint: "${tip}"`);
   ok(LJ.tuning && +LJ.tuning.bankT > 0 && Array.isArray(LJ.tuning.stars), `lines.json tuning gives the copy its numbers (bankT ${LJ.tuning?.bankT} s, stars ${LJ.tuning?.stars})`);
@@ -88,10 +117,39 @@ if (S) {
   if (unl.length) console.log(`  warn build steps without a label (shown blank): ${unl.join(', ')}`); else ok(steps.length > 0, `every build step (${steps.length}) has a label`);
   // the stills: committed after the last commit that changed the look (git; skipped outside a git checkout)
   const ct = (f) => { try { return +execFileSync('git', ['log', '-1', '--format=%ct', '--', f], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || 0; } catch (e) { return -1; } };
-  const still = Math.min(ct(S.backdrop), ct(S.thumb)), look = Math.max(...['world-seoul.js', 'seoul-signs.js', 'fpvcam.js'].map(ct));
+  const still = Math.min(ct(S.backdrop), ct(S.thumb)), look = Math.max(...['world-seoul.js', 'seoul-signs.js', 'fpvcam.js', 'seoul-life.js'].map(ct));   // [P4] + the crowd
   if (still < 0 || look < 0) console.log('  skip stills freshness (no git)');
   else ok(still >= look, `identity stills are newer than the look (stills ${new Date(still * 1e3).toISOString().slice(0, 16)}, look ${new Date(look * 1e3).toISOString().slice(0, 16)})` +
-    (still >= look ? '' : ': re-shoot, python3 tools/seoul-ui-assets.py --backdrop STILL --thumb STILL'));
+    (still >= look ? '' : ': re-shoot (poses: seoul/ui/stills.json), python3 tools/seoul-ui-assets.py --backdrop STILL --thumb STILL'));
+  // [P4] ui #1 / #2: the stills record
+  const sj = join(ROOT, 'seoul', 'ui', 'stills.json'), SR = existsSync(sj) ? JSON.parse(readFileSync(sj, 'utf8')) : null;
+  ok(!!SR, 'seoul/ui/stills.json exists (tools/seoul-ui-assets.py writes it)');
+  for (const k of ['backdrop', 'thumb']) if (SR && S[k] && existsSync(join(ROOT, S[k]))) {
+    const h = createHash('sha256').update(readFileSync(join(ROOT, S[k]))).digest('hex');
+    ok(SR[k]?.sha256 === h, `stills.json ${k} hash matches ${S[k]}`);
+  }
+  if (SR) ok(+SR.thumb?.satBright >= 0.03, `the thumb reads as neon: ${(100 * (+SR.thumb?.satBright || 0)).toFixed(1)} % saturated-bright pixels (>= 3 %)`);
+}
+
+console.log('End card and OSD labels (fit.js)');
+{
+  // a careful long take: 6 named lines (one repeated), 30 micros
+  const log = [];
+  const nm = ['UNDER THE STAGE', 'WALKING STREET', 'RED ROAD', 'HONGIK-RO', 'SCREEN CANYON', 'CROSSING'];
+  nm.forEach((n, i) => { log.push({ name: n, flow: i + 1, clean: i !== 2, micro: false }); for (let k = 0; k < 5; k++) log.push({ name: `${n} ${k + 1}/5`, flow: 1, clean: true, micro: true }); });
+  log.push({ name: 'WALKING STREET', flow: 1, clean: true, micro: false, repeat: true });
+  const T = takeSummary(log);
+  ok(T.named.length === 6 && T.named[1].name === 'WALKING STREET' && T.named[1].flow === 2 && T.named[1].n === 2, `named lines once each, in order, with their FLOW (${T.named.map((l) => l.name + ' x' + l.flow).join(', ')})`);
+  ok(T.beats === 30 && T.flights === 7 && T.clean === 6, `micros are beats (+${T.beats} BEATS); CLEAN over named flights: ${T.clean}/${T.flights}`);
+  const T2 = takeSummary(['WALKING STREET', 'WALKING STREET 1/7', 'RED ROAD'], (n) => / \d+\/\d+$/.test(n));
+  ok(T2.named.length === 2 && T2.beats === 1, 'name-only logs use the lines file to tell micros');
+  // gap_the (932 x 430 OSD): the guide "WALKING STREET · 1:28" at y 38-56, THE GAP's bracket 72-366 px: its label goes under
+  const guide = [370, 35, 590, 58], timer = [425, 396, 508, 422], bx = [436, 72, 497, 366];
+  const sp = labelSpot(bx, 80, 16, { band: Math.max(80, guide[3] + 20), bottom: 426, fixed: [guide, timer], labels: [], left: 4, right: 928 });
+  ok(sp && sp.y > bx[3], `a bracket label in the top band goes under its bracket (y ${sp?.y})`);
+  const sp2 = labelSpot([300, 150, 380, 250], 80, 16, { band: 80, fixed: [guide], labels: [] });
+  ok(sp2 && sp2.y < 150, 'below the band it stays over its bracket');
+  ok(!labelSpot([400, 60, 520, 410], 80, 16, { band: 80, bottom: 426, fixed: [guide, timer], labels: [] }), 'no room above or below: no label (the ticks stay)');
 }
 
 console.log('UI font coverage');
