@@ -135,7 +135,8 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
   // P5 sound #4: Hongdae's own voices: shop callers on the walking street, glasses and bottles at the tables
   ok(res.walking.st.callers >= 1 && res.club.st.clinks >= 1, `Hongdae's own voices: shop callers ${res.walking.st.callers} at the walking-street hover, clinks ${res.club.st.clinks} on the club street (12 s each)`);
   ok(res.club.lu <= -6 && res.club.lu > -12, `the club doors are cooled: the club spot is ${res.club.lu.toFixed(1)} LU (-12 to -6; P3 -3.4)`);
-  ok(Object.values(res).every((v) => v.low < 0.3 && v.lu - v.ph < 5 && v.ph > -17), `voiced for a phone speaker: < 120 Hz ${Object.values(res).map((v) => (100 * v.low).toFixed(0)).join(' / ')} % (< 30; P2 club 53 %), through a 350 Hz high-pass ${Object.values(res).map((v) => v.ph.toFixed(1)).join(' / ')} LU (> -17; P2 club street -18.2), losing ${Object.values(res).map((v) => (v.lu - v.ph).toFixed(1)).join(' / ')} (< 5)`);
+  const fv = four.map(([, v]) => v);   // (P5: the alley is meant to be quiet; its own row is above)
+  ok(fv.every((v) => v.low < 0.3 && v.lu - v.ph < 5 && v.ph > -17), `voiced for a phone speaker (walking, junction, club, station): < 120 Hz ${fv.map((v) => (100 * v.low).toFixed(0)).join(' / ')} % (< 30; P2 club 53 %), through a 350 Hz high-pass ${fv.map((v) => v.ph.toFixed(1)).join(' / ')} LU (> -17; P2 club street -18.2), losing ${fv.map((v) => (v.lu - v.ph).toFixed(1)).join(' / ')} (< 5)`);
   // sound #1: peaks. Momentary loudness p95 - p50 on the hero streets (P2 0.7-1.3 dB everywhere; a recorded crowd 5.3)
   const walk = await cityAt({ y: 3 }, 20, { path: S065 }), club = await cityAt({ y: 3 }, 20, { path: CLUB }), sw = spread(walk.L, walk.R), sc = spread(club.L, club.R);
   ok(sw >= 4 && sc >= 4, `the map has peaks: p95 - p50 ${sw.toFixed(1)} dB along the walking street, ${sc.toFixed(1)} along the club street (>= 4 / 4; P2 0.7-1.3)`);

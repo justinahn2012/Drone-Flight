@@ -32,9 +32,9 @@ const nrm = (k) => Math.pow(10, NORM[k] / 20);
 // Vehicles: 1 m figures (P2 used 7.5 m pass-by figures at 1 m, so Yanghwa-ro sat 40 LU under the props).
 export const SND = {
   level: 1,
-  // P5 (sound #2): 5.13 -> 4.08 (-2 dB): the walking-street hover back at -10 LU now the arterials, the shop callers and
+  // P5 (sound #2): 5.13 -> 3.85 (-2.5 dB): the walking-street hover back at -10 LU now the arterials, the shop callers and
   // the hover's events carry more; the place contrast comes from the parts, not the trim
-  world: 4.08,     // trim on the world path, set so the city sits ~10 LU under a hover on the walking street (sound #1)
+  world: 3.85,     // trim on the world path, set so the city sits ~10 LU under a hover on the walking street (sound #1)
   // P4: beds.traffic is now the city floor under the energy-summed traffic bed (sound #2); P3 61 dB at the street centre
   beds: { traffic: 50, crowd: 63, alley: 58, air: 54, rain: 66 },   // P4: crowd 65 -> 63 (plain-RMS babble; the events carry the peaks)
   // P5 (sound #2): artFlow 0.9 -> 1.3, now counted per lane against the sim's own moving (> 3 m/s) vehicles on that lane
@@ -45,7 +45,7 @@ export const SND = {
   music: 75, club: 91,   // P5: music 81 -> 75 (a doorway speaker ~70 dB at 2 m; P4 75: a steady wall that held a hover CV at 0.44)
   busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 82, shout: 88, talk: 74, yelp: 92, heel: 72, step: 60,
   applause: 92, cheer: 88, guide: 84, tick: 72, queue: 80, staff: 86, exit: 80, draught: 72,
-  glaugh: 85, name: 94, phone: 74, beep: 84,   // P5: beep 88 -> 84
+  glaugh: 85, name: 97, phone: 74, beep: 84,   // P5: beep 88 -> 84
     // P4 (sound #3): a group's laughter, a name called, a phone's K-pop, a scooter's horn
   // P5: a pass-by at its closest (sound #3), the diesel idle of the arterial's buses (bed, 1 m), a shop caller's headset PA
   // and her clapping (sound #4), glasses and soju bottles in w21, a group talking past (sound #5), the train under exit 9
@@ -971,7 +971,8 @@ export function createSeoulAudio(layout, life, opts = {}) {
     if (life?.crowd && g.ctxv && dtF > 0) {
       refreshNear(cam);
       // P5 (sound #2): sparse streets laugh less than in proportion (laughter needs groups): x crowdN / 60 under 60
-      const rate = Math.min(0.3, 0.006 * g.ctxv.crowdN * Math.min(1, g.ctxv.crowdN / 60)), slot = Math.floor(t * 10), prevSlot = Math.floor((t - dtF) * 10);
+      const rate = Math.min(0.2, 0.006 * g.ctxv.crowdN * Math.min(1, g.ctxv.crowdN / 60)),   // (P5: cap 0.3 -> 0.2 a second: the swells carry a dense crowd's peaks)
+        slot = Math.floor(t * 10), prevSlot = Math.floor((t - dtF) * 10);
       for (let sl = prevSlot + 1; sl <= slot; sl++) {
         const h = ((Math.imul(sl, 2654435761) ^ 0x5bd1e995) >>> 0) / 4294967296;
         if (h < rate * 0.1 && nearList.length) {
