@@ -147,6 +147,9 @@ body.thr #oThr{display:block}
 #oGhost.far svg{width:12px;height:12px}
 /* [F2] ui #4: night levels halo the OSD (glyphs, take tag, brackets) over lit fascia: the keyline alone sat on 88 % lit pixels */
 body.night #osd .o,body.night #toast,body.night #warn{filter:drop-shadow(0 0 3px rgba(0,0,0,.65))}
+/* [P5-F] ui #3: the first HUD-over-world shots (844x390, phone preset) put 26-28 % of the score's box and 63 % of the speed's
+   over lit signs (> 0.6 luma; gate 25 %): at night the corner readouts sit on a 0.35 scrim chip */
+body.night #osd .tr,body.night #osd .br,body.night #osd .bl,body.night #osd .bc,body.night #osd .rm{background:rgba(0,0,0,.35);border-radius:5px;padding:1px 5px;margin:-1px -5px}
 /* overlay levels: OSD (all) | Minimal (score + captions) | Clean (captions only) */
 body.hud-min #osd .o:not(.tr):not(.tl):not(.cc){display:none}
 body.nohud #osd, body.nohud #live{display:none}
@@ -182,6 +185,7 @@ body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 #pop::before{content:"";position:absolute;inset:-5px -14px -4px;border-radius:10px;background:rgba(0,0,0,.35);opacity:0;transition:opacity .15s;z-index:-1}
 #pop.plate::before{opacity:1}
 #pop .sub b{font-weight:600;color:var(--amber)}
+#pop .sub{font-variant-numeric:tabular-nums}#pop .sub .pts{color:#a29f99}   /* [P5-F] ui #5: tabular times, the points in the quiet grey */
 #pop .sub b.fast{padding:0 .3em;border-radius:3px;background:var(--amber);color:#1a1300;text-shadow:none;box-shadow:0 0 0 1px #000}   /* [F2] P4 ux #6 */
 #pop.show{animation:popA var(--popDur,1.3s) cubic-bezier(.2,.8,.2,1) forwards}
 @keyframes popA{0%{transform:translateX(-50%) scale(1.25);opacity:0}12%{transform:translateX(-50%) scale(1);opacity:1}80%{opacity:1}100%{transform:translateX(-50%) scale(1);opacity:0}}

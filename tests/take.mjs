@@ -624,6 +624,32 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     ok(slow && slow.speed === 1.1 && !slow.fast && Math.abs(slow.best - fast.dur) < 1e-9 && !slow.newBest && slow.pts === Math.round(1000 * 1.25 * 1.1),
       `13 s of a 15 s window: x1.1, no FAST, best = the 5 s run (${JSON.stringify(slow && { dur: slow.dur, speed: slow.speed, best: slow.best })})`);
     ok(new Take().lineList({ lines: [{ name: 'S', caption: 'S', pts: 1000, ...gate(40), pre: [gate(0)], within: 15, par: 5 }], skimBvh }).find((l) => l.name === 'S').bestDur === fast.dur, 'lineList carries the best time (bestDur)');
+    // [P5-F design #4 / UX #5] bankBonus: the street's k pays on its micros too (they score x1 themselves); fastPar: FAST
+    // only within par x fastPar
+    if ('bankBonus' in T) {
+      const runB = (v, tun) => {
+        const Wb = { lines: [{ name: 'S', caption: 'S', pts: 1000, ...gate(40), pre: [gate(0)], within: 15, par: 5 },
+          { name: 'S 1/2', caption: 'S 1/2', pts: 500, micro: true, seg: 'S', ...gate(20), pre: [gate(0)], within: 8, par: 2.5 },
+          { name: 'S 2/2', caption: 'S 2/2', pts: 500, micro: true, seg: 'S', ...gate(40), pre: [gate(20)], within: 8, par: 2.5 }], skimBvh, tuning: tun };
+        const t = new Take(), dd = mk(), out = []; dd.pos = { x: 0, y: 2, z: -2 }; dd.vel = { x: 0, y: 0, z: v };
+        for (let z = -2; z < 42; z += v * DT) { dd.pos = { ...dd.pos, z }; out.push(...t.update(DT, dd, Wb, true)); }
+        return out;
+      };
+      resetProgress();
+      const B = runB(8, { timed: true, bankBonus: true, fastBonus: 1.0, fastPar: 1.15, microFlow: 0 }), s = B.find((e) => e.name === 'S'), m = B.filter((e) => e.micro);
+      const mp = m.reduce((a, e) => a + e.pts, 0);
+      ok(m.length === 2 && m.every((e) => e.speed === 1 && e.fast) && s && s.speed === 2 && s.bonus === mp && s.pts === Math.round(1000 * 1.25 * 2) + mp,
+        `bankBonus at par: micros x1 (${m.map((e) => e.pts)}), the street x2 + its micros again (bonus ${s?.bonus}, pts ${s?.pts})`);
+      resetProgress();
+      const Bs = runB(40 / 7, { timed: true, bankBonus: true, fastBonus: 1.0, fastPar: 1.15, microFlow: 0 }), ss = Bs.find((e) => e.name === 'S');
+      ok(ss && !ss.fast && ss.dur > 5 * 1.15 && ss.speed > 1 && ss.bonus > 0, `7 s for a 5 s par: paid x${ss?.speed} but no FAST (par x 1.15 = 5.75 s)`);
+      resetProgress();
+      const Bo = runB(8, { timed: true }), so = Bo.find((e) => e.name === 'S');
+      resetProgress();
+      const Bc = runB(40 / 8.4, { timed: true, bankBonus: true, fastBonus: 1.0, slowPar: 1.6, fastPar: 1.15, microFlow: 0 }), sc = Bc.find((e) => e.name === 'S');
+      ok(sc && sc.speed === 1 && !sc.bonus, `slowPar 1.6: 8.4 s for a 5 s par (a careful pilot) pays x${sc?.speed}, no bonus`);
+      ok(so && !('bonus' in so) && so.speed === 1.5 && Bo.filter((e) => e.micro).every((e) => e.speed === 1.5), 'bankBonus off (phase 4): every timed line its own x1.5, no bonus');
+    }
     // no par, not timed (bando): the event keeps its shape
     resetProgress();
     const plain = (() => { const Wp = { lines: [{ name: 'S', caption: 'S', pts: 1000, ...gate(40), pre: [gate(0)], within: 15 }], skimBvh }, t = new Take(), dd = mk(), out = [];
@@ -641,6 +667,32 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     ok(tk5.nextHint(d5, { ...W5, startPoints: [{ ...W5.startPoints[0], hint: { ...W5.startPoints[0].hint, r: undefined } }] })?.name === 'N' && new Take().nextHint({ ...d5, pos: { x: 0, y: 2, z: 7 } }, { ...W5, startPoints: [{ ...W5.startPoints[0], hint: { ...W5.startPoints[0].hint, r: undefined } }] })?.name === 'N', 'no r: 6 m (then the nearest, N here too)');
     resetProgress();
   }
+}
+
+// [P5-F design #3] the star fit's evidence: tests/seoul/take-sim.json (seoul/tools/take-sim.mjs --record) against lines.json's
+// stars. Phase 4's [18k, 60k, 150k] gave a careful long take 3 stars in 3 of 4 runs: careful long <= 2 stars in every run (its
+// p75 of 4 is the best run), regular long 3 at its p50, and the record is of these lines (else: re-record)
+{
+  const fs = await import('node:fs'), { createHash } = await import('node:crypto');
+  const LJp = DIR + '/seoul/lines.json', Rp = DIR + '/tests/seoul/take-sim.json';
+  if (fs.existsSync(LJp) && fs.existsSync(Rp)) {
+    const LJ = JSON.parse(fs.readFileSync(LJp, 'utf8')), R = JSON.parse(fs.readFileSync(Rp, 'utf8')), st = LJ.tuning.stars;
+    const h = createHash('sha256').update(JSON.stringify({ lines: LJ.lines, tuning: LJ.tuning, takeStart: LJ.takeStart })).digest('hex').slice(0, 16);
+    ok(R.lines === h, `tests/seoul/take-sim.json is of this lines.json (${R.lines} vs ${h}; re-record: node seoul/tools/take-sim.mjs --runs 4 --route short,walk,loop,long,hongik,stairs,pop,pass --record)`);
+    const cl = R.results['long/careful'], rl = R.results['long/regular'], sl = R.results['long/sharp'];
+    ok(cl && starsFor(cl.p75, st) <= 2, `a careful long take is <= 2 stars in every run (best ${cl?.p75}, 3 stars at ${st[2]})`);
+    ok(rl && starsFor(rl.p50, st) === 3, `a regular long take is 3 stars at its p50 (${rl?.p50})`);
+    const cw = R.results['walk/careful'], sw = R.results['short/sharp'], cs = R.results['short/careful'];
+    ok(cw && starsFor(cw.p50, st) >= 1, `the walking street alone at a careful pace is 1 star (${cw?.p50})`);
+    // design #4: speed pays (phase 4: sharp +18 % on WALKING STREET's own pts)
+    ok(cs && sw && sw.wsPts >= 1.5 * cs.wsPts, `WALKING STREET pays a sharp pilot >= 1.5x a careful one (${sw?.wsPts} vs ${cs?.wsPts})`);
+    // design #1 / #5 / #6: the opening's first x2 by 20 s, no caption gap over 15 s on long and loop, the portals and the stair dive flown
+    ok(cs && cs.x2 <= 20, `the first x2 comes at ${cs?.x2} s (careful, short route; phase 4: 211 s following the hint)`);
+    for (const k of ['long/careful', 'long/regular', 'long/sharp', 'loop/careful', 'loop/regular', 'loop/sharp']) if (R.results[k]) ok(R.results[k].gapMax <= 15, `${k}: caption gap max ${R.results[k].gapMax} s (<= 15)`);
+    for (const r of ['pop', 'pass']) { const n = ['careful', 'regular', 'sharp'].reduce((a, p) => a + (R.results[`${r}/${p}`]?.stars ? R.results[`${r}/${p}`].stars.length : 0), 0);
+      const got = ['careful', 'regular', 'sharp'].reduce((a, p) => a + (R.results[`${r}/${p}`]?.flown ?? 0), 0);
+      ok(n === 0 || got >= Math.ceil(n * 10 / 12), `${r}: flown in ${got} of ${n} sim takes (>= 10 of 12)`); }
+  } else console.log('skip: tests/seoul/take-sim.json or seoul/lines.json missing');
 }
 
 console.log(`take tests: ${pass} passed, ${fail} failed`);

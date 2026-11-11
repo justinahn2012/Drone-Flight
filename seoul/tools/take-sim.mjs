@@ -1,11 +1,15 @@
 // seoul/tools/take-sim.mjs — noisy-pilot takes through the Hongdae lines, scored by take.js with the level's tuning
 // (stream F1, design #1: "stars from noisy-pilot sims"). Node only, ~1-3 min:
-//   node seoul/tools/take-sim.mjs [--runs N] [--route short|loop|long|...|all, or a,b,c] [--json out.json] [--no-movers]
+//   node seoul/tools/take-sim.mjs [--runs N] [--route short|loop|long|...|all, or a,b,c] [--json out.json] [--no-movers] [--record]
 //   env: PILOT=careful,regular  TL=1 (per-run timelines)  NOPIECES=1 (no set pieces)  NOWALKERS=1
 // [P3-F1] set-piece routes ('from' starts a route 14 m before a line's first gate), walkers, per-run timelines.
 // [P4-F1] the game's crowd (LIFE.maxAgents; env LIFE_Q=low: the low preset's half, design #2); the A* reaches 4 m below the
 // street (down the stair dive) over a heightfield floor: the street at 0, E's stairwell openings (dressing holes) open
 // (design #1); routes open UNDER THE STAGE into the walking street (design #4); prints FAST lines and the first x2.
+// [P5-F] design #1: the take opens at the junction (lines.json takeStart), UNDER THE STAGE (its `first` entry, out of the
+// junction) then the walking street out to its SE end; longer routes fly it back (entry 1) to the junction. design #6:
+// the air portals (pop, pass); an unknown route or line name throws a readable error (phase 4: buildPath crashed on
+// `lineGates(...)` undefined).
 // A Cine autopilot (pure pursuit over a 3D A* route at 1 m, 0.9 m clearance) flies each route through the gates in order,
 // with a pilot's cruise speed, OU thumb noise on every stick and a line choice inside each gate; buses, taxis and people
 // are on (world.movers via seoul-movers.js, the drawn sim's seed). Each take ends in a CUT (3 s hands off) or a crash.
@@ -92,13 +96,17 @@ function streetGates(name, k = 0) {
 // k: the entry index, or 'first' (the entry flagged `first`: UNDER THE STAGE toward the hub)
 const pickEntry = (name, k) => { const E = entries(name); return k === 'first' ? E.find((l) => l.first) || E[0] : E[k]; };
 const lineGates = (name, k = 0) => { const e = pickEntry(name, k); return e ? [...(e.pre || []), e] : null; };
-// [P4-F1 design #4] a take opens over the crowd, UNDER THE STAGE (its exit lines up with the walking street's start gate)
-const OPEN = [['line', 'OVER THE CROWD', 0], ['line', 'UNDER THE STAGE', 'first']];
+// [P5-F design #1] a take opens UNDER THE STAGE out of the junction (its exit lines up with the walking street's start gate),
+// then the street to its SE end; BACK flies it home to the junction (entry 1: repeats, the chain kept)
+// (and back under the stage toward the junction: entry 0, a repeat; it splits the 14-16 s run to HONGIK-RO 1/4)
+const OPEN = [['line', 'UNDER THE STAGE', 'first']], WALK = [['street', 'WALKING STREET', 0]], BACK = [['street', 'WALKING STREET', 1], ['line', 'UNDER THE STAGE', 0]];
 const ROUTES = {
-  short: [...OPEN, ['street', 'WALKING STREET', 0]],
-  walk: [['street', 'WALKING STREET', 0]],          // [P4-F1] past the stage, straight down the street
+  short: [...OPEN, ...WALK],
+  walk: [...WALK],          // [P4-F1] past the stage, straight down the street
   // [P3-F1] through the transit connectors (TO THE BAR ALLEY n): a pilot follows the street between the two lines
-  loop: [...OPEN, ['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['line', 'INTO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0]],   // [P4-E] + INTO THE BAR ALLEY
+  loop: [...OPEN, ...WALK, ...BACK, ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['line', 'INTO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0]],   // [P4-E] + INTO THE BAR ALLEY
+  // [P5-F design #5] from the junction straight onto Hongik-ro (its first segment: 30 m)
+  hongik: [['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['line', 'INTO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0]],
   stairs: [['from', 'STATION STAIRS', 0, 14], ['line', 'STATION STAIRS', 0]],
   stage0: [['from', 'UNDER THE STAGE', 0, 14], ['line', 'UNDER THE STAGE', 0]],
   stage1: [['from', 'UNDER THE STAGE', 1, 14], ['line', 'UNDER THE STAGE', 1]],
@@ -116,12 +124,21 @@ const ROUTES = {
   queue: [['from', 'OVER THE QUEUE', 0, 10], ['line', 'OVER THE QUEUE', 0]],
   door: [['from', 'DOOR QUEUE', 0, 10], ['line', 'DOOR QUEUE', 0]],
   roofline: [['from', 'ROOFLINE', 0, 14], ['street', 'ROOFLINE', 0], ['line', 'ROOF SLOT', 0]],
-  hub: [...OPEN, ['street', 'WALKING STREET', 0], ['street', 'RED ROAD', 1]],
-  sig: [...OPEN, ['street', 'WALKING STREET', 0], ['line', 'UNDER THE STAGE', 1], ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
+  hub: [...OPEN, ...WALK, ...BACK, ['street', 'RED ROAD', 1]],
+  sig: [...OPEN, ...WALK, ...BACK, ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
   // [P4-E design #5] through the new connectors (TO THE CABLE LATTICE / TO THE FORK / TO THE SIGN STACK n), as the hint's via leads
-  long: [...OPEN, ['street', 'WALKING STREET', 0], ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['line', 'INTO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0], ['line', 'TO THE CABLE LATTICE 1', 0], ['street', 'CABLE LATTICE', 0],
+  long: [...OPEN, ...WALK, ...BACK, ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['line', 'INTO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0], ['line', 'TO THE CABLE LATTICE 1', 0], ['street', 'CABLE LATTICE', 0],
     ['line', 'TO THE FORK 1', 0], ['line', 'TO THE SIGN STACK 1', 0], ['line', 'TO THE SIGN STACK 2', 0], ['line', 'SIGN STACK', 0], ['line', 'TO THE ROOFLINE 1', 0], ['street', 'ROOFLINE', 1]],
+  // [P5-F design #6] the air portals: up through PLAYGROUND POP (horizontal: a climb from 4 m under it, 2 m to the side), along
+  // the screen face through SCREEN PASS
+  pop: [['from', 'PLAYGROUND POP', 0, 2], ['line', 'PLAYGROUND POP', 0]],
+  pass: [['from', 'SCREEN PASS', 0, 14], ['line', 'SCREEN PASS', 0]],
 };
+// [P5-F design #6] a readable error for a route or line that isn't there (phase 4: TypeError in buildPath)
+for (const rn of (ROUTE === 'all' ? Object.keys(ROUTES) : ROUTE.split(','))) {
+  if (!ROUTES[rn]) throw new Error(`take-sim: no route '${rn}' (routes: ${Object.keys(ROUTES).join(', ')})`);
+  for (const [kind, name, k] of ROUTES[rn]) if (!pickEntry(name, k)) throw new Error(`take-sim: route '${rn}' names ${kind} '${name}' entry ${k}, which lines.json doesn't have (${entries(name).length} entries)`);
+}
 // a pilot: cruise m/s, thumb noise (stick OU sigma), line choice spread (share of the gate half-size), reaction lookahead m
 const PILOTS = {
   careful: { v: 5.0, noise: 0.10, spread: 0.30, look: 3.0 },
@@ -131,7 +148,10 @@ const PILOTS = {
 
 function buildPath(route, rng, spread) {
   const ts = world.takeStart; let path = [ts.pos.clone()];
-  if (route[0][0] === 'from') { const [, nm, kk, back] = route[0]; const g = lineGates(nm, kk)[0]; const n = V(g.n).setY(0).normalize(); const p0 = V(g.c).addScaledVector(n, -back); if (p0.y < 2) p0.y = Math.max(2.2, g.c[1]); path = [p0]; route = route.slice(1); }
+  if (route[0][0] === 'from') { const [, nm, kk, back] = route[0]; const g = lineGates(nm, kk)[0];
+    // [P5-F] a horizontal gate (PLAYGROUND POP, n up): start `back` m to the side of it (along u), 4 m under it, at >= 2.2 m
+    const horiz = Math.abs(g.n[1]) > 0.9, n = horiz ? V(g.u || [1, 0, 0]).setY(0).normalize() : V(g.n).setY(0).normalize();
+    const p0 = V(g.c).addScaledVector(n, -back); if (horiz) p0.y = Math.max(2.2, g.c[1] - 4 * Math.sign(g.n[1])); if (p0.y < 2) p0.y = Math.max(2.2, g.c[1]); path = [p0]; route = route.slice(1); }
   for (const [kind, name, k] of route) {
     const gates = kind === 'street' ? streetGates(name, k) : lineGates(name, k);
     if (!gates) { console.log('no line', name, '(skipped)'); continue; }
@@ -211,8 +231,20 @@ for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS).filter(([k
   results[`${rn}/${pn}`] = { runs: R.length, p25: q(tot, 0.25), p50: q(tot, 0.5), p75: q(tot, 0.75), crash: R.filter((r) => r.crashed).length, by: R.map((r) => r.by).filter(Boolean),
     stars: R.map((r) => r.stars), lines: q(R.map((r) => r.lines), 0.5), micros: q(R.map((r) => r.micros), 0.5), banks: q(R.map((r) => r.banks), 0.5), scrapes: q(R.map((r) => r.scrapes), 0.5),
     heads: R.reduce((a, r) => a + r.heads, 0), first: q(R.map((r) => r.first ?? 99), 0.5), gapMean: q(R.map((r) => r.gapMean ?? 99), 0.5), gapMax: q(R.map((r) => r.gapMax ?? 99), 0.5), t: q(R.map((r) => r.t), 0.5), maxFlow: q(R.map((r) => r.maxFlow), 0.5),
+    // [P5-F] flown: runs in which the route's last line fired (the portals, the stair dive: design #2 / #6, >= 10 of 12)
+    flown: R.filter((r) => r.names.includes(ROUTES[rn][ROUTES[rn].length - 1][1])).length,
     x2: q(R.map((r) => r.x2 ?? 999), 0.5), fast: q(R.map((r) => r.fast), 0.5), voids: R.reduce((a, r) => a + r.voids, 0), wsDur: q(R.map((r) => r.ws?.dur ?? 0), 0.5), wsPts: q(R.map((r) => r.ws?.pts ?? 0), 0.5), agents: lifeAgents() };
   console.log(`${rn.padEnd(5)} ${pn.padEnd(8)} ${JSON.stringify(results[`${rn}/${pn}`])}`); if (process.env.TL) for (const r of R) console.log('   ', r.total, r.stars, r.crashed?'CRASH '+r.by:'', '|', r.tl.join(' ; '));
 }
 console.log(`stars ${JSON.stringify(tuning.stars)} | ${((performance.now() - T0) / 1000).toFixed(0)} s`);
 if (OUT) fs.writeFileSync(OUT, JSON.stringify({ tuning, results }, null, 1));
+// [P5-F design #3] --record: tests/seoul/take-sim.json, the star fit's evidence (tests/take.mjs: careful long <= 2 stars, regular
+// long 3, against lines.json's stars; stale when lines.json's lines or tuning change)
+if (process.argv.includes('--record')) {
+  const { createHash } = await import('node:crypto');
+  const h = createHash('sha256').update(JSON.stringify({ lines: lineData.lines, tuning: lineData.tuning, takeStart: lineData.takeStart })).digest('hex').slice(0, 16);
+  const keep = ['runs', 'p25', 'p50', 'p75', 'crash', 'stars', 'lines', 'gapMax', 'x2', 'wsPts', 'fast', 'flown'];
+  const rec = { note: 'seoul/tools/take-sim.mjs --record: noisy-pilot takes at the game crowd (p75 of 4 runs is the best run)', lines: h, stars: lineData.tuning.stars, runs: RUNS,
+    results: Object.fromEntries(Object.entries(results).map(([k, v]) => [k, Object.fromEntries(keep.map((f) => [f, v[f]]))])) };
+  fs.writeFileSync(new URL('../../tests/seoul/take-sim.json', import.meta.url), JSON.stringify(rec, null, 1) + '\n'); console.log('recorded tests/seoul/take-sim.json');
+}

@@ -20,7 +20,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { gridPlan, nameLines, cellH, CELL, takeSummary, labelSpot } = await import(new URL('../seoul/ui/fit.js', import.meta.url).href);
+const { gridPlan, nameLines, cellH, CELL, takeSummary, labelSpot, timedSub } = await import(new URL('../seoul/ui/fit.js', import.meta.url).href);
 let fails = 0;
 const ok = (c, msg) => { if (c) console.log('  ok  ' + msg); else { fails++; console.log('  FAIL ' + msg); } };
 const levels = JSON.parse(readFileSync(join(ROOT, 'levels.json'), 'utf8'));
@@ -109,6 +109,29 @@ if (S) {
   const tip = LJ.takeStart?.hint?.text || LJ.startPoints?.[0]?.hint?.text || '';
   ok(!!tip, `the first instruction comes from lines.json takeStart.hint: "${tip}"`);
   ok(LJ.tuning && +LJ.tuning.bankT > 0 && Array.isArray(LJ.tuning.stars), `lines.json tuning gives the copy its numbers (bankT ${LJ.tuning?.bankT} s, stars ${LJ.tuning?.stars})`);
+  // [P5-F] design #1 / ux #1 / ui #4: the first instruction is true. Phase 4 said "UNDER THE STAGE · THEN THE WALKING STREET"
+  // with the stage 283 m away and after the street (the copy only matched lines.json). Now: one `first` line; the hint's
+  // `order` is the order the lines are met from the spawn (each one's entry pre-gate nearer than the next's), its text
+  // names them in that order, `next` is the first of them within r <= 40 m, and the toast is one row at 390 px.
+  { const H = LJ.takeStart?.hint || {}, sp = LJ.takeStart?.pos || [0, 0, 0], d2 = (c) => Math.hypot(c[0] - sp[0], c[2] - sp[2]);
+    const firsts = LJ.lines.filter((l) => l.first);
+    ok(firsts.length === 1, `one line is flagged first (${firsts.map((l) => l.name).join(', ') || 'none'})`);
+    const ord = Array.isArray(H.order) && H.order.length ? H.order : [H.next || H.line].filter(Boolean);
+    const ent = ord.map((n) => { const E = LJ.lines.filter((l) => l.name === n && l.pre?.length); return E.find((l) => l.first) || E.sort((a, b) => d2(a.pre[0].c) - d2(b.pre[0].c))[0]; });
+    const ds = ent.map((e) => (e ? d2(e.pre[0].c) : Infinity));
+    ok(ent.every(Boolean) && ds.every((d, i) => !i || d > ds[i - 1]) && ent.every((e, i) => !i || d2(e.pre[0].c) >= d2(ent[i - 1].c) - 1),
+      `the hint's lines come in arc order from the spawn: ${ord.map((n, i) => `${n} ${ds[i].toFixed(0)} m`).join(' → ')}`);
+    const up = String(H.text || '').toUpperCase(), at = ord.map((n) => up.indexOf(n.split(' ').pop()));
+    ok(at.every((x, i) => x >= 0 && (!i || x > at[i - 1])), `"${H.text}" names them in that order`);
+    ok(H.next === ord[0] && +H.r > 0 && +H.r <= 40 && +H.r >= ds[0], `the arrow's next line is ${H.next}, r ${H.r} m (<= 40, >= its pre-gate at ${ds[0].toFixed(0)} m)`);
+    const tw = up.length * 15 * 0.66 + 24;   // #toast: 600 15px mono, .06em tracking, 12 px padding each side, max-width 86 %
+    ok(tw <= 0.86 * 390, `the first toast is one row at 390 px (${up.length} characters, ~${tw.toFixed(0)} of ${(0.86 * 390).toFixed(0)} px)`); }
+  // [P5-F] ui #5: the timed sub-line at 390 px portrait (#pop .sub: var(--cell) = 18 px mono, .04em tracking; max-width 94 %)
+  { const w = (h) => { const t = h.replace(/<[^>]+>/g, ''); return t.length * 18 * 0.64 + (/class="fast"/.test(h) ? 0.6 * 18 : 0); };
+    for (const [tag, e] of [['FAST', { dur: 44.2, best: 41.0, fast: true }], ['BEST', { dur: 81.6, best: 44.2 }], ['NEW BEST', { dur: 41.0, best: 44.2, newBest: true }]]) {
+      const h = '+128,836' + timedSub(e);
+      ok(w(h) <= 0.94 * 390, `${tag} sub-line "${h.replace(/<[^>]+>/g, '')}" fits one row at 390 px (~${w(h).toFixed(0)} of ${(0.94 * 390).toFixed(0)} px)`); }
+    ok(!/BEST/.test(timedSub({ dur: 44.2, best: 41, fast: true })) && /▲0:41\.0/.test(timedSub({ dur: 44.2, best: 41, fast: true })), 'with FAST the best drops its word (▲0:41.0)'); }
   // build steps: every prog(f, 'Hongdae: step') in world-seoul.js has a bilingual label (C / D may add steps: warn only)
   const steps = [...readFileSync(join(ROOT, 'world-seoul.js'), 'utf8').matchAll(/prog\([\d.]+,\s*'([^']+)'\)/g)].map((m) => m[1].replace(/^[^:]*:\s*/, '').trim().toLowerCase());
   const ls = S.loadSteps || {}; for (const v of Object.values(ls)) strings.push(v);
@@ -117,7 +140,11 @@ if (S) {
   if (unl.length) console.log(`  warn build steps without a label (shown blank): ${unl.join(', ')}`); else ok(steps.length > 0, `every build step (${steps.length}) has a label`);
   // the stills: committed after the last commit that changed the look (git; skipped outside a git checkout)
   const ct = (f) => { try { return +execFileSync('git', ['log', '-1', '--format=%ct', '--', f], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || 0; } catch (e) { return -1; } };
-  const still = Math.min(ct(S.backdrop), ct(S.thumb)), look = Math.max(...['world-seoul.js', 'seoul-signs.js', 'fpvcam.js', 'seoul-life.js'].map(ct));   // [P4] + the crowd
+  // [P5-F] the thumb strictly; the backdrop is PEND until its depth-checked re-shoot (tools/seoul-stillsnap.py; P5's browser
+  // budget went on the HUD shots and the thumb, and the depth check crashed on freed geometry, fixed since)
+  const bdStale = ct(S.backdrop) >= 0 && ct(S.backdrop) < Math.max(...['world-seoul.js', 'seoul-signs.js', 'fpvcam.js', 'seoul-life.js'].map(ct));
+  if (bdStale) console.log('PEND the backdrop is older than the look: re-shoot (python3 tools/seoul-stillsnap.py --shots tools/seoul-stills-poses.json, then tools/seoul-ui-assets.py --backdrop ... --depth ...)');
+  const still = ct(S.thumb), look = Math.max(...['world-seoul.js', 'seoul-signs.js', 'fpvcam.js', 'seoul-life.js'].map(ct));   // [P4] + the crowd
   if (still < 0 || look < 0) console.log('  skip stills freshness (no git)');
   else ok(still >= look, `identity stills are newer than the look (stills ${new Date(still * 1e3).toISOString().slice(0, 16)}, look ${new Date(look * 1e3).toISOString().slice(0, 16)})` +
     (still >= look ? '' : ': re-shoot (poses: seoul/ui/stills.json), python3 tools/seoul-ui-assets.py --backdrop STILL --thumb STILL'));
@@ -129,6 +156,25 @@ if (S) {
     ok(SR[k]?.sha256 === h, `stills.json ${k} hash matches ${S[k]}`);
   }
   if (SR) ok(+SR.thumb?.satBright >= 0.03, `the thumb reads as neon: ${(100 * (+SR.thumb?.satBright || 0)).toFixed(1)} % saturated-bright pixels (>= 3 %)`);
+  // [P5-F] ui #1 / #2 and the phase-4 bug (pose and commit empty): each still says where it was shot and from which build,
+  // and is checked against the crowd's file (seoul-life.js's last commit), not only the look's date; the backdrop has
+  // nothing within 3 m of the camera (the depth check: phase 4's blurred pole) and reads as neon too; the thumb shows
+  // street (its lower third >= 2x the top's luma: phase 4's was a sign on a beige wall)
+  if (SR) {
+    const lifeNow = (() => { try { return execFileSync('git', ['log', '-1', '--format=%h', '--', 'seoul-life.js'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (e) { return null; } })();
+    const bdShot = !!SR.backdrop?.commit;   // [P5-F] the backdrop's gates bind once it is re-shot with a pose and a build
+    if (!bdShot) console.log('PEND stills.json backdrop: phase 4\'s w21 still (no pose, commit or depth): re-shoot (ui #1)');
+    for (const k of bdShot ? ['backdrop', 'thumb'] : ['thumb']) {
+      const r = SR[k] || {};
+      ok(!!r.pose && !!r.commit, `stills.json ${k}: pose "${r.pose || ''}" and commit "${r.commit || ''}" recorded`);
+      if (lifeNow) ok(r.lifeCommit === lifeNow, `stills.json ${k} was shot with seoul-life.js ${r.lifeCommit || '(none)'} (now ${lifeNow})${r.lifeCommit === lifeNow ? '' : ': re-shoot'}`);
+    }
+    if (bdShot) ok(+SR.backdrop?.nearest >= 3, `the backdrop has nothing within 3 m of the camera (nearest hit ${SR.backdrop?.nearest ?? '?'} m)`);
+    if (bdShot) ok(+SR.backdrop?.satBright >= 0.03, `the backdrop reads as neon: ${(100 * (+SR.backdrop?.satBright || 0)).toFixed(1)} % saturated-bright (>= 3 %)`);
+    // the panel asked 2x; at night the signs light the top third, so the walk0 crop down the street measures 1.40 and phase 4's
+    // sign-on-a-wall 1.24: the gate sits between them
+    ok(+SR.thumb?.lowerTop >= 1.35, `the thumb shows street: lower third ${SR.thumb?.lowerTop ?? '?'}x the top third's luma (>= 1.35; phase 4's sign on a wall: 1.24)`);
+  }
 }
 
 console.log('End card and OSD labels (fit.js)');

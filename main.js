@@ -12,7 +12,7 @@ import { Take, defaultTakeUI } from './take.js';
 import * as TakeLib from './take.js';
 import { lifeMovers } from './seoul-movers.js';   // [F1] movers hook (design #5): world.movers from the level's life sim
 import { GhostKeeper } from './ghost.js';   // C12 (D5): best take as a ghost, CHALLENGE files   // F1: TAKE_TUNING (cutT/bankT/stars) for the HUD, read live; a namespace import never fails on a missing name
-import { gridPlan, takeSummary, labelSpot } from './seoul/ui/fit.js';   // [F2] P4: the grid plan, the end card's line row, OSD label spots (pure: tests/seoul-ui.mjs runs them)
+import { gridPlan, takeSummary, labelSpot, fmtDur, timedSub } from './seoul/ui/fit.js';   // [F2] P4: the grid plan, the end card's line row, OSD label spots (pure: tests/seoul-ui.mjs runs them)
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
@@ -2450,13 +2450,13 @@ function onTakeEvent(e) {
       break;
     case 'line': {
       const text = e.caption || e.name || 'NICE!', flow = e.flow || 1, pl = placeAt(drone.pos);   // [F2] ui #6: where it was flown
-      showLine(text, `+${fmtN(e.pts)}${timedSub(e)}`, flow, pl);   // ×N lives on the FLOW line only (UI #2)
+      showLine(text, `<span class="pts">+${fmtN(e.pts)}</span>${timedSub(e)}`, flow, pl);   // [P5-F] ui #5: points in the quiet grey   // ×N lives on the FLOW line only (UI #2)
       caption(text, flow, pl); runStats.maxFlow = Math.max(runStats.maxFlow, flow);
       break;
     }
     case 'repeat': {
       const text = world.lines?.find?.((l) => l.name === e.name)?.caption || e.name || 'AGAIN', pl = placeAt(drone.pos);
-      showLine(text, `REPEAT +${fmtN(e.pts)}${timedSub(e)}`, 1, pl); caption(text, 1, pl);
+      showLine(text, `REPEAT <span class="pts">+${fmtN(e.pts)}</span>${timedSub(e)}`, 1, pl); caption(text, 1, pl);
       break;
     }
     case 'bank': pop(`BANKED <em>+${fmtN(e.pts)}</em>`, 'score'); break;
@@ -2469,12 +2469,7 @@ function onTakeEvent(e) {
 // [F2] P4 ux #6 (F1's data: line / repeat events of timed lines carry dur, best = the best before this one (0 = none),
 // newBest, fast): " · 0:44 · BEST 0:41 · FAST" on a named line's caption sub-line, so a 44 s and an 82 s WALKING STREET
 // read differently. Micros and untimed lines (bando): nothing.
-const fmtDur = (t) => { t = Math.round(t * 10) / 10; return `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`; };   // 0:44.2, 1:21.6
-function timedSub(e) {
-  if (!e || e.micro || e.free || !(+e.dur > 0)) return '';
-  const b = +e.best || 0;
-  return ` · ${fmtDur(+e.dur)}` + (b > 0 ? (e.newBest ? ' · <b>NEW BEST</b>' : ` · BEST ${fmtDur(b)}`) : '') + (e.fast ? ' · <b class="fast">FAST</b>' : '');
-}
+// [P5-F] fmtDur / timedSub live in seoul/ui/fit.js (tests/seoul-ui.mjs checks the sub-line's width at 390 px)
 // [F14] the crash card's "next:" is measured from where RETRY puts you (C4's retryPose() in main.js: {pos, yaw, name});
 // without it, from where you are. Free fly flies on from near here.
 function retryFrom() {
