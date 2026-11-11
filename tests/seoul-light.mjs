@@ -205,5 +205,20 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
     w.dispose();
   }
 }
+// 9 P4 perf #3: the shipped night lightmap (seoul/light/night-lm.bin): it decodes; its key against this build (a stale
+// file is a WARN: re-run node tools/bakelm.mjs --night after merging), and when current it matches a fresh bake exactly
+{
+  const R = new URL('..', import.meta.url).pathname, N = await import('../seoul-nightlm.js'), f = R + N.NIGHT_LM.file.replace(/^\.\//, '');
+  if (fs.existsSync(f) && fs.existsSync(R + 'world-seoul.js')) {
+    const zlib = await import('node:zlib'), F = N.lmFileHeader(fs.readFileSync(f));
+    ok(F && F.header.w > 0 && F.header.key, 'night-lm.bin header');
+    const planes = zlib.gunzipSync(F.payload), D = N.lmUnplanes(planes, F.header.w, F.header.h);
+    ok(planes.length === F.header.w * F.header.h * 4 && D.some((v) => v), `night-lm.bin decodes (${F.header.w} x ${F.header.h}, ${(fs.statSync(f).size / 1048576).toFixed(2)} MB)`);
+    const { bakeNight } = await import('../tools/bakelm-night.mjs');
+    const fresh = await bakeNight({ log: () => {} });
+    if (fresh.header.key !== F.header.key) console.log(`WARN night-lm.bin is stale (file ${F.header.key}, this build ${fresh.header.key}): the game bakes in a Worker until node tools/bakelm.mjs --night is re-run`);
+    else { const G = N.lmFileHeader(fresh.file), D2 = N.lmUnplanes(zlib.gunzipSync(G.payload), G.header.w, G.header.h); let diff = 0; for (let i = 0; i < D.length; i++) if (D[i] !== D2[i]) diff++; ok(diff === 0, `night-lm.bin is current (${F.header.key}) and bit-identical to a fresh bake (${diff} texels differ)`); }
+  } else console.log('night-lm.bin absent: skipped');
+}
 console.log(`seoul-light tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

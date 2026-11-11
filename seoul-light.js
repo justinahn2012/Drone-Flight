@@ -43,7 +43,7 @@
 // Optional fields read here: lumens (street lamps), forward [x,0,z] (street lamp arm direction; else the nearest street),
 // beam {lumens} (headlights, default 1400 lm at 20,000 nits), nitsMax (animated: binning nominal).
 import * as THREE from 'three';
-import { sstep, lobeStreet, lobeBeam, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM } from './seoul-nightlm.js';
+import { sstep, lobeStreet, lobeBeam, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM, packLM, lmKey, lmFileHeader, lmUnplanes, decodeRGB9E5 } from './seoul-nightlm.js';
 export { NIGHT_LM };
 
 export const NITS = 0.1;                      // scene units per cd/m2 (night worlds)
@@ -80,7 +80,9 @@ export const NIGHT_SKY = { zenith: [0.07, 0.06, 0.05], horizon: [0.5, 0.32, 0.18
 // capped at maxR (3 m: a halo round the lamp, not a cloud over the facade), none within nearM of the camera (fades in
 // over fadeM), and a source's brightest channel is capped at lampCap x the median street lamp's (no violet clouds).
 export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
-export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 4, fadeM: 2, lampCap: 2 };
+// P4 lighting #4 (near air): sources from nearM = 2 m (was 4: close signs floated with no air round them), fading in over
+// fadeM, at nearGain (0.25) of their energy until fullM (4 m), so the halo never veils the lens.
+export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 2, fadeM: 0.5, nearGain: 0.25, fullM: 4, lampCap: 2 };
 // Irradiance volume (lighting #1): probe heights, albedos for the one bounce.
 // windowNits: the mean emission of the facades a probe faces at each probe height (lit windows are not L3 emitters: binding
 // table 55 % lit on floors 2-4, 12-20 % above, 5-25 nits, ~25 % of a wall is glass); multi: 1 / (1 - mean albedo) for the
@@ -375,7 +377,8 @@ float cityContact(vec3 wp){       // soft footprint occlusion under the nearest 
 }
 uniform sampler2D tCityMirror;
 uniform mat4 uCityMirrorVP;
-uniform float uCityWet;
+uniform float uCityWet; uniform float uCityDamp;
+float cityPud = 0.0;
 uniform vec2 uCityMirrorTexel;
 float cityWet = 0.0;
 float cityHash(vec2 p){ p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
@@ -874,12 +877,17 @@ export function attach(world, emitters = [], ctx = {}) {
 
   // ------------------------------------------------------------------------------------- night lightmap (P3 lighting #3)
   // seoul-nightlm.js bakes every static emitter (no K limit, heightfield-occluded) + the volume's indirect onto the
-  // ground (0.5 m) and the exposed walls (0.5 m atlas). Browser: in a module Worker, so the level opens on the volume and
-  // the lightmap fades in when it lands (~1-3 s); node / ctx.lightmapSync: in line. ctx.lightmap === false: off.
-  const half4 = (w, h, data) => { const t = new THREE.DataTexture(data || new Uint16Array(w * h * 4), w, h, THREE.RGBAFormat, THREE.HalfFloatType);
-    t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.generateMipmaps = false; t.needsUpdate = true; return t; };
-  let tLM = half4(1, 1);
+  // ground (0.5 m) and the exposed walls (0.5 m atlas). P4 perf #3: the browser first fetches the shipped bake
+  // (NIGHT_LM.file, written by `node tools/bakelm.mjs --night`) and uses it when its key matches this build's inputs
+  // (lmKey: emitters, layout, model constants); else, or if it can't be read in `fileTimeout` s, it bakes in a module
+  // Worker (killed after `workerTimeout` s: the volume stays). Node / ctx.lightmapSync: in line. ctx.lightmap === false:
+  // off. P4 perf #5: RGB9E5 (4 bytes a texel; was RGBA16F, 8): 14 MB, not 28. ctl.lightmapReady resolves true / false.
+  const rgb9 = (w, h, data) => { const t = new THREE.DataTexture(data || new Uint32Array(w * h), w, h, THREE.RGBFormat, THREE.UnsignedInt5999Type);
+    t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.generateMipmaps = false; t.unpackAlignment = 4; t.needsUpdate = true; return t; };
+  let tLM = rgb9(1, 1);
   const uLM = { value: new THREE.Vector4(0, NIGHT_LM.gres, NIGHT_LM.fres, NIGHT_LM.near) }, uLMG = { value: new THREE.Vector4() }, uLMA = { value: new THREE.Vector4(1, 1, 1, 1) }, uLMR = { value: new THREE.Vector4(LMR0, LMR1, 0, 0) };
+  lm.whenReady = new Promise((r) => { lm.settle = r; });
+  if (!lm.on) lm.settle(false);
   if (lm.on) {
     const plan = lmPlan;
     const cs = new Int32Array(NC + 1); for (let q = 0; q < pairs; q++) cs[pc[q] + 1]++; for (let c = 0; c < NC; c++) cs[c + 1] += cs[c];
@@ -887,27 +895,55 @@ export function attach(world, emitters = [], ctx = {}) {
     for (let q = 0; q < pairs; q++) { const o = fillc[pc[q]]++; pe[o] = pi[q]; po[o] = pb[q]; }
     const M = new Float32Array(stat.length * LM_MS);
     metas.forEach((m, i) => packMeta(m, M, i, i >= animBase || (m.flick?.hz > 0 && m.flick?.depth > 0) ? 1 : 0));   // screens and flicker stay per fragment
-    const job = { plan: { ...plan, raster: null }, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI };
+    // the key: everything the bake reads (the volume's indirect is a function of the same inputs and constants)
+    const tK = now();
+    lm.key = lmKey({ consts: { v: NIGHT_LM.version, NIGHT_LM: { ...NIGHT_LM, file: 0 }, VOLUME, NIGHT_SKY, HAZE, SOURCE_TYPES, OMEGA, E_MIN, NS }, M, n: stat.length, layout: ctx.layout, grid: [x0, z0, cell, gw, gh, plan.atlasW, plan.atlasH, plan.nE] });
+    lm.keyMs = +(now() - tK).toFixed(1);
+    let job = { plan: { ...plan, raster: null }, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI };
     uLMG.value.set(plan.x0, plan.z0, plan.gw, plan.gh); uLMA.value.set(plan.atlasW, plan.atlasH, plan.rw, plan.rh);
     lm.plan = { edges: plan.nE, atlas: [plan.atlasW, plan.atlasH], ground: [plan.gw, plan.gh], planMs: +lmPlanMs.toFixed(0) };
-    const apply = (res) => {
-      if (!res?.atlas || lm.disposed) return;
-      tLM.dispose(); tLM = half4(plan.atlasW, plan.atlasH, res.atlas); lm.data = res.atlas;
+    lm.size = [plan.atlasW, plan.atlasH];
+    const apply = (res) => {   // res: { data: RGB9E5 Uint32Array (atlasW x atlasH), texels, ms, valid? }
+      if (!res?.data || lm.disposed || res.data.length !== plan.atlasW * plan.atlasH) return false;
+      tLM.dispose(); tLM = rgb9(plan.atlasW, plan.atlasH, res.data); lm.data = res.data; lm.valid = res.valid || null;
       U.tCityLM.value = tLM; uLM.value.x = 1;
-      lm.ready = true; lm.ms = res.ms; lm.texels = res.texels;
+      lm.ready = true; lm.ms = res.ms; lm.texels = res.texels; job = null; lm.settle(true);
+      return true;
     };
+    const fail = (mode, why) => { if (lm.ready || lm.disposed) return; lm.mode = mode; console.warn(`[D] night lightmap: ${why}; the volume stays`); job = null; lm.settle(false); };
     const IS_NODE = typeof window === 'undefined';
     lm.apply = apply;
-    if (ctx.lightmapSync || IS_NODE || typeof Worker === 'undefined') { lm.mode = 'sync'; lm.pending = bakeLM(job); }   // applied once U exists
-    else {
+    function startWorker(why) {
+      if (lm.disposed || lm.ready || !job) return;
       try {
-        lm.mode = 'worker';
+        lm.mode = 'worker'; lm.why = why; const t0 = now();
         const w = lm.worker = new Worker(new URL('./seoul-nightlm-worker.js', import.meta.url), { type: 'module' });
-        w.onmessage = (ev) => { apply(ev.data); w.terminate(); lm.worker = null; };
-        w.onerror = (e) => { console.warn('[D] night lightmap worker failed; the volume stays', e?.message || e); w.terminate(); lm.worker = null; lm.mode = 'failed'; };
+        const kill = setTimeout(() => { w.terminate(); lm.worker = null; fail('timeout', `the worker bake ran past ${ctx.lightmapWorkerTimeout ?? 60} s`); }, (ctx.lightmapWorkerTimeout ?? 60) * 1000);
+        w.onmessage = (ev) => { clearTimeout(kill); w.terminate(); lm.worker = null; if (!apply({ ...ev.data, ms: Math.round(now() - t0) })) fail('failed', 'the worker sent a malformed map'); };
+        w.onerror = (e) => { clearTimeout(kill); w.terminate(); lm.worker = null; fail('failed', 'worker error ' + (e?.message || e)); };
         w.postMessage(job, [job.M.buffer, job.cs.buffer, job.pe.buffer, job.po.buffer, job.H.H.buffer]);
-      } catch (e) { console.warn('[D] no lightmap worker', e); lm.mode = 'failed'; }
+      } catch (e) { fail('failed', 'no worker (' + (e?.message || e) + ')'); }
     }
+    async function fromFile() {   // the shipped bake; any miss -> the worker
+      const t0 = now(), ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const tm = setTimeout(() => ac?.abort(), (ctx.lightmapFileTimeout ?? 15) * 1000);
+      try {
+        const r = await fetch(new URL(ctx.lightmapFile || NIGHT_LM.file, import.meta.url), ac ? { signal: ac.signal } : {});
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const F = lmFileHeader(await r.arrayBuffer()); if (!F) throw new Error('not a night-lm file');
+        lm.fileKey = F.header.key;
+        if (F.header.key !== lm.key || F.header.w !== plan.atlasW || F.header.h !== plan.atlasH) throw new Error(`stale (file key ${F.header.key}, this build ${lm.key}: re-run node tools/bakelm.mjs --night)`);
+        if (typeof DecompressionStream === 'undefined') throw new Error('no DecompressionStream');
+        const planes = new Uint8Array(await new Response(new Blob([F.payload]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+        if (planes.length !== plan.atlasW * plan.atlasH * 4) throw new Error('payload size ' + planes.length);
+        clearTimeout(tm);
+        if (apply({ data: lmUnplanes(planes, plan.atlasW, plan.atlasH), texels: F.header.texels, ms: Math.round(now() - t0) })) { lm.mode = 'file'; lm.fileBytes = F.header.bytes; }
+      } catch (e) { clearTimeout(tm); if (!lm.disposed && !lm.ready) { lm.fileMiss = String(e?.message || e); console.info('[D] night lightmap file:', lm.fileMiss, '-> worker bake'); startWorker('file: ' + lm.fileMiss); } }
+    }
+    if (ctx.lightmapSync || IS_NODE || typeof Worker === 'undefined') {   // applied once U exists
+      lm.mode = 'sync'; const r = bakeLM(job), p = packLM(r.atlas, plan.atlasW, plan.atlasH); lm.pending = { data: p.data, valid: p.valid, texels: r.texels, ms: r.ms };
+    } else if (ctx.lightmapFile !== false && typeof fetch === 'function') { lm.mode = 'file?'; fromFile(); }
+    else startWorker('no file');
   }
   // volume statistics (exterior probes at 0.5 m on streets): irradiance on an up and a side face, lux
   const volStat = (() => { let n = 0, up = 0, side = 0; for (let c = 0; c < NC; c++) { if (!roadMask[c] || inner[c * NL]) continue; const p = c * NL; const a = lumaOf([VA[p * 4], VA[p * 4 + 1], VA[p * 4 + 2]]); up += a * Math.max(0, 1 + VB[p * 4 + 1]); side += a; n++; } return { streetProbes: n, upLux: +(up / Math.max(1, n) / NS).toFixed(2), sideLux: +(side / Math.max(1, n) / NS).toFixed(2) }; })();
@@ -926,7 +962,7 @@ export function attach(world, emitters = [], ctx = {}) {
     uCityAO: aoU?.uAO || { value: blackTex }, uCityAOOn: aoU?.uAOOn || { value: 0 }, uCityAOScale: aoU?.uAOScale || { value: new THREE.Vector2(1, 1) },
     uCityCar: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uCityCarS: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) },
     uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, uCityLMR: uLMR, tCityLM: { value: tLM },
-    tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
+    tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityDamp: { value: ctx.damp ?? 0.3 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
   if (lm.pending) { lm.apply(lm.pending); lm.pending = null; }
@@ -937,15 +973,18 @@ export function attach(world, emitters = [], ctx = {}) {
     if (!mat || patched.has(mat) || !(mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) || mat.userData.cityLight === false) return false;
     patched.add(mat);
     const wet = !!(opt.wet ?? mat.userData.wet);
+    let paver = false;   // set per program: C's atlas ground shader (sgLi = the layer) gets damp pavers
     const prevOBC = mat.onBeforeCompile, prevKey = mat.customProgramCacheKey;
     mat.onBeforeCompile = function (sh, r) {
       if (prevOBC) prevOBC.call(this, sh, r);
       Object.assign(sh.uniforms, U);
+      paver = wet && /\bsgLi\b/.test(sh.fragmentShader) && /tCityDiff/.test(sh.fragmentShader);
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${CITY_HEAD}${wet ? WET_HEAD : ''}`)
         .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>
   vec3 cityNW = normalize(transpose(mat3(viewMatrix)) * geometryNormal), cityLMv;
   cityLMOn = cityLightmap(cityWorldPos(geometryPosition), cityNW, cityLMv);
+  ${wet ? 'material.roughness = mix(mix(material.roughness, max(0.3, material.roughness * 0.6), smoothstep(0.0, 0.35, cityWet)), 0.12, cityPud / max(uCityWet, 1e-3));   // P4: wet = glossy (film 0.3-0.4, puddles 0.12)' : ''}
   cityLights(geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
   ${wet ? `float cityCC = cityContact(cityWorldPos(geometryPosition)); reflectedLight.directDiffuse *= mix(1.0, cityCC, 0.75); reflectedLight.directSpecular *= mix(1.0, cityCC, 0.75);` : 'float cityCC = 1.0;'}
   #if defined( RE_IndirectDiffuse )
@@ -957,8 +996,9 @@ export function attach(world, emitters = [], ctx = {}) {
           .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
   { vec3 wpw = cityWorldPos(-vViewPosition);
     float pn = cityNoise(wpw.xz * 0.21) * 0.6 + cityNoise(wpw.xz * 0.83 + 7.1) * 0.3 + cityNoise(wpw.xz * 3.1) * 0.1;
-    cityWet = uCityWet * smoothstep(0.38, 0.62, pn);                               // puddles + damp film
-    cityWet = max(cityWet, uCityWet * 0.35);
+    ${paver ? 'bool cityPaver = sgLi > 0;' : 'bool cityPaver = false;'}                   // P4 lighting #5: C's ground layers (0 asphalt, 1-2 pavers)
+    cityPud = uCityWet * (cityPaver ? smoothstep(0.63, 0.70, pn) : smoothstep(0.38, 0.62, pn));   // puddles: ~50 % of the asphalt, ~15 % of the pavers
+    cityWet = max(cityPud, cityPaver ? uCityDamp : uCityWet * 0.35);                 // + the damp film
     diffuseColor.rgb *= mix(1.0, 0.55, cityWet); }                                  // wet asphalt darkens`)
           .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
   { vec3 wpw = cityWorldPos(-vViewPosition);
@@ -971,7 +1011,7 @@ export function attach(world, emitters = [], ctx = {}) {
     totalEmissiveRadiance += texture(tCityMirror, muv).rgb * (F * cityWet * inb); }`);
       }
     };
-    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW3' : '|city3'); };
+    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW4' : '|city4'); };
     mat.needsUpdate = true;
     return true;
   }
@@ -1278,7 +1318,7 @@ export function attach(world, emitters = [], ctx = {}) {
       if (isMov(e) || isAnim(e)) { if (!(e.nits > 0)) continue; if (isAnim(e)) I *= Math.min(1, e.nits / Math.max(1, (e.nitsMax ?? SOURCE_TYPES.screen.nits))); }
       const d = Math.hypot(e.pos[0] - camPos.x, e.pos[1] - camPos.y, e.pos[2] - camPos.z);
       if (d < AIRLIGHT.nearM) continue;
-      I *= sstep(AIRLIGHT.nearM, AIRLIGHT.nearM + AIRLIGHT.fadeM, d);              // fades in past nearM
+      I *= sstep(AIRLIGHT.nearM, AIRLIGHT.nearM + AIRLIGHT.fadeM, d) * (AIRLIGHT.nearGain + (1 - AIRLIGHT.nearGain) * sstep(AIRLIGHT.nearM + AIRLIGHT.fadeM, AIRLIGHT.fullM, d));   // P4: in past nearM at nearGain, full by fullM
       const R = Math.min(AIRLIGHT.maxR, 0.4 * d + 0.5, sig * I / (8 * minL));
       if (R < 0.2) continue;
       const hmin = Math.max(0.08, 0.5 * Math.sqrt(m ? m.A : (e.w || 0.5) * (e.h || 0.5)));
@@ -1509,7 +1549,7 @@ export function attach(world, emitters = [], ctx = {}) {
     binMs: +binMs.toFixed(1), volMs: +volMs.toFixed(1), attachMs: 0, pairs, occludedPairs: occl,
     cells: cellsUsed, mean: +(used / Math.max(1, cellsUsed)).toFixed(2), full, volume: volStat,
     materials: nMat, wetMaterials: nWet, mirror: mirror.on, wallPacks: packs.length, cull: { meshes: cull.meshes, from: cull.from, batched: cull.batch ? cull.batches.length : 0, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
-    get lightmap() { return { mode: lm.mode, ready: lm.ready, ms: lm.ms, texels: lm.texels, ...(lm.plan || {}) }; },
+    get lightmap() { return { mode: lm.mode, ready: lm.ready, ms: lm.ms, texels: lm.texels, key: lm.key, keyMs: lm.keyMs, ...(lm.fileKey ? { fileKey: lm.fileKey } : {}), ...(lm.fileMiss ? { fileMiss: lm.fileMiss } : {}), ...(lm.why ? { why: lm.why } : {}), format: 'RGB9E5', gpuMB: lm.size ? +(lm.size[0] * lm.size[1] * 4 / 1048576).toFixed(1) : 0, ...(lm.plan || {}) }; },
     pools: !!pool.mesh, airlight: air.n, airCap: air.cap, airCapped: air.capped, update: uStats, marks,
   };
   function exportData() {   // native #2: the model (exportParams) + this level's grid and baked volume
@@ -1546,8 +1586,8 @@ export function attach(world, emitters = [], ctx = {}) {
   // CPU mirror of cityLightmap (tests, diagnostics): lux at (x, y, z) on a face with world normal n, null = volume
   function lightmapAt(x, y, z, nx = 0, ny = 1, nz = 0) {
     if (!lm.ready || !lm.data) return null;
-    const P = lmPlan, D = lm.data, AW = P.atlasW, hf = THREE.DataUtils.fromHalfFloat;
-    const read = (u, v) => { const i = Math.floor(u), j = Math.floor(v), o = (j * AW + i) * 4; if (i < 0 || j < 0 || i >= AW || j >= P.atlasH || !hf(D[o + 3])) return null; return (LUMA[0] * hf(D[o]) + LUMA[1] * hf(D[o + 1]) + LUMA[2] * hf(D[o + 2])) / NS; };
+    const P = lmPlan, D = lm.data, V = lm.valid, AW = P.atlasW, c3 = [0, 0, 0];   // P4: RGB9E5 texels (+ the bake's valid mask in node)
+    const read = (u, v) => { const i = Math.floor(u), j = Math.floor(v), o = j * AW + i; if (i < 0 || j < 0 || i >= AW || j >= P.atlasH || (V ? !V[o] : !D[o])) return null; decodeRGB9E5(D[o], c3); return (LUMA[0] * c3[0] + LUMA[1] * c3[1] + LUMA[2] * c3[2]) / NS; };
     if (ny > 0.7 && y < 0.6) return read((x - P.x0) / P.gres, (z - P.z0) / P.gres);
     if (Math.abs(ny) > 0.35) return null;
     const rx = Math.floor(x - P.x0), rz = Math.floor(z - P.z0); if (rx < 0 || rz < 0 || rx >= P.rw || rz >= P.rh) return null;
@@ -1562,10 +1602,12 @@ export function attach(world, emitters = [], ctx = {}) {
   }
   const ctl = {
     update, patchMaterial, qualityCap, lightmapAt, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
-    setWet(v) { U.uCityWet.value = v; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
+    lightmapReady: lm.whenReady,   // P4: resolves true when the night lightmap is on the GPU, false if it never will be
+    get lightmapData() { return lm.ready ? { key: lm.key, w: lm.size[0], h: lm.size[1], data: lm.data, valid: lm.valid, texels: lm.texels } : null; },
+    setWet(v, damp) { U.uCityWet.value = v; if (damp != null) U.uCityDamp.value = damp; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
     dispose() {
       for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex, U.tCityLM.value]) t.dispose();
-      lm.disposed = true; lm.worker?.terminate();
+      lm.disposed = true; lm.worker?.terminate(); lm.settle?.(false);
       U.tCityMirror.value?.dispose?.();
       mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); quad.geometry.dispose();
       if (steam) { steam.geometry.dispose(); steam.material.dispose(); scene.remove(steam); }

@@ -20,7 +20,9 @@
 //   windows, sky) at the texel. Lightmapped fragments take their static diffuse from here and only the specular of
 //   the grid's static lights (seoul-light.js), so nothing is counted twice.
 
-export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 1 };
+// version: the light model's revision (part of the shipped file's key: bump it whenever the model changes in a way the
+// constants hashed by lmKey() don't capture). P4: 2 (spill lobe, urban floor, wall packs, RGB9E5).
+export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 2, file: './seoul/light/night-lm.bin', dilate: 6 };
 
 // ---- lobes (seoul-light.js imports these: one copy for JS, the GLSL mirror lives there)
 export const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -182,4 +184,81 @@ export function bakeLM(job) {
     }
   }
   return { atlas: A, texels: { ground: nG, facade: nA }, ms: Date.now() - t0 };
+}
+
+// ---- P4 perf #3 / #5: the shipped lightmap. RGB9E5 (WebGL2 RGB9_E5: 4 bytes a texel, filterable; half of RGBA16F):
+// invalid texels are filled from their valid neighbours first (NIGHT_LM.dilate passes), so the shader needs no alpha.
+const E5MAX = 65408;   // (511 / 512) x 2^15
+export function encodeRGB9E5(r, g, b) {
+  r = Math.min(Math.max(r, 0), E5MAX) || 0; g = Math.min(Math.max(g, 0), E5MAX) || 0; b = Math.min(Math.max(b, 0), E5MAX) || 0;
+  const m = Math.max(r, g, b); if (m < 5.97e-8) return 0;     // under 2^-24: black
+  let e = Math.max(-16, Math.floor(Math.log2(m))) + 1;          // shared exponent (bias 15, stored 0..31): m < 2^e
+  let sc = Math.pow(2, 9 - e); if (Math.floor(m * sc + 0.5) >= 512) { e += 1; sc *= 0.5; }
+  return ((Math.floor(r * sc + 0.5) & 511) | ((Math.floor(g * sc + 0.5) & 511) << 9) | ((Math.floor(b * sc + 0.5) & 511) << 18) | ((e + 15) << 27)) >>> 0;
+}
+export function decodeRGB9E5(u, out = [0, 0, 0]) {
+  const sc = Math.pow(2, (u >>> 27) - 15 - 9);
+  out[0] = (u & 511) * sc; out[1] = ((u >>> 9) & 511) * sc; out[2] = ((u >>> 18) & 511) * sc; return out;
+}
+const _h2f = (() => { const t = new Float32Array(65536); for (let h = 0; h < 65536; h++) { const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, m = h & 1023; t[h] = e === 0 ? s * m * 2 ** -24 : e === 31 ? (m ? NaN : s * Infinity) : s * (1 + m / 1024) * 2 ** (e - 15); } return t; })();
+// bakeLM's RGBA16F atlas (alpha = valid) -> { data: RGB9E5 Uint32Array, valid: Uint8Array }; invalid texels take the mean
+// of their valid 4-neighbours, `passes` times (what is left stays black: nothing samples it)
+export function packLM(A16, W, H, passes = NIGHT_LM.dilate) {
+  const N = W * H, R = new Float32Array(N * 3), V = new Uint8Array(N);
+  for (let i = 0; i < N; i++) if (A16[i * 4 + 3]) { V[i] = 1; R[i * 3] = _h2f[A16[i * 4]]; R[i * 3 + 1] = _h2f[A16[i * 4 + 1]]; R[i * 3 + 2] = _h2f[A16[i * 4 + 2]]; }
+  const F = V.slice(), add = [];
+  for (let p = 0; p < passes; p++) {
+    add.length = 0;
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+      const k = j * W + i; if (F[k]) continue;
+      let n = 0, r = 0, g = 0, b = 0;
+      if (i > 0 && F[k - 1]) { r += R[k * 3 - 3]; g += R[k * 3 - 2]; b += R[k * 3 - 1]; n++; }
+      if (i < W - 1 && F[k + 1]) { r += R[k * 3 + 3]; g += R[k * 3 + 4]; b += R[k * 3 + 5]; n++; }
+      if (j > 0 && F[k - W]) { const q = (k - W) * 3; r += R[q]; g += R[q + 1]; b += R[q + 2]; n++; }
+      if (j < H - 1 && F[k + W]) { const q = (k + W) * 3; r += R[q]; g += R[q + 1]; b += R[q + 2]; n++; }
+      if (n) add.push(k, r / n, g / n, b / n);
+    }
+    if (!add.length) break;
+    for (let q = 0; q < add.length; q += 4) { const k = add[q]; R[k * 3] = add[q + 1]; R[k * 3 + 1] = add[q + 2]; R[k * 3 + 2] = add[q + 3]; F[k] = 1; }
+  }
+  const D = new Uint32Array(N); for (let i = 0; i < N; i++) if (F[i]) D[i] = encodeRGB9E5(R[i * 3], R[i * 3 + 1], R[i * 3 + 2]);
+  return { data: D, valid: V };
+}
+// the file: 'NLM2' | u32 header bytes | header JSON | payload (gzip of the texels as 4 byte planes, each delta-coded
+// along the rows: smooth light compresses ~3-5x). Header: { key, w, h, version, enc, bytes, texels }.
+export function lmPlanes(D, W, H) {   // RGB9E5 texels -> filtered planes (Uint8Array W x H x 4)
+  const N = W * H, P = new Uint8Array(N * 4), b = new Uint8Array(D.buffer, D.byteOffset, N * 4);
+  for (let p = 0; p < 4; p++) { const o = p * N; for (let j = 0; j < H; j++) { let prev = 0; for (let i = 0; i < W; i++) { const k = j * W + i, v = b[k * 4 + p]; P[o + k] = (v - prev) & 255; prev = v; } } }
+  return P;
+}
+export function lmUnplanes(P, W, H) {  // inverse of lmPlanes -> Uint32Array (little-endian hosts)
+  const N = W * H, D = new Uint32Array(N), b = new Uint8Array(D.buffer);
+  for (let p = 0; p < 4; p++) { const o = p * N; for (let j = 0; j < H; j++) { let prev = 0; for (let i = 0; i < W; i++) { const k = j * W + i; prev = (prev + P[o + k]) & 255; b[k * 4 + p] = prev; } } }
+  return D;
+}
+export function lmFile(header, gz) {   // gz: the gzipped planes
+  const hj = new TextEncoder().encode(JSON.stringify({ ...header, bytes: gz.length })), out = new Uint8Array(8 + hj.length + gz.length);
+  out.set([78, 76, 77, 50], 0); new DataView(out.buffer).setUint32(4, hj.length, true); out.set(hj, 8); out.set(gz, 8 + hj.length);
+  return out;
+}
+export function lmFileHeader(buf) {    // -> { header, payload (Uint8Array view) } or null
+  const u = new Uint8Array(buf); if (u.length < 8 || u[0] !== 78 || u[1] !== 76 || u[2] !== 77 || u[3] !== 50) return null;
+  const n = new DataView(u.buffer, u.byteOffset).getUint32(4, true); if (8 + n > u.length) return null;
+  let header; try { header = JSON.parse(new TextDecoder().decode(u.subarray(8, 8 + n))); } catch (e) { return null; }
+  return { header, payload: u.subarray(8 + n) };
+}
+// the key: FNV-1a (two lanes) over the model constants and everything the bake reads, quantised (1/1024) so float
+// noise between JS engines (V8 here, JavaScriptCore on the phone) can't split it. inputs: { consts (JSON-able), metas
+// (packed MS floats), skip (per light), layout, grid }
+export function lmKey({ consts, M, n, layout, grid }) {
+  let a = 0x811c9dc5 | 0, b = 0x01000193 ^ 0x5bd1e995;
+  const w = (v) => { v |= 0; a = Math.imul(a ^ v, 16777619); b = Math.imul(b ^ (v + 0x9e3779b9), 0x01000193) ^ (b >>> 15); };
+  const q = (x) => w(Math.round((Number.isFinite(x) ? x : 0) * 1024));
+  const str = (t) => { for (let i = 0; i < t.length; i++) w(t.charCodeAt(i)); };
+  str(JSON.stringify(consts));
+  w(n); for (let i = 0; i < n; i++) { const o = i * MS, skip = M[o + 18]; for (let k = 0; k < MS; k++) { if (skip && k >= 8 && k <= 10) continue; q(M[o + k]); } }   // (a skipped light's intensity: runtime-driven)
+  for (const l of layout?.lots || []) { q(l.floors || 1); q(l.floorH || 3.2); for (const [x, z] of l.footprint || []) { q(x); q(z); } }
+  for (const s of layout?.streets || []) { str(s.kind || ''); q(s.width || 6); for (const [x, z] of s.points || []) { q(x); q(z); } }
+  for (const v of grid) q(v);
+  return (a >>> 0).toString(16).padStart(8, '0') + (b >>> 0).toString(16).padStart(8, '0');
 }

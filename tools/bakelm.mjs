@@ -3,6 +3,7 @@
 //
 //   node tools/bakelm.mjs             full bake: 32 + 32 + 256 rays per texel (3 bounces), both skies, ~10-15 min on 2 cores
 //   node tools/bakelm.mjs --quick     the same files at 8 + 8 + 48 rays (noisier): checks the pipeline in ~2-3 min
+//   node tools/bakelm.mjs --night     [P4-D] Neon Seoul's night lightmap -> seoul/light/night-lm.bin (tools/bakelm-night.mjs)
 //   options: --threads N   --fresh (ignore checkpoints)   --verify (only compare the committed maps with a reference
 //            path tracer)   --out DIR (default: the repo root)   --hdr DIR (Poly Haven 2k .hdr cache)
 //
@@ -293,7 +294,9 @@ function workerMain() {
 }
 
 // ================================================================ main
-if (!isMainThread) workerMain();
+// [P4-D] --night: Neon Seoul's shipped night lightmap (tools/bakelm-night.mjs); the bando bake below is untouched
+if (isMainThread && process.argv.includes('--night')) { globalThis.__bakelmNight = true; await import('./bakelm-night.mjs'); }
+else if (!isMainThread) workerMain();
 else await main();
 
 async function main() {

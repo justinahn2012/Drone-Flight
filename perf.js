@@ -148,7 +148,7 @@ export function perfProbe(o, frames = 120) {
             if (i >= warm) { tot.push(a); cpu.push(b); if (upd0) upd.push(UPD[UPD.length - 1]); }
             if (i % 10 === 0) say(`PERF · ${s.toFixed(1)}× · ${name} · ${i < warm ? 'warm-up' : `frame ${i - warm}/${frames}`}`);
           }
-          row.seg[name] = stats(tot, cpu); if (split.on) row.seg[name].parts = split.read();
+          row.seg[name] = stats(tot, cpu, upd); if (split.on) row.seg[name].parts = split.read();   // [P4-D] the update split reports (was dropped)
         }
         const all = Object.values(row.seg);
         row.p90 = Math.max(...all.map((x) => x.p90)); row.worst = Object.keys(row.seg).find((k) => row.seg[k].p90 === row.p90);
