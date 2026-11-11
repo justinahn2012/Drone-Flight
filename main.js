@@ -12,6 +12,7 @@ import { Take, defaultTakeUI } from './take.js';
 import * as TakeLib from './take.js';
 import { lifeMovers } from './seoul-movers.js';   // [F1] movers hook (design #5): world.movers from the level's life sim
 import { GhostKeeper } from './ghost.js';   // C12 (D5): best take as a ghost, CHALLENGE files   // F1: TAKE_TUNING (cutT/bankT/stars) for the HUD, read live; a namespace import never fails on a missing name
+import { gridPlan, takeSummary, labelSpot } from './seoul/ui/fit.js';   // [F2] P4: the grid plan, the end card's line row, OSD label spots (pure: tests/seoul-ui.mjs runs them)
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
@@ -151,16 +152,23 @@ const GAME_HINT = {
   free: () => 'No clock, no take. Lines still caption. Crash and you fly on from where you last flew clear.',
 };
 const STICK_LBL = { cine: ['CLIMB · TURN', 'SPEED · CARVE'], angle: ['THROTTLE · YAW', 'PITCH · ROLL'], acro: ['THROTTLE · YAW', 'PITCH · ROLL'] };
+// [F2] P4 ux #4: an iPhone / iPad on Quality Auto runs a capped level (Seoul) on the phone preset and builds it at 'low'
+// (half the crowd, 0.6 of the far dressing): the heap was 423 MB at low, and an iOS tab reloads at 1-1.5 GB with the GPU's
+// share. ?preset=auto opts out; Quality High keeps everything.
+const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const phoneDefault = () => S.quality === 'low' || (S.quality === 'auto' && IOS && params.get('preset') !== 'auto');
+const buildQuality = (level) => (!isBando(level) && S.quality === 'auto' && phoneDefault() ? 'low' : S.quality);
 function applySettings() {
   const q = QUALITY[S.quality];
   // [F2 for D] P3 perf #4/#6: a level's quality cap (seoul-light's world.qualityCap: render scale <= 1.0, presets auto | phone).
-  // Quality Low (or ?preset=phone) runs the phone preset: MSAA 2, crowd and light low. No cap (bando): unchanged.
-  const cap = world.qualityCap, pq = params.get('preset'), pn = cap ? (cap.presets?.[pq] ? pq : S.quality === 'low' ? 'phone' : 'auto') : null;
+  // Quality Low (or ?preset=phone, or [P4] Auto on iOS) runs the phone preset: MSAA 2, crowd and light low. No cap (bando):
+  // unchanged. [P4] The preset's MSAA is the preset's (Low took min(0, 2) = 0: perf bug).
+  const cap = world.qualityCap, pq = params.get('preset'), pn = cap ? (cap.presets?.[pq] ? pq : phoneDefault() ? 'phone' : 'auto') : null;
   if (cap && cap.current !== pn && cap.presets?.[pn]) cap.apply?.(pn);
   const P = cap ? cap.presets?.[pn] || cap : null;
   fpv.setQualityRange(q.min, P && +P.max > 0 ? Math.min(q.max, +P.max) : q.max);
   fpv.look.maxSamples = q.samples;
-  fpv.look.msaa = P && P.msaa != null ? Math.min(q.msaa ?? 4, P.msaa) : q.msaa ?? 4; fpv.look.ssao = q.ao ?? 1;   // [D]
+  fpv.look.msaa = P && P.msaa != null ? +P.msaa : q.msaa ?? 4; fpv.look.ssao = q.ao ?? 1;   // [D]
   if (spark) spark.maxStdDev = q.std;
   fpv.look.lens = LENSES[S.lens] || LENSES.ref;
   fpv.look.shutter = (SHUTTERS[S.shutter] || SHUTTERS.nd16).t;
@@ -522,8 +530,9 @@ async function loadProcWorld(def) {
   // asked at, carried in snapshots), at the rendered pose's time (tick - 1 + physAlpha: the pose is lerped between the last
   // two ticks), so the bus you see is the bus you hit; the input log restarting (10 min) no longer rewinds the city
   const scene0 = new THREE.Scene(), opts = { takeClock: () => hqClock ?? Math.max(0, (drone.tick ?? (inputLog?.ticks ?? 0) + 1) - 1 + physAlpha) * PHYS,   // [integ6] deterministic: sim ticks ([P3-G2] hqClock: an HQ sub-frame)
-    sky: def.sky, quality: S.quality, level: level.id, layout: level.layout, onProgress: (f, t) => setLoad(null, f, stepText(level, t)) };   // [P3-F2] real loading status
+    sky: def.sky, quality: buildQuality(level), level: level.id, layout: level.layout, onProgress: (f, t) => { setLoad(null, f, stepText(level, t)); heapMark(t); } };   // [P3-F2] real loading status; [P4] the heap per step
   const args = (Array.isArray(level.args) ? level.args : ['renderer', 'scene', 'opts']).map((a) => (a === 'renderer' ? renderer : a === 'scene' ? scene0 : a === 'opts' ? opts : undefined));
+  heapLog.length = 0; heapT0 = performance.now(); heapMark('start');
   const w = await build(...args);
   if (!w || !(w.scene || scene0.children.length)) throw new Error(`${level.build}() returned no world`);
   const wScene = w.scene || scene0;
@@ -531,7 +540,7 @@ async function loadProcWorld(def) {
   Object.assign(world, { skimBvh: w.skimBvh || w.bvh || null, lines: w.lines || [], takeStart: w.takeStart || null, startPoints: w.startPoints || null, funnels: w.funnels || null });   // C: the take (C1)
   world.grassAt = typeof w.grassAt === 'function' ? w.grassAt : null;                     // [F24] C7 (V2, optional): grass height (m) at x, z
   world.level = level.id; world.dispose = typeof w.dispose === 'function' ? w.dispose : null; world.audio = w.audio || null;   // [S0]
-  world.places = level.placeNames && w.layout ? buildPlaces(w.layout) : null;              // [F2] ui #6: street names for captions
+  world.places = level.placeNames && w.layout ? buildPlaces(w.layout, level.placeKo) : null;   // [F2] ui #6: street names for captions
   // [integ6] S4: the level's city sound goes through the same camera-mic chain as the motors
   if (world.audio?.attach && audio.ctx) { try { world.audio.attach(audio.ctx, audio.bus); } catch (e) { console.warn('level audio', e); } }
   // [F1] movers hook (design #5, contract P2-F1): kinematic movers checked inside Drone.step on its tick clock (buses and
@@ -559,6 +568,16 @@ async function loadProcWorld(def) {
   } catch (e) { console.warn('shader warm-up skipped', e); }
   // [D] perf #2: depthScene/shadow programs, every texture uploaded, one full frame from the spawn (no first-frame freeze)
   fpv.warmup?.(world, { pos: world.spawn.clone().add(new THREE.Vector3(0, 1.2, 0)), quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), world.yaw || 0) });
+  heapMark('warm');
+  const lid = level.id; setTimeout(() => { if (world.level === lid) { heapMark('settled'); console.info('[F2] heap by load step (MB)', JSON.stringify(heapLog.map((h) => [h.step, h.mb, h.ms]))); } }, 10000);
+}
+// [F2] P4 ux #4: the JS heap after each build step (Chrome's performance.memory; Safari: null), the shader warm-up and
+// 10 s later: window.__onetake.levels.mem().steps [{step, mb, ms}] (H: the CI gate reads 'settled' at quality low)
+const heapLog = []; let heapT0 = 0;
+function heapMark(step) {
+  const pm = performance.memory, k = String(step || '').replace(/^[^:]*:\s*/, '').trim().toLowerCase() || '?';
+  heapLog.push({ step: k, mb: pm ? Math.round(pm.usedJSHeapSize / 1048576) : null, ms: Math.round(performance.now() - heapT0) });
+  if (heapLog.length > 32) heapLog.shift();
 }
 
 async function loadWorld(def) {
@@ -1529,7 +1548,7 @@ function drawCaption(g, box, text, flow, age, cap = null) {
   g.textBaseline = 'alphabetic'; g.textAlign = 'left'; g.lineJoin = 'round'; g.miterLimit = 2;
   const ws = parts.map((p) => g.measureText(p[0]).width), tw = ws.reduce((a, b) => a + b, 0);
   let pw = 0; if (place) { g.font = `800 ${pfs}px ${CAP_KO}`; pw = g.measureText(place).width; g.font = `900 ${fs}px Montserrat, "Barlow Condensed", system-ui, sans-serif`; }
-  const fit = Math.min(1, (box.w * 0.9) / Math.max(1, tw, pw));
+  const fit = Math.min(1, (box.w * 0.82) / Math.max(1, tw, pw));   // [F2] P4: 82 % of the picture at most (THE WALKING STREET! filled 90 %)
   const lift = place ? pfs * 1.3 : 0, cx = box.x + box.w / 2, by = box.y + box.h * 0.96;
   // plate box in caption units (baseline of the place line, or of the caption, at 0)
   const px = Math.max(tw, pw) / 2 + fs * 0.3, py0 = -lift - fs * 0.86, py1 = (place ? pfs * 0.34 : fs * 0.2);
@@ -1614,13 +1633,15 @@ $('clipOpts').addEventListener('click', (e) => {
 
 // ---------------- [F2] ui #6: place names. The street (OSM `ko`, e.g. 와우산로21길) or landmark (layout.hero, e.g. 홍대입구역
 // 9번 출구, within 20 m) under a point, from the level's layout. Captions carry it as their second line, live and in clips.
-function buildPlaces(layout) {
-  const segs = [], marks = [];
+// [F2] P4 ui #5: levels.json `placeKo` {street or hero id: name} for the names people use over the OSM one: s069 (the
+// WALKING STREET line, signed 걷고싶은거리 on the stage) and s065 (RED ROAD, 레드로드) were both 어울마당로
+function buildPlaces(layout, over = null) {
+  const segs = [], marks = [], ko = (o) => (over && o.id && over[o.id]) || o.ko;
   for (const s of layout.streets || []) {
-    const P = s.points || [], hw = (+s.width || 6) / 2; if (!s.ko || P.length < 2) continue;
-    for (let i = 0; i + 1 < P.length; i++) segs.push([P[i][0], P[i][1], P[i + 1][0], P[i + 1][1], hw, s.ko]);
+    const P = s.points || [], hw = (+s.width || 6) / 2, k = ko(s); if (!k || P.length < 2) continue;
+    for (let i = 0; i + 1 < P.length; i++) segs.push([P[i][0], P[i][1], P[i + 1][0], P[i + 1][1], hw, k]);
   }
-  for (const h of layout.hero || []) if (h.ko && Array.isArray(h.pos)) marks.push([h.pos[0], h.pos[2], h.ko]);
+  for (const h of layout.hero || []) { const k = ko(h); if (k && Array.isArray(h.pos)) marks.push([h.pos[0], h.pos[2], k]); }
   return { segs, marks };
 }
 function placeAt(p) {
@@ -1749,7 +1770,9 @@ const toastSays = (s) => !!s && toastTxt === String(s).toUpperCase() && performa
 let headsTm = 0;
 function headsStamp(e) {
   const h = $('heads'); if (!h) { warn('HEADS!'); return; }
-  h.querySelector('small').textContent = e.lost ? `FLOW ×${e.flow || 1} · −${e.lost}` : 'SCRAPE';   // what it cost
+  // what it cost; [F2] P4 ux #5: a `heads` line it voided says so ("DOOR QUEUE · VOID": it was voided silently)
+  const vd = Array.isArray(e.voids) && e.voids.length ? `${e.voids.join(' · ')} · VOID` : '';
+  h.querySelector('small').textContent = vd || (e.lost ? `FLOW ×${e.flow || 1} · −${e.lost}` : 'SCRAPE');
   h.classList.remove('show'); void h.offsetWidth; h.classList.add('show');
   clearTimeout(headsTm); headsTm = setTimeout(() => h.classList.remove('show'), 1250);
   try { navigator.vibrate?.(20); } catch (er) {}   // Android; iOS Safari has none (native: a haptic tick)
@@ -1824,7 +1847,9 @@ function updateHud(dt) {
     D.classList.toggle('low', !!arm && arm.left != null && arm.left <= 5);
   }
   $('oNext').classList.toggle('on', guide); $('oNext').classList.toggle('armed', guide && !!arm); $('oNext').classList.toggle('bk', guide && bk);
+  brR = brRadius(curTake());                                        // [F2] P4 ux #3
   brCands = live ? bracketCands(arm) : [];
+  if (live && brCands.length) osdBoxes();                           // [F2] P4 ui #6: what the labels keep off
   // --- radio OLED (portrait)
   $('oMd').textContent = { cine: 'CINE', angle: 'ANGLE', acro: 'ACRO' }[S.mode]; $('oT').textContent = fmt(time); $('oS').textContent = `${kmh} KM/H`;
   const bars = world.lastDist < 3 ? Math.max(0, Math.min(4, Math.round(4 - world.lastDist / 0.5))) : 0;
@@ -1981,15 +2006,36 @@ const dist3 = (c) => Math.hypot(c[0] - camPose.pos.x, c[1] - camPose.pos.y, c[2]
 // centre is in frame within 30 m and not behind a wall (a BVH ray, re-tested every 0.15 s per gate), drawn as corner ticks
 // on the gate's projected w x h, labelled "NAME 23M" ("23M" on the armed end gate).
 const BR_N = 3, BR_R = 30, _br = new THREE.Ray(), brOcc = new Map();
+// [F2] P4 ux #3: 34 m at the take start (ready, or the first 12 s of a take with no line yet): UNDER THE STAGE's two start
+// gates sit 28 and 31 m from the spawn, and only one was bracketed (updateHud sets it at 10 Hz)
+let brR = BR_R;
+const brRadius = (t) => (t && S.game !== 'free' && (t.state === 'ready' || (t.state === 'live' && (+t.stats?.time || 0) < 12 && !t.stats?.lines?.length)) ? 34 : BR_R);
 function bracketCands(arm) {
   const out = [], flown = new Set(lineList().filter((l) => l.flown).map((l) => l.name));
   const armG = arm ? armGate(arm) : null;
-  if (armG?.c && dist3(armG.c) < BR_R + 4) out.push({ g: armG, name: arm.name, end: true });
+  if (armG?.c && dist3(armG.c) < brR + 4) out.push({ g: armG, name: arm.name, end: true });
   for (const l of world.lines || []) {
     if (!l?.name || isMicro(l) || l.carve || flown.has(l.name) || (arm && l.name === arm.name)) continue;
-    for (const g of l.pre?.length ? l.pre : [l]) if (g?.c && dist3(g.c) < BR_R + 4) out.push({ g, name: l.name, end: false });
+    for (const g of l.pre?.length ? l.pre : [l]) if (g?.c && dist3(g.c) < brR + 4) out.push({ g, name: l.name, end: false });
   }
   return out;
+}
+// [F2] P4 ui #6: the OSD's own boxes, for the labels to keep off (10 Hz, updateHud): every readout in #osd (LQ, the guide,
+// the take tag and its hint, score, altitude, the bottom row) and the FLOW chain; `band` = the top rows' bottom + 20 px
+// (at least 80): a label above it goes under its bracket instead ("THE GAP 9M" sat 17 px under the guide)
+const osdFix = { boxes: [], band: 80, w: 0, h: 0 };
+function osdBoxes() {
+  const o = $('osd'), R0 = o.getBoundingClientRect(), out = [];
+  const R = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 ? [r.left - R0.left - 3, r.top - R0.top - 3, r.right - R0.left + 3, r.bottom - R0.top + 3] : null; };
+  let top = 0;
+  for (const el of o.children) {
+    if (el.classList.contains('brl') || el.id === 'oBr' || el.id === 'oGhost' || el.id === 'cutC') continue;
+    const b = R(el); if (!b) continue; out.push(b);
+    if (b[1] < R0.height * 0.25) top = Math.max(top, b[3]);
+  }
+  const hint = R($('takeHint')); if (hint) { out.push(hint); top = Math.max(top, hint[3]); }
+  const live = $('live'); if (live?.classList.contains('show')) { const b = R(live); if (b) out.push(b); }
+  osdFix.boxes = out; osdFix.band = Math.max(80, top + 20); osdFix.w = R0.width; osdFix.h = R0.height;
 }
 function gateCorners(g) {
   const c = g.c, n = g.n || [0, 0, 1];
@@ -2029,7 +2075,7 @@ function drawBrackets() {
   let n = 0; const boxes = [], tags = [], now = performance.now();
   if (state === 'fly' && brCands.length && !summaryUp()) {
     if (brPxH !== viewH) { brPxH = viewH; brPx = parseFloat(getComputedStyle(labels[0]).fontSize) || 12; }   // label px (calc(--cell * .78), vh-based)
-    const C = brCands.map((cd) => ({ cd, d: dist3(cd.g.c) })).filter((x) => x.d <= BR_R).sort((a, b) => a.d - b.d);
+    const C = brCands.map((cd) => ({ cd, d: dist3(cd.g.c) })).filter((x) => x.d <= brR).sort((a, b) => a.d - b.d);
     for (const { cd, d } of C) {
       if (n >= BR_N) break;
       const c = cd.g.c; if (!projectView({ x: c[0], y: c[1], z: c[2] }) || gateOccluded(cd, d)) continue;
@@ -2047,15 +2093,16 @@ function drawBrackets() {
       const g = G[n], near = d < 8;
       g.children[0].setAttribute('d', path); g.children[1].setAttribute('d', path);
       if (!g.classList.contains('on')) g.classList.add('on'); g.classList.toggle('near', near);
-      const lb = labels[n], top = bx[1], cx = (P[0].x + P[1].x + P[2].x + P[3].x) / 4;
+      const lb = labels[n];
       const txt = `${cd.name} ${Math.round(d)}M`;                     // the armed end gate is named too ("HONGIK-RO 8M")
-      // the label's box from its text (mono, ~0.64 em a glyph with the tracking): no layout read per frame
-      const ly = Math.max(14, top - 4), lw = txt.length * brPx * 0.64 + 6, tg = [cx - lw / 2, ly - brPx * 1.25, cx + lw / 2, ly];
-      if (tags.some((b) => ovl(b, tg) > 0.3)) { lb.classList.remove('on'); }
+      // the label's box from its text (mono, ~0.64 em a glyph with the tracking): no layout read per frame. [F2] P4 ui #6:
+      // over the bracket, or under it in the top band / over a readout, else dropped (fit.js labelSpot)
+      const lw = txt.length * brPx * 0.64 + 6, sp = labelSpot(bx, lw, brPx * 1.25, { band: osdFix.band, bottom: (osdFix.h || viewH) - 4, fixed: osdFix.boxes, labels: tags, left: 4, right: (osdFix.w || viewW) - 4 });
+      if (!sp) { lb.classList.remove('on'); }
       else {
-        tags.push(tg);
+        tags.push(sp.box);
         if (lb.textContent !== txt) lb.textContent = txt;
-        lb.style.transform = `translate(${cx.toFixed(1)}px,${ly.toFixed(1)}px) translate(-50%,-100%)`;
+        lb.style.transform = `translate(${sp.x.toFixed(1)}px,${sp.y.toFixed(1)}px) translateX(-50%)`;
         if (!lb.classList.contains('on')) lb.classList.add('on'); lb.classList.toggle('near', near);
       }
       n++;
@@ -2227,12 +2274,13 @@ function baseLines() {                  // checklist names in world order (cache
 }
 // [{name, hint, flown, f (best FLOW)}]
 function lineList() {
-  const C = cLines(), m = C ? new Map(C.map((l) => [l.name, { n: l.n || (l.flown ? 1 : 0), f: l.bestFlow || 0, t: +l.bestT || 0 }])) : null;
+  const C = cLines(), m = C ? new Map(C.map((l) => [l.name, { n: l.n || (l.flown ? 1 : 0), f: l.bestFlow || 0, t: +l.bestDur || +l.bestT || 0 }])) : null;
   const S0 = m ? null : !Array.isArray(world.lines) ? cStore() : null, S1 = m ? cStore() : S0;
   return baseLines().map((name) => {
-    const c = m ? m.get(name) : S0?.[name] ? { n: +S0[name].n || 0, f: +S0[name].flow || 0, t: +S0[name].bestT || 0 } : null, r = uiProg.lines[name];
-    // C12 (D5): PROG[name].bestT, the line's best time (s), via lineList or the stored record
-    const bt = c?.t > 0 ? c.t : +S1?.[name]?.bestT > 0 ? +S1[name].bestT : 0;
+    const c = m ? m.get(name) : S0?.[name] ? { n: +S0[name].n || 0, f: +S0[name].flow || 0, t: +S0[name].bd || +S0[name].bestT || 0 } : null, r = uiProg.lines[name];
+    // C12 (D5): PROG[name].bestT, the line's best time (s), via lineList or the stored record; [F2] P4 ux #6: the line's own
+    // best time (pre-gate to gate: lineList bestDur, PROG bd, F1's timed lines) when it has one
+    const bt = c?.t > 0 ? c.t : +S1?.[name]?.bd > 0 ? +S1[name].bd : +S1?.[name]?.bestT > 0 ? +S1[name].bestT : 0;
     return { name, hint: hintFor(name), flown: !!(c?.n || r), f: Math.max(c?.f || 0, r?.f || 0), bt };
   });
 }
@@ -2278,7 +2326,6 @@ function nextLine(from = null) {
 function starTargets(id) { const s = LT(id).stars; return Array.isArray(s) && s.length ? s : [60000, 150000, 260000]; }
 const starCount = (total) => starTargets().filter((v) => total >= v).length;
 const starsHTML = (n, of) => Array.from({ length: of }, (_, i) => `<svg viewBox="0 0 16 16"${i < n ? ' class="on"' : ''} aria-hidden="true"><path d="${STAR}"/></svg>`).join('');
-const fmtBT = (t) => (t >= 60 ? `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}` : `${t.toFixed(t < 10 ? 2 : 1)} S`);   // best line time
 const kfmt = (v) => (v >= 1000 ? Math.round(v / 1000) + 'K' : String(v));
 // menu: BEST + stars (of the best take) + LINES strip, the LINES checklist, START AT (paused)
 function renderProgress() {
@@ -2288,8 +2335,10 @@ function renderProgress() {
   $('lnCount').textContent = `${fl}/${L.length}`;
   const cell = (l) => {
     const next = !l.flown && nx?.name === l.name;
-    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.hint, bt = l.flown && l.bt > 0 ? `<i> · ${fmtBT(l.bt)}</i>` : '';
-    return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}${bt}</small></div>`;
+    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.hint, bt = l.flown && l.bt > 0 ? `<i> · ${fmtDur(l.bt)}</i>` : '';   // [F2] P4: one time format (the caption's)
+    // [F2] P4 ui #3: the compact grid (short landscape) drops the sub-line for a corner tag (×2), so a cell is two lines at most
+    const fx = l.flown && l.f >= 1 ? `<u class="fx">×${l.f}</u>` : '';
+    return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}${bt}</small>${fx}</div>`;
   };
   // [F2] P3 ui #2 / ux #3: the level's groups (lineGroups) under 11 px mono heads, each with its own count; a line in no
   // listed group goes last, under no head
@@ -2312,16 +2361,35 @@ function renderProgress() {
   $('starts').innerHTML = sp.map((s) => `<button data-n="${esc(s.name)}"${s.name.toLowerCase() === cur ? ' class="on"' : ''}>${esc(s.name)}</button>`).join('');
 }
 // [F2] P3 ui #2 / ux #3: short landscape (< 500 px tall) the LINES grid scrolls inside itself and stops 16 px above the
-// FLY / RESUME bar, so no row hides under it (paused it sits right under START AT: it gets the rest of the screen)
+// FLY / RESUME bar, so no row hides under it (paused it sits right under START AT: it gets the rest of the screen).
+// [F2] P4 ui #3 / ux #2: 19 lines hid 3 at 390 px (STREETS 2 across, 5 rows). The groups now share the width by gridPlan:
+// every group the same rows, as few as fit (STREETS 3 across, SET PIECES and GAPS 2: 7 cells, 3 rows at 844 x 390); the
+// inner scroll is the fallback, with a "3 MORE" cue over its fade.
 const SHORT_LAND = window.matchMedia?.('(orientation:landscape) and (max-height:500px)');
 function fitLines() {
   const g = $('lnGrid'); if (!g) return;
-  if (!SHORT_LAND?.matches || $('menu').classList.contains('hidden')) { g.style.maxHeight = ''; g.classList.remove('scroll'); return; }
+  const secs = g.classList.contains('grouped') ? [...g.children].filter((e) => e.classList.contains('lgrp')) : [];
+  const cols = (plan) => { g.style.gridTemplateColumns = plan ? plan.weights.map((w) => `minmax(0,${w.toFixed(1)}fr)`).join(' ') : '';
+    secs.forEach((e, i) => { const q = e.querySelector('.lgg'); if (q) q.style.gridTemplateColumns = plan ? `repeat(${plan.cols[i]},minmax(0,1fr))` : ''; }); };
+  if (!SHORT_LAND?.matches || $('menu').classList.contains('hidden')) { g.style.maxHeight = ''; g.classList.remove('scroll'); cols(null); moreCue(); return; }
+  cols(secs.length > 1 ? gridPlan(secs.map((e) => e.querySelectorAll('.ln').length), g.clientWidth) : null);
   const bar = document.querySelector('#menu .cta')?.offsetHeight || 62, paused = document.body.classList.contains('paused');
   const top = paused ? g.getBoundingClientRect().top + $('menu').scrollTop : 40;
   g.style.maxHeight = Math.max(96, Math.round(window.innerHeight - top - bar - 16)) + 'px';
   g.classList.toggle('scroll', g.scrollHeight > g.clientHeight + 2);
+  moreCue();
 }
+// the cells under the scroller's fade (their middle below its bottom edge - 10 px): "3 MORE ▾" over the fade
+function moreCue() {
+  const g = $('lnGrid'), m = $('lnMore'); if (!g || !m) return;
+  let n = 0;
+  if (g.classList.contains('scroll')) {
+    const b = g.getBoundingClientRect().bottom - 10;
+    g.querySelectorAll('.ln').forEach((c) => { const r = c.getBoundingClientRect(); if ((r.top + r.bottom) / 2 > b) n++; });
+  }
+  m.textContent = n ? `${n} MORE ▾` : ''; m.classList.toggle('on', n > 0);
+}
+$('lnGrid')?.addEventListener('scroll', moreCue, { passive: true });
 window.addEventListener('resize', () => { if (state === 'menu') setTimeout(fitLines, 60); });
 // [F2] P3 ui #6: a level card's second line: "18 LINES · 3★ 150K" (its lines file: the count and the 3-star target), with
 // the flown count once there is one
@@ -2365,6 +2433,7 @@ function onTakeEvent(e) {
   if (e.type === 'line' || e.type === 'repeat') { noteLine(e); lineTag = e.clean && !e.free ? ' · <b>CLEAN</b>' : ''; }
   if (e.type === 'scrape' && e.heads) headsStamp(e);                  // [F2] P3: HEADS! at any FLOW
   else if (e.type === 'scrape' && e.lost) warn(`SCRAPE · FLOW ×${e.flow || 1}`, 1.2);
+  else if (e.type === 'void' && e.voids?.length) warn(`${e.voids.join(' · ')} · VOID`, 1.4);   // [F2] P4 ux #5: F1's grace contact
   switch (e.type) {
     case 'start':
       hideSummary(); sum.kind = sum.data = null; pendingSum = null; clipEndT = null;
@@ -2372,13 +2441,13 @@ function onTakeEvent(e) {
       break;
     case 'line': {
       const text = e.caption || e.name || 'NICE!', flow = e.flow || 1, pl = placeAt(drone.pos);   // [F2] ui #6: where it was flown
-      showLine(text, `+${fmtN(e.pts)}`, flow, pl);   // ×N lives on the FLOW line only (UI #2)
+      showLine(text, `+${fmtN(e.pts)}${timedSub(e)}`, flow, pl);   // ×N lives on the FLOW line only (UI #2)
       caption(text, flow, pl); runStats.maxFlow = Math.max(runStats.maxFlow, flow);
       break;
     }
     case 'repeat': {
       const text = world.lines?.find?.((l) => l.name === e.name)?.caption || e.name || 'AGAIN', pl = placeAt(drone.pos);
-      showLine(text, `REPEAT +${fmtN(e.pts)}`, 1, pl); caption(text, 1, pl);
+      showLine(text, `REPEAT +${fmtN(e.pts)}${timedSub(e)}`, 1, pl); caption(text, 1, pl);
       break;
     }
     case 'bank': pop(`BANKED <em>+${fmtN(e.pts)}</em>`, 'score'); break;
@@ -2387,6 +2456,15 @@ function onTakeEvent(e) {
     case 'cut': clipEndT = now + 0.6; showSummary('cut', e); break;
     case 'crash': clipEndT = now + 1.2; pendingSum = e; break;   // card appears 0.8 s after the hit (uiFrame)
   }
+}
+// [F2] P4 ux #6 (F1's data: line / repeat events of timed lines carry dur, best = the best before this one (0 = none),
+// newBest, fast): " · 0:44 · BEST 0:41 · FAST" on a named line's caption sub-line, so a 44 s and an 82 s WALKING STREET
+// read differently. Micros and untimed lines (bando): nothing.
+const fmtDur = (t) => { t = Math.round(t * 10) / 10; return `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`; };   // 0:44.2, 1:21.6
+function timedSub(e) {
+  if (!e || e.micro || e.free || !(+e.dur > 0)) return '';
+  const b = +e.best || 0;
+  return ` · ${fmtDur(+e.dur)}` + (b > 0 ? (e.newBest ? ' · <b>NEW BEST</b>' : ` · BEST ${fmtDur(b)}`) : '') + (e.fast ? ' · <b class="fast">FAST</b>' : '');
 }
 // [F14] the crash card's "next:" is measured from where RETRY puts you (C4's retryPose() in main.js: {pos, yaw, name});
 // without it, from where you are. Free fly flies on from near here.
@@ -2401,7 +2479,10 @@ function showSummary(kind, e) {
   const total = e?.total ?? v.total ?? 0;
   const best = Math.max(v.best || 0, total), newBest = total > 0 && total > bestAtStart;
   const maxSp = st.maxSpeed ?? runStats.maxSpeed, time = st.time ?? v.time ?? flightT, mf = st.maxFlow ?? runStats.maxFlow;
-  const lines = Array.isArray(st.lines) ? st.lines.map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean) : null;
+  // [F2] P4 ui #4 / ux #1: a careful take logs 36 captions, 30 of them micros: the card lists the named lines (once, with
+  // their FLOW), then "+30 BEATS"; CLEAN counts named flights only
+  const tsum = Array.isArray(st.lines) ? takeSummary(st.lines, (n) => (world.lines || []).some((l) => l?.name === n && isMicro(l))) : null;
+  const lines = tsum ? tsum.named.map((l) => l.name) : null;
   sum.kind = kind; sum.data = e || null;
   // C12 (D5): gold PERFECT on a CUT with every line CLEAN and no scrapes (cut.perfect, else take.perfect)
   const tk = curTake(), perfect = kind === 'cut' && !!(e?.perfect ?? st.perfect ?? (tk && 'perfect' in tk ? tk.perfect : false));
@@ -2414,15 +2495,15 @@ function showSummary(kind, e) {
   $('bSub').textContent = kind === 'cut' ? `${pace ? (e?.how === 'land' ? 'Landed' : '') + pace : cutHow}`.replace(/^ · /, '') + ' · touch a stick for a new one' : isTake ? `${lost} · touch a stick to retry` : 'Touch a stick to fly on';
   const row = (k, val) => `<span>${k}</span><b>${val}</b>`;
   // ui #3: six even cells. The 6th is CLEAN lines (x/n) when C has it, else SCRAPES; LINES no longer repeats the list below
-  const nL = lines ? lines.length : 0;
-  const sixth = typeof st.clean === 'number' && nL ? row('CLEAN', `${Math.min(st.clean, nL)}/${nL}`) : typeof st.scrapes === 'number' ? row('SCRAPES', String(st.scrapes)) : lines ? row('LINES', String(nL)) : '';
+  const nL = tsum ? tsum.flights : 0, objs = !!st.lines?.some?.((l) => l && typeof l === 'object' && 'clean' in l);
+  const sixth = typeof st.clean === 'number' && nL ? row('CLEAN', `${objs ? tsum.clean : Math.min(st.clean, nL)}/${nL}`) : typeof st.scrapes === 'number' ? row('SCRAPES', String(st.scrapes)) : lines ? row('LINES', String(lines.length)) : '';
   $('bStats').innerHTML = row('MAX SPEED', `${Math.round(maxSp * 3.6)} KM/H`) + row('FLY TIME', fmt(time)) +
     row('SCORE', fmtN(total)) + row('BEST', newBest ? `<em>NEW</em> ${fmtN(best)}` : fmtN(best)) +
     row('MAX FLOW', `×${mf || 1}`) + sixth;
   // stars for this take + the next target; this take's lines (NEW = first time ever); the checklist and what to fly next
   const tg = starTargets(), ns = typeof e?.stars === 'number' ? e.stars : starCount(total), nextT = tg.find((s) => total < s);
   $('bStars').innerHTML = isTake ? starsHTML(ns, tg.length) + (nextT ? `<small>NEXT ${kfmt(nextT)}</small>` : '') : '';
-  $('bLines').innerHTML = lines && lines.length ? [...new Set(lines)].map((n) => esc(n) + (newLines.has(n) ? ' <em>NEW</em>' : '')).join(' · ') : '';
+  bLinesRow(tsum);
   const LL = lineList(), nx = nextLine(kind === 'crash' && isTake ? retryFrom() : null), nh = nx ? hintFor(nx.name) : '';
   $('bNext').innerHTML = LL.length ? `LINES <b>${flownCount()}/${LL.length}</b>` + (nx ? ` · next: <b>${esc(nx.name)}</b>${nh ? ` – ${esc(nh)}` : ''}` : '') : '';
   $('cReset').textContent = isTake ? 'RETRY' : 'FLY ON';
@@ -2431,7 +2512,22 @@ function showSummary(kind, e) {
   $('cChal').classList.toggle('hidden', !(kind === 'cut' && ghostKeeper?.last));   // C12: share this take as a ghost to beat
   $('banner').classList.remove('hidden'); $('crashBar').classList.remove('hidden'); $('live').classList.remove('show');
   document.body.classList.add('sumup');
+  fitBLines(tsum);
   padArmed = false;
+}
+// the line row: named lines in 12 px mono (×N amber, NEW badge), then "+30 BEATS" in #a29f99; two lines at most. A row
+// that would wrap to a third drops names from the end into "+2 LINES" (fitBLines), so the count always shows.
+function bLinesRow(T, keep = Infinity) {
+  const el = $('bLines'); if (!T || (!T.named.length && !T.beats)) { el.innerHTML = ''; return; }
+  const shown = T.named.slice(0, keep), more = T.named.length - shown.length;
+  const nm = shown.map((l) => `<span class="nm">${esc(l.name)}${l.flow > 1 ? `<i>×${l.flow}</i>` : ''}${newLines.has(l.name) ? ' <em>NEW</em>' : ''}</span>`).join(' · ');
+  const tail = [more > 0 ? `+${more} LINE${more > 1 ? 'S' : ''}` : '', T.beats ? `${shown.length ? '+' : ''}${T.beats} BEAT${T.beats > 1 ? 'S' : ''}` : ''].filter(Boolean).join(' · ');
+  el.innerHTML = nm + (tail ? `<span class="bt">${shown.length ? ' · ' : ''}${tail}</span>` : '');
+}
+function fitBLines(T) {
+  const el = $('bLines'); if (!T || !T.named.length || !el.offsetParent) return;
+  const lh = parseFloat(getComputedStyle(el).lineHeight) || 16, max = 2 * lh + 2;
+  for (let k = T.named.length - 1; k >= 1 && el.scrollHeight > max; k--) bLinesRow(T, k);
 }
 function hideSummary() { $('banner').classList.add('hidden'); $('crashBar').classList.add('hidden'); document.body.classList.remove('sumup'); }
 const summaryUp = () => !$('banner').classList.contains('hidden');
@@ -2672,7 +2768,7 @@ window.__onetake = {
 window.__onetake.levels = {
   get list() { return LEVELS; }, get loaded() { return world.level || null; }, get progress() { return progLevel; }, get look() { return curLook; },
   select(id) { const L = levelByName(id); if (!L) return false; S.world = L.id === 'bando' ? 'yard' : L.id; buildWorlds(); return true; },
-  mem() { const pm = performance.memory; return { renderer: { ...renderer.info.memory, programs: renderer.info.programs?.length ?? null }, heapMB: pm ? Math.round(pm.usedJSHeapSize / 1048576) : null, lastDispose }; },
+  mem() { const pm = performance.memory; return { renderer: { ...renderer.info.memory, programs: renderer.info.programs?.length ?? null }, heapMB: pm ? Math.round(pm.usedJSHeapSize / 1048576) : null, lastDispose, steps: heapLog.slice(), preset: world.qualityCap?.current ?? null, ios: IOS }; },
 };
 window.__onetake.flight = { PHYS, get log() { return inputLog; }, get lastLog() { return lastInputLog; }, get alpha() { return physAlpha; } };   // [E] input logs
 if (MANUAL) { setInterval(() => { if (state === 'loading') { last = performance.now() - 16; } }, 500); }

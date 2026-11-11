@@ -1,0 +1,10 @@
+{
+ "backdrop": {
+  "sha256": "95c376728cc82f43c55690a666b090ba790913a19511185470fa303e62d9480c",
+  "satBright": 0.0123
+ },
+ "thumb": {
+  "sha256": "6e7a5e7ca431abbadb478bc383d85e8bd83ec5e0c4a71944ebb6a8237d9f6661",
+  "satBright": 0.0039
+ }
+}
