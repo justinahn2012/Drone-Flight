@@ -34,7 +34,7 @@ export const SND = {
   level: 1,
   world: 5.13,     // trim on the world path, set so the city sits ~9 LU under a hover on the walking street (sound #1)
   // P4: beds.traffic is now the city floor under the energy-summed traffic bed (sound #2); P3 61 dB at the street centre
-  beds: { traffic: 50, crowd: 65, alley: 58, air: 54, rain: 66 },
+  beds: { traffic: 50, crowd: 63, alley: 58, air: 54, rain: 66 },   // P4: crowd 65 -> 63 (plain-RMS babble; the events carry the peaks)
   wet: 0.7, artFlow: 0.9,   // P4 (sound #2): the look's wetness (seoul-light uCityWet default); arterial moving vehicles in 80 m per m of width (19.5 m: ~18)
   car: 90, taxi: 88, truck: 94, bus: 97, scooter: 92, tyre: 90,
   // one-shots and loops, RMS at 1 m (calibrated buffers): shop doorway speaker, club door, busking PA, horn, ...
@@ -155,18 +155,20 @@ export function* babbleSteps(sr = 22050, secs = 24, seed = 5, talkers = 12) {
   for (let k = 0; k < talkers; k++) {
     const near = k < nNear, mid = !near && k < nMid, fr = R.next(), female = near ? k !== 1 : fr < 0.5, f0 = (female ? 185 + R.next() * 70 : 98 + R.next() * 40) * 1.08, pan = (R.next() * 2 - 1) * (near ? 0.85 : mid ? 0.7 : 0.6), far = R.next(), g0 = k < 2 ? 0.8 + 0.4 * R.next() : 0.45 + 0.25 * R.next();
     const say = (t, len, gain) => voice(out, sr, t, Math.min(len, secs - t), { f0: f0 * Math.pow(2, (R.next() * 2 - 1) * 3 / 12), female, rate: 4.2 + R.next() * 1.4, pitch: (R.next() - 0.3) * (near ? 0.4 : 0.25), gain, pan, seed: Math.floor(R.next() * 1e9), words: 0.4 + 0.25 * R.next() });
-    if (k < 2 && k < nNear) { for (const [w, t, len] of turns) if (w === k) { say(t, len, g0 * (0.45 + 1.1 * R.next())); yield k; } continue; }
+    if (k < 2 && k < nNear) { for (const [w, t, len] of turns) if (w === k) { say(t, len, g0 * (0.6 + 0.8 * R.next())); yield k; } continue; }
     let t = near ? 1 + R.next() * 3 : R.next() * 1.5;
     while (t < secs) {
       const len = near ? 0.8 + R.next() * 1.7 : 0.6 + R.next() * 2.4;
-      say(t, len, near ? g0 * (0.6 + 0.8 * R.next()) : mid ? 0.15 + 0.08 * R.next() : 0.05 + 0.05 * (1 - far));
+      say(t, len, near ? g0 * (0.6 + 0.8 * R.next()) : mid ? 0.24 + 0.1 * R.next() : 0.06 + 0.05 * (1 - far));
       t += len + (near ? 1.5 + R.next() * 3.5 : 0.2 + R.next() * 1.3);
       yield k;   // one phrase per step (~10-25 ms)
     }
   }
   const m = Math.floor(sr * 0.08);
   for (const c of out) for (let i = 0; i < m; i++) { const u = i / m; c[i] = c[i] * u + c[n - m + i] * (1 - u); }
-  unitRms(out, sr);   // P3: unit RMS (the crowd bed's NORM, the queue and exit 9 sources are calibrated against it)
+  // P3: unit RMS (the crowd bed's NORM, the queue and exit 9 sources are calibrated against it). P4: plain RMS, not the
+  // one-shots' active RMS: with lulls in it the babble is a bed, and its level is its mean (active would sit it 1.4 dB low)
+  { let z = 0; for (const c of out) for (let i = 0; i < n; i++) z += c[i] * c[i]; const k = 1 / (Math.sqrt(z / (2 * n)) || 1e-6); for (const c of out) for (let i = 0; i < n; i++) c[i] *= k; }
   return { out, sr, secs };
 }
 // one-shot banks (laughs, shouts, cheers, clapping, voice guide, bus announcement, chimes, horns, heels): pre-rendered
@@ -440,9 +442,9 @@ export function createSeoulAudio(layout, life, opts = {}) {
       // P3 (sound #3) voicing: no +10 dB shelf (it made a 4 kHz hiss hump and a 1 kHz hole); chest +4, the F1/F2 band
       // (1-2 kHz, the phone speaker's best) +8/+6 dB, the consonant hump at 4 kHz -8, air above 6 kHz back (the voice
       // synth's 5.2 kHz low-pass and the 22 kHz buffer's linear resampling took it): each octave 125 Hz-8 kHz within 3 dB of a recorded crowd (tests/seoul-audio)
-      // P4 (sound #4): re-voiced for the 12-talker babble (more near-pair voicing, Lombard F0): chest +7, 1.1 kHz +11
+      // P4 (sound #4): re-voiced for the 12-talker babble (more near-pair voicing, Lombard F0): chest +7, 1.1 kHz +15
       const pk = (f, q, gn) => { const b = F('peaking', f, q); b.gain.value = gn; return b; }, hs = F('highshelf', 6000); hs.gain.value = 23;
-      const eq = [F('highpass', 60, 0.7), pk(140, 1, 7), pk(1100, 1.0, 11), pk(2000, 1.2, 7), pk(4000, 1.4, -8), hs], hp = eq[0], pbG = G(0.35);
+      const eq = [F('highpass', 60, 0.7), pk(140, 1, 7), pk(1100, 1.3, 15), pk(2000, 1.2, 7), pk(4000, 1.4, -8), hs], hp = eq[0], pbG = G(0.35);
       for (let i = 1; i < eq.length; i++) eq[i - 1].connect(eq[i]);
       pa.connect(hp); pb.connect(pbG); pbG.connect(hp); hs.connect(g.bCrowd); g.crowdSrc = [pa, pb]; g.crowdIn = hp;
       // P4 (sound bug: the 12 s loop left a 0.08-0.10 autocorrelation peak at 11.99 s): the babble (24 s now) plays as two
