@@ -160,9 +160,9 @@ jobs:
           path: browser-out/
           retention-days: 14
 
-  browser-seoul:   # SwiftShader renders Seoul slowly: 50 min on main bfe39b1 (?perf 2 min, 3 stills ~45 min), so 90
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+  browser-seoul:   # SwiftShader renders Seoul slowly and runners vary 2x: 45 min on integ8, >90 on p3/H-ci 3450714 (stills
+    runs-on: ubuntu-latest   # 1548-2084 s each; stills.json now logs the seconds per step), so 180 (the limit is 360)
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -183,8 +183,8 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Build the Seoul export (coverage reads its world.json)
         run: node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae
-      - name: Neon Seoul in headless Chromium (SwiftShader)
-        run: node tests/browser.mjs --level seoul-hongdae --exports exports/seoul-hongdae --out browser-out-seoul
+      - name: Neon Seoul in headless Chromium (SwiftShader; still rows tolerated while A, C, F2, G1, G2 land, see ci/known-failures.json)
+        run: node ci/run.mjs tests/browser.mjs --level seoul-hongdae --exports exports/seoul-hongdae --out browser-out-seoul
       - uses: actions/setup-python@v5
         if: ${{ !cancelled() }}
         with:

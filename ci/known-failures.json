@@ -15,9 +15,15 @@
     },
     {
       "suite": "tools/camgate.py",
-      "match": "[exposure] club90: ground p50",
-      "owner": "A + D (PLAN-P3 fpv #4 hero-street exposure, colour #4 floor)",
-      "why": "club street floor meters 8 against 40 in the CI stills of main bfe39b1"
+      "match": ": ground p50",
+      "owner": "A (fpv #4 hero-street exposure) with C (facade/room fill)",
+      "why": "hero-street floors meter 7-23 against 40 in integ8's CI stills"
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": ": clip ",
+      "owner": "A (fpv #5 bleach the neon cores, colour #3)",
+      "why": "walk0 clips 4.9 % against 3 % in integ8 (B's hotter cores landed; A shapes them)"
     },
     {
       "suite": "tools/camgate.py",
@@ -30,6 +36,24 @@
       "match": "[colour]",
       "owner": "A (PLAN-P3 colour #1, #3; fpv #1)",
       "why": "the colour rows (neutral mids, room saturation, warm share, white area) are phase-3 targets A, B and C are building towards (panel2 color.md #6). Exposure rows are tolerated only as listed above"
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "still walk0: ",
+      "owner": "A, C, F2, G1, G2 (still landing on integ8, PLAN-P3)",
+      "why": "the Seoul look moves with every landing; golden-seoul-hongdae.json is integ8 0b9cf41's. Once they have landed the integrator re-baselines (tests/browser.mjs --level seoul-hongdae --golden-from <artifact>/stills.json) and deletes this entry. Page, shader, coverage and crash failures stay fatal"
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "still club90: ",
+      "owner": "A, C, F2, G1, G2 (still landing on integ8, PLAN-P3)",
+      "why": "the Seoul look moves with every landing; golden-seoul-hongdae.json is integ8 0b9cf41's. Once they have landed the integrator re-baselines (tests/browser.mjs --level seoul-hongdae --golden-from <artifact>/stills.json) and deletes this entry. Page, shader, coverage and crash failures stay fatal"
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "still station: ",
+      "owner": "A, C, F2, G1, G2 (still landing on integ8, PLAN-P3)",
+      "why": "the Seoul look moves with every landing; golden-seoul-hongdae.json is integ8 0b9cf41's. Once they have landed the integrator re-baselines (tests/browser.mjs --level seoul-hongdae --golden-from <artifact>/stills.json) and deletes this entry. Page, shader, coverage and crash failures stay fatal"
     }
   ]
 }

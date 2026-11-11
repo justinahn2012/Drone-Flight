@@ -26,7 +26,18 @@ export function coverage(scene, world) {
   const get = (path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), world);
   const near = (a, b) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) <= 1e-4 * Math.max(1, Math.abs(b[i])));
   const within = (mn, mx, b) => mn.every((v, i) => v >= b.min[i] - 1e-4 * Math.max(1, Math.abs(b.min[i]))) && mx.every((v, i) => v <= b.max[i] + 1e-4 * Math.max(1, Math.abs(b.max[i])));
-  const boxOf = (g) => { if (!g.boundingBox) g.computeBoundingBox(); const b = g.boundingBox; return [[b.min.x, b.min.y, b.min.z], [b.max.x, b.max.y, b.max.z]]; };
+  // [P3 H] bounds without touching the geometry: a cached box (BatchedMesh keeps its own), else computed here from the
+  // positions, else null: D frees the CPU arrays once the GPU has them (count stays), and three's computeBoundingBox()
+  // on a freed array logs a NaN error per mesh and leaves a NaN box behind (integ8: 33 console errors, 33 "uncovered")
+  const fin = (b) => b && [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].every(Number.isFinite);
+  const boxOf = (m) => {
+    const g = m.geometry, c = (m.isBatchedMesh && fin(m.boundingBox) && m.boundingBox) || (fin(g.boundingBox) && g.boundingBox);
+    if (c) return [[c.min.x, c.min.y, c.min.z], [c.max.x, c.max.y, c.max.z]];
+    const p = g.attributes.position; if (!p || p.isInterleavedBufferAttribute || !p.array || p.array.length < p.count * p.itemSize) return null;
+    const A = p.array, k = p.itemSize, mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < p.count; i++) for (let j = 0; j < 3; j++) { const v = A[i * k + j]; if (v < mn[j]) mn[j] = v; if (v > mx[j]) mx[j] = v; }
+    return [mn, mx].every((a) => a.every(Number.isFinite)) ? [mn, mx] : null;
+  };
   const trisOf = (g) => { const n = g.index ? g.index.count : g.attributes.position.count, s = Math.max(0, g.drawRange?.start || 0), c = g.drawRange?.count; return Math.floor(Math.max(0, Math.min(n - s, Number.isFinite(c) ? c : Infinity)) / 3); };
   const rowOf = (m) => {
     if (m.isInstancedMesh || !m.geometry?.attributes?.position) return null;
@@ -34,12 +45,12 @@ export function coverage(scene, world) {
     const key = m.userData?.exportKey ?? m.userData?.seoulKey;
     if (key != null) {   // [P3 H] a cell of a world.glb row (or the whole row under its own key)
       const r = rows.find((x) => x.name === key); if (!r) return null;
-      const [mn, mx] = boxOf(g);   // a cell's own box (splitCells sets it for culling) lies inside its row's
-      return within(mn, mx, r.bounds) ? r : null;
+      const b = boxOf(m);   // a cell's (or batch's) box lies inside its row's; arrays freed and no cached box: the key decides
+      return !b || within(b[0], b[1], r.bounds) ? r : null;
     }
     if (!rows.some((r) => r.vertices === n)) return null;
-    const [mn, mx] = boxOf(g);
-    return rows.find((r) => r.vertices === n && near(mn, r.bounds.min) && near(mx, r.bounds.max)) || null;
+    const b = boxOf(m); if (!b) return null;
+    return rows.find((r) => r.vertices === n && near(b[0], r.bounds.min) && near(b[1], r.bounds.max)) || null;
   };
   const progOf = (m) => { const mt = Array.isArray(m.material) ? m.material[0] : m.material; try { return mt?.customProgramCacheKey?.() || ''; } catch (e) { return ''; } };
   const out = { meshes: 0, byRule: {}, uncovered: [], pending: [], drawnRows: new Set(), rowTris: {} };

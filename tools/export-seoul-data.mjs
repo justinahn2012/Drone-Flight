@@ -323,6 +323,16 @@ async function lookOf(root, X, L, log) {
   } catch (e) { log(`  note: look.json: ${e.message}`); return null; }
 }
 
+/** [P3 H] Node has no DOM: a module that loads a texture with THREE.TextureLoader while building (E's dressing materials)
+ *  would throw `document is not defined` and take the whole headless build down. For the build only, ImageLoader.load
+ *  returns an empty placeholder image (never loaded: the export reads geometry and data, never texels). */
+async function headless(fn) {
+  if (typeof document !== 'undefined') return fn();
+  const THREE = await import('three'), P = THREE.ImageLoader.prototype, load0 = P.load;
+  P.load = function (url) { return { src: url, width: 0, height: 0, headless: true }; };
+  try { return await fn(); } finally { P.load = load0; }
+}
+
 // ================================================================================================================
 // [P3 H, native #2] light tables and atlases
 // ================================================================================================================
@@ -419,7 +429,7 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
 
   // ---- the runtime build, headless: what the browser builds (emitters, signs, life, light)
   let world = null;
-  try { world = await ws.buildSeoul(null, { seed, takeClock: () => 0, quality: 'auto' }); }
+  try { world = await headless(() => ws.buildSeoul(null, { seed, takeClock: () => 0, quality: 'auto' })); }
   catch (e) { warn(`buildSeoul() failed in node (${e.message}): emitters from the geometry entry only, partner data from the modules`); }
   const parts = world?.parts || {};
   const ctx = { layout, seed, nitScale: ws.NITS ?? 0.1, NIT: ws.NITS ?? 0.1, quality: 'auto', headless: true, world, emitters: world?.emitters || geo.emitters };
