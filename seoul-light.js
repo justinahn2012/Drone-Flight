@@ -95,10 +95,11 @@ export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 2, 
 // P3 graphics #4: 8 layers (0.5 ... 50 m) so the upper facades and the towers get their own probes, not a 12-30 m blend.
 // P4 lighting #2 / graphics #1: cityLux, an urban ambient floor (lux, isotropic, per layer): the light every surface of a lit
 // district gets from the city's own glow (the lit cloud deck, the facades and streets past the heightfield horizon, the
-// bounces past the volume's one) that a K-limited, one-bounce model drops. 2 lux at street level (1.5-3), 4-5 lux on the
-// upper floors (a 0.35-albedo wall then reads 0.45-0.55 nits: the 0.3-0.8 nit floor above 10 m, no black slabs); warm grey.
+// bounces past the volume's one) that a K-limited, one-bounce model drops. 2 lux at street level (1.5-3), 4.5-6 lux on the
+// upper floors (a wall at the city's ~0.2-0.35 effective albedo then reads 0.3-0.65 nits: the 0.3-0.8 nit floor above
+// 10 m, no black slabs); warm grey.
 export const VOLUME = { heights: [0.5, 2.5, 5, 8, 12, 18, 30, 50], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2, windowNits: [0.3, 1.2, 1.6, 1.5, 1.2, 0.8, 0.5, 0.3], windowRGB: [1.0, 0.86, 0.7], multi: 1.25,
-  cityLux: [2.0, 2.0, 2.3, 2.8, 4.0, 4.6, 4.8, 4.0], cityRGB: [1.0, 0.9, 0.78] };
+  cityLux: [2.0, 2.2, 2.6, 3.2, 4.5, 5.5, 6.0, 5.0], cityRGB: [1.0, 0.9, 0.78] };
 // fractional layer index of a height (piecewise linear between VOLUME.heights): JS and GLSL
 export function layerOf(y, H = VOLUME.heights) { if (y <= H[0]) return 0; for (let k = 1; k < H.length; k++) if (y < H[k]) return k - 1 + (y - H[k - 1]) / (H[k] - H[k - 1]); return H.length - 1; }
 const LAYER_GLSL = (H) => `float cityLayer(float y){ ${H.slice(1).map((h, k) => `if (y < ${h.toFixed(2)}) return ${k.toFixed(1)} + (y - ${H[k].toFixed(2)}) / ${(h - H[k]).toFixed(2)};`).join(' ')} return ${(H.length - 1).toFixed(1)}; }`;
