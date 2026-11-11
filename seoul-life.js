@@ -728,6 +728,14 @@ export function h32(a, b = 0, c = 0) {
   h ^= h >>> 15; h = Math.imul(h, 0x2C1B3C6D) >>> 0; h ^= h >>> 12; h = Math.imul(h, 0x297A2D39) >>> 0; h ^= h >>> 15; return h >>> 0;
 }
 const hu = (a, b, c) => h32(a, b, c) / 4294967296;
+// sin/cos without libm (native parity, P3): every standing or seated person is a SCRAPE capsule, so their placement must be
+// bit-identical on a port; range-reduced odd/even minimax polynomials, |error| < 2e-7, IEEE +,* only
+export function psin(x) {
+  const TAU = 6.283185307179586; let k = Math.floor(x / TAU + 0.5); x -= k * TAU;   // [-pi, pi]
+  let sg = 1; if (x > 1.5707963267948966) x = 3.141592653589793 - x; else if (x < -1.5707963267948966) x = -3.141592653589793 - x; void sg;
+  const x2 = x * x; return x * (1 + x2 * (-0.16666666666666666 + x2 * (0.008333333333333333 + x2 * (-0.0001984126984126984 + x2 * (2.7557319223985893e-6 + x2 * (-2.505210838544172e-8 + x2 * 1.6059043836821613e-10))))));
+}
+export const pcos = (x) => psin(x + 1.5707963267948966);
 const wrapA = (a) => a - Math.round(a / 6.283185307179586) * 6.283185307179586;
 const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
 // how much door traffic a frontage makes (people in and out per unit of frontage), by use
@@ -742,6 +750,12 @@ export function buskSitesFrom(pieces = []) {
   for (const p of pieces || []) {
     if (!p || !p.pos || !/busk|stage/i.test((p.kind || '') + ' ' + (p.id || ''))) continue;
     const c = p.crowdRing?.c;
+    if (p.busk && p.busk.pos) {   // E's P3 stage: performers at busk.pos facing busk.yaw, the crowd round crowdRing.c, canopy {c, len, dep}
+      const B = p.busk, yaw = B.yaw ?? p.yaw ?? 0, fx = psin(yaw), fz = pcos(yaw), r = B.r || [2.6, 4.1];
+      sites.push({ pos: B.pos, yaw, kind: B.kind || 'dance', n: p.n ?? 56, arc: B.arc ?? 1.95, r0: r[0], y0: B.pos[1] > 0.05 ? B.pos[1] : 0, piece: p.id, ring: c ? { c: [c[0], c[2]], r: p.crowdRing.r ?? 3.2 } : null });
+      const cc = p.canopy?.c || p.pos; keep.push({ x: cc[0], z: cc[2], ax: fz, az: -fx, sx: fx, sz: fz, hx: (p.canopy?.len ?? 9) / 2 + 0.4, hz: (p.canopy?.dep ?? 5.6) / 2 + 0.4 });
+      continue;
+    }
     if (c) {
       let sx = c[0] - p.pos[0], sz = c[2] - p.pos[2]; const l = Math.hypot(sx, sz) || 1; sx /= l; sz /= l;   // toward the street
       const px = p.pos[0] - sx * 1.4, pz = p.pos[2] - sz * 1.4, ax = p.dir ? p.dir[0] : -sz, az = p.dir ? p.dir[2] : sx;
@@ -923,7 +937,7 @@ export class CrowdSim {
       }
       for (let q = 0; q < 24; q++) {
         const a = R.next() * 6.283, r = 2.5 + R.next() * 6.5, p = this.newPerson(R, K_STAND);
-        p.x = ex.x + Math.cos(a) * r; p.z = ex.z + Math.sin(a) * r; p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
+        p.x = ex.x + pcos(a) * r; p.z = ex.z + psin(a) * r; p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
         this.statics.push(p.id);
       }
     }
@@ -950,7 +964,7 @@ export class CrowdSim {
           const u = (t + 0.5) / nt, x = a[0] + fx * u + nx * 1.6, z = a[1] + fz * u + nz * 1.6; l._tables.push([x, z]);
           const occ = 2 + Math.floor(R.next() * 3);
           for (let q = 0; q < 4; q++) {
-            const ang = q * Math.PI / 2 + 0.785, sx = x + Math.cos(ang) * 0.62, sz = z + Math.sin(ang) * 0.62;
+            const ang = q * Math.PI / 2 + 0.785, sx = x + pcos(ang) * 0.62, sz = z + psin(ang) * 0.62;
             l._tables.push({ stool: [sx, sz] });
             if (q < occ) { const p = this.newPerson(R, K_SEAT); p.x = sx; p.z = sz; p.yaw = Math.atan2(x - sx, z - sz); p.pose = P_SIT; this.statics.push(p.id); }
           }
@@ -963,7 +977,7 @@ export class CrowdSim {
       const smokers = n === 1 && R.next() < 0.5;
       for (let q = 0; q < n; q++) {
         const ang = (q / n) * 6.283 + R.next() * 0.5, r = n > 1 ? 0.42 + 0.1 * n : 0;
-        const p = this.newPerson(R, K_STAND); p.x = gx + Math.cos(ang) * r; p.z = gz + Math.sin(ang) * r;
+        const p = this.newPerson(R, K_STAND); p.x = gx + pcos(ang) * r; p.z = gz + psin(ang) * r;
         p.yaw = n > 1 ? Math.atan2(gx - p.x, gz - p.z) : Math.atan2(nx, nz) + (R.next() - 0.5) * 2; p.smoker = smokers || R.next() < 0.12; p.T = 15 + R.next() * 30; p.cl = [gx, gz];
         this.statics.push(p.id);
       }
@@ -976,13 +990,13 @@ export class CrowdSim {
     this.buskSites = siteList;
     siteList.forEach((s, si) => {
       const b = { id: si, x: s.pos[0], z: s.pos[2], yaw: s.yaw ?? 0, kind: s.kind || (si ? 'acoustic' : 'dance'), song: 170 + 30 * hu(this.seed, si, 5), off: 97 * hu(this.seed, si, 6), perf: [], aud: [], piece: s.piece || null, ring: s.ring || null };
-      const fwx = Math.sin(b.yaw), fwz = Math.cos(b.yaw), rtx = fwz, rtz = -fwx;
+      const fwx = psin(b.yaw), fwz = pcos(b.yaw), rtx = fwz, rtz = -fwx;
       const np = b.kind === 'dance' ? 3 : 1 + (R.next() < 0.5 ? 1 : 0);
       for (let j = 0; j < np; j++) { const p = this.newPerson(R, K_PERF, b.kind === 'dance' ? R.next() < 0.6 : true); const lat = (j - (np - 1) / 2) * 1.1; p.x = b.x + rtx * lat - fwx * (j === 1 ? 0.5 : 0); p.z = b.z + rtz * lat - fwz * (j === 1 ? 0.5 : 0); p.y0 = s.y0 || 0; p.yaw = b.yaw; p.busk = si; p.pose = b.kind === 'dance' ? P_DANCE : P_SING; b.perf.push(p.id); this.statics.push(p.id); }
       const na = Math.round((s.n ?? (b.kind === 'dance' ? 50 : 30)) * Math.min(1, this.density));
       for (let j = 0; j < na; j++) {
         const row = Math.floor(R.next() * R.next() * 3), r = (s.r0 ?? 2.6) + row * 0.75 + R.next() * 0.35, th = (R.next() - 0.5) * 2 * (s.arc ?? 1.95);
-        const ax = b.x + (fwx * Math.cos(th) + rtx * Math.sin(th)) * r, az = b.z + (fwz * Math.cos(th) + rtz * Math.sin(th)) * r;
+        const ax = b.x + (fwx * pcos(th) + rtx * psin(th)) * r, az = b.z + (fwz * pcos(th) + rtz * psin(th)) * r;
         if (this.inDress(ax, az, 0.3)) continue;
         const p = this.newPerson(R, K_BUSK); p.x = ax; p.z = az;
         p.yaw = Math.atan2(b.x - p.x, b.z - p.z) + (R.next() - 0.5) * 0.3; p.busk = si; p.film = R.next() < 0.4; p.pose = p.film ? P_FILM : R.next() < 0.6 ? P_IDLE : P_TALK;
@@ -2056,7 +2070,7 @@ export function build(layout, ctx = {}) {
   const humanMat = makeHumanMat();
   const instAttrs = (g, cap) => {
     const at = (n) => { const a = new THREE.InstancedBufferAttribute(new Float32Array(cap * n), n); a.setUsage(THREE.DynamicDrawUsage); return a; };
-    const A = { iPos: at(4), iAnim: at(4), iTop: at(4), iBot: at(4), iHair: at(4), iSkin: at(4), iFill: at(4), iWear: at(4), iLook: at(4) };
+    const A = { iPos: at(4), iAnim: at(4), iTop: at(4), iBot: at(4), iHair: at(4), iSkin: at(4), iFill: at(4), iWear: at(4), iLook: at(4), instanceVelocity: at(3) };   // (+ m/s for A's object blur, P3-A1)
     for (const k in A) g.setAttribute(k, A[k]);
     g.instanceCount = 0; g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
     return A;
@@ -2094,6 +2108,8 @@ export function build(layout, ctx = {}) {
     avatars.male = meta.avatars.map((av, i) => (av.sex === 'm' ? i : -1)).filter((i) => i >= 0);
     avatars.female = meta.avatars.map((av, i) => (av.sex === 'f' ? i : -1)).filter((i) => i >= 0);
     avatars.n = nA; avatars.ready = true; avatars.patched = false;
+    for (const L of avatars.tiers) for (const t of L) motionMeshes.push(t.mesh);   // (the same array scene.userData.motionMeshes spreads: re-list)
+    if (ctx.scene?.userData) ctx.scene.userData.motionMeshes = [...(ctx.scene.userData.motionMeshes || []).filter((m) => !motionMeshes.includes(m)), ...motionMeshes];
     stats.avatars = nA; stats.trisNear = avatars.tiers[0][0].tris; stats.trisMid = avatars.tiers[1][0].tris;
   }
   // ---- contact shadows (lighting #6, P3): a soft dark footprint under every near and mid person (multiplied into what is
@@ -2153,7 +2169,7 @@ export function build(layout, ctx = {}) {
     vByType[ty] = { im, st, vel, env, cap, n: list.length };
   }
   // contract P2-A1: list the vehicle meshes for A's object blur (world.motionMeshes / scene.userData.motionMeshes)
-  const motionMeshes = Object.values(vByType).map((B) => B.im);
+  const motionMeshes = [...Object.values(vByType).map((B) => B.im), ...tiers.map((t) => t.mesh)];
   group.userData.motionMeshes = motionMeshes;
   if (ctx.scene?.userData) ctx.scene.userData.motionMeshes = [...(ctx.scene.userData.motionMeshes || []), ...motionMeshes];
   const poolG = new THREE.InstancedBufferGeometry().copy(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2));
@@ -2207,7 +2223,8 @@ export function build(layout, ctx = {}) {
     crowd.evaluate(clock + W, camE);
     const c2 = performance.now();
     const X = crowd.X, Z = crowd.Z, VIS = crowd.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
-    const cosFov = Math.cos(Math.min(1.55, ctx.fovHalf ?? 1.15)), visTest = typeof ctx.visible === 'function' ? ctx.visible : null;
+    const VZ = ctx.scene?.userData?.seoulLight?.visibility;   // D's frustum + heightfield occlusion (P3), else ctx.visible
+    const cosFov = Math.cos(Math.min(1.55, ctx.fovHalf ?? 1.15)), visTest = VZ && typeof VZ.visible === 'function' ? (x, y, z, r) => VZ.visible(x, y, z, r) : typeof ctx.visible === 'function' ? ctx.visible : null;
     let nN = 0, nM = 0, nF = 0, nC = 0; for (const t of tiers) t.n = 0; if (avatars.ready) for (const L of avatars.tiers) for (const t of L) t.n = 0;
     if (avatars.ready && !avatars.patched) { const SL = ctx.scene?.userData?.seoulLight; if (SL?.patchMaterial) { for (const m of avatars.mats) SL.patchMaterial(m); avatars.patched = true; } }
     const T0 = tiers[0].A, T1 = tiers[1].A, T2 = tiers[2].A, mr2 = LIFE.midR * LIFE.midR;
@@ -2269,13 +2286,14 @@ export function build(layout, ctx = {}) {
       T.iSkin.array.set(L.skin, o); T.iSkin.array[o + 3] = umbOf[i];
       T.iWear.array.set(L.wear, o); T.iWear.array[o + 3] = a.look.style;
       T.iLook.array[o] = LY[i]; T.iLook.array[o + 1] = LP[i]; T.iLook.array[o + 2] = accOf[i]; T.iLook.array[o + 3] = seedOf[i];
+      { const sp = crowd.WALK[i] * (walker ? crowd.units[a.unit].v : 1.25), ov = k * 3; T.instanceVelocity.array[ov] = Math.sin(yaw) * sp; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = Math.cos(yaw) * sp; }
       fill.at(x, z, tmpF); T.iFill.array[o] = tmpF[0]; T.iFill.array[o + 1] = tmpF[1]; T.iFill.array[o + 2] = tmpF[2]; T.iFill.array[o + 3] = tmpF[3];
     }
     let avTris = 0;
     for (const T of [...tiers, ...(avatars.ready ? avatars.tiers.flat() : [])]) {
       const n = T.n; T.g.instanceCount = n; T.mesh.visible = n > 0; avTris += n * T.tris;
       if (!n) continue;
-      for (const k in T.A) { const at = T.A[k]; at.clearUpdateRanges?.(); at.addUpdateRange?.(0, n * 4); at.needsUpdate = true; }
+      for (const k in T.A) { const at = T.A[k]; at.clearUpdateRanges?.(); at.addUpdateRange?.(0, n * at.itemSize); at.needsUpdate = true; }
     }
     contactG.instanceCount = nC; contactA.clearUpdateRanges?.(); contactA.addUpdateRange?.(0, nC * 4); contactA.needsUpdate = true; contactY.clearUpdateRanges?.(); contactY.addUpdateRange?.(0, nC); contactY.needsUpdate = true;
     stats.contacts = nC;

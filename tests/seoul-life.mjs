@@ -84,6 +84,8 @@ if (existsSync('tests/seoul-life-dressing.json') && file === 'seoul/layout.json'
         for (const o of phys) if (Math.abs(C.X[i] - o[0]) < 2 && Math.abs(C.Z[i] - o[1]) < 2 && Math.hypot(C.X[i] - o[0], C.Z[i] - o[1]) < o[2]) { ins++; break; } } }
     res.push({ ring, inside: 100 * ins / tot, rings: C.busk.length });
   }
+  { const P3 = { id: 'under-the-stage', kind: 'stage', pos: [196, 0, -311], yaw: 0.5, busk: { pos: [196, 0, -311], yaw: 0.5, arc: 1.95, r: [2.6, 4.1] }, crowdRing: { c: [196 + 3.3 * Math.sin(0.5), 0, -311 + 3.3 * Math.cos(0.5)], r: 3.2 }, canopy: { c: [196 - 1, 0, -311 - 1.5], len: 9, dep: 5.6 } };
+    const bs = buskSitesFrom([P3]); ok(bs.sites.length === 1 && bs.sites[0].pos === P3.busk.pos && bs.sites[0].yaw === 0.5 && bs.areas.length === 1, "E's P3 stage format (busk.pos / busk.yaw / canopy) gives the busk site"); }
   ok(res[1].ring >= 30 && res[0].ring === 0 && res[1].rings >= 3, `UNDER THE STAGE busks: ${res[1].ring} in the crowd round crowdRing.c (P2: ${res[0].ring}); ${res[1].rings} rings (the Playground kept)`);
   ok(res[1].inside < 1.2 && res[1].inside < res[0].inside * 0.5, `walkers inside E's carts, tents, stalls and parked scooters within 25 m: ${res[1].inside.toFixed(2)} % (without the discs ${res[0].inside.toFixed(2)} %)`);
 }
@@ -164,8 +166,9 @@ if (existsSync('seoul/people/people.json')) {
   const L2 = lifeMod.build(layout, { audio: false, scene: new THREE.Scene(), peopleData: { meta, bin } }), cam = new THREE.Vector3(-36, 3, -23), qq = new THREE.Quaternion();
   for (let k = 0; k < 10; k++) L2.update(10 + k / 30, cam, qq);
   const nAv = L2.avatars.tiers[0].reduce((a, t) => a + t.n, 0) + L2.avatars.tiers[1].reduce((a, t) => a + t.n, 0);
-  ok(L2.avatars.ready && nAv > 50 && nAv === L2.stats.near + L2.stats.mid && L2.stats.contacts === nAv && L2.motionMeshes.length === 5 && L2.motionMeshes.some((m) => m.count > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 1)),
-    `render path: ${nAv} near/mid people on avatars, ${L2.stats.contacts} contact shadows, ${L2.motionMeshes.length} vehicle meshes with instanceVelocity (A's object blur)`);
+  ok(L2.avatars.ready && nAv > 50 && nAv === L2.stats.near + L2.stats.mid && L2.stats.contacts === nAv && L2.motionMeshes.filter((m) => m.isInstancedMesh).length === 5 && L2.motionMeshes.some((m) => m.count > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 1))
+    && L2.motionMeshes.some((m) => !m.isInstancedMesh && m.geometry.instanceCount > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 0.5)),
+    `render path: ${nAv} near/mid people on avatars, ${L2.stats.contacts} contact shadows, ${L2.motionMeshes.length} meshes with instanceVelocity (5 vehicle types + crowd tiers; A's object blur)`);
 }
 // native export (H): life.json round-trips through JSON and carries the parity hash
 { const d = JSON.parse(JSON.stringify(exportData(layout, { seed: 7 }))); ok(d.lanes.length === a.traffic.lanes.length && d.walkways.length === a.crowd.ways.length && d.parity.trafficHash90 === ha[ha.length - 1], `exportData(): life.json with ${d.lanes.length} lanes, ${d.walkways.length} walkways, ${d.crowd.units.length} units, parity hash ${d.parity.trafficHash90}`); }
