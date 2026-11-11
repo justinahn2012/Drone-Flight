@@ -124,6 +124,10 @@ try {
   ok(segOk && (BANDO ? perf.segments.length === 4 : perf.segments.length >= 3 && !perf.segments.includes('hover')), `?perf segments ${perf.segments.join(', ')} at ${perf.scales.map((s) => s.scale).join(' / ')} (${sec()}); ` +
     (BANDO ? `hover ${JSON.stringify(perf.hover)}` : `world.update ${perf.segments.map((n) => { const g = perf.scales[0].seg[n] || {}; return `${n} ${Number.isFinite(g.updP50) ? g.updP50.toFixed(1) + ' p50' : 'parts ' + JSON.stringify(g.parts || {})}`; }).join(', ')} ms`));
   writeFileSync(join(OUT, 'perf.json'), JSON.stringify(perf, null, 1));
+  // [P4 H, perf #4] the shareable result: the update split reports (perf.js dropped it), the device block, a SHARE button,
+  // and a digest small enough for a text message
+  const sh = await page.evaluate(async () => { const m = await import('./perf.js'); const d = JSON.stringify(m.perfDigest(window.__onetake.perf)); return { len: d.length, btn: !!document.getElementById('perfShare') && document.getElementById('perfShare').style.display !== 'none', text: (window.__onetake.perfText || '').length }; });
+  ok(perf.segments.every((n) => Number.isFinite(perf.scales[0].seg[n]?.updP50)) && perf.device?.at && sh.btn && sh.text > 0 && sh.len < 4000, `?perf result is shareable: updP50 per segment, device ${JSON.stringify(perf.device?.renderer || null)}, SHARE shown, digest ${sh.len} chars`);
   }
 
   // ---- 3. coverage

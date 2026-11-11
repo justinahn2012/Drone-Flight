@@ -347,13 +347,14 @@ temporal upscaling from ~0.6x against cable and window-grid shimmer; in-tile MSA
 
 ## 8. Phase 3 (stream H): CI, light tables, atlases, snapshot v4
 
-**CI is green on main and stays honest** (`.github/workflows/ci.yml`, four jobs):
+**CI** (`.github/workflows/ci.yml`, four jobs). Correction (P4): main was not green at the end of phase 3 (the Seoul export,
+bando's spawn golden and three audio rows failed); see section 9 for where it stands.
 - `test` (~4 min on a runner): syntax, replay, lightmaps, take, stress-lite, test-export, test-seoul, test-facades, seoul-life,
   movers, seoul-signs, seoul-light, seoul-dressing, camera-night, seoul-ui, `seoul-parity --strict`, the bando export, the
   Seoul export `--strict` then `--check --strict`. Every step runs even after one fails (`if: !cancelled()`).
 - `audio`: tests/seoul-audio.mjs (node-web-audio-api 1.0.4 from ci/package.json; it links libasound, installed if missing).
 - `browser`: bando in SwiftShader, stills vs tests/golden.json.
-- `browser-seoul` (90-min cap): Seoul in SwiftShader, coverage, stills vs tests/golden-seoul-hongdae.json, then the camera gate.
+- `browser-seoul` (180-min cap since faf1a21): Seoul in SwiftShader, coverage, stills vs tests/golden-seoul-hongdae.json, then the camera gate.
 
 **Known failures** (`ci/known-failures.json`, `ci/run.mjs`): a suite with a failure that is already on main runs through
 `node ci/run.mjs <suite> [args]`. It passes only when every FAIL line it prints matches an entry for that suite (each names
@@ -403,4 +404,64 @@ worker once it is a pure function. On Metal: the same sim on its own thread.
   and its tick: a contact counts again when the body changes or after MV_GAP ticks).
 Older snapshots restore with tick 0 and no contact. A port's movers must be a pure function of (t, p, r): life.json's
 parity vectors pin the traffic.
+
+## 9. Phase 4 (stream H): binding known failures, the content that was missing, a compressed bundle, the worker wired
+
+**Known failures ratchet** (`ci/run.mjs`, `ci/known-failures.json`). An entry may carry `limit: {re, min?, max?}`: `re`
+captures one number from the FAIL line, and outside [min, max] the known row fails CI ("known failure got worse"). The
+blanket `[colour]` / `: EV ` entries are gone: one entry per shot and row (walk0, club90, station; EV, ground p50, clip,
+room saturation, warm share, white area, neutral R-G), each limited about 10 % past main's CI value, so the colour gate
+binds while A, B, C and D work. The still rows carry a p95 floor (a black or half-rendered still fails). G1's densities
+and F2's lineNames are fixed and deleted. The audio job runs through ci/run.mjs: G2's three rows after G1's traffic
+merged (station -13.2 LU, junction -14.4, hover peaks 2.9 dB), ratcheted, owned by G2 (sound #2, #3).
+
+**Phase 3's content ships** (native #2; world.json `data.content`, `data.assets`):
+- `people/`: people.json + people.bin (8 Rocketbox avatars x 2 LODs: pos Float32 x3, nrm Int8 x4, uv Float32 x2, bone
+  Uint8 x4, index Uint16; offsets per LOD in people.json), atlas.jpg, hair.png, the MIT licence. `runtimeOnly.crowd`
+  now says what the near / mid tiers draw.
+- `dressing/ginkgo_cards.png`, `dressing/ac_face.png`: world.json `materials[dr_*].mapFile` (the repo path stays in `map`).
+- `ui/`: the level's menu art (levels.json thumb / backdrop) and the hangul subset.
+- `light/lightmap.bin`: D's night lightmap, baked headless at export (the browser's Worker job, in line): 2048 x 1735
+  RGBA16F (rgb = irradiance x NITS, a = valid), with light.json `lightmap` (uniforms, plan, texel counts) and
+  `layoutSha256` (the layout it was baked for). Its lookup raster and edge table are rows of light/records.bin. A
+  lightmap D ships in the repo (`seoul/light/lightmap.*`, perf #3) is copied instead.
+- Asset coverage: every repo file a Seoul module (world-seoul.js, seoul-*.js, msdf-meta.js) or the level's levels.json
+  entry names must be in the export byte for byte, or listed in `ASSET_EXCEPTIONS` (tools/export-seoul-data.mjs) with a
+  reason (the opt-in ?beds recordings, the provisional layout). Otherwise a warning: `--strict` fails CI.
+
+**Compression** (native #4; `tools/glb.mjs` meshPacked, world.json `compression`). world.glb, collider.glb and
+signs.glb require EXT_meshopt_compression + KHR_mesh_quantization; decode with meshoptimizer's C library
+(meshopt_decodeVertexBuffer / DecodeIndexBuffer / DecodeIndexSequence, then meshopt_decodeFilterExp / Oct) or three's
+GLTFLoader + MeshoptDecoder.
+- Render meshes: identical vertices merged and indexed (vertex-cache order); positions float with a 20-bit mantissa
+  (EXP filter: <= 1 mm at 500 m), normals oct 12-bit (int16 x4 normalized), UVs 18-bit, other floats 20-bit (integers
+  < 2^19 exact). world.json `meshes[].vertices / triangles` stay the game's draw counts; `meshes[].glb` gives the
+  stored vertex count, index type and per attribute what it holds.
+- The collider is lossless: exact float32 positions, merged; the index keeps the three-mesh-bvh triangle order and
+  each triangle's vertex order (INDICES codec). `collider.soupHash` = GeoHash of the triangles' positions in index
+  order: a port's decode must reproduce it bit for bit.
+- signs.glb: as render meshes, triangle order kept (layered faces); the instanced screen mesh stays plain.
+- `signs.bin`: signs.json's big tables (designs, faces, housings, emitters, scrollers) as columns (`onetake.columns/1`):
+  per numeric key one meshopt vertex stream (i32, f32, or i32 fixed point with `scale` where the JSON was rounded to
+  that many decimals: exact against the JSON); every other key stays a JSON column; nested tables carry `offsets`.
+- `light/lightmap.bin`, `light/volume.bin`, `light/records.bin`, `light/grid.bin`: meshopt vertex streams (lossless;
+  their light.json descriptor says `codec`, `stride`, `decodedBytes`); world.json `data.packed` lists them.
+- Every export decodes its own output with three's decoder before writing (each packed vertex against the source
+  vertex it stands for, the triangles as a multiset, each signs.bin value against the JSON; GLTFLoader parses the three
+  GLBs; the collider's soupHash): a mismatch is a warning, so `--strict` fails. `--raw` writes the plain GLBs.
+
+**The LifeSim worker is wired** (perf #1 / native #3; seoul-life.js `update`, fenced `[P4 H]`). In a browser,
+build() starts a LifeWorker (off with `?lifeworker=0` or `ctx.lifeWorker: false`; a LifeWorker instance in
+ctx.lifeWorker is used as is). update() requests the next frame's clock (clock + W + the smoothed frame time) with the
+camera (x, y, z and the horizontal forward the evaluate throttles by) and draws the newest finished frame, skipping
+the main thread's crowd.evaluate; a frame more than 0.25 s from the clock (a seek) falls back to the inline evaluate.
+The worker must report the main sim's agent and vehicle counts and t = 0 hash, else it is dropped. Traffic, colliders
+and take parity stay on the main thread. `life.lifeWorker` / `stats.lifeWorker*` report the state and frames used.
+Still to do (with G1): pack the per-instance attributes (10 x vec4 per drawn person, re-uploaded per tier per frame)
+into a static per-person table plus 2-3 dynamic vec4, in the worker; on Metal the same sim runs on its own thread.
+
+**?perf from the phone** (perf #4; perf.js). The result block gains `device` (time, unmasked GPU string, screen, dpr,
+cores, preset, standalone) and the world.update split (`updP50/P90`, perf.js dropped it). SHARE opens the iOS share
+sheet: the overlay text plus a one-line `perf-digest {json}`, and a .json file with this run and the last 5 on the
+phone (localStorage), so an auto and a `&preset=phone` run travel together. No share sheet: clipboard, then a text box.
 

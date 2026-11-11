@@ -16,6 +16,8 @@
 # seoul-dressing, camera-night, movers, test-facades, seoul-ui, and seoul-audio (own job: node-web-audio-api + libasound).
 # Goldens: tests/golden.json, tests/golden-seoul-hongdae.json (re-baseline from a CI artifact: tests/browser.mjs
 # --golden-from). The Seoul browser job ends with the camera gate (tools/camgate.py: exposure + colour rows, retro 0 + shipped).
+# P4 (stream H, native #1): known failures are per shot and row with a ratchet (`limit`: a known row may improve, never get
+# worse); the audio job runs through ci/run.mjs too (G2's rows after G1's traffic merged).
 name: ci
 on:
   push:
@@ -111,7 +113,7 @@ jobs:
           retention-days: 30
 
   audio:   # [P3 H] G2's suite: offline Web Audio in node (node-web-audio-api, which links libasound), ~5 min
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # [P4 H] pinned: ubuntu-latest is moving to 26.04, where apt-installed deps (libasound, playwright's) broke
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -125,12 +127,12 @@ jobs:
           npm ci --prefix ci --ignore-scripts --no-audit --no-fund
           ln -s ci/node_modules node_modules
           ldconfig -p | grep -q 'libasound.so.2 ' || { sudo apt-get update -qq && { sudo apt-get install -y -qq --no-install-recommends libasound2t64 || sudo apt-get install -y -qq --no-install-recommends libasound2; }; }
-      - name: Seoul audio (G2 - calibration, determinism, the HQ clip path)
-        run: node tests/seoul-audio.mjs
+      - name: Seoul audio (G2 - calibration, determinism, the HQ clip path; known failures in ci/known-failures.json)
+        run: node ci/run.mjs tests/seoul-audio.mjs
 
   browser:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04   # [P4 H] pinned (playwright --with-deps supports 24.04; 26.04 runs failed installing Chromium's deps)
+    timeout-minutes: 45   # [P4 H] run 43040900806 passed every row but was cut at 30 (7 min lost to apt)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -147,8 +149,11 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: pw-${{ runner.os }}-${{ hashFiles('ci/package-lock.json') }}
-      - name: Install Chromium (+ system libraries)
-        run: npx playwright install --with-deps chromium
+      - name: Install Chromium (from Playwright's CDN; system libraries from apt when apt answers)
+        run: |   # [P4 H] apt on the runners hung / failed resolving security.ubuntu.com (Nov 11): the browser download no longer waits on it
+          for i in 1 2 3; do npx playwright install chromium && break; echo "::warning::playwright install failed (try $i)"; sleep 20; [ $i = 3 ] && exit 1; done
+          timeout 180 npx playwright install-deps chromium || echo "::warning::playwright install-deps failed or timed out (apt): using the runner image's libraries"
+        timeout-minutes: 12
       - name: Build exports (coverage reads world.json)
         run: node tools/export-world.mjs --out exports
       - name: Game in headless Chromium (SwiftShader)
@@ -161,7 +166,7 @@ jobs:
           retention-days: 14
 
   browser-seoul:   # SwiftShader renders Seoul slowly and runners vary 2x: 45 min on integ8, >90 on p3/H-ci 3450714 (stills
-    runs-on: ubuntu-latest   # 1548-2084 s each; stills.json now logs the seconds per step), so 180 (the limit is 360)
+    runs-on: ubuntu-24.04    # 1548-2084 s each; stills.json now logs the seconds per step), so 180 (the limit is 360). [P4 H] pinned like browser
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -179,8 +184,11 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: pw-${{ runner.os }}-${{ hashFiles('ci/package-lock.json') }}
-      - name: Install Chromium (+ system libraries)
-        run: npx playwright install --with-deps chromium
+      - name: Install Chromium (from Playwright's CDN; system libraries from apt when apt answers)
+        run: |   # [P4 H] apt on the runners hung / failed resolving security.ubuntu.com (Nov 11): the browser download no longer waits on it
+          for i in 1 2 3; do npx playwright install chromium && break; echo "::warning::playwright install failed (try $i)"; sleep 20; [ $i = 3 ] && exit 1; done
+          timeout 180 npx playwright install-deps chromium || echo "::warning::playwright install-deps failed or timed out (apt): using the runner image's libraries"
+        timeout-minutes: 12
       - name: Build the Seoul export (coverage reads its world.json)
         run: node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae
       - name: Neon Seoul in headless Chromium (SwiftShader; still rows tolerated while A, C, F2, G1, G2 land, see ci/known-failures.json)
@@ -189,7 +197,7 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           python-version: '3.12'
-      - name: Camera gate (tools/camgate.py on the stills; [colour] rows tolerated until A lands, see ci/known-failures.json)
+      - name: Camera gate (tools/camgate.py on the stills; known rows per shot, ratcheted, in ci/known-failures.json)
         if: ${{ !cancelled() && hashFiles('browser-out-seoul/stills.json') != '' }}
         run: |
           python -m pip install --quiet --disable-pip-version-check numpy pillow scipy

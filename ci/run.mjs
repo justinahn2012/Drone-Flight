@@ -7,6 +7,10 @@
 //   else the suite's own code (an unknown FAIL, a crash, a signal).
 // A known entry whose failure no longer shows prints a ::notice:: (remove it from the list); it never fails the build, so a
 // partner's fix landing on main turns the entry stale rather than red. The list is the debt: each entry names an owner.
+// [P4 H] Ratchet: an entry may carry `limit: { re, min?, max? }`. `re` captures one number from the FAIL line; outside
+// [min, max] the line counts as a regression (it fails CI even though the row is known). A known failure may get better,
+// never worse, so the gate stays binding while the owner works on it (panel3 native.md: the old "[colour]" and ": EV "
+// entries tolerated any value of any shot).
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname, relative } from 'node:path';
@@ -38,10 +42,16 @@ p.on('close', (code, signal) => {
   const matchOf = (l) => known.find((k) => l.includes(k.match));
   const seen = new Set(fails.map(matchOf).filter(Boolean));
   for (const k of known) if (!seen.has(k)) console.log(`::notice title=known failure gone::${suite}: "${k.match}" no longer fails (${k.owner}); remove it from ci/known-failures.json`);
+  // [P4 H] ratchet: a known row past its entry's limit is a regression
+  const worse = (l) => { const k = matchOf(l), L = k?.limit; if (!L) return null; const m = new RegExp(L.re).exec(l), v = m ? +m[1] : NaN;
+    if (!Number.isFinite(v)) return `the limit's pattern /${L.re}/ found no number`;
+    if (L.min != null && v < L.min) return `${v} < the tolerated ${L.min}`; if (L.max != null && v > L.max) return `${v} > the tolerated ${L.max}`; return null; };
+  const regressed = fails.filter((l) => worse(l));
+  for (const l of regressed) console.log(`::error title=known failure got worse (${matchOf(l).owner})::${suite}: ${l.slice(0, 300)} | ${worse(l)} (ci/known-failures.json limit)`);
   if (code === 0) process.exit(0);
-  const unknown = fails.filter((l) => !matchOf(l));
+  const unknown = fails.filter((l) => !matchOf(l) || worse(l));
   if (signal || code !== 1 || crashed || !fails.length || unknown.length) {
-    if (unknown.length) console.log(`::error title=${suite}::${unknown.length} failure(s) not in ci/known-failures.json: ${unknown.slice(0, 5).join(' | ').slice(0, 900)}`);
+    if (unknown.length) console.log(`::error title=${suite}::${unknown.length} failure(s) not tolerated by ci/known-failures.json (unlisted, or past a limit): ${unknown.slice(0, 5).join(' | ').slice(0, 900)}`);
     else if (!fails.length || crashed || signal) console.log(`::error title=${suite}::exited ${signal || code} ${crashed ? 'with a stack trace' : fails.length ? '' : 'without a FAIL line'}`);
     process.exit(code || 1);
   }

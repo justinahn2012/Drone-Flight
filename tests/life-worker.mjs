@@ -75,5 +75,39 @@ console.log(`cost per frame (node, median of ${frames}): inline advanceTo + eval
   `with the worker: request() ${med(postMs).toFixed(3)} ms on the main thread (buffers move, nothing is copied), ` +
   `${med(workerMs).toFixed(2)} ms in the worker, round trip ${med(rttMs).toFixed(2)} ms (draw the frame requested one frame earlier)`);
 lw.dispose();
+
+// 6. [P4 H, perf #1 / native #3] wired: seoul-life.js build() with ctx.lifeWorker draws the worker's frames. Two builds
+// fly the same 90-frame path (worker vs inline); the worker build must attach, draw from the worker on every frame after
+// the first, draw the same people (tier counts within 2 %, the same instance positions within a frame's walk), and spend
+// less of the main thread in update()
+{
+  const THREE = await import('three');
+  const lifeMod = await import('../seoul-life.js');
+  const lw2 = await LifeWorker.create(layout, { seed: 7, density: 1, maxAgents: lifeMod.LIFE.maxAgents, throwOnError: true }, { WorkerImpl: Worker });
+  const mk = (w) => lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene(), lifeWorker: w });
+  const A = mk(lw2), B = mk(false), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4);
+  ok(A.lifeWorker.state === 'on' && B.lifeWorker.state === 'off', `build() attaches a LifeWorker given in ctx.lifeWorker (state ${A.lifeWorker.state}; inline build ${B.lifeWorker.state})`);
+  const NF = 90, tA = [], tB = [], dCount = [], dPos = [];
+  const waitFrame = () => new Promise((r) => { const poll = () => (lw2.ready || lw2.error ? r() : setImmediate(poll)); poll(); });
+  const tier = (L) => L.group.children.find((m) => /^crowd-near/.test(m.name) && m.geometry?.attributes?.iPos);
+  for (let k = 0; k < NF; k++) {
+    const t = 20 + k / 60, cam = new THREE.Vector3(-36 + k * 0.05, 2.5, -23 - k * 0.08);
+    let a = performance.now(); A.update(t, cam, q); tA.push(performance.now() - a);
+    a = performance.now(); B.update(t, cam, q); tB.push(performance.now() - a);
+    if (k > 0) {
+      const sa = A.stats, sb = B.stats; dCount.push(Math.abs(sa.drawn - sb.drawn) / Math.max(1, sb.drawn));
+      const ga = tier(A)?.geometry, gb = tier(B)?.geometry;
+      if (ga && gb && ga.instanceCount === gb.instanceCount && ga.instanceCount) { const pa = ga.attributes.iPos.array, pb = gb.attributes.iPos.array; let m = 0; for (let i = 0; i < ga.instanceCount; i++) m = Math.max(m, Math.hypot(pa[i * 4] - pb[i * 4], pa[i * 4 + 2] - pb[i * 4 + 2])); dPos.push(m); }
+    }
+    await waitFrame();
+  }
+  const LWs = A.lifeWorker;
+  ok(LWs.used >= NF - 2 && !lw2.error, `the wired build drew ${LWs.used} of ${NF} frames from the worker (inline ${LWs.inline}: until the first frame lands)`);
+  ok(Math.max(...dCount) <= 0.02, `same people drawn as inline: tier totals within ${(Math.max(...dCount) * 100).toFixed(2)} % (<= 2 %)`);
+  ok(dPos.length > NF / 2 && med(dPos) <= 0.05, `near-tier instances where inline puts them: median of the per-frame worst ${med(dPos)?.toFixed(4)} m over ${dPos.length} frames (one frame's walk is ~0.025 m)`);
+  const ma = med(tA.slice(5)), mb = med(tB.slice(5));
+  ok(ma < mb, `main thread: update() ${ma.toFixed(2)} ms with the worker vs ${mb.toFixed(2)} ms inline (median, node)`);
+  A.dispose(); B.dispose(); lw2.dispose();
+}
 console.log(`life-worker tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

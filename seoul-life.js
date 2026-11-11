@@ -23,6 +23,7 @@
 import * as THREE from 'three';
 import { Rng } from './rng.js';
 import { createSeoulAudio } from './seoul-audio.js';
+import { LifeWorker } from './seoul-life-client.js';
 
 export const LIFE = {
   crowdHz: 10, trafficHz: 60,
@@ -2209,6 +2210,38 @@ export function build(layout, ctx = {}) {
         attachAvatars({ meta, bin, atlas, hair });
       }).catch((e) => { avatars.error = String(e?.message || e); console.warn('seoul-life: avatars', e); });
   }
+  // ---- [P4 H, perf #1 / native #3] the crowd's per-frame evaluate off the main thread (seoul-life-worker.js): the worker
+  // runs this same LifeSim (same layout and options) and returns X, Z, YAW, PH, WALK, POSE, VIS + the door events for a
+  // requested (t, camera); update() asks for the next frame's clock and draws the newest finished frame (a pure function
+  // of its t: one frame of camera lag in the far-unit throttling only), so the main thread skips crowd.evaluate. The
+  // traffic, the colliders and take parity stay on this thread's sim. ctx.lifeWorker: false = inline; true / absent in a
+  // browser = start one (?lifeworker=0 turns it off); a LifeWorker instance = use it (node tests). Until it is ready,
+  // after a seek (|t - frame t| > 0.25 s), or if it fails, the inline evaluate runs as before.
+  const lwq = typeof location !== 'undefined' ? new URLSearchParams(location.search || '').get('lifeworker') : null;
+  const LW = { w: null, f: null, dt: 1 / 60, last: null, used: 0, inline: 0, state: 'off', hash0: sim.hash(), disposed: false };   // (the sim as built: t = 0)
+  const lwPlain = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
+  const lwAttach = (w) => {
+    if (!w) { LW.state = 'unavailable'; return; }
+    if (w.info && (w.info.agents !== crowd.X.length || w.info.vehicles !== traffic.vehicles.length || w.info.hash !== LW.hash0)) { LW.state = 'mismatch'; w.dispose(); return; }
+    if (LW.disposed) { w.dispose(); return; }
+    LW.w = w; LW.state = 'on';
+  };
+  if (ctx.lifeWorker && typeof ctx.lifeWorker === 'object') lwAttach(ctx.lifeWorker);
+  else if (ctx.lifeWorker !== false && lwq !== '0' && (ctx.lifeWorker === true || typeof window !== 'undefined') && LifeWorker.supported()) {
+    LW.state = 'starting';
+    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles) }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
+  }
+  function lwFrame(tNow, cam) {   // -> the worker frame to draw at tNow, or null (inline)
+    const w = LW.w; if (!w) return null;
+    if (w.error) { LW.state = 'failed: ' + w.error; LW.w = null; return null; }
+    if (LW.last != null) { const d = tNow - LW.last; if (d > 0 && d < 0.1) LW.dt += (d - LW.dt) * 0.2; }
+    LW.last = tNow;
+    w.request(tNow + LW.dt, [cam.x, camP.y, cam.z, cam.fx, cam.fz]);
+    const f = w.latest(); if (f) { if (LW.f) w.release(LW.f); LW.f = f; }
+    const use = LW.f && Math.abs(LW.f.t - tNow) <= 0.25 ? LW.f : null;
+    if (use) LW.used++; else LW.inline++;
+    return use;
+  }
   function update(t, camPos, camQuat) {
     const c0 = performance.now();
     if (typeof t === 'number') { clock = t; extClock = true; }
@@ -2221,9 +2254,12 @@ export function build(layout, ctx = {}) {
     // ---- people: closed-form at the clock (avoidance near the camera), tier by distance, cull behind the camera
     crowd.events.length = 0;
     camE.x = camP.x; camE.z = camP.z; const fl = Math.hypot(fwd.x, fwd.z); camE.fx = fl > 1e-3 ? fwd.x / fl : null; camE.fz = fl > 1e-3 ? fwd.z / fl : null;
-    crowd.evaluate(clock + W, camE);
+    const CF = lwFrame(clock + W, camE);   // [P4 H] the worker's frame, else the inline evaluate
+    if (CF) { for (const e of CF.events) crowd.events.push(e); } else crowd.evaluate(clock + W, camE);
+    const CA = CF || crowd;   // the frame's arrays: X, Z, YAW, PH, WALK, POSE, VIS
+    stats.lifeWorker = LW.state; stats.lifeWorkerUsed = LW.used; stats.lifeWorkerInline = LW.inline;
     const c2 = performance.now();
-    const X = crowd.X, Z = crowd.Z, VIS = crowd.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
+    const X = CA.X, Z = CA.Z, VIS = CA.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
     const VZ = ctx.scene?.userData?.seoulLight?.visibility;   // D's frustum + heightfield occlusion (P3), else ctx.visible
     const cosFov = Math.cos(Math.min(1.55, ctx.fovHalf ?? 1.15)), visTest = VZ && typeof VZ.visible === 'function' ? (x, y, z, r) => VZ.visible(x, y, z, r) : typeof ctx.visible === 'function' ? ctx.visible : null;
     let nN = 0, nM = 0, nF = 0, nC = 0; for (const t of tiers) t.n = 0; if (avatars.ready) for (const L of avatars.tiers) for (const t of L) t.n = 0;
@@ -2233,7 +2269,7 @@ export function build(layout, ctx = {}) {
     for (let i = 0; i < NP; i++) {
       if (!VIS[i]) { ab[i] = 99; continue; }
       const dx = X[i] - camP.x, dz = Z[i] - camP.z, h2 = dx * dx + dz * dz, d2 = h2 + camH * camH * 0.25;
-      if (h2 < 900) { const d = Math.sqrt(h2); near.crowdN += 1 / (1 + d / 6); if (d < 5 && crowd.WALK[i] > 0.5 && near.feet.length < 16) near.feet.push(i); }
+      if (h2 < 900) { const d = Math.sqrt(h2); near.crowdN += 1 / (1 + d / 6); if (d < 5 && CA.WALK[i] > 0.5 && near.feet.length < 16) near.feet.push(i); }
       // (perf #2, P3) view cone: off the camera's half-angle plus the person's own angular size (ctx.fovHalf, default 66 deg;
       // D's ctx.visible(x, y, z, r) occlusion test when given). P2 only dropped people behind the camera.
       let b = Math.floor(Math.sqrt(d2) / 10);
@@ -2263,31 +2299,31 @@ export function build(layout, ctx = {}) {
       if (!AT) AT = tiers[lod];
       T = AT.A; k = AT.n++;
       if (lod < 2 && nC < capC) {   // contact footprint: full strength standing, a touch lighter and longer walking; fades out by 50 m
-        const w = crowd.WALK[i] > 0.5 ? 1 : 0, fade = 1 - Math.min(1, Math.max(0, (Math.sqrt(h2) - 38) / 12));
-        contactA.setXYZW(nC, x, z, crowd.YAW[i], w + Math.min(0.999, (a.kind === K_SEAT ? 0.45 : 0.62) * fade * (w ? 0.85 : 1))); contactY.setX(nC, groundAt(x, z)); nC++;
+        const w = CA.WALK[i] > 0.5 ? 1 : 0, fade = 1 - Math.min(1, Math.max(0, (Math.sqrt(h2) - 38) / 12));
+        contactA.setXYZW(nC, x, z, CA.YAW[i], w + Math.min(0.999, (a.kind === K_SEAT ? 0.45 : 0.62) * fade * (w ? 0.85 : 1))); contactY.setX(nC, groundAt(x, z)); nC++;
       }
       // look at the drone (life #4): standing people within 14 m turn their heads, filmers raise phones after ~1.2 s;
       // walkers within 8 m glance
-      let pose = crowd.POSE[i], ty = 0, tp = 0;
-      const yaw = crowd.YAW[i], walker = a.kind === K_WALK;
+      let pose = CA.POSE[i], ty = 0, tp = 0;
+      const yaw = CA.YAW[i], walker = a.kind === K_WALK;
       const R = walker ? 8 : 14;
       if (h2 < R * R && camH < 20 && camH > -1 && a.kind !== K_PERF) {
         const rel = wrapA(Math.atan2(-dx, -dz) - yaw), hd = Math.sqrt(h2);
         if (Math.abs(rel) < (walker ? 1.3 : 2.2)) { ty = Math.max(-1.1, Math.min(1.1, rel)); tp = -Math.max(-0.25, Math.min(0.9, Math.atan2(camP.y - groundAt(x, z) - 1.55 * a.scale, hd))); }
         ATT[i] += dt;
-        if (filmer[i] && ATT[i] > 1.2 && crowd.WALK[i] < 0.3) { pose = P_FILM; tp -= 0.05; }
+        if (filmer[i] && ATT[i] > 1.2 && CA.WALK[i] < 0.3) { pose = P_FILM; tp -= 0.05; }
       } else ATT[i] = Math.max(0, ATT[i] - dt * 2);
       LY[i] += (ty - LY[i]) * kL; LP[i] += (tp - LP[i]) * kL;
       const o = k * 4, L = look[i];
       T.iPos.array[o] = x; T.iPos.array[o + 1] = groundAt(x, z) + (a.y0 || 0); T.iPos.array[o + 2] = z; T.iPos.array[o + 3] = yaw;
-      T.iAnim.array[o] = crowd.PH[i]; T.iAnim.array[o + 1] = crowd.WALK[i]; T.iAnim.array[o + 2] = pose; T.iAnim.array[o + 3] = a.scale;
+      T.iAnim.array[o] = CA.PH[i]; T.iAnim.array[o + 1] = CA.WALK[i]; T.iAnim.array[o + 2] = pose; T.iAnim.array[o + 3] = a.scale;
       T.iTop.array.set(L.top, o); T.iTop.array[o + 3] = a.look.coat;
       T.iBot.array.set(L.bot, o); T.iBot.array[o + 3] = a.look.bag;
       T.iHair.array.set(L.hair, o); T.iHair.array[o + 3] = a.wide;
       T.iSkin.array.set(L.skin, o); T.iSkin.array[o + 3] = umbOf[i];
       T.iWear.array.set(L.wear, o); T.iWear.array[o + 3] = a.look.style;
       T.iLook.array[o] = LY[i]; T.iLook.array[o + 1] = LP[i]; T.iLook.array[o + 2] = accOf[i]; T.iLook.array[o + 3] = seedOf[i];
-      { const sp = crowd.WALK[i] * (walker ? crowd.units[a.unit].v : 1.25), ov = k * 3; T.instanceVelocity.array[ov] = Math.sin(yaw) * sp; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = Math.cos(yaw) * sp; }
+      { const sp = CA.WALK[i] * (walker ? crowd.units[a.unit].v : 1.25), ov = k * 3; T.instanceVelocity.array[ov] = Math.sin(yaw) * sp; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = Math.cos(yaw) * sp; }
       fill.at(x, z, tmpF); T.iFill.array[o] = tmpF[0]; T.iFill.array[o + 1] = tmpF[1]; T.iFill.array[o + 2] = tmpF[2]; T.iFill.array[o + 3] = tmpF[3];
     }
     let avTris = 0;
@@ -2336,7 +2372,8 @@ export function build(layout, ctx = {}) {
     // acoustic context at a point (for the props' wall slapback): nearest facade distance and canyon openness
     acoustics: (p) => acousticsAt(layout, sim.net, p),
     audio: null,
-    dispose() { group.traverse((o) => { o.geometry?.dispose?.(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose()); }); group.removeFromParent(); },
+    dispose() { LW.disposed = true; LW.w?.dispose(); LW.w = LW.f = null; group.traverse((o) => { o.geometry?.dispose?.(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose()); }); group.removeFromParent(); },
+    lifeWorker: LW,   // [P4 H] { state, used, inline } (perf / tests)
   };
   life.crossPhase = crossPhase;
   if (ctx.audio !== false) life.audio = createSeoulAudio(layout, life, { signs: ctx.emitters, rain });

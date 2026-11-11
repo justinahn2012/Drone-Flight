@@ -1,0 +1,4 @@
+module CMeshopt {
+    header "meshoptimizer.h"
+    export *
+}
