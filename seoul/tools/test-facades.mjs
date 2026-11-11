@@ -17,24 +17,26 @@ const geo = buildSeoulGeometry(layout, { dressing: false });
 const kind = new Map(layout.streets.map((s) => [s.id, s.kind]));
 
 // 1. windows
-const by = { low: [0, 0], high: [0, 0], tower: [0, 0] }, litN = [], unlitN = [], dimN = [];
+const by = { low: [0, 0], high: [0, 0], tower: [0, 0] }, litN = [], unlitN = [], dimN = [], towerOff = [];
 for (const l of layout.lots) {
   const i = geo.lotInfo.get(l.id), comm = kind.get(l.street) !== 'alley';
   // [P4-C] a tall lot (8F+) on a main road or the walking street is an office tower, lit 35 % above 4F (lighting #3)
   const tw = l.floors >= 8 && ['main', 'walking'].includes(kind.get(l.street));
-  for (const w of i.windows) { (w.lit ? litN : w.dim ? dimN : unlitN).push(w.nits); if (!comm) continue; const k = w.f <= 3 ? 'low' : tw ? 'tower' : 'high'; by[k][1]++; if (w.lit) by[k][0]++; }
+  // [P5-C] lighting #5: a tall lot's lit office floor is 40-60 nits (4500-5000 K); every other lit window 5-25
+  for (const w of i.windows) { (w.lit ? (l.floors >= 8 && w.nits > 25 ? towerOff : litN) : w.dim ? dimN : unlitN).push(w.nits); if (!comm) continue; const k = w.f <= 3 ? 'low' : tw ? 'tower' : 'high'; by[k][1]++; if (w.lit) by[k][0]++; }
 }
 const share = (k) => by[k][0] / by[k][1];
 ok(share('low') > 0.48 && share('low') < 0.62, `2F-4F commercial lit share ${share('low').toFixed(3)} (55 %)`);
 ok(share('high') >= 0.12 && share('high') <= 0.2, `5F+ commercial lit share ${share('high').toFixed(3)} (12-20 %, towers apart)`);
 ok(share('tower') >= 0.27 && share('tower') <= 0.4, `5F+ tower lit share ${share('tower').toFixed(3)} (35 %, lighting #3)`);
 ok(litN.every((n) => n >= 5 && n <= 25), `lit windows 5-25 nits (${Math.min(...litN)}-${Math.max(...litN)})`);
+ok(towerOff.length > 300 && towerOff.every((n) => n >= 40 && n <= 60), `tower office windows 40-60 nits (lighting #5, ${towerOff.length})`);
 ok(unlitN.every((n) => n >= 0.5 && n <= 1.2), `unlit windows 0.5-1.2 nits (${Math.min(...unlitN)}-${Math.max(...unlitN)})`);
 { const d = dimN.length / (dimN.length + unlitN.length); ok(d > 0.1 && d < 0.2 && dimN.every((n) => n >= 1.5 && n <= 3), `dim-lit windows ${(d * 100).toFixed(1)} % of the dark ones at 1.5-3 nits (fpv #3)`); }
 // the aEm channel really carries those luminances (rgb luminance / NITS)
 { const e = geo.merged.glass.getAttribute('aEm'), wk = geo.merged.glass.getAttribute('aWin'); let lo = Infinity, hi = 0;
   for (let i = 0; i < e.count; i += 6) { if (wk.getZ(i) >= 4) continue; const Y = (0.2126 * e.getX(i) + 0.7152 * e.getY(i) + 0.0722 * e.getZ(i)) / NITS; lo = Math.min(lo, Y); hi = Math.max(hi, Y); }
-  ok(lo >= 0.45 && hi <= 26, `glass aEm luminance ${lo.toFixed(2)}-${hi.toFixed(2)} nits`); }
+  ok(lo >= 0.45 && hi <= 61, `glass aEm luminance ${lo.toFixed(2)}-${hi.toFixed(2)} nits`); }
 
 // [P3-C] atlas groups (perf #1): what is drawn is ground / city / glass / lanepaint / ao, layers resolve, KTX2 slices exist
 { const { SEOUL_GROUPS, SEOUL_TEX_IDS, SEOUL_LAYER_MAX } = await import('../../world-seoul.js');

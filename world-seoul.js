@@ -87,6 +87,9 @@ const TENANT = { bar: { room: [3], nits: [6, 12], cct: 2700 }, karaoke: { room: 
   pc: { room: [13, 7], nits: [6, 12], cct: 6000 }, office: { room: [8], nits: [15, 25], cct: 5000 }, home: { room: [12, 13, 11, 12], nits: [5, 12], cct: 2800 },
   study: { room: [11], nits: [8, 16], cct: 3500 }, restaurant: { room: [2], nits: [12, 20], cct: 3500 }, motel: { room: [12], nits: [6, 10], rgb: [1.0, 0.7, 0.75] },
   hotel: { room: [12], nits: [8, 14], cct: 3000 } };
+// [P5-C] lighting #5 (station2's office floors read amber): a tower's office floor is a 4500-5000 K LED panel grid at 40-60
+// nits as the street sees it (a lit open-plan floor is the brightest window in the city; P4 gave it the 15-25 of a low office)
+const TOWER_OFFICE = { room: [8], nits: [40, 60], cct: 4750 };
 // a black body's colour, normalised to luminance 1 (Tanner Helland's fit; 2700-6500 K is all we use)
 export function cctRGB(K) {
   const t = K / 100; let r, g, b;
@@ -325,14 +328,15 @@ export function buildSeoulGeometry(layout, opts = {}) {
   // downpipes, conduit, yellow gas risers with meters, and spandrel anchors for B's floor boxes
   const facadeKit = (l, info, a, t, n, L, H, Ht, yaw, typ, rh, R, front, street) => {
     const W3 = (s, y, o) => [a[0] + t[0] * s + n[0] * o, y, a[1] + t[1] * s + n[1] * o];
+    const got = { pipe: false, conduit: false };
     if (L > 3 && R() < 0.45) {   // a downpipe at one end, hopper head under the coping, a shoe at the foot
-      facts.pipes++; const s0 = R() < 0.5 ? 0.14 : L - 0.14;
+      facts.pipes++; got.pipe = true; const s0 = R() < 0.5 ? 0.14 : L - 0.14;
       A('pipe').tube([W3(s0, 0.08, 0.07), W3(s0, H - 0.15, 0.07)], 0.045, 5);
       A('pipe').box(W3(s0, H - 0.08, 0.1), [0.1, 0.09, 0.08], yaw, true);
       for (let y = 1.5; y < H - 0.5; y += 1.8) A('frame').quad(W3(s0 - 0.06, y - 0.015, 0.12), W3(s0 + 0.06, y - 0.015, 0.12), W3(s0 + 0.06, y + 0.015, 0.12), W3(s0 - 0.06, y + 0.015, 0.12), [n[0], 0, n[1]]);
     }
     if (front && L > 2 && R() < 0.5) {   // conduit along the top of the sign bed, a riser to the roof
-      A('frame').tube([W3(0.3, K.fascia[0] + K.fascia[1] + 0.05, 0.06), W3(L - 0.3, K.fascia[0] + K.fascia[1] + 0.05, 0.06)], 0.022, 4);
+      got.conduit = true; A('frame').tube([W3(0.3, K.fascia[0] + K.fascia[1] + 0.05, 0.06), W3(L - 0.3, K.fascia[0] + K.fascia[1] + 0.05, 0.06)], 0.022, 4);
       const sr = 0.3 + R() * (L - 0.6); A('frame').tube([W3(sr, K.fascia[0] + K.fascia[1] + 0.05, 0.06), W3(sr, Ht + 0.05, 0.06), W3(sr, Ht + 0.05, -0.3)], 0.02, 4);
     }
     if ((!front || typ === 'villa') && l.floors >= 3 && L > 4 && R() < 0.35) {   // gas: a run at 2.2-2.8 m, a riser, a meter per floor
@@ -344,6 +348,54 @@ export function buildSeoulGeometry(layout, opts = {}) {
       const y0 = f * l.floorH + rh.sill + Math.min(rh.h, l.floorH - rh.sill - 0.3), y1 = (f + 1) * l.floorH + rh.sill;
       if (y1 - y0 > 0.35) { const c = W3(L / 2, (y0 + y1) / 2, 0.02); info.bands.push({ f, c: c.map((v) => +v.toFixed(2)), normal: [n[0], 0, n[1]], t: [t[0], 0, t[1]], w: +(L * 0.9).toFixed(2), h: +(y1 - y0).toFixed(2), side: !front }); }
     }
+    return got;
+  };
+  // ---- [P5-C] art #2 / graphics #1 (walls that have weathered): what phase 4's kit left bare, from its own stream (R5, keyed
+  // by lot and wall) so the phase 2-4 streams, and the collider they shape, are untouched. All render-only (ao, pipe, frame).
+  // A drip streak: a multiply decal that is darkest under its source and fades out downward, ragged (2-3 strips of
+  // different length and strength), and a little rust tint under steel.
+  const drip = (a, t, n, s, w, yTop, len, k, R5, rust = false) => {
+    const strips = 1 + (R5() < 0.5 ? 1 : 0);
+    for (let q = 0; q < strips; q++) {
+      const ww = w * (0.25 + R5() * 0.45), sc = s + (R5() - 0.5) * (w - ww), ll = len * (0.45 + R5() * 0.55), kk = 1 - (1 - k) * (0.6 + R5() * 0.4);
+      const top = rust ? [kk * 1.0, kk * 0.9, kk * 0.8] : [kk, kk, kk * 0.98];
+      const P = (u, y) => [a[0] + t[0] * u + n[0] * 0.016, y, a[1] + t[1] * u + n[1] * 0.016];
+      const y0 = Math.max(0.15, yTop - ll);
+      A('ao').quadC(P(sc - ww / 2, y0), P(sc + ww / 2, y0), P(sc + ww / 2, yTop), P(sc - ww / 2, yTop), [n[0], 0, n[1]], undefined, undefined, [WHITE, WHITE, top, top]);
+    }
+    facts.drips = (facts.drips || 0) + 1;
+  };
+  // the wall kit phase 4 rolled against: a downpipe on 60 % of open walls (P4 45 %), conduit on 60 % of fronts (P4 50 %),
+  // empty sign brackets (a tenant who left) on a third of the street walls, a dirty soffit streak under every floor band
+  const wallKit5 = (l, info, a, t, n, L, H, Ht, yaw, rh, got, front, street, age, slot) => {
+    const R5 = rng(l.id + ':p5:' + a[0].toFixed(1) + ',' + a[1].toFixed(1)), W3 = (s, y, o) => [a[0] + t[0] * s + n[0] * o, y, a[1] + t[1] * s + n[1] * o];
+    if (!got.pipe && L > 3 && R5() < 0.28) {
+      facts.pipes++; const s0 = R5() < 0.5 ? 0.14 : L - 0.14;
+      A('pipe').tube([W3(s0, 0.08, 0.07), W3(s0, H - 0.15, 0.07)], 0.045, 5);
+      A('pipe').box(W3(s0, H - 0.08, 0.1), [0.1, 0.09, 0.08], yaw, true);
+      for (let y = 1.5; y < H - 0.5; y += 1.8) A('frame').quad(W3(s0 - 0.06, y - 0.015, 0.12), W3(s0 + 0.06, y - 0.015, 0.12), W3(s0 + 0.06, y + 0.015, 0.12), W3(s0 - 0.06, y + 0.015, 0.12), [n[0], 0, n[1]]);
+      drip(a, t, n, s0, 0.35, H - 0.2, 1.2 + R5() * 2.5, 0.8, R5);   // the hopper overflows
+    }
+    if (front && !got.conduit && L > 2 && R5() < 0.2) {
+      const yc = K.fascia[0] + K.fascia[1] + 0.05; A('frame').tube([W3(0.3, yc, 0.06), W3(L - 0.3, yc, 0.06)], 0.022, 4);
+      const sr = 0.3 + R5() * (L - 0.6); A('frame').tube([W3(sr, yc, 0.06), W3(sr, Ht + 0.05, 0.06), W3(sr, Ht + 0.05, -0.3)], 0.02, 4);
+    }
+    if (street && l.floors >= 3 && L > 3 && R5() < 0.35) {   // empty projecting-sign brackets: two arms and a brace, 2F-4F
+      const nb = 1 + (R5() < 0.4 ? 1 : 0);
+      for (let k = 0; k < nb; k++) {
+        const s0 = 0.5 + R5() * (L - 1.0), f = 1 + Math.floor(R5() * Math.min(3, l.floors - 2)), y0 = f * l.floorH + 0.5, h = 0.9 + R5() * 0.6, out = 0.5 + R5() * 0.3;
+        for (const y of [y0, y0 + h]) A('frame').tube([W3(s0, y, 0.0), W3(s0, y, out)], 0.018, 4);
+        A('frame').tube([W3(s0, y0 + 0.05, 0.0), W3(s0, y0 + h, out * 0.9)], 0.012, 3);
+        A('frame').quad(W3(s0 - 0.07, y0 - 0.08, 0.012), W3(s0 + 0.07, y0 - 0.08, 0.012), W3(s0 + 0.07, y0 + h + 0.08, 0.012), W3(s0 - 0.07, y0 + h + 0.08, 0.012), [n[0], 0, n[1]]);   // the wall plate
+        drip(a, t, n, s0, 0.16, y0 - 0.08, 0.6 + R5() * 1.4, 0.82, R5, true);   // rust off the plate
+        facts.brackets = (facts.brackets || 0) + 1;
+      }
+    }
+    if (street && rh.bands) for (let f = 1; f < Math.min(l.floors, 7); f++) {   // soffit dirt: water runs off the band lip, ragged
+      const y = f * l.floorH - 0.1;
+      for (let s = 0.1; s < L - 0.3; s += 0.9 + R5() * 1.4) { if (R5() < 0.5) continue; const w = 0.4 + R5() * 1.1; if (s + w > L - 0.05) break;
+        drip(a, t, n, s + w / 2, w, y, 0.4 + R5() * (0.8 + age * 1.6), 0.86 - age * 0.1, R5); }
+    }
   };
   for (const l of lots) {
     // [P3-C] every phase-3 draw comes from R2, so phase 2's stream (R) and the collider it shapes stay as they were
@@ -353,7 +405,8 @@ export function buildSeoulGeometry(layout, opts = {}) {
     const info = { id: l.id, H, facade: fmat, shopLit: false, shutter: false, fascia: null, fascias: [], bands: [], edges: [], floors: [], windows: [] };
     lotInfo.set(l.id, info);
     // per-lot tint and age (vertex colour multiplies the scan texture): +-10 % value, a warm/cool cast, grime with age
-    const age = hash(l.id + 'age'), tv = 0.9 + hash(l.id + 'tv') * 0.2, cast = (hash(l.id + 'tc') - 0.5) * 0.1;
+    // [P5-C] art #2: +-15 % value and a wider warm/cool cast (P4: +-10 %), so neighbouring walls of one scan read as two buildings
+    const age = hash(l.id + 'age'), tv = 0.85 + hash(l.id + 'tv') * 0.3, cast = (hash(l.id + 'tc') - 0.5) * 0.14;
     const tint = [tv * (1 - age * 0.2) * (1 + cast), tv * (1 - age * 0.22), tv * (1 - age * 0.25) * (1 - cast)], dim = (k) => tint.map((v) => v * k);
     // facade rhythm
     let typ = l.floors >= 8 ? (R() < 0.5 ? 'curtain' : 'punched') : comm && l.floors <= 7 && R() < 0.45 ? 'ribbon' : !comm && l.floors >= 3 && R() < 0.4 ? 'villa' : 'punched';
@@ -373,7 +426,9 @@ export function buildSeoulGeometry(layout, opts = {}) {
       rh.paneW = 1.2 + R3() * 0.3; rh.bandH = 1.5 + R3() * 0.4; rh.bandSill = 0.75 + R3() * 0.2; rh.bands = rh.bands || typ === 'band';
       if (typ === 'punched') { rh.bay = Math.min(rh.bay, 2.6); rh.ratio = Math.max(rh.ratio, 0.6); rh.h = Math.max(rh.h, 1.5); }
       const pT = (tower ? 0.37 : 0.24) + (hash(l.id + 'pt') - 0.5) * 0.08;   // x 0.9 per window: 35 % / 22 %
-      for (let f = 1; f < l.floors; f++) { const T = info.floors[f]; T.lit = R3() < (f <= 3 ? pLow : pT); if (f >= 2 && l.use !== 'hotel' && l.use !== 'motel' && R3() < 0.8) T.use = 'office'; }
+      // [P5-C] lighting #5 (tower white): 63 % office; 15 % flats (officetels: the warm 2800 K windows) from 9F up, above the
+      // signs; the rest keep their trade. One draw either way, so the stream holds
+      for (let f = 1; f < l.floors; f++) { const T = info.floors[f]; T.lit = R3() < (f <= 3 ? pLow : pT); if (f >= 2 && l.use !== 'hotel' && l.use !== 'motel') { const u3 = R3(); if (u3 < 0.63 || (u3 < 0.78 && f < 8)) T.use = 'office'; else if (u3 < 0.78) T.use = 'home'; } }
     }
     info.typ = typ;
     // walls + parapet
@@ -443,11 +498,11 @@ export function buildSeoulGeometry(layout, opts = {}) {
         if (W.stair) { lit = R() < 0.6; o = { nits: [8, 15], cct: 6000 }; room = ROOM.stair; }
         else if (W.small) { lit = R() < 0.3; o = TENANT.home; room = R() < 0.5 ? ROOM.home : ROOM.study; if (R() < 0.5) fr = FRONT.frosted; }
         else {
-          o = TENANT[T?.use] || TENANT.home; room = o.room[Math.floor(R() * o.room.length)]; lit = !!T?.lit && R() < 0.9;
+          o = TENANT[T?.use] || TENANT.home; if (tall && o === TENANT.office) o = TOWER_OFFICE; room = o.room[Math.floor(R() * o.room.length)]; lit = !!T?.lit && R() < 0.9;
           const r = R();
           if (lit && r < 0.15) fr = FRONT.blinds;                                       // a lit floor with this blind down
           else if (o === TENANT.home) fr = r < 0.5 ? FRONT.curtain : r < 0.65 ? FRONT.blinds : 0;
-          else if (o === TENANT.office) fr = r < 0.35 ? FRONT.blinds : 0;
+          else if (o === TENANT.office || o === TOWER_OFFICE) fr = r < 0.35 ? FRONT.blinds : 0;
           else if (!lit) fr = r < 0.3 ? FRONT.blinds : r < 0.45 ? FRONT.curtain : 0;
         }
         // [P4-C] fpv #3: 15 % of the dark windows are dim-lit at 1.5-3 nits (a TV in a dark room, a lamp left on, a corridor
@@ -470,8 +525,12 @@ export function buildSeoulGeometry(layout, opts = {}) {
             A('sill').quad(Q(-hw, y1, 0), Q(hw, y1, 0), Q(hw, y1, o), Q(-hw, y1, o), [0, 1, 0], [[0, 0], [2 * hw, 0], [2 * hw, o], [0, o]]);
             A('sill').quad(Q(-hw, y0, o), Q(hw, y0, o), Q(hw, y1, o), Q(-hw, y1, o), [nx, 0, nz], [[0, 0], [2 * hw, 0], [2 * hw, 0.07], [0, 0.07]]);
             A('sill').quad(Q(-hw, y0, 0), Q(hw, y0, 0), Q(hw, y0, o), Q(-hw, y0, o), [0, -1, 0], [[0, 0], [2 * hw, 0], [2 * hw, o], [0, o]]); }
-          if (age > 0.45 && R() < 0.4) { const side = R() < 0.5 ? -1 : 1, s = W.s + side * (W.w / 2 - 0.05), ww = 0.15 + R() * 0.25, len = 0.8 + R() * 1.6;
+          let dripped = false;
+          if (age > 0.45 && R() < 0.4) { dripped = true; const side = R() < 0.5 ? -1 : 1, s = W.s + side * (W.w / 2 - 0.05), ww = 0.15 + R() * 0.25, len = 0.8 + R() * 1.6;
             wallDecal(a, t2, n2, s - ww / 2, s + ww / 2, Math.max(0.2, W.y0 - 0.07 - len), W.y0 - 0.07, 0.72 - age * 0.12, 1.0); }
+          // [P5-C] art #2 / graphics #1: every other sill weeps too (its own stream): ragged streaks under both ends and the middle
+          if (!dripped && (front || streetSide) && W.f <= 6) { const R5 = rng(l.id + ':sd' + i + ':' + W.f + ':' + W.s.toFixed(1));
+            for (const e of [-0.42, 0.42]) if (R5() < 0.75) drip(a, t2, n2, W.s + e * W.w, 0.12 + R5() * 0.22, W.y0 - 0.075, 0.35 + R5() * (0.6 + age * 1.8), 0.9 - age * 0.12, R5); }
         }
         // AC units: side and back walls by a window, or high on older fronts (the real Seoul pattern), with a rust streak
         // [P3-C] art #2: ~1 unit per 2 windows on side and rear walls (phase 2's 30 % from R, the rest from R2)
@@ -491,7 +550,8 @@ export function buildSeoulGeometry(layout, opts = {}) {
       if (tall) R = R1;
       // [P3-C] art #1 / art bug (club90's 20 m dead frontage): a corner lot's second face on a commercial street is a shopfront too
       const sideShop = !front && streetSide && sideKind !== 'alley' && L > 3.2;
-      if (front || streetSide || (open && !slot)) facadeKit(l, info, a, t2, n2, L, H, Ht, yaw, typ, rh, R2, front, front || streetSide);
+      if (front || streetSide || (open && !slot)) { const got = facadeKit(l, info, a, t2, n2, L, H, Ht, yaw, typ, rh, R2, front, front || streetSide);
+        wallKit5(l, info, a, t2, n2, L, H, Ht, yaw, rh, got, front, front || streetSide, age, slot); }
       if (!front && !sideShop) { Acc.tint = WHITE; continue; }
       // ---- ground floor: shopfront bays (interior-mapped), a framed door, posters; or a shutter. Sign bed above.
       if (sideShop) R = R2;
@@ -890,19 +950,29 @@ vec3 sgEnv(vec3 P, vec3 rf, vec3 n) {
   float bs = fract(a / 11.0), bi = floor(a / 11.0);
   if (bs < 0.07 && y > 4.5 && y < 4.5 + 9.0 * sgHash(vec2(bi, 9.0))) {
     float hb = sgHash(vec2(bi, 5.0)); vec3 bc = hb < 0.35 ? vec3(1.0, 0.45, 0.15) : hb < 0.6 ? vec3(1.0, 0.85, 0.6) : hb < 0.8 ? vec3(1.0, 0.25, 0.4) : vec3(0.3, 0.7, 1.0);
-    return bc * (4.0 * step(0.5, fract(y / 0.9)) + 0.8);
+    return bc * (12.0 * step(0.5, fract(y / 0.9)) + 2.0);   // [P5-C] blades at 120-200 nits (P4: 40-50)
   }
   if (y > 2.8 && y < 4.2) {
     float u = fract(a / 4.7), s = sgHash(vec2(floor(a / 4.7), 1.0)), v = (y - 2.8) / 1.4;
     vec3 sc = s < 0.3 ? vec3(1.0, 0.5, 0.18) : s < 0.55 ? vec3(1.0, 0.88, 0.7) : s < 0.68 ? vec3(0.25, 0.6, 1.0) : s < 0.82 ? vec3(1.0, 0.25, 0.45) : vec3(0.9, 0.9, 0.86);
     float on = step(0.1, u) * step(u, 0.9) * step(0.18, v) * step(v, 0.82) * step(0.15, s);
-    return mix(c * 1.5, sc * 5.0, on);
+    return mix(c * 1.5, sc * 16.0, on);   // [P5-C] graphics #2 / fpv #2: box letters at ~160 nits, so neon reads on the glass
   }
-  if (y < 2.8) { float u = fract(a / 3.1), h = sgHash(vec2(floor(a / 3.1), 2.0)); return mix(vec3(0.02), mix(vec3(1.0, 0.86, 0.7), vec3(0.85, 0.92, 1.0), step(0.75, h)) * 3.0, step(0.3, h) * step(0.08, u) * step(u, 0.92) * step(y, 2.4)); }
+  if (y < 2.8) { float u = fract(a / 3.1), h = sgHash(vec2(floor(a / 3.1), 2.0)); return mix(vec3(0.02), mix(vec3(1.0, 0.86, 0.7), vec3(0.85, 0.92, 1.0), step(0.75, h)) * 4.5, step(0.3, h) * step(0.08, u) * step(u, 0.92) * step(y, 2.4)); }
   vec2 cell = vec2(floor(a / 2.6), floor(y / 3.2)), f = vec2(fract(a / 2.6), fract(y / 3.2));
   float h1 = sgHash(cell), h2 = sgHash(cell + 17.3);
   if (f.x > 0.22 && f.x < 0.78 && f.y > 0.3 && f.y < 0.78) c = h1 < 0.4 ? mix(vec3(1.0, 0.85, 0.65), vec3(0.88, 0.93, 1.0), step(0.7, h2)) * (0.5 + 0.9 * h2) : vec3(0.025);
   return c;
+}
+// [P5-C] art #3 / graphics #2: shelf stock by trade (linear albedo; h a per-item hash): clothes are folded black, white,
+// denim and camel; phones dark with a lit screen; a cafe's beans, cups and bottles; a convenience store's packaging
+vec3 sgStock(float room, float h) {
+  float k = fract(h * 5.17);
+  vec3 c = abs(room - 5.0) < 0.5 ? (k < 0.3 ? vec3(0.03) : k < 0.45 ? vec3(0.75, 0.74, 0.7) : k < 0.62 ? vec3(0.1, 0.14, 0.3) : k < 0.75 ? vec3(0.45, 0.32, 0.18) : k < 0.85 ? vec3(0.6, 0.08, 0.08) : vec3(0.25, 0.4, 0.6))
+    : abs(room - 6.0) < 0.5 ? (k < 0.5 ? vec3(0.04) : k < 0.7 ? vec3(0.8) : k < 0.85 ? vec3(0.1, 0.3, 0.85) : vec3(0.85, 0.2, 0.25))
+    : abs(room - 1.0) < 0.5 ? (k < 0.4 ? vec3(0.35, 0.2, 0.1) : k < 0.7 ? vec3(0.85, 0.82, 0.75) : k < 0.85 ? vec3(0.1, 0.25, 0.15) : vec3(0.7, 0.45, 0.15))
+    : (k < 0.15 ? vec3(0.75, 0.08, 0.06) : k < 0.3 ? vec3(0.85, 0.55, 0.05) : k < 0.42 ? vec3(0.08, 0.25, 0.7) : k < 0.54 ? vec3(0.1, 0.5, 0.15) : k < 0.7 ? vec3(0.85, 0.85, 0.82) : k < 0.8 ? vec3(0.9, 0.3, 0.05) : k < 0.9 ? vec3(0.6, 0.1, 0.45) : vec3(0.05));
+  return c * (0.75 + 0.5 * fract(h * 11.3));
 }
 void seoulGlass(inout vec4 dc) {
   float gr = step(50.0, sWin.w);   // [P3-C] aWin.w + 100: a security grille in front of the pane
@@ -952,6 +1022,39 @@ void seoulGlass(inout vec4 dc) {
   float lod = clamp(log2(px * 512.0 / Wr), 0.0, 7.0);
   vec4 c = sgTile(room, tuv, lod);
   vec3 col = c.rgb * (1.0 + (1.0 - c.a) * 6.0 * lit) * uSeoulNorm[int(room)] * L;
+  // [P5-C] graphics #2 / art #3 / fpv #2 (shops that aren't dioramas: club90's cream cubicles, walk0's white room): the
+  // light has a source and the room has stuff in it. Every room: -1 EV into its corners and edges, brighter by the glass,
+  // dimmer at the back. Shops: a paint per tenant (a third not cream), shelving to 1.8 m with stock, price-tag strips and
+  // uprights on the side walls of 70 % of the retail shops (convenience, clothes, phone) and 35 % of the rest, and LED strip
+  // fixtures in the ceiling with a pool on the floor under them.
+  {
+    vec3 hw = vec3(hit.x / (Wr * 0.5), hit.y / Hr, hit.z / D);
+    float sideW = step(0.995, abs(hw.x)), floorW = step(hit.y, 0.005), ceilW = step(Hr - 0.005, hit.y), backW = step(D - 0.005, hit.z);
+    float ex = smoothstep(0.6, 1.0, abs(hw.x)), ey = max(1.0 - smoothstep(0.0, 0.15, hw.y), smoothstep(0.88, 1.0, hw.y)), ez = smoothstep(0.65, 1.0, hw.z);
+    float lf = mix(1.0, 0.5, max(max(ex * ey, ex * ez), ey * ez)) * mix(1.15, 0.8, hw.z);
+    if (kind > 0.5) {
+      float hs = fract(seed * 13.71), retail = (room < 0.5 || abs(room - 5.0) < 0.5 || abs(room - 6.0) < 0.5) ? 1.0 : 0.0;
+      if (c.a > 0.98 && max(sideW, backW) > 0.5) { float tp = fract(seed * 29.3);
+        col *= tp < 0.22 ? vec3(0.36, 0.35, 0.34) : tp < 0.34 ? vec3(0.78, 0.9, 0.8) : tp < 0.44 ? vec3(1.0, 0.82, 0.8) : tp < 0.56 ? vec3(0.85, 0.66, 0.48) : vec3(1.0, 0.96, 0.9); }
+      if (sideW > 0.5 && hs < (retail > 0.5 ? 0.7 : 0.35) && hit.y > 0.12 && hit.y < 1.85 && hit.z > 0.5 && hit.z < D - 0.3) {
+        float sy = (hit.y - 0.12) / 0.36, si = floor(sy), sf = fract(sy) * 0.36, z = hit.z + sign(hit.x) * 7.0;
+        vec3 st;
+        if (fract(z / 0.9) < 0.035) st = vec3(0.05);
+        else if (sf < 0.022) st = vec3(0.5, 0.5, 0.48);
+        else if (sf < 0.045) { float tg = fract(z / 0.17 + si * 0.37); st = tg < 0.32 ? (sgHash(vec2(floor(z / 0.17), si)) < 0.3 ? vec3(0.95, 0.78, 0.1) : vec3(0.9)) : vec3(0.12); }
+        else { float pw = 0.07 + 0.12 * sgHash(vec2(si, floor(seed * 50.0))), pi = floor(z / pw), pf = fract(z / pw);
+          float hp = sgHash(vec2(pi, si + floor(seed * 37.0))), ph = (0.45 + 0.45 * fract(hp * 7.3)) * 0.315;
+          st = (pf > 0.1 && sf - 0.045 < ph) ? sgStock(room, hp) * (0.75 + 0.6 * (sf - 0.045) / 0.315) : vec3(0.05); }
+        col = st * L * 1.4;
+      }
+      col *= lf;
+      if (lit > 0.5 && (retail > 0.5 || hs > 0.6)) {
+        float sx = abs(abs(hit.x) - Wr * 0.22);
+        if (ceilW > 0.5) col = mix(col, L * 7.0, (1.0 - smoothstep(0.03, 0.05, sx)) * step(fract(hit.z / 1.5), 0.82) * step(0.3, hit.z));
+        if (floorW > 0.5) col *= 0.75 + 0.6 * exp(-sx * sx * 4.0);
+      }
+    } else col *= lf;
+  }
   // [P3-C] mid-depth layer (art #3): shelves, counters, menu boards, diners 1.2-2 m behind shop glass and office windows
   float mid = room < 6.5 ? room : (room > 7.5 && room < 8.5 ? 7.0 : -1.0);
   if (mid > -0.5) {
@@ -1007,20 +1110,41 @@ void seoulGlass(inout vec4 dc) {
   vec3 rf = reflect(rd, n); float ci = clamp(-dot(rd, n), 0.0, 1.0);
   float grime = 0.55 * smoothstep(0.45, 0.85, sgVN(sWPos.xz * 1.7 + vec2(sWPos.y * 0.6, sWPos.y * 2.3))) + 0.45 * smoothstep(0.22, 0.0, gu.y);
   // [P4-C] art #5 / fpv #2: F0 0.05 (windows) / 0.06 (shop glass: film, two panes), so a 40 % street reflection survives at 45 deg
-  float F0 = kind > 0.5 ? 0.06 : 0.05, F = min(0.6, (F0 + (1.0 - F0) * pow(1.0 - ci, 5.0)) * (1.0 + 0.9 * grime));
+  // [P5-C] graphics #2 / fpv #2: shop glass F0 0.08 (laminated, film, two faces) rising to 0.25+ at grazing; P4's 0.06
+  float F0 = kind > 0.5 ? 0.08 : 0.05, F = min(0.6, (F0 + (1.0 - F0) * pow(1.0 - ci, 5.0)) * (1.0 + 0.9 * grime));
   col = col * (1.0 - F) * (1.0 - 0.12 * grime) + F * sgEnv(sWPos, rf, n);
   sgEmit = col * (1.0 - gcov); dc.rgb = mix(dc.rgb, vec3(0.055, 0.055, 0.06), gcov); if (gcov > 0.5) sgMask = 1.0;
 }
 `;
 // procedural grime on the scan textures: vertical streaks and blots in metres of uv (walls: along x, height y)
+// [P5-C] art #2 / graphics #1 (grime on the lit walls; walk0 and walk180 were even cream from 2 m to 20 m): on walls (|n.y| <
+// 0.5, uv = metres along the wall and up it) re-rendered repair patches ~1 per 20 m2 with trowelled edges a shade off the
+// wall, a splash tide line over the bottom 0.4-0.9 m (world height) with speckle, soot mottling at 0.3-0.5 m, and a
+// roughness that follows the dirt (+-0.15). Drip streaks under sills, brackets, hoppers and band lips are decals (ao).
 const GRIME_HEAD = /* glsl */`
-varying vec2 sUv;
+varying vec2 sUv; varying float sNy; varying float sWY;
+float sgGR = 0.0;
 float sgH(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
 float sgN(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
   return mix(mix(sgH(i), sgH(i + vec2(1.0, 0.0)), f.x), mix(sgH(i + vec2(0.0, 1.0)), sgH(i + vec2(1.0, 1.0)), f.x), f.y); }
 float seoulGrime(vec2 uv) {
   float streak = smoothstep(0.55, 0.95, sgN(vec2(uv.x * 2.3, uv.y * 0.16))) * smoothstep(0.35, 0.85, sgN(vec2(uv.x * 0.37 + 7.1, uv.y * 0.05)));
-  return 1.0 - 0.3 * streak - 0.12 * smoothstep(0.5, 1.0, sgN(uv * 0.9 + 3.3));
+  float k = 1.0 - 0.3 * streak - 0.12 * smoothstep(0.5, 1.0, sgN(uv * 0.9 + 3.3));
+  sgGR = 0.12 * streak + (sgN(uv * 0.6 + 21.0) - 0.5) * 0.3;
+  if (abs(sNy) < 0.5) {
+    vec2 pc = vec2(uv.x / 1.7, uv.y / 1.25), ci = floor(pc), cf = fract(pc);
+    if (sgH(ci + 31.7) < 0.11) {
+      vec2 lo = vec2(sgH(ci + 3.1), sgH(ci + 5.3)) * 0.35, hi = 1.0 - vec2(sgH(ci + 7.9), sgH(ci + 9.4)) * 0.35, fw = fwidth(pc) + 1e-4;
+      float m = smoothstep(lo.x - fw.x, lo.x + fw.x, cf.x) * smoothstep(lo.y - fw.y, lo.y + fw.y, cf.y) * (1.0 - smoothstep(hi.x - fw.x, hi.x + fw.x, cf.x)) * (1.0 - smoothstep(hi.y - fw.y, hi.y + fw.y, cf.y));
+      float tone = sgH(ci + 13.3) < 0.55 ? 0.84 : 1.1;
+      k *= mix(1.0, tone, m); sgGR += m * (tone > 1.0 ? -0.1 : 0.06);
+    }
+    float tide = 0.4 + 0.5 * sgN(vec2(uv.x * 1.3, 1.7)), g = 1.0 - smoothstep(0.0, tide, sWY);
+    k *= 1.0 - 0.32 * g * (0.55 + 0.45 * sgN(uv * vec2(9.0, 14.0)));
+    sgGR += 0.12 * g;
+    k *= 0.9 + 0.2 * sgN(uv * vec2(3.1, 2.3) + 11.0);
+  }
+  return k;
 }
 `;
 function patchSeoul(mat, mode) {
@@ -1042,7 +1166,7 @@ function patchSeoul(mat, mode) {
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vEm;').replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vEm;');
     } else if (mode === 'atlas') {   // [P3-C] ground / city: layer table + KTX2 arrays + two-scale detail
       Object.assign(sh.uniforms, ATLAS_UNIFORMS);
-      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float aLay;\nflat varying float sLay; varying vec2 sUv;').replace('#include <begin_vertex>', '#include <begin_vertex>\nsLay = aLay; sUv = uv;');
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float aLay;\nflat varying float sLay; varying vec2 sUv; varying float sNy; varying float sWY;').replace('#include <begin_vertex>', '#include <begin_vertex>\nsLay = aLay; sUv = uv; sNy = normal.y; sWY = (modelMatrix * vec4(transformed, 1.0)).y;');
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + GRIME_HEAD + ATLAS_HEAD)
         .replace('#include <map_fragment>', `
   sgLi = int(sLay + 0.5); sgLA = uLayA[sgLi]; sgLB = uLayB[sgLi]; sgLuv = sUv * sgLA.z;
@@ -1052,13 +1176,13 @@ function patchSeoul(mat, mode) {
         .replace('#include <normal_fragment_maps>', `
   { vec3 tn = texture(tCityNor, vec3(sgLuv, max(sgLA.y, 0.0))).xyz * 2.0 - 1.0;
     vec3 mapN = sgLA.y > -0.5 ? tn : vec3(0.0, 0.0, 1.0);
-    mapN.xy += (sgDet.xy * 2.0 - 1.0) * uSeoulDetail.x;
+    mapN.xy += (sgDet.xy * 2.0 - 1.0) * uSeoulDetail.x * mix(2.0, 1.0, smoothstep(6.0, 12.0, length(vViewPosition)));   // [P5-C] graphics #1: x2 under 10 m
     mapN.xy *= normalScale;
     normal = normalize(tbn * mapN); }`)
-        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor *= clamp(sgLB.a * (1.0 + (sgDet.z - 0.5) * uSeoulDetail.y * 2.0), 0.04, 1.0);')
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor *= clamp(sgLB.a * (1.0 + (sgDet.z - 0.5) * uSeoulDetail.y * 2.0), 0.04, 1.0);\n  if (sgLA.w > 0.5) roughnessFactor = clamp(roughnessFactor + sgGR, 0.04, 1.0);')
         .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor *= uLayM[sgLi];');
     } else if (mode === 'grime') {
-      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 sUv;').replace('#include <begin_vertex>', '#include <begin_vertex>\nsUv = uv;');
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 sUv; varying float sNy; varying float sWY;').replace('#include <begin_vertex>', '#include <begin_vertex>\nsUv = uv; sNy = normal.y; sWY = (modelMatrix * vec4(transformed, 1.0)).y;');
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + GRIME_HEAD).replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= seoulGrime(sUv);');
     }
   };
