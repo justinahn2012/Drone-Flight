@@ -52,6 +52,17 @@ export const DRESS_MATS = {
   // reads as a lit sheet with the tables behind it instead of an open box
   dr_vinyl: { color: [0.32, 0.30, 0.28], rough: 0.12, transparent: true, opacity: 0.4, double: true, noCol: true, emissive: true, vcol: true, albedo: [0.05, 0.05, 0.05] },
 };
+// [P5-E art #6] the street carts' menu light boxes (one per cart menu above, in its order): items with 2026 prices, photo tones
+const CART_MENU = [
+  { items: ['떡볶이 5,000', '순대 5,000', '튀김 3,000'], cols: ['#c8321c', '#5a3a34', '#d89a3a'] },
+  { items: ['호떡 2,000', '씨앗호떡 2,500', '어묵 1,500'], cols: ['#b8762c', '#9a6430', '#d8b88a'] },
+  { items: ['어묵 1,500', '꼬치 3,000', '국물 무료'], cols: ['#d8b88a', '#a8642c', '#c89a5a'] },
+  { items: ['타코야끼 6알 5,000', '10알 7,000', '음료 2,000'], cols: ['#8a5a2a', '#6a4a2a', '#2a6ab0'] },
+  { items: ['닭꼬치 4,000', '매운맛 4,500', '소떡소떡 3,500'], cols: ['#a8441c', '#c8321c', '#b86a2a'] },
+  { items: ['와플 3,000', '츄러스 3,000', '아이스크림 2,500'], cols: ['#d8a04a', '#b8742a', '#f0e0c8'] },
+  { items: ['군고구마 5,000', '군밤 5,000', '옥수수 3,000'], cols: ['#7a3a2a', '#6a4424', '#e8c03a'] },
+  { items: ['계란빵 2,500', '붕어빵 3개 2,000', '호떡 2,000'], cols: ['#e0b04a', '#b87a34', '#b8762c'] },
+];
 // S1/C keys this module writes into (attribute layout: position, normal, uv)
 const C_KEYS = new Set(['concrete', 'tile', 'walk', 'metal', 'white', 'dark', 'pole', 'brick', 'plaster']);
 const specOf = (k) => DRESS_MATS[k] || { emissive: false, vcol: false };
@@ -227,6 +238,21 @@ export function geometry(layout, opts = {}) {
   const seed = opts.seed ?? 11, R0 = rng('dress' + seed);
   const M = blockModel(layout);
   const gates = gatesOf(opts.lines);
+  // [P5-E] flight corridors: the polyline through each line's pre-gates and gate, and on to the next entry of the same line
+  // ("WALKING STREET 1/7" ...) or one within 40 m. Overhead and rooftop dressing keeps out of them (gates alone miss the run).
+  const corr = [];
+  { const L = (opts.lines?.lines || []).filter((l) => l.c && !l.carve), base = (n) => String(n || '').replace(/\s+\d+\/\d+$/, '');
+    let prev = null;
+    for (const l of L) { const pts = [...(l.pre || []).map((p) => p.c), l.c];
+      if (prev && (base(prev.l.name) === base(l.name) || Math.hypot(...v3.sub(prev.p, pts[0])) < 40)) corr.push([prev.p, pts[0]]);
+      for (let i = 0; i + 1 < pts.length; i++) corr.push([pts[i], pts[i + 1]]);
+      prev = { l, p: pts[pts.length - 1] }; } }
+  const segD3 = (p, a, b) => { const v = v3.sub(b, a), l2 = v3.dot(v, v) || 1e-9, t = clamp(v3.dot(v3.sub(p, a), v) / l2, 0, 1); return Math.hypot(...v3.sub(p, v3.add(a, v3.mul(v, t)))); };
+  // an AABB (as aabbSince) within m of a corridor (sampled along the segment against the box grown by m)
+  const corrHit = (b, m = 1.5) => { for (const [a, c] of corr) { if (Math.min(a[0], c[0]) > b[3] + m || Math.max(a[0], c[0]) < b[0] - m || Math.min(a[1], c[1]) > b[4] + m || Math.max(a[1], c[1]) < b[1] - m || Math.min(a[2], c[2]) > b[5] + m || Math.max(a[2], c[2]) < b[2] - m) continue;
+    const n = Math.max(1, Math.ceil(Math.hypot(...v3.sub(c, a)) / 0.5)); for (let k = 0; k <= n; k++) { const p = [lerp(a[0], c[0], k / n), lerp(a[1], c[1], k / n), lerp(a[2], c[2], k / n)];
+      if (p[0] > b[0] - m && p[0] < b[3] + m && p[1] > b[1] - m && p[1] < b[4] + m && p[2] > b[2] - m && p[2] < b[5] + m) return true; } } return false; };
+  const polyCorrOK = (pts, m = 1.2) => { for (const p of pts) for (const [a, c] of corr) if (segD3(p, a, c) < m) return false; return true; };
   const shopTop = opts.shopTop ?? 2.95, fasciaY = opts.fasciaY ?? 3.05;
   const dens = clamp(opts.density ?? 1, 0, 3);   // clutter density (scooters, stools, bags): a perf knob, 1 = the reference look
   const acc = {}; const A = (k) => (acc[k] ||= new Acc(specOf(k)));
@@ -318,6 +344,7 @@ export function geometry(layout, opts = {}) {
     const undo = () => { rollback(m); gates.length = g0; setPieces.length = s0; holes.length = h0; };
     const r = fn(); if (r === false) { undo(); return false; }
     if (!o.noGate && g0) { const g = gateHit(aabbSince(m), o.margin ?? 0.35, o.skip, g0); if (g) { undo(); facts.rejectedByGates++; if (opts.debug && o.tag) console.log('gate reject', o.tag, g.name); return false; } }
+    if (o.corr && corrHit(aabbSince(m), o.corr)) { undo(); facts.rejectedByCorr = (facts.rejectedByCorr || 0) + 1; return false; }   // [P5-E]
     facts.items++; return true;
   }
   // a polyline (cable) must stay `m` clear of every gate rect: segments sampled every <= 0.2 m (vertices alone miss crossings)
@@ -1015,11 +1042,32 @@ export function geometry(layout, opts = {}) {
       if (item(() => {
         set('dr_galv'); boxMM(F, -0.8, 0.25, -0.45, 0.8, 0.95, 0.45); set('dr_prop', { c: [0.02, 0.02, 0.02] }); for (const xx of [-0.55, 0.55]) cyl(F, [xx, 0.2, 0], 'z', 0.2, 0.92, 6);
         set('dr_steel'); for (const xx of [-0.78, 0.78]) for (const zz of [-0.43, 0.43]) boxMM(F, xx - 0.02, 0.95, zz - 0.02, xx + 0.02, 2.05, zz + 0.02, ['ny']);
-        set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: NI([1.0, 0.62, 0.3], 75) }); boxMM(F, -0.95, 2.05, -0.6, 0.95, 2.12, 0.62);
-        boxMM(F, -0.95, 1.85, 0.6, 0.95, 2.12, 0.62);                           // valance over the counter
-        set('dr_glow', { em: NI(srgb(0xffb46b), 1500), col: false }); for (const xx of [-0.45, 0.1, 0.55]) boxMM(F, xx - 0.03, 1.88, 0.15 - 0.03, xx + 0.03, 1.95, 0.15 + 0.03);
-        set('dr_glow', { em: NI([1.0, 0.7, 0.4], 160), col: false }); boxMM(F, -0.7, 0.55, 0.451, 0.7, 0.85, 0.455);   // lit counter front (menu)
-        labels.push({ id: 'cart:' + id, kind: 'tent', pos: r3(W(F, 0, 1.985, 0.625)), normal: r3(D(F, 0, 0, 1)), w: 1.8, h: 0.24, nits: 70, lines: [menus[id % menus.length]] });
+        // [P5-E art #6 / color #6] the canopy is lit by its bulbs, not by itself (phase 4: 75 nits on every face, the "blank cream
+        // kiosk" of w21 at (111,100,91), brighter than the shops). Underside: the tarp's reflectance x the bulbs' cos / d^2 (a
+        // hot spot over each bulb, a few nits at the eaves); top and outer faces: what a thin tarp transmits (3-5 nits).
+        const bulbs = [-0.45, 0.1, 0.55].map((xx) => W(F, xx, 1.915, 0.15)), tl = 0.2126 * tarp[0] + 0.7152 * tarp[1] + 0.0722 * tarp[2], tN = tarp.map((v) => v / Math.max(0.05, tl));
+        const lit = (p, n, k = 4.2, cap = 70) => { let s = 0; for (const b of bulbs) { const v = v3.sub(b, p), d2 = v3.dot(v, v), cs = Math.max(0, v3.dot(v, n) / Math.sqrt(d2)); s += cs / (d2 + 0.06); } return NI(tN, Math.min(cap, 0.6 + k * s)); };
+        set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: NI(tN, 3) });
+        boxMM(F, -0.95, 2.05, -0.6, 0.95, 2.12, 0.62, ['ny']);                  // the canopy (top and edges)
+        { const nD = D(F, 0, -1, 0), nu = 8, nv = 5;
+          for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) { const xa = -0.95 + 1.9 * i / nu, xb = -0.95 + 1.9 * (i + 1) / nu, za = -0.6 + 1.22 * j / nv, zb = -0.6 + 1.22 * (j + 1) / nv;
+            const q = [W(F, xa, 2.05, za), W(F, xb, 2.05, za), W(F, xb, 2.05, zb), W(F, xa, 2.05, zb)]; quad(q[0], q[1], q[2], q[3], nD, uvDef, q.map((p) => lit(p, nD))); } }
+        set('dr_tarp', { c: tarp.map((v) => v * 0.6), em: NI(tN, 5) }); boxMM(F, -0.95, 1.85, 0.6, 0.95, 2.05, 0.62, ['nz', 'py']);   // valance over the counter
+        { const nI = D(F, 0, 0, -1), q = [W(F, 0.95, 1.85, 0.599), W(F, -0.95, 1.85, 0.599), W(F, -0.95, 2.05, 0.599), W(F, 0.95, 2.05, 0.599)]; quad(q[0], q[1], q[2], q[3], nI, uvDef, q.map((p) => lit(p, nI, 2.5, 40))); }
+        set('dr_glow', { em: NI(srgb(0xffb46b), 1500), col: false }); for (const b of bulbs) boxMM(FW, b[0] - 0.03, b[1] - 0.035, b[2] - 0.03, b[0] + 0.03, b[1] + 0.035, b[2] + 0.03);
+        set('dr_glow', { em: NI([1.0, 0.78, 0.45], 45), col: false }); boxMM(F, -0.7, 0.55, 0.451, 0.7, 0.85, 0.455);   // the menu light box (its print: the label)
+        // stock under the bulbs (baked: albedo x ~60 nits of bulb light, the tent table's level): a pan of 떡볶이, an 어묵 trough
+        // with skewers, a tray of 튀김, cups, squeeze bottles; the glass sneeze guard at the front edge
+        { const st = (c, k = 60) => set('dr_glow', { em: NI(c, k), col: false });
+          set('dr_galv', { col: false }); cyl(F, [-0.38, 0.98, -0.05], 'y', 0.3, 0.06, 10); st([0.5, 0.07, 0.03]); cyl(F, [-0.38, 1.006, -0.05], 'y', 0.28, 0.012, 10);
+          for (let k = 0; k < 7; k++) { st([0.62, 0.42, 0.25], 55); boxMM(F, -0.55 + (k % 4) * 0.1, 1.012, -0.18 + Math.floor(k / 4) * 0.12, -0.5 + (k % 4) * 0.1, 1.04, -0.1 + Math.floor(k / 4) * 0.12); }
+          set('dr_galv', { col: false }); boxMM(F, 0.08, 0.95, -0.3, 0.68, 1.06, 0.05, ['ny']); st([0.55, 0.45, 0.3], 50); boxMM(F, 0.1, 1.06, -0.28, 0.66, 1.062, 0.03, ['ny']);
+          for (let k = 0; k < 9; k++) { st([0.6, 0.48, 0.32], 70); const sx = 0.13 + k * 0.06, sz = -0.22 + (k % 3) * 0.1; boxMM(F, sx - 0.004, 1.06, sz - 0.004, sx + 0.004, 1.32, sz + 0.004, ['ny']); boxMM(F, sx - 0.022, 1.08, sz - 0.01, sx + 0.022, 1.2, sz + 0.01, ['ny']); }
+          set('dr_steel', { col: false }); boxMM(F, 0.15, 0.95, 0.12, 0.6, 0.97, 0.4, ['ny']); for (let k = 0; k < 6; k++) { st([0.78, 0.5, 0.16], 60); boxMM(F, 0.18 + (k % 3) * 0.14, 0.97, 0.15 + Math.floor(k / 3) * 0.12, 0.29 + (k % 3) * 0.14, 1.02, 0.24 + Math.floor(k / 3) * 0.12, ['ny']); }
+          st([0.85, 0.83, 0.78], 70); cyl(F, [0.74, 1.05, -0.3], 'y', 0.045, 0.2, 6); st([0.7, 0.05, 0.03], 60); cyl(F, [0.74, 1.04, -0.15], 'y', 0.03, 0.18, 6); st([0.8, 0.62, 0.05], 60); cyl(F, [0.74, 1.04, -0.06], 'y', 0.03, 0.18, 6);
+          set('dr_glass'); quad(W(F, -0.78, 0.95, 0.43), W(F, 0.78, 0.95, 0.43), W(F, 0.78, 1.28, 0.43), W(F, -0.78, 1.28, 0.43), D(F, 0, 0, 1)); }
+        labels.push({ id: 'cart:' + id, kind: 'tent', pos: r3(W(F, 0, 1.95, 0.625)), normal: r3(D(F, 0, 0, 1)), w: 1.8, h: 0.19, nits: 45, lines: [menus[id % menus.length]] });
+        { const M2 = CART_MENU[id % CART_MENU.length]; labels.push({ id: 'cartmenu:' + id, kind: 'menu', pos: r3(W(F, 0, 0.7, 0.457)), normal: r3(D(F, 0, 0, 1)), w: 1.4, h: 0.3, nits: 110, lines: M2.items, colors: M2.cols, px: 220 }); }
         emit({ id: 'dress:cart:' + id, kind: 'tent', pos: W(F, 0, 1.6, 0.4), normal: D(F, 0, 0, 1), w: 1.6, h: 1.1, rgb: [1.0, 0.62, 0.3], nits: 110 });
       }, { margin: 0.35 })) { occAdd(x, z, 1.2); n++; facts.carts = n; }
     }
@@ -1157,7 +1205,7 @@ export function geometry(layout, opts = {}) {
   // ---- awnings on ~40 % of shopfronts (retractable fabric, 2.5-2.9 m, under the fascia)
   {
     const R = rng('awn' + seed);
-    const cols = [srgb(0x1d4d2b), srgb(0x7a1a1a), srgb(0x1b2a4a), srgb(0x3a3a3a), srgb(0xb06a1a), srgb(0x5a2a4a), srgb(0xd8d2c0)];
+    const cols = [srgb(0x1d4d2b), srgb(0x7a1a1a), srgb(0x1b2a4a), srgb(0x3a3a3a), srgb(0xb06a1a), srgb(0x5a2a4a), srgb(0xb4ad9c)];   // [P5-E] the solid cream 0.69 -> 0.45
     for (const f of fronts) {
       if (f.info?.shutter || R() > 0.4 || f.L < 3 || !inCore(f.mx, f.mz)) continue;
       const depth = clamp(Math.min(1.3, (isFinite(f.free) ? f.free : 6) * 0.3), 0.7, 1.3), w = Math.min(f.L - 1.0, 3 + R() * 4);
@@ -1167,7 +1215,10 @@ export function geometry(layout, opts = {}) {
       const yTop = Math.min(shopTop - 0.08, fasciaY - 0.12), yLow = yTop - 0.35 - depth * 0.15, c = cols[Math.floor(R() * cols.length)];
       // [P3-E graphics #2] striped or solid fabric, a scalloped valance with the shop's name printed on it (not lit: ~6 nits
       // of reflected shop light), the roller box and the folding arms. Its own stream per awning (placement stays put).
-      const Ra = rng('awn2' + f.l.id), striped = Ra() < 0.55, c2 = Ra() < 0.7 ? srgb(0xe9e2cf) : c.map((v) => v * 0.45);
+      // [P5-E art #6 / color #6] cream at a fabric's 0.5 (was 0.81: under the lightmap's smear of the fascia above it read
+      // (143,82,42) over the whole canopy, "a lightbox"); the top face carries the fascia's shade (0.35 at the wall to 0.7 at
+      // the front bar), the underside keeps its albedo: lit from below by the shop glass, not from itself.
+      const Ra = rng('awn2' + f.l.id), striped = Ra() < 0.55, c2 = Ra() < 0.7 ? srgb(0xc4bca8) : c.map((v) => v * 0.45);
       const light = (cc) => 0.2126 * cc[0] + 0.7152 * cc[1] + 0.0722 * cc[2] > 0.3;
       const USE_KO = { restaurant: ['식당', '분식', '김밥', '국밥', '치킨'], cafe: ['카페', '커피', '디저트'], bar: ['호프', '포차', '이자카야'], pocha: ['포장마차', '실내포차'], conv: ['편의점'], shop: ['옷가게', '잡화', '안경'], karaoke: ['노래방', '코인노래방'], club: ['라운지'] };
       const pool = USE_KO[f.l.use] || ['상회', '마트'], name = /[가-힣]/.test(f.l.osmName || '') && (f.l.osmName || '').length <= 9 ? f.l.osmName : pool[Math.floor(Ra() * pool.length)];
@@ -1176,8 +1227,11 @@ export function geometry(layout, opts = {}) {
         const n = v3.norm(v3.cross(v3.sub(b, a), v3.sub(d, a))), up = n[1] > 0 ? n : v3.mul(n, -1);
         const nS = striped ? Math.max(4, Math.round(w / 0.32)) : 1;
         for (let i = 0; i < nS; i++) {
-          const t0 = i / nS, t1 = (i + 1) / nS, P = (t, o) => v3.add(o ? d : a, v3.mul(v3.sub(o ? cc : b, o ? d : a), t));
-          set('dr_prop', { c: striped && i % 2 ? c2 : c }); quad(P(t0, 0), P(t1, 0), P(t1, 1), P(t0, 1), up); quad(P(t0, 0), P(t0, 1), P(t1, 1), P(t1, 0), v3.mul(up, -1));
+          const t0 = i / nS, t1 = (i + 1) / nS, P = (t, v) => { const p = v3.add(a, v3.mul(v3.sub(b, a), t)), q = v3.add(d, v3.mul(v3.sub(cc, d), t)); return v3.add(p, v3.mul(v3.sub(q, p), v)); };
+          const cs = striped && i % 2 ? c2 : c;
+          for (let j = 0; j < 3; j++) { const v0 = j / 3, v1 = (j + 1) / 3, occ = 0.35 + 0.35 * (j + 0.5) / 3;
+            set('dr_prop', { c: cs.map((x) => x * occ) }); quad(P(t0, v0), P(t1, v0), P(t1, v1), P(t0, v1), up); }
+          set('dr_prop', { c: cs.map((x) => x * 0.9) }); quad(P(t0, 0), P(t0, 1), P(t1, 1), P(t1, 0), v3.mul(up, -1));
         }
         // valance (both faces) with scallops below it
         const zv = zs * depth, yv0 = yLow - 0.17, nV = Math.max(4, Math.round(w / 0.3)), sw = w / nV, out = D(F, 0, 0, zs);
@@ -1366,12 +1420,154 @@ export function geometry(layout, opts = {}) {
   }
 
   lap('kit');
+  // ---- [P5-E art #6] the frontage kit: lit standing signs (입간판), A-frame boards, wheelie bins, cones and 주차금지 stands, so
+  // the street has a thing every ~6 m of frontage with the scooters, crates and bags above (phase 4: w21's frontage was bare).
+  // Signs: an LED box (0.28 x 0.5 x 1.3 m on a weighted base), its wide faces along the pavement, printed (label) at 220 nits
+  // white-equivalent, so a red face is ~30 nits: saturated under the white point (color #3), red and orange on 55 % of them.
+  // Own stream (placement of everything before it stays put).
+  {
+    const R = rng('frontkit' + seed);
+    const SIGN_TXT = { bar: ['칵테일 BAR', '맥주', '호프', 'LIVE BAR', '하이볼', '와인바'], pocha: ['실내포차', '포차', '안주 일체'], karaoke: ['코인노래방', '노래방', '노래연습장'], club: ['CLUB', '라운지', 'PARTY'],
+      restaurant: ['삼겹살', '고기집', '곱창', '치킨', '국밥', '김치찌개', '24시', '닭갈비'], cafe: ['COFFEE', '카페', '디저트'], shop: ['SALE', '빈티지', '옷'], pc: ['PC방'], motel: ['MOTEL'], hotel: ['HOTEL'], conv: ['24시'], office: ['상가'] };
+    const SIGN_BG = ['#d0201a', '#e85a10', '#c8102e', '#f08a00', '#d0201a', '#e85a10', '#1a5ad0', '#7a1ac8', '#108a4a', '#f2c200', '#f4f0e8'];
+    const nitsS = 220;
+    const standSign = (F, txt, bg) => {
+      const ink = bg === '#f2c200' || bg === '#f4f0e8' ? '#c8102e' : '#ffffff', c = srgb(parseInt(bg.slice(1), 16));
+      set('dr_prop', { c: [0.02, 0.02, 0.022] }); boxMM(F, -0.2, 0, -0.32, 0.2, 0.12, 0.32, ['ny']); boxMM(F, -0.15, 1.42, -0.27, 0.15, 1.47, 0.27, ['ny']);
+      set('dr_glow', { em: NI(c, nitsS), col: true }); boxMM(F, -0.14, 0.12, -0.25, 0.14, 1.42, 0.25, ['py', 'ny']);
+      for (const sx of [1, -1]) labels.push({ id: 'stand:' + F.o[0].toFixed(2) + ':' + F.o[2].toFixed(2) + ':' + sx, kind: 'standsign', pos: r3(W(F, sx * 0.141, 0.77, 0)), normal: r3(D(F, sx, 0, 0)), w: 0.5, h: 1.3, nits: nitsS, bg, ink, lines: [txt], px: 110 });
+      emit({ id: 'dress:stand:' + F.o[0].toFixed(2) + ':' + F.o[2].toFixed(2), kind: 'lightbox', pos: W(F, 0.15, 0.8, 0), normal: D(F, 1, 0, 0), w: 0.5, h: 1.3, rgb: c.map((v) => v / Math.max(0.05, 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2])).map((v) => Math.min(v, 8)), nits: Math.max(1, Math.round(nitsS * (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]))), omni: 0.6, range: 5 });
+      facts.standSigns = (facts.standSigns || 0) + 1;
+    };
+    const aFrame = (F, Rr) => {   // two boards hinged at 1.0 m, 0.36 m apart at the foot: chalkboard or a printed poster
+      const poster = Rr() < 0.5, face = poster ? [srgb(0xe8e0d0), srgb(0xd0201a), srgb(0x202020), srgb(0xf2c200)][Math.floor(Rr() * 4)] : [0.03, 0.035, 0.03];
+      for (const sz of [-1, 1]) {
+        const fr = (y, z) => W(F, 0, y, sz * z), nrm = v3.norm(D(F, 0, 0.18, sz));
+        set('dr_prop', { c: [0.12, 0.08, 0.05] }); for (const sx of [-0.3, 0.3]) tube([W(F, sx, 0, sz * 0.18), W(F, sx, 1.0, sz * 0.01)], 0.015, 3);
+        set('dr_prop', { c: face, col: true }); quad(W(F, -0.28, 0.15, sz * 0.153), W(F, 0.28, 0.15, sz * 0.153), W(F, 0.28, 0.98, sz * 0.02), W(F, -0.28, 0.98, sz * 0.02), nrm);
+        // chalk (or print) blocks: a heading band and 3-4 lines
+        const ink = poster ? [srgb(0xffffff), srgb(0x1a1a1a), srgb(0xd0201a)][Math.floor(Rr() * 3)] : [0.55, 0.55, 0.5];
+        set('dr_prop', { c: ink, col: false });
+        const lines = [[0.9, 0.82, 0.4], [0.7, 0.66, 0.34], [0.58, 0.55, 0.3], [0.47, 0.44, 0.36], [0.36, 0.33, 0.22]];
+        for (const [y1, y0, wl] of lines) { if (Rr() < 0.15) continue; const t = (y) => 0.153 - (y - 0.15) / 0.83 * 0.133 + 0.004, x0 = -wl / 2 + (Rr() - 0.5) * 0.05;
+          quad(W(F, x0, y0, sz * t(y0)), W(F, x0 + wl, y0, sz * t(y0)), W(F, x0 + wl, y1, sz * t(y1)), W(F, x0, y1, sz * t(y1)), nrm); }
+        void fr;
+      }
+      facts.aFrames = (facts.aFrames || 0) + 1;
+    };
+    const bin = (F, Rr) => {      // a 120 L wheelie bin (grey, green or blue), lid a shade darker, two wheels at the back
+      const c = [srgb(0x4a5a4a), srgb(0x2a5a9a), srgb(0x2a6a3a), srgb(0x6a6a6a)][Math.floor(Rr() * 4)];
+      set('dr_prop', { c }); box(F, 0, 0.5, 0, 0.24, 0.47, 0.27, ['ny']);
+      set('dr_prop', { c: c.map((v) => v * 0.7) }); boxMM(F, -0.26, 0.97, -0.3, 0.26, 1.02, 0.29, ['ny']); boxMM(F, -0.22, 0.88, -0.32, 0.22, 0.95, -0.27);
+      set('dr_prop', { c: [0.02, 0.02, 0.02], col: false }); for (const sx of [-0.2, 0.2]) cyl(F, [sx, 0.1, -0.24], 'x', 0.1, 0.05, 6);
+      facts.bins = (facts.bins || 0) + 1;
+    };
+    const cone = (F, Rr) => {     // a traffic cone (reflective band) or a 주차금지 stand: shop-reserved parking, the alley classic
+      if (Rr() < 0.55) { set('dr_prop', { c: srgb(0xf05a1a) }); boxMM(F, -0.2, 0, -0.2, 0.2, 0.04, 0.2, ['ny']); cyl(F, [0, 0.38, 0], 'y', 0.13, 0.68, 8, 0.03);
+        set('dr_prop', { c: [0.75, 0.75, 0.72], col: false }); cyl(F, [0, 0.45, 0], 'y', 0.087, 0.12, 8, 0.073, false); }
+      else { set('dr_prop', { c: srgb(0xf08a00) }); for (const sz of [-1, 1]) quad(W(F, -0.22, 0, sz * 0.2), W(F, 0.22, 0, sz * 0.2), W(F, 0.2, 0.75, sz * 0.02), W(F, -0.2, 0.75, sz * 0.02), v3.norm(D(F, 0, 0.25, sz)));
+        for (const sz of [-1, 1]) quad(W(F, -0.22, 0, sz * 0.2), W(F, -0.2, 0.75, sz * 0.02), W(F, 0.2, 0.75, sz * 0.02), W(F, 0.22, 0, sz * 0.2), v3.norm(D(F, 0, -0.25, -sz)));
+        set('dr_prop', { c: [0.8, 0.8, 0.78], col: false }); for (const sz of [-1, 1]) quad(W(F, -0.21, 0.42, sz * 0.111), W(F, 0.21, 0.42, sz * 0.111), W(F, 0.21, 0.55, sz * 0.077), W(F, -0.21, 0.55, sz * 0.077), v3.norm(D(F, 0, 0.25, sz))); }
+      facts.cones = (facts.cones || 0) + 1;
+    };
+    for (const f of fronts) {
+      if (!f.st || f.st.kind === 'main' || f.L < 3 || !inCore(f.mx, f.mz) || f.info?.shutter) continue;
+      const use = f.l.use, busy = /bar|pocha|karaoke|club|restaurant/.test(use), retail = /cafe|shop|conv/.test(use);
+      const w = busy ? [0.45, 0.15, 0.2, 0.2] : retail ? [0.2, 0.4, 0.2, 0.2] : [0.3, 0, 0.4, 0.3];
+      const n = Math.floor(f.L / 8 * dens + R());
+      for (let k = 0; k < n; k++) {
+        const u = R(), kind = u < w[0] ? 0 : u < w[0] + w[1] ? 1 : u < w[0] + w[1] + w[2] ? 2 : 3;
+        const s = 0.5 + (k + R()) / Math.max(1, n) * (f.L - 1.0), off = kind === 0 ? 0.55 : kind === 1 ? 0.75 : kind === 2 ? 0.4 : 0.5 + R() * 0.8;
+        const x = f.fa[0] + f.tx * s + f.nx * off, z = f.fa[1] + f.tz * s + f.nz * off, r = kind === 0 ? 0.4 : 0.38;
+        if (!occFree(x, z, r) || M.ribbonD(x, z, true) < 0.3 || !M.lotClear(x, z, 0.15) || M.lotAt(x + f.nx * 0.6, z + f.nz * 0.6)) continue;
+        const Rr = rng('fk' + x.toFixed(2) + ':' + z.toFixed(2)), F = frameH([x, 0, z], f.tx, f.tz);
+        let txt = null, bg = null;
+        if (kind === 0) { const pool = SIGN_TXT[use] || ['상가']; const nm = f.l.osmName || ''; txt = /^[가-힣 ]{2,5}$/.test(nm) && Rr() < 0.4 ? nm : pool[Math.floor(Rr() * pool.length)]; bg = SIGN_BG[Math.floor(Rr() * SIGN_BG.length)]; }
+        if (item(() => { if (kind === 0) standSign(F, txt, bg); else if (kind === 1) aFrame(F, Rr); else if (kind === 2) bin(F, Rr); else cone(F, Rr); }, { margin: 0.35, corr: 0.5 })) occAdd(x, z, r);
+      }
+    }
+  }
+  lap('frontkit');
+  // ---- [P5-E graphics #4] the rooftops: 3-6 props per lot past C's stair house, tank, condenser and sign frame, so the aerial
+  // stops reading as bare slabs: sandwich-panel sheds (blue, white or rust roofs; a quarter with a lit window), styrofoam
+  // vegetable boxes, dishes on stands, turbine vents, solar panels, laundry racks, black PE tanks, pipe runs and condenser rows
+  // (drawn by the AC kit below). Bar and cafe roofs: a lit deck (festoon square, tables, a parasol) on a third of them.
+  // Props keep 0.5 m inside the parapet, off C's items, 1.5 m off every flight corridor. Own stream per lot.
+  const roofAC = [];
+  {
+    const W8 = [['shed', 0.17], ['planters', 0.17], ['dish', 0.12], ['vent', 0.12], ['solar', 0.09], ['laundry', 0.09], ['tank', 0.08], ['ac', 0.1], ['pipe', 0.06]];
+    let nR = 0, nDeck = 0;
+    for (const l of M.lots) {
+      const P = l.footprint, H = l._H, area = Math.abs(polyArea(P)), [x0, x1, z0, z1] = l._bb;
+      if (area < 30 || !inCore((x0 + x1) / 2, (z0 + z1) / 2)) continue;
+      const info = opts.lotInfo?.get ? opts.lotInfo.get(l.id) : null, Rl = rng('roofkit' + l.id);
+      const taken = [];   // discs on this roof: C's items, then ours
+      for (const r of info?.roof || []) taken.push([r.x, r.z, r.kind === 'stair' ? 2.4 : 1.5]);
+      for (const u of info?.ac || []) if (u.roof) taken.push([u.c[0], u.c[2], 1.0]);
+      if (info?.roofSign) { const s = info.roofSign; for (let t = -0.5; t <= 0.5; t += 0.25) taken.push([s.c[0] + s.t[0] * t * s.w, s.c[2] + s.t[2] * t * s.w, 1.6]); }
+      const fa = l.frontage[0], fb = l.frontage[1], fl = Math.hypot(fb[0] - fa[0], fb[1] - fa[1]) || 1, tx = (fb[0] - fa[0]) / fl, tz = (fb[1] - fa[1]) / fl;
+      const fits = (x, z, r) => pip(x, z, P) && polyD(x, z, P) > r + 0.5 && !taken.some((d) => Math.hypot(d[0] - x, d[1] - z) < d[2] + r);
+      const spot = (r) => { for (let t = 0; t < 16; t++) { const x = lerp(x0, x1, Rl()), z = lerp(z0, z1, Rl()); if (fits(x, z, r)) return [x, z]; } return null; };
+      const deckLot = /bar|cafe|pocha|restaurant/.test(l.use) && l.floors <= 6 && area > 70 && Rl() < 0.33;
+      let n = clamp(Math.round(area / 120) + 2, 3, 4); if (deckLot) n -= 2;
+      const placeIn = (r, fn) => { const s = spot(r); if (!s) return false; const yaw = Rl() < 0.7 ? [tx, tz] : [-tz, tx]; const F = frameH([s[0], H, s[1]], yaw[0], yaw[1]);
+        if (item(() => fn(F), { margin: 0.4, corr: 1.5 })) { taken.push([s[0], s[1], r]); nR++; return true; } return false; };
+      if (deckLot) placeIn(2.6, (F) => {   // a lit deck: a festoon square on four posts, two tables, a parasol, crates
+        set('dr_steel'); for (const [a, b] of [[-2, -2], [2, -2], [2, 2], [-2, 2]]) cyl(F, [a, 1.25, b], 'y', 0.035, 2.5, 5);
+        const cnr = [[-2, -2], [2, -2], [2, 2], [-2, 2]].map(([a, b]) => W(F, a, 2.45, b));
+        for (let i = 0; i < 4; i++) { const a = cnr[i], b = cnr[(i + 1) % 4], pts = []; for (let k = 0; k <= 10; k++) { const t = k / 10; pts.push([lerp(a[0], b[0], t), a[1] - 0.25 * 4 * t * (1 - t), lerp(a[2], b[2], t)]); }
+          set('dark', { col: false }); tube(pts, 0.006, 3); cables.push({ pts: pts.map(r3), r: 0.006 });
+          set('dr_glow', { em: NI(srgb(0xffb46b), 1400), col: false }); for (let k = 1; k < 10; k++) { const p = pts[k]; octa([p[0], p[1] - 0.05, p[2]], 0.024, 0.04); } }
+        for (const [a, b] of [[-0.9, -0.6], [0.9, 0.7]]) { set('dr_prop', { c: [0.5, 0.5, 0.52] }); cyl(F, [a, 0.72, b], 'y', 0.4, 0.04, 10); set('dr_steel', { col: false }); cyl(F, [a, 0.36, b], 'y', 0.03, 0.7, 5);
+          for (const d of [[0.6, 0], [-0.6, 0], [0, 0.6]]) { set('dr_prop', { c: [srgb(0x2f6fd6), srgb(0xd23a2a), srgb(0x1f7a3a)][Math.floor(Rl() * 3)] }); boxMM(F, a + d[0] - 0.15, 0, b + d[1] - 0.15, a + d[0] + 0.15, 0.43, b + d[1] + 0.15, ['ny']); } }
+        set('dr_prop', { c: srgb(0x1d4d2b), col: false }); { const c0 = W(F, 0, 2.2, 0); for (let k = 0; k < 8; k++) { const a0 = k / 8 * TAU, a1 = (k + 1) / 8 * TAU; tri(c0, W(F, Math.cos(a1) * 1.3, 1.85, Math.sin(a1) * 1.3), W(F, Math.cos(a0) * 1.3, 1.85, Math.sin(a0) * 1.3)); tri(c0, W(F, Math.cos(a0) * 1.3, 1.85, Math.sin(a0) * 1.3), W(F, Math.cos(a1) * 1.3, 1.85, Math.sin(a1) * 1.3)); } }
+        set('dr_steel', { col: false }); cyl(F, [0, 1.1, 0], 'y', 0.02, 2.2, 4);
+        emit({ id: 'dress:deck:' + l.id, kind: 'neon', pos: W(F, 0, 2.3, 0), normal: [0, -1, 0], w: 4, h: 4, rgb: [1.0, 0.62, 0.32], nits: 40, omni: 0.9, range: 9 });
+        nDeck++;
+      });
+      for (let k = 0; k < n; k++) {
+        let u = Rl(), kind = W8[W8.length - 1][0]; for (const [kk, p] of W8) { if (u < p) { kind = kk; break; } u -= p; }
+        if (kind === 'shed') { if (taken.some((d) => d[3] === 'shed')) continue;
+          const w = 2.4 + Rl() * 1.6, d = 2.0 + Rl() * 1.0, h = 2.3, roofC = [srgb(0x2a5aa8), srgb(0x2a5aa8), srgb(0xb8b8b4), srgb(0xa8402a)][Math.floor(Rl() * 4)], litW = Rl() < 0.25;
+          placeIn(Math.hypot(w, d) / 2, (F) => {
+            set('dr_prop', { c: [0.5, 0.5, 0.48] }); boxMM(F, -w / 2, 0, -d / 2, w / 2, h, d / 2, ['ny', 'py']);
+            set('dr_prop', { c: [0.36, 0.36, 0.35], col: false }); for (let x = -w / 2 + 0.5; x < w / 2 - 0.2; x += 0.5) for (const sz of [-1, 1]) quad(W(F, x - 0.025, 0.02, sz * (d / 2 + 0.008)), W(F, x + 0.025, 0.02, sz * (d / 2 + 0.008)), W(F, x + 0.025, h - 0.02, sz * (d / 2 + 0.008)), W(F, x - 0.025, h - 0.02, sz * (d / 2 + 0.008)), D(F, 0, 0, sz));
+            set('dr_prop', { c: roofC }); quad(W(F, -w / 2 - 0.12, h + 0.12, -d / 2 - 0.12), W(F, w / 2 + 0.12, h + 0.12, -d / 2 - 0.12), W(F, w / 2 + 0.12, h - 0.02, d / 2 + 0.12), W(F, -w / 2 - 0.12, h - 0.02, d / 2 + 0.12), [0, 1, 0]);
+            set('dr_prop', { c: [0.3, 0.32, 0.34], col: false }); quad(W(F, -0.45, 0.02, d / 2 + 0.015), W(F, 0.45, 0.02, d / 2 + 0.015), W(F, 0.45, 2.0, d / 2 + 0.015), W(F, -0.45, 2.0, d / 2 + 0.015), D(F, 0, 0, 1));
+            if (litW) { set('dr_glow', { em: NI([1.0, 0.86, 0.68], 16), col: false }); quad(W(F, w / 2 - 1.1, 1.1, d / 2 + 0.016), W(F, w / 2 - 0.4, 1.1, d / 2 + 0.016), W(F, w / 2 - 0.4, 1.7, d / 2 + 0.016), W(F, w / 2 - 1.1, 1.7, d / 2 + 0.016), D(F, 0, 0, 1)); }
+          }) && (taken[taken.length - 1][3] = 'shed');
+        } else if (kind === 'planters') { const nb = 3 + Math.floor(Rl() * 3), rows = Rl() < 0.3 ? 2 : 1;
+          placeIn(Math.max(nb * 0.33, rows * 0.5), (F) => { for (let r = 0; r < rows; r++) for (let i = 0; i < nb; i++) { const x = (i - (nb - 1) / 2) * 0.64, z = (r - (rows - 1) / 2) * 0.48, g = Rl();
+            set('dr_prop', { c: g < 0.2 ? [0.12, 0.3, 0.6] : g < 0.3 ? [0.45, 0.2, 0.1] : [0.72, 0.72, 0.7] }); boxMM(F, x - 0.3, 0, z - 0.2, x + 0.3, 0.3, z + 0.2, ['ny', 'py']);
+            set('dr_prop', { c: Rl() < 0.7 ? [0.05 + Rl() * 0.04, 0.13 + Rl() * 0.08, 0.03] : [0.12, 0.08, 0.05], col: false }); const hy = 0.3 + Rl() * 0.12; quad(W(F, x - 0.28, hy, z - 0.18), W(F, x + 0.28, hy, z - 0.18), W(F, x + 0.28, hy, z + 0.18), W(F, x - 0.28, hy, z + 0.18), [0, 1, 0]); } });
+        } else if (kind === 'dish') placeIn(0.6, (F) => { set('dr_steel', { col: false }); cyl(F, [0, 0.6, 0], 'y', 0.025, 1.2, 4, 0.025, false);
+            const G = { o: W(F, 0, 1.2, 0), x: v3.norm(D(F, 0.6, 0.8, 0)), y: v3.norm(D(F, -0.8, 0.6, 0)), z: F.z }; set('dr_prop', { c: [0.6, 0.6, 0.58], col: false }); cyl(G, [0.05, 0, 0], 'x', 0.05, 0.1, 7, 0.3, false);
+            set('dr_steel', { col: false }); tube([W(G, 0.08, 0.25, 0), W(G, 0.45, 0, 0), W(G, 0.08, -0.25, 0)], 0.008, 3); });
+        else if (kind === 'vent') placeIn(0.4, (F) => { const turb = Rl() < 0.6; set('dr_galv', { col: false }); cyl(F, [0, 0.45, 0], 'y', 0.12, 0.9, 6, 0.12, false);
+            if (turb) cyl(F, [0, 1.12, 0], 'y', 0.22, 0.44, 7, 0.08); else cyl(F, [0, 0.98, 0], 'y', 0.24, 0.12, 6, 0.08); });
+        else if (kind === 'solar') placeIn(1.1, (F) => { set('dr_steel'); for (const sx of [-0.8, 0.8]) { boxMM(F, sx - 0.03, 0, -0.5, sx + 0.03, 0.4, -0.44); boxMM(F, sx - 0.03, 0, 0.44, sx + 0.03, 1.0, 0.5); }
+            { const a = W(F, -0.95, 0.42, -0.55), b = W(F, 0.95, 0.42, -0.55), c = W(F, 0.95, 1.02, 0.55), d = W(F, -0.95, 1.02, 0.55); set('dr_prop', { c: [0.02, 0.03, 0.07] }); quad(a, b, c, d, v3.norm(v3.cross(v3.sub(b, a), v3.sub(d, a))[1] > 0 ? v3.cross(v3.sub(b, a), v3.sub(d, a)) : v3.cross(v3.sub(d, a), v3.sub(b, a))));
+              set('dr_prop', { c: [0.5, 0.5, 0.52], col: false }); for (const t of [0.33, 0.66]) { const p = (q, r) => v3.add(q, v3.mul(v3.sub(r, q), t)); const e0 = p(a, d), e1 = p(b, c); quad(v3.add(e0, [0, 0.006, 0]), v3.add(e1, [0, 0.006, 0]), v3.add(e1, [0, 0.026, 0]), v3.add(e0, [0, 0.026, 0]), [0, 1, 0]); } } });
+        else if (kind === 'laundry') placeIn(1.0, (F) => { set('dr_galv', { col: false }); for (const sx of [-0.8, 0.8]) tube([W(F, sx, 0, -0.35), W(F, sx, 1.3, 0), W(F, sx, 0, 0.35)], 0.012, 3);
+            for (const z of [-0.12, 0, 0.12]) tube([W(F, -0.8, 1.28, z), W(F, 0.8, 1.28, z)], 0.006, 3);
+            for (let i = 0; i < 6; i++) { if (Rl() < 0.3) continue; const x = -0.65 + i * 0.26, z = [-0.12, 0, 0.12][i % 3], h = 0.35 + Rl() * 0.4; set('dr_prop', { c: [[0.7, 0.7, 0.68], [0.1, 0.1, 0.12], [0.2, 0.3, 0.55], [0.6, 0.2, 0.2], [0.55, 0.5, 0.4]][Math.floor(Rl() * 5)], col: false });
+              quad(W(F, x - 0.11, 1.28 - h, z), W(F, x + 0.11, 1.28 - h, z), W(F, x + 0.11, 1.28, z), W(F, x - 0.11, 1.28, z), D(F, 0, 0, 1)); quad(W(F, x - 0.11, 1.28 - h, z), W(F, x - 0.11, 1.28, z), W(F, x + 0.11, 1.28, z), W(F, x + 0.11, 1.28 - h, z), D(F, 0, 0, -1)); } });
+        else if (kind === 'tank') placeIn(0.7, (F) => { set('dr_prop', { c: Rl() < 0.6 ? [0.025, 0.025, 0.03] : [0.08, 0.18, 0.45] }); cyl(F, [0, 0.55, 0], 'y', 0.55, 1.1, 8); });
+        else if (kind === 'ac') { const s = spot(1.6); if (!s) continue; const nu = 2 + Math.floor(Rl() * 3), ya = Math.atan2(tz, tx);
+          for (let i = 0; i < nu; i++) { const x = s[0] + tx * (i - (nu - 1) / 2) * 1.0, z = s[1] + tz * (i - (nu - 1) / 2) * 1.0; if (!fits(x, z, 0.55) || corrHit([x - 0.6, H, z - 0.6, x + 0.6, H + 1.2, z + 0.6], 1.5)) continue;
+            roofAC.push({ c: [x, H + 0.4, z], n: [Math.sin(ya), 0, -Math.cos(ya)].map((v) => (Rl() < 0.5 ? v : -v)), size: [0.84, 0.64, 0.32], roof: true, tint: [1, 1, 0.97] }); taken.push([x, z, 0.55]); } }
+        else if (kind === 'pipe') placeIn(0.5, (F) => { const L = 2 + Rl() * 3; set('dr_galv', { col: false }); tube([W(F, -L / 2, 0.25, 0), W(F, L / 2, 0.25, 0), W(F, L / 2, 0.25, 0.01)], 0.05, 5); set('concrete', { col: false }); for (let x = -L / 2 + 0.3; x < L / 2; x += 1.2) boxMM(F, x - 0.1, 0, -0.12, x + 0.1, 0.2, 0.12, ['ny']); });
+      }
+    }
+    facts.roofProps = nR + roofAC.length; facts.roofDecks = nDeck;
+  }
+  lap('roofs');
   // ---- [P3-E graphics #2] AC condensers: C places them (its facade rules), E draws them. Contract P3-E1: C records each unit
   // as lotInfo.get(id).ac = [{ c: [x, y, z] centre, n: [nx, 0, nz] out of the wall, size: [w, h, d], tint, roof }] (or passes
   // opts.acUnits) and stops drawing its box; absent, nothing is drawn here. Kit: enamel housing with a lid, the fan opening
   // with a two-ring grille, spokes and hub, louvres, a steel bracket and strut, insulated pipes into the wall, a drain hose.
   {
-    const units = opts.acUnits || (opts.lotInfo?.values ? [...opts.lotInfo.values()].flatMap((i) => i.ac || []) : []);
+    const units = (opts.acUnits || (opts.lotInfo?.values ? [...opts.lotInfo.values()].flatMap((i) => i.ac || []) : [])).concat(roofAC);   // [P5-E] + the roof kit's condenser rows
     for (const u of units) {
       if (!u?.c || !u?.n) continue;
       const [w, h, d] = u.size || [0.84, 0.64, 0.34], hx = w / 2, hy = h / 2, hz = d / 2, t = u.tint || [1, 1, 1];
@@ -1431,6 +1627,129 @@ export function geometry(layout, opts = {}) {
   }
 
   lap('cables');
+  // ================================================================================================ OVERHEAD (P5-E art #4)
+  // Phase 4's walking and club streets were a black void above 6 m. Hongdae's carry wall-to-wall lines: telecom bundles,
+  // festoon strings (S14 bulbs at 0.4 m pitch, 2200 K) and pennant bunting. A station every 8-12 m where both walls stand
+  // within 22 m: 2-4 sagging lines between 5.8 m and 0.6 m under the lower roof, their ends skewed along the street so the
+  // lattice criss-crosses; 30 % of stations carry a festoon string, 15 % bunting. Lines render as the screen-space cables
+  // (no tubes: >= 1.25 px, true width up close) and collide (3-sided tubes in colTris only); bulbs and flags do not.
+  // Every line keeps 0.5 m off the gates and 1.2 m off every flight corridor.
+  const colTube = (pts, r) => { for (let i = 0; i + 1 < pts.length; i++) { const a = pts[i], b = pts[i + 1], t = v3.norm(v3.sub(b, a)), u = v3.norm(v3.cross(t, Math.abs(t[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0])), v = v3.cross(u, t);
+    const ring = (p) => [0, 1, 2].map((k) => { const th = k / 3 * TAU; return v3.add(p, v3.add(v3.mul(u, Math.cos(th) * r), v3.mul(v, Math.sin(th) * r))); }), A2 = ring(a), B2 = ring(b);
+    for (let k = 0; k < 3; k++) { const k1 = (k + 1) % 3; col.need(18); col.p3(...A2[k]); col.p3(...A2[k1]); col.p3(...B2[k1]); col.p3(...A2[k]); col.p3(...B2[k1]); col.p3(...B2[k]); } } };
+  function octa(p, rx, ry) { const q = [[rx, 0, 0], [0, 0, rx], [-rx, 0, 0], [0, 0, -rx]].map((d) => v3.add(p, d)), top = v3.add(p, [0, ry, 0]), bot = v3.add(p, [0, -ry, 0]);
+    for (let k = 0; k < 4; k++) { const a = q[k], b = q[(k + 1) % 4]; tri(top, b, a); tri(bot, a, b); } }
+  {
+    const R = rng('overhead' + seed); let nSt = 0, nFest = 0, nBunt = 0, nLines = 0;
+    const sagLine = (a, b, sag) => { const L = Math.hypot(b[0] - a[0], b[2] - a[2]), n = Math.max(4, Math.ceil(L / 0.9)), pts = []; for (let i = 0; i <= n; i++) { const t = i / n; pts.push([lerp(a[0], b[0], t), lerp(a[1], b[1], t) - 4 * sag * L * t * (1 - t), lerp(a[2], b[2], t)]); } return pts; };
+    const hAt = (x, z) => { const l = M.lotAt(x, z); return l ? l._H : 0; };
+    for (const st of M.streets.filter((s) => s.kind === 'walking' || s.kind === 'club')) for (let s = 4 + R() * 4; s < st.len - 4; s += 8 + R() * 4) {
+      const q = M.at(st, s); if (!inCore(q.x, q.z)) continue;
+      const nx = -q.tz, nz = q.tx, dl = M.freeRay(q.x, q.z, -nx, -nz, 22, 0.1), dr = M.freeRay(q.x, q.z, nx, nz, 22, 0.1);
+      if (!isFinite(dl) || !isFinite(dr) || dl + dr < 4) continue;
+      const nLn = 2 + Math.floor(R() * 3), fest = R() < 0.3, bunt = !fest && R() < 0.21;
+      let placed = 0;
+      for (let k = 0; k < nLn; k++) {
+        const kind = k === 0 && fest ? 'fest' : k === 0 && bunt ? 'bunt' : 'cable';
+        const sa = (R() - 0.5) * 3, sb = (R() - 0.5) * 3;
+        const ax = q.x - nx * (dl - 0.03) + q.tx * sa, az = q.z - nz * (dl - 0.03) + q.tz * sa, bx = q.x + nx * (dr - 0.03) + q.tx * sb, bz = q.z + nz * (dr - 0.03) + q.tz * sb;
+        // the ends must sit on a wall: re-cast from the street centre line to each end's side
+        const Ha = hAt(ax - nx * 0.15, az - nz * 0.15), Hb = hAt(bx + nx * 0.15, bz + nz * 0.15), top = Math.min(Ha, Hb) - 0.6;
+        if (top < 6.3 || !M.lotAt(ax - nx * 0.15, az - nz * 0.15) || !M.lotAt(bx + nx * 0.15, bz + nz * 0.15) || M.lotAt(ax + nx * 0.25, az + nz * 0.25) || M.lotAt(bx - nx * 0.25, bz - nz * 0.25)) continue;
+        const ya = 5.8 + R() * Math.min(4, top - 5.8), yb = clamp(ya + (R() - 0.5) * 1.2, 5.8, top), sag = kind === 'fest' ? 0.05 + R() * 0.03 : kind === 'bunt' ? 0.03 + R() * 0.02 : 0.02 + R() * 0.025;
+        const pts = sagLine([ax, ya, az], [bx, yb, bz], sag);
+        if (!polyGateOK(pts, 0.5) || !polyCorrOK(pts, 1.2)) { facts.rejectedByGates++; continue; }
+        const r = kind === 'cable' ? (R() < 0.3 ? 0.03 : 0.01 + R() * 0.008) : 0.005;
+        if (!item(() => {
+          cables.push({ pts: pts.map(r3), r }); colTube(pts, Math.max(r, 0.012));
+          set('dr_steel', { col: false }); for (const p of [pts[0], pts[pts.length - 1]]) box(FW, p[0], p[1], p[2], 0.04, 0.04, 0.04);
+          if (kind === 'fest') {
+            const L = Math.hypot(bx - ax, bz - az), nb = Math.floor(L / 0.4);
+            for (let i = 1; i < nb; i++) { const t = i / nb, j = t * (pts.length - 1), j0 = Math.floor(j), f2 = j - j0, a = pts[j0], b = pts[Math.min(pts.length - 1, j0 + 1)], p = [lerp(a[0], b[0], f2), lerp(a[1], b[1], f2), lerp(a[2], b[2], f2)];
+              set('dark', { col: false }); box(FW, p[0], p[1] - 0.035, p[2], 0.012, 0.025, 0.012);
+              set('dr_glow', { em: NI(srgb(0xffb46b), 1500), col: false }); octa([p[0], p[1] - 0.1, p[2]], 0.026, 0.045); }
+            const m = pts[Math.floor(pts.length / 2)];
+            emit({ id: 'dress:festoon:' + st.id + ':' + s.toFixed(1), kind: 'neon', pos: [m[0], m[1] - 0.1, m[2]], normal: [0, -1, 0], w: +L.toFixed(2), h: 0.12, rgb: [1.0, 0.62, 0.32], nits: 400, omni: 0.8, range: 12 });
+            nFest++;
+          } else if (kind === 'bunt') {
+            const pal = [[0.6, 0.05, 0.04], [0.85, 0.5, 0.03], [0.05, 0.25, 0.6], [0.75, 0.72, 0.65], [0.1, 0.45, 0.15], [0.55, 0.1, 0.45]], off = Math.floor(R() * 6);
+            const L = Math.hypot(bx - ax, bz - az), nf = Math.floor(L / 0.32), dx = (bx - ax) / L, dz = (bz - az) / L;
+            for (let i = 1; i < nf; i++) { const t = i / nf, j = t * (pts.length - 1), j0 = Math.floor(j), f2 = j - j0, a = pts[j0], b = pts[Math.min(pts.length - 1, j0 + 1)], p = [lerp(a[0], b[0], f2), lerp(a[1], b[1], f2), lerp(a[2], b[2], f2)];
+              set('dr_prop', { c: pal[(i + off) % 6], col: false }); const p0 = [p[0] - dx * 0.11, p[1], p[2] - dz * 0.11], p1 = [p[0] + dx * 0.11, p[1], p[2] + dz * 0.11], p2 = [p[0], p[1] - 0.24, p[2]];
+              tri(p0, p1, p2); tri(p0, p2, p1); }
+            nBunt++;
+          }
+        }, { margin: 0.5, noGate: false })) continue;
+        placed++; nLines++;
+      }
+      if (placed) nSt++;
+    }
+    facts.overhead = { stations: nSt, lines: nLines, festoons: nFest, bunting: nBunt };
+  }
+  lap('overhead');
+  // ---- [P5-E art #4, fpv #6] the posts: C's lamp posts (walking and club streets: 4.5 m, main roads 8.5 m) and utility poles
+  // were flat grey cylinders at 0.3-1 m (w21, roadE). E paints them: a sleeve over the post (charcoal on the walking streets,
+  // grey on the roads) in 0.3 m bands where 1-2.4 m carries poster and sticker residue (paper whites, faded yellows, pinks,
+  // torn edges), a base collar; utility poles get the anti-flyer sheet (bumpy, 0.9-2.6 m), the yellow-black reflective band and
+  // a number plate. Half the walking-street posts hang two vinyl banners (0.45 x 1.3 m, printed both sides, ~10 nits: the
+  // post's own light on them). Render only (the posts collide as C built them).
+  {
+    const R = rng('posts' + seed), paper = [[0.62, 0.6, 0.55], [0.55, 0.5, 0.36], [0.6, 0.42, 0.45], [0.4, 0.42, 0.45], [0.66, 0.64, 0.6], [0.5, 0.2, 0.15], [0.15, 0.25, 0.45]];
+    const posts = [];
+    for (const e of opts.emitters || []) {
+      if (e.kind !== 'street' || !e.pos || String(e.id).startsWith('dress:') || e.role === 'security' || e.role === 'roof') continue;
+      const ped = e.role === 'pedestrian', arm = ped ? 0.5 : 1.6, h = e.pos[1] - 0.2;
+      // C hangs road heads w/2 - 0.9 m off a main's centre line, ped heads 0.5 m inside a post at w/2 - 0.4 - 0.5 k: the street whose
+      // geometry matches that (not merely the nearest: carriageway pairs and junctions) gives the post; none matches, no sleeve
+      let best = null; for (const st of M.streets) { if (ped ? st.kind !== 'walking' && st.kind !== 'club' : st.kind !== 'main') continue; const p = M.project(st, e.pos[0], e.pos[2]);
+        const fit = ped ? (() => { const k = (st.width / 2 - 0.4 - (p.dist + 0.5)) / 0.5; return k > -0.1 && Math.abs(k - Math.round(k)) < 0.1 ? Math.abs(k - Math.round(k)) : null; })() : (Math.abs(p.dist - (st.width / 2 - 0.9)) < 0.1 ? Math.abs(p.dist - (st.width / 2 - 0.9)) : null);
+        if (fit !== null && (!best || p.dist < best.p.dist)) best = { st, p }; }
+      if (!best || best.p.dist > best.st.width / 2 + 2) continue;
+      let ax = e.pos[0] - best.p.px, az = e.pos[2] - best.p.pz; const al = Math.hypot(ax, az); if (al < 1e-3) continue; ax /= al; az /= al;
+      const x = e.pos[0] + ax * arm, z = e.pos[2] + az * arm; if (!inCore(x, z)) continue;
+      posts.push({ x, z, h, r: 0.1, ped, away: [ax, az], st: best.st, walk: best.st.kind === 'walking' || best.st.kind === 'club' });
+    }
+    const sleeve = (x, z, r, y0, y1, base, bands, residue, sides = 8, bump = 0) => {
+      const Rp = rng('sleeve' + x.toFixed(2) + ':' + z.toFixed(2)), ys = [y0]; for (const y of [0.9, 1.35, 1.8, 2.4]) if (y > y0 + 0.05 && y < y1 - 0.05) ys.push(y); ys.push(y1);   // bands: flyers live at 0.9-2.4 m
+      for (let j = 0; j + 1 < ys.length; j++) for (let k = 0; k < sides; k++) {
+        const a0 = (k / sides) * TAU, a1 = ((k + 1) / sides) * TAU, r0 = r + (bump && k % 2 ? bump : 0), r1 = r + (bump && (k + 1) % 2 ? bump : 0), am = (a0 + a1) / 2;
+        const yc = (ys[j] + ys[j + 1]) / 2, stick = residue && yc > 0.9 && yc < 2.5 && Rp() < 0.4;
+        set('dr_prop', { c: stick ? paper[Math.floor(Rp() * paper.length)].map((v) => v * (0.7 + Rp() * 0.3)) : base.map((v) => v * (0.9 + Rp() * 0.2)), col: false });
+        const rr = stick ? 0.004 : 0;
+        quad([x + Math.cos(a0) * (r0 + rr), ys[j], z + Math.sin(a0) * (r0 + rr)], [x + Math.cos(a1) * (r1 + rr), ys[j], z + Math.sin(a1) * (r1 + rr)], [x + Math.cos(a1) * (r1 + rr), ys[j + 1], z + Math.sin(a1) * (r1 + rr)], [x + Math.cos(a0) * (r0 + rr), ys[j + 1], z + Math.sin(a0) * (r0 + rr)], [Math.cos(am), 0, Math.sin(am)]);
+      } };
+    const BANNERS = [
+      { lines: ['홍대 걷고싶은거리', 'HONGDAE'], bg: '#c8102e' }, { lines: ['버스킹 페스티벌', '2026 HONGDAE'], bg: '#f08a00' }, { lines: ['함께하는 마포', 'MAPO-GU'], bg: '#108a9a' },
+      { lines: ['홍대 프리마켓', '매주 토요일'], bg: '#7a1ac8' }, { lines: ['인디음악축제', 'INDIE MUSIC'], bg: '#1a1a1a' }, { lines: ['금연구역', 'NO SMOKING'], bg: '#1a5ad0' }];
+    let nP = 0, nB = 0;
+    for (const p of posts) {
+      const base = p.walk ? [0.055, 0.058, 0.062] : [0.26, 0.26, 0.25];
+      item(() => { sleeve(p.x, p.z, 0.1, 0, p.h - 0.05, base, 0.3, true); set('dr_prop', { c: base.map((v) => v * 0.8), col: false }); cyl(FW, [p.x, 0.15, p.z], 'y', 0.15, 0.3, 8, 0.12, false); nP++; }, { noGate: true });
+      if (p.ped && p.walk && R() < 0.55) {
+        const d = BANNERS[Math.floor(R() * BANNERS.length)], c = srgb(parseInt(d.bg.slice(1), 16)), [ax, az] = p.away, F = frameH([p.x, 0, p.z], -ax, -az);   // local x toward the street centre
+        if (item(() => {
+          set('dr_steel', { col: false }); for (const y of [2.62, 3.98]) boxMM(F, 0, y - 0.015, -0.015, 0.56, y + 0.015, 0.015);
+          set('dr_prop', { c: c.map((v) => v * 0.6), col: false }); for (const sz of [-1, 1]) quad(W(F, 0.08, 2.64, sz * 0.006), W(F, 0.53, 2.64, sz * 0.006), W(F, 0.53, 3.94, sz * 0.006), W(F, 0.08, 3.94, sz * 0.006), D(F, 0, 0, sz));
+          for (const sz of [-1, 1]) labels.push({ id: 'banner:' + p.x.toFixed(2) + ':' + p.z.toFixed(2) + ':' + sz, kind: 'banner', pos: r3(W(F, 0.305, 3.29, sz * 0.008)), normal: r3(D(F, 0, 0, sz)), w: 0.45, h: 1.3, nits: 10, bg: d.bg, lines: d.lines, px: 100 });
+        }, { margin: 0.4, corr: 0.6 })) nB++;
+      }
+    }
+    for (const p of opts.poles || []) {
+      if (!inCore(p.x, p.z)) continue;
+      item(() => {
+        sleeve(p.x, p.z, 0.18, 0.9, 2.6, [0.42, 0.4, 0.36], 0.34, true, 10, 0.012);                       // the anti-flyer sheet, flyers on it
+        const Rp = rng('band' + p.x.toFixed(2) + p.z.toFixed(2));
+        for (let j = 0; j < 2; j++) for (let k = 0; k < 10; k++) { const a0 = k / 10 * TAU, a1 = (k + 1) / 10 * TAU, y0 = 0.4 + j * 0.25, yy = y0 + 0.25, sh = (k + j) % 2;   // yellow-black chevrons
+          set('dr_prop', { c: sh ? [0.7, 0.5, 0.03] : [0.03, 0.03, 0.03], col: false }); const r = 0.18;
+          quad([p.x + Math.cos(a0) * r, y0, p.z + Math.sin(a0) * r], [p.x + Math.cos(a1) * r, y0, p.z + Math.sin(a1) * r], [p.x + Math.cos(a1) * r, yy, p.z + Math.sin(a1) * r], [p.x + Math.cos(a0) * r, yy, p.z + Math.sin(a0) * r], [Math.cos((a0 + a1) / 2), 0, Math.sin((a0 + a1) / 2)]); }
+        const a = Rp() * TAU, F = frameH([p.x + Math.cos(a) * 0.18, 2.9, p.z + Math.sin(a) * 0.18], -Math.sin(a), Math.cos(a));
+        set('dr_prop', { c: [0.7, 0.7, 0.68], col: false }); boxMM(F, -0.07, -0.13, 0, 0.07, 0.13, 0.008);
+        nP++;
+      }, { noGate: true });
+    }
+    facts.posts = nP; facts.banners = nB;
+  }
+  lap('posts');
   // ---- [P3-E fpv #3] background massing inside the block box where C built nothing (the strip's interior: 118 empty 24 m
   // cells, the "orange dots in a black void" of the high shot). Collidable villas and a few mid-rises on the local grid,
   // drawn by dr_mass: the same procedural facades as beyond()'s ring (uv = metres along the face / height, colour = floorH,
@@ -1771,13 +2090,16 @@ varying float vCov; varying float vSide; varying float vHw;`)
   const canPaint = typeof document !== 'undefined';
   if (geo.labels.length && canPaint) {
     const fam = await loadFont(ctx.fontBase);
-    const PX = 160, cells = geo.labels.map((L) => ({ L, w: Math.max(32, Math.round(L.w * PX * (L.kind === 'exitnum' ? 1.5 : 1))), h: Math.max(24, Math.round(L.h * PX * (L.kind === 'exitnum' ? 1.5 : 1))) }));
-    const AW = 2048; let x = 0, y = 0, rowH = 0;
-    for (const c of cells) { if (x + c.w > AW) { x = 0; y += rowH + 2; rowH = 0; } c.x = x; c.y = y; x += c.w + 2; rowH = Math.max(rowH, c.h); }
+    // [P5-E] L.px (pixels per metre) overrides 160; labels that print the same thing share one atlas cell (banners, standing
+    // signs and cart menus repeat a few designs: the atlas stays at phase 4's size)
+    const PX = 160, cells = geo.labels.map((L) => { const k = (L.px || PX) * (L.kind === 'exitnum' ? 1.5 : 1); return { L, w: Math.max(32, Math.round(L.w * k)), h: Math.max(24, Math.round(L.h * k)), key: /^(banner|standsign|menu)$/.test(L.kind) ? [L.kind, L.w, L.h, L.bg, L.ink, ...(L.lines || [])].join('|') : null }; });
+    const AW = 2048; let x = 0, y = 0, rowH = 0; const shared = new Map();
+    for (const c of cells) { const s0 = c.key && shared.get(c.key); if (s0) { c.x = s0.x; c.y = s0.y; c.dup = true; continue; } if (c.key) shared.set(c.key, c);
+      if (x + c.w > AW) { x = 0; y += rowH + 2; rowH = 0; } c.x = x; c.y = y; x += c.w + 2; rowH = Math.max(rowH, c.h); }
     const AH = Math.min(4096, THREE.MathUtils.ceilPowerOfTwo(y + rowH + 2));
     const cv = document.createElement('canvas'); cv.width = AW; cv.height = AH; const g2 = cv.getContext('2d');
     g2.clearRect(0, 0, AW, AH);
-    for (const c of cells) paintLabel(g2, c, fam);
+    for (const c of cells) if (!c.dup) paintLabel(g2, c, fam);
     const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = ctx.renderer ? Math.min(16, ctx.renderer.capabilities.getMaxAnisotropy()) : 8;
     tex.generateMipmaps = true; tex.minFilter = THREE.LinearMipmapLinearFilter;
     const P = [], UV = [], C = [], I = [];
@@ -1981,6 +2303,22 @@ function paintLabel(g, c, fam) {
     g.fillStyle = '#fff4f0'; g.textAlign = 'center'; fit(L.lines[0], h * 0.48, w * 0.92, 800); g.fillText(L.lines[0], x + w / 2, y + h * 0.36); fit(L.lines[1], h * 0.22, w * 0.92, 600); g.fillText(L.lines[1], x + w / 2, y + h * 0.78);
   } else if (L.kind === 'awning') {                // printed on the valance: paint over transparent (the fabric is geometry)
     g.fillStyle = L.ink || '#f4efe4'; g.textAlign = 'center'; fit(L.lines[0], h * 0.78, w * 0.94, 700); g.fillText(L.lines[0], x + w / 2, y + h * 0.54);
+  } else if (L.kind === 'standsign') {          // [P5-E] a standing LED box: the face colour, the name stacked (hangul) or along it
+    g.fillStyle = L.bg || '#d0201a'; g.fillRect(x, y, w, h); g.strokeStyle = 'rgba(255,255,255,0.85)'; g.lineWidth = Math.max(1, w * 0.04); g.strokeRect(x + w * 0.08, y + w * 0.08, w * 0.84, h - w * 0.16);
+    g.fillStyle = L.ink || '#ffffff'; g.textAlign = 'center'; const t = L.lines[0], ch = [...t.replace(/\s+/g, '')];
+    if (/[가-힣]/.test(t) && ch.length <= 6) { const step = Math.min(w * 0.72, (h * 0.8) / ch.length); ch.forEach((c2, i) => { fit(c2, step * 0.92, w * 0.74, 800); g.fillText(c2, x + w / 2, y + h * 0.1 + step * (i + 0.5) + (h * 0.8 - step * ch.length) / 2); }); }
+    else { g.save(); g.translate(x + w / 2, y + h / 2); g.rotate(-Math.PI / 2); fit(t, w * 0.6, h * 0.8, 800); g.fillText(t, 0, w * 0.03); g.restore(); }
+  } else if (L.kind === 'banner') {             // [P5-E] a lamp-post vinyl banner: colour field, a white band, the title stacked
+    g.fillStyle = L.bg || '#c8102e'; g.fillRect(x, y, w, h); g.fillStyle = 'rgba(255,255,255,0.92)'; g.fillRect(x, y + h * 0.84, w, h * 0.1);
+    g.fillStyle = L.bg === '#1a1a1a' ? '#f2c200' : '#ffffff'; g.textAlign = 'center'; const ch = [...L.lines[0].replace(/\s+/g, '')], step = Math.min(w * 0.7, (h * 0.72) / ch.length);
+    ch.forEach((c2, i) => { fit(c2, step * 0.92, w * 0.8, 800); g.fillText(c2, x + w / 2, y + h * 0.06 + step * (i + 0.5)); });
+    g.fillStyle = L.bg || '#c8102e'; fit(L.lines[1] || '', h * 0.06, w * 0.9, 700); g.fillText(L.lines[1] || '', x + w / 2, y + h * 0.89);
+  } else if (L.kind === 'menu') {               // [P5-E] a cart's menu light box: yellow field, three photo tiles, names and prices
+    g.fillStyle = '#f2c230'; g.fillRect(x, y, w, h); g.fillStyle = '#c8102e'; g.fillRect(x, y, w, h * 0.16);
+    const n = L.lines.length, cw = w / n;
+    L.lines.forEach((t, i) => { const cx = x + cw * i; g.fillStyle = (L.colors || [])[i] || '#a8441c'; g.beginPath(); g.ellipse(cx + cw / 2, y + h * 0.47, cw * 0.36, h * 0.24, 0, 0, TAU); g.fill();
+      g.fillStyle = 'rgba(255,255,255,0.35)'; g.beginPath(); g.ellipse(cx + cw * 0.42, y + h * 0.4, cw * 0.12, h * 0.06, -0.4, 0, TAU); g.fill();
+      g.fillStyle = '#1a1410'; g.textAlign = 'center'; fit(t, h * 0.15, cw * 0.92, 800); g.fillText(t, cx + cw / 2, y + h * 0.86); });
   } else if (L.kind === 'tent') {
     g.fillStyle = 'rgba(255,248,235,0.95)'; g.textAlign = 'center'; fit(L.lines[0], h * 0.8, w * 0.9, 800); g.fillText(L.lines[0], x + w / 2, y + h * 0.54);
   }
