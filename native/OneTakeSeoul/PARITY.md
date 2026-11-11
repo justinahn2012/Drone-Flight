@@ -35,13 +35,31 @@ Swift BVH, and keep each triangle's vertex order. Ties between equal hit distanc
    meshes. Materials come from world.json `materials` and the KTX2 maps (tex/; transcode Basis to ASTC 4x4). Match the
    browser's stills, retro 0 grade, at the CI poses (tests/golden-seoul-hongdae.json) within the golden tolerances.
 2. **Light:** emitters.json + light.json. Records, grid and volume come from light/*.bin; the lightmap comes from
-   light/night-lm.bin, the game's own file (RGB9E5 planes, gzip; keyed by `key` = lmKey over emitters, layout and the light
-   model, with `layoutSha256` beside it; [P5 D] one lightmap, one key). Use clustered lights in compute with no K cap.
+   light/night-lm.bin: the browser's own file (NLM2 header, gzip of 4 row-delta byte planes of RGB9E5 texels; upload
+   as MTLPixelFormatRGB9E5Float). Use it only when its header key equals light.json `lightmap.key`. Use clustered lights in compute with no K cap.
    EDR output keeps sign cores above 1000 nits.
 3. **Signs:** signs.glb + signs.bin + signs/msdf.png. Draw the 5 batched groups and the sign tiles from an indirect
    command buffer, culled on the GPU.
 4. **Life:** the LifeSim port on its own thread, a pure function of the take clock (section 2's traffic hash).
-   Compute-skin the crowd from people/ (people.bin layouts in world.json `data.content.people`).
+   Compute-skin the crowd from people/ (people.bin layouts in world.json `data.content.people`). The thread follows
+   the browser worker's protocol (P5, seoul-life-worker.js): warm to take clock + 75 s before the first frame; a far
+   target fast-forwards in slices of at most 40 ms and is retargeted by a newer request (only the newest is answered);
+   a rewind restores the newest traffic snapshot at or before it (every 600 ticks up to tick 36000, then every 3600).
+   The crowd evaluate is stateful by design (units past 60 m every 3rd frame, past 110 m or behind the camera every
+   6th, keyed on a frame counter): the thread takes the render loop's counter with each request, so it thins the same
+   units on the same frames as the inline sim (tests/life-worker.mjs: identical tier counts after frame 1).
+   **Crowd buffer (spec, P5 native #4):** per drawn person 3 x half4 = 24 bytes, one buffer per tier, one upload per
+   tier per frame:
+   - `h0` = (x - camX, y - camY, z - camZ, yaw): camera-relative metres (half: <= 1.6 cm inside 32 m, <= 6 cm at 128 m;
+     the far tier ends at 170 m), yaw in radians;
+   - `h1` = (gait phase 0..1, walk amount 0..1, pose index, height scale);
+   - `h2` = (head yaw, head pitch, id >> 11, id & 2047): the person id split so both halves are exact integers.
+   Everything constant per person (top, bottom, hair, skin, fill, wear colours, accessory bits, seed) is a static
+   table indexed by id (6 x RGBA8 sRGB + u32), written once. Object-blur velocity = (h0 now - h0 last frame +
+   camera delta) / dt, from the previous frame's buffer. The browser still uploads 10 float vec4 attributes per drawn
+   person (156 bytes; seoul-life.js makeHumanMat, G1): adopting this layout there is the open half of panel4 perf #2.
+   **Depth:** the traffic is in the depth pass (seoul-depth.js: each vehicle type's instances, depth-only); the crowd
+   is not (its skinning would double the depth pass's triangles).
 5. **Frame:** MetalFX upscaling from 0.6x. Run at 120 Hz with `ProcessInfo.thermalState` stepping the presets
    (the browser's ?perf SHARE results give the starting point).
 

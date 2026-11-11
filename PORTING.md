@@ -421,10 +421,8 @@ merged (station -13.2 LU, junction -14.4, hover peaks 2.9 dB), ratcheted, owned 
   now says what the near / mid tiers draw.
 - `dressing/ginkgo_cards.png`, `dressing/ac_face.png`: world.json `materials[dr_*].mapFile` (the repo path stays in `map`).
 - `ui/`: the level's menu art (levels.json thumb / backdrop) and the hangul subset.
-- `light/lightmap.bin`: D's night lightmap, baked headless at export (the browser's Worker job, in line): 2048 x 1735
-  RGBA16F (rgb = irradiance x NITS, a = valid), with light.json `lightmap` (uniforms, plan, texel counts) and
-  `layoutSha256` (the layout it was baked for). Its lookup raster and edge table are rows of light/records.bin. A
-  lightmap D ships in the repo (`seoul/light/lightmap.*`, perf #3) is copied instead.
+- `light/lightmap.bin`: D's night lightmap, baked headless at export. **Superseded in phase 5 (§10):** the export now
+  ships the game's own `light/night-lm.bin` (one file, one key).
 - Asset coverage: every repo file a Seoul module (world-seoul.js, seoul-*.js, msdf-meta.js) or the level's levels.json
   entry names must be in the export byte for byte, or listed in `ASSET_EXCEPTIONS` (tools/export-seoul-data.mjs) with a
   reason (the opt-in ?beds recordings, the provisional layout). Otherwise a warning: `--strict` fails CI.
@@ -444,7 +442,7 @@ GLTFLoader + MeshoptDecoder.
 - `signs.bin`: signs.json's big tables (designs, faces, housings, emitters, scrollers) as columns (`onetake.columns/1`):
   per numeric key one meshopt vertex stream (i32, f32, or i32 fixed point with `scale` where the JSON was rounded to
   that many decimals: exact against the JSON); every other key stays a JSON column; nested tables carry `offsets`.
-- `light/lightmap.bin`, `light/volume.bin`, `light/records.bin`, `light/grid.bin`: meshopt vertex streams (lossless;
+- `light/volume.bin`, `light/records.bin`, `light/grid.bin`: meshopt vertex streams (lossless;
   their light.json descriptor says `codec`, `stride`, `decodedBytes`); world.json `data.packed` lists them.
 - Every export decodes its own output with three's decoder before writing (each packed vertex against the source
   vertex it stands for, the triangles as a multiset, each signs.bin value against the JSON; GLTFLoader parses the three
@@ -465,3 +463,50 @@ cores, preset, standalone) and the world.update split (`updP50/P90`, perf.js dro
 sheet: the overlay text plus a one-line `perf-digest {json}`, and a .json file with this run and the last 5 on the
 phone (localStorage), so an auto and a `&preset=phone` run travel together. No share sheet: clipboard, then a text box.
 
+
+## 10. Phase 5 (stream H): one lightmap, a merge gate, a seek-safe worker, the phone plan, traffic in depth
+
+**One lightmap, one key** (native #1 / #2; tools/export-seoul-data.mjs `lightmapFile`). The export ships the file the
+game fetches, `seoul/light/night-lm.bin`, byte for byte as `light/night-lm.bin`: NLM2 header (key, w, h, version) +
+gzip of the RGB9E5 texels as 4 row-delta byte planes (seoul-nightlm.js `lmUnplanes`). light.json `lightmap.key` is the
+build's `lmKey`; a port uploads RGB9E5 as is (MTLPixelFormatRGB9E5Float) and uses it only when the header key matches.
+P4's second, RGBA16F bake (`light/lightmap.bin`, keyed by the layout only) is gone. A stale file is a warning, so
+`--strict` fails, and the `test` job has a step `node tools/bakelm-night.mjs --check` (stale = red). The key covers
+emitters, layout and the light model, so **every merge that touches signs, buildings, dressing or light needs
+`node tools/bakelm.mjs --night` on the merge** (~1 min) and the file committed.
+
+**Main stays green** (native #1). `node ci/merge-check.mjs` runs every `run:` step of ci.yml's `test` and `audio`
+jobs (read from the workflow, so it cannot drift) on the merged tree, ~15 min, logs in `ci-merge-check/`, and on a
+clean all-green tree records the commit in `.git/onetake-merge-check.json`. `git config core.hooksPath ci/hooks`
+installs `ci/hooks/pre-push`, which refuses to move main to a commit with neither a green record nor a green CI run
+(`ONETAKE_FORCE_MAIN=1` overrides). To make CI itself the gate (Justin, once, on GitHub): Settings > Branches > Add
+rule for `main` > "Require status checks to pass" > `test` and `audio`. Then the integrator pushes the merge to
+`integ/p<N>`, waits for green, and fast-forwards: `git push origin integ/p<N>:main` (the same commit, so its checks
+count). The browser jobs (25-180 min on SwiftShader) stay advisory.
+
+**The worker is seek-safe** (perf #2 / native #4; seoul-life-worker.js, seoul-life-client.js, the `[P5 H]` lines in
+seoul-life.js). The worker warms to clock + 75 s before 'ready' (P4 paid it on the first frame: 2.65 s, 22 s on a
+loaded box, with no frame back). A far target fast-forwards in <= 40 ms slices and yields; a request > 0.5 s from the
+one in flight goes out at once and retargets it. The result is bit-identical to one advanceTo (test). The main thread
+draws inline until a frame within 0.25 s of its clock lands. The P4 tier gap (7.92 %) was the crowd's stateful
+stagger: the worker counted frames on its own and never saw the camera forward. Both now come with each request.
+Still open: the main thread's own traffic sim pays a seek in full (colliders and take parity need it), and the
+instance packing (PARITY.md "Crowd buffer"; G1's shader).
+
+**Browser -> node parity every run.** The bando browser job flies ~6 s on the keyboard path, saves the input log
+(`browser-out/browser.otil`) and replays it with `node tests/replay.mjs --strict --log <file>` (1 mm). The committed
+tests/browser.otil (stale since the collider changed) is retired.
+
+**Traffic in the depth pass** (native #6; seoul-depth.js). world.depthScene was empty. Each vehicle InstancedMesh
+gets a depth-only proxy sharing its geometry and instanceMatrix (contract C2 packing): SSAO contact under the traffic
+and blur depth. Signs into physics (`SIGN_COLLIDE`) still waits on the 32 gates being re-fitted (F).
+
+**The A18 run, one tap** (perf #4; perf-plan.js, tests/perf-plan.mjs). On the iPhone 16 Pro Max:
+1. Unplug it, Low Power Mode off, close other apps, brightness about half.
+2. Open the game's address with `?level=seoul&perf=a18` on the end, in Safari.
+3. When the panel says ready, tap **START** and prop the phone in landscape. It runs ~14 min with no taps: the auto
+   preset (`&preset=auto`), the phone preset (`&preset=phone`), then a 10-minute soak at the iPhone default (Auto on
+   iOS = phone). The page reloads itself between runs and holds the screen awake (if it says it can't: Settings >
+   Display & Brightness > Auto-Lock > Never).
+4. At the end tap **SHARE** once and send it to yourself (Messages, Mail or Notes). It carries a table of the three
+   runs and one JSON file with all three; paste or attach it in the chat.

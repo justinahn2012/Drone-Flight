@@ -83,7 +83,7 @@ lw.dispose();
 {
   const THREE = await import('three');
   const lifeMod = await import('../seoul-life.js');
-  const lw2 = await LifeWorker.create(layout, { seed: 7, density: 1, maxAgents: lifeMod.LIFE.maxAgents, throwOnError: true }, { WorkerImpl: Worker });
+  const lw2 = await LifeWorker.create(layout, { seed: 7, density: 1, maxAgents: lifeMod.LIFE.maxAgents, warmTo: lifeMod.LIFE.warm, throwOnError: true }, { WorkerImpl: Worker });   // [P5 H] as seoul-life.js asks
   const mk = (w) => lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene(), lifeWorker: w });
   const A = mk(lw2), B = mk(false), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4);
   ok(A.lifeWorker.state === 'on' && B.lifeWorker.state === 'off', `build() attaches a LifeWorker given in ctx.lifeWorker (state ${A.lifeWorker.state}; inline build ${B.lifeWorker.state})`);
@@ -92,6 +92,7 @@ lw.dispose();
   const tier = (L) => L.group.children.find((m) => /^crowd-near/.test(m.name) && m.geometry?.attributes?.iPos);
   for (let k = 0; k < NF; k++) {
     const t = 20 + k / 60, cam = new THREE.Vector3(-36 + k * 0.05, 2.5, -23 - k * 0.08);
+    if (k === 0) ok(lw2.info.warmTo === lifeMod.LIFE.warm, `the worker warmed to ${lw2.info.warmTo} s before 'ready' (${lw2.info.warmMs?.toFixed(0)} ms in the worker; P4 paid it on the first frame)`);
     let a = performance.now(); A.update(t, cam, q); tA.push(performance.now() - a);
     a = performance.now(); B.update(t, cam, q); tB.push(performance.now() - a);
     if (k > 0) {
@@ -108,6 +109,33 @@ lw.dispose();
   const ma = med(tA.slice(5)), mb = med(tB.slice(5));
   ok(ma < mb, `main thread: update() ${ma.toFixed(2)} ms with the worker vs ${mb.toFixed(2)} ms inline (median, node)`);
   A.dispose(); B.dispose(); lw2.dispose();
+}
+// 7. [P5 H, perf #2 / native #4] seek-safe: a far seek fast-forwards in slices; a newer request retargets it (the worker
+// never finishes a frame nobody will draw); the result is bit-identical to one advanceTo; the main thread draws inline
+// until a frame from after the seek lands, never a stale one
+{
+  const opts7 = { seed: 7, density: 1, maxAgents: (await import('../seoul-life.js')).LIFE.maxAgents };
+  const lw = await LifeWorker.create(layout, { ...opts7, throwOnError: true }, { WorkerImpl: Worker });
+  const next = () => new Promise((r) => { const poll = () => { const x = lw.latest(); if (x) r(x); else setImmediate(poll); }; poll(); });
+  lw.request(1, [0, 2, 0]); lw.release(await next());
+  // a far seek (t 1 -> 600: 36k traffic steps), then 120 ms later the clock is rewound to 5 s: the 600 s frame must be dropped
+  const a = performance.now(); lw.request(600, [0, 2, 0]);
+  await new Promise((r) => setTimeout(r, 120));
+  lw.request(5, [0, 2, 0]);
+  const f = await next(), dt = performance.now() - a;
+  ok(f.t === 5 && lw.stats.retargets >= 1, `a far seek is retargeted mid fast-forward: the first frame back is t ${f.t} (asked 600, then 5) after ${dt.toFixed(0)} ms, ${lw.stats.slices} slices`);
+  lw.release(f);
+  // bit-identity after a sliced fast-forward with a retarget in it: t 5 -> 300, retarget to 420
+  lw.request(300, [-36, 3, -23, 0, -1]); await new Promise((r) => setTimeout(r, 60)); lw.request(420, [-36, 3, -23, 0, -1]);
+  let g = await next(); while (g.t !== 420) { lw.release(g); g = await next(); }
+  const ref = new LifeSim(layout, opts7), c0 = { x: 0, y: 2, z: 0, fx: null, fz: null };   // the same evaluate history (the stagger is stateful): t 1, 5, 420; 600 and 300 were never drawn
+  for (const [t, c] of [[1, c0], [5, c0], [420, { x: -36, y: 3, z: -23, fx: 0, fz: -1 }]]) { ref.advanceTo(t); ref.crowd.events.length = 0; ref.crowd.evaluate(t, c); }
+  const P = {}, V = g.veh; let bad7 = 0;
+  ref.traffic.vehicles.forEach((v, i) => { const p = ref.traffic.pose(v, ref.aT, P), o = i * VEH_STRIDE; if (V[o] !== Math.fround(p.x) || V[o + 1] !== Math.fround(p.z) || V[o + 4] !== (p.hidden ? 1 : 0)) bad7++; });
+  for (const key of ['X', 'Z', 'YAW', 'PH', 'WALK', 'POSE', 'VIS']) if (!eq(g[key], ref.crowd[key])) bad7++;
+  ok(!bad7, `after a sliced, retargeted fast-forward (5 -> 300 -> 420 s) the frame equals one advanceTo(420) + the same evaluates (camera forward included) bit for bit; the dropped targets cost nothing` + (bad7 ? `: ${bad7} mismatches` : ''));
+  ok((await lw.hash(420)) === ref.hash(), 'and the traffic hash equals the main thread\'s');
+  lw.release(g); lw.dispose();
 }
 console.log(`life-worker tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

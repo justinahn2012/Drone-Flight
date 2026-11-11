@@ -21,6 +21,7 @@
 // 5 m/s; canyon: the Yanghwa-ro screen strip at 8 m, 8 m/s; club: Wausan-ro 19-gil at 4 m/s; high: 60 m over the block,
 // 35 deg down), the same scales and soak, and world.update split per part (light / life / signs ms per frame) so the
 // phone's CPU line names its owner.
+import { planOf, planHook } from './perf-plan.js';   // [P5 H, perf #4] ?perf=a18: the one-tap phone plan
 const SCALES = [1.0, 1.2], WARM = 30, BUDGET = 14.2, TAIL = 30;
 const q = (a, p) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 const f1 = (v) => (Number.isFinite(v) ? v.toFixed(1) : '-');
@@ -79,6 +80,7 @@ const SEOUL_SEGMENTS = {
 
 export function perfProbe(o, frames = 120) {
   const params = new URLSearchParams(location.search);
+  const plan = planOf(params); if (plan) frames = plan.frames;   // [P5 H] ?perf=a18 (main.js passes NaN -> 120)
   const soakS = Math.max(0, +(params.get('soak') ?? (frames >= 60 ? 180 : 0)) || 0);
   const level = String(o.S?.world || '');
   const TABLE = /seoul/i.test(level) ? SEOUL_SEGMENTS : SEGMENTS;
@@ -224,6 +226,8 @@ export function perfProbe(o, frames = 120) {
       (params.has('soak') && !soakS ? '.' : `, then a ${params.has('soak') ? soakS : 180} s soak (QUICK: no soak).`));
     btn.textContent = 'RUN'; bar.style.display = '';
     o.perfReady = true;
+    // [P5 H, perf #4] the A18 plan takes the buttons over (START once, SHARE once; perf-plan.js)
+    if (plan) await planHook(o, { run, say, btn, quick, share, bar, digest: perfDigest, sharePayload: (p) => sendPayload(p, say, o) }, params);
   })().catch((e) => say('PERF · failed: ' + (e?.message || e)));
 }
 
@@ -255,7 +259,11 @@ async function sharePerf(o, say) {
   const text = `One Take FPV perf · ${res.level || 'bando'} · ${res.device?.at || ''}\n${o.perfText || ''}\n\nperf-digest ${JSON.stringify(perfDigest(res))}`;
   const name = `onetake-perf-${(res.level || 'bando').replace(/[^\w-]/g, '')}-${(res.device?.at || '').replace(/[:.]/g, '-').slice(0, 19)}.json`;
   const runs = readHist(); if (!runs.some((x) => x.device?.at === res.device?.at)) runs.push(res);
-  let file = null; try { file = new File([JSON.stringify({ format: 'onetake.perf/1', runs }, null, 1)], name, { type: 'application/json' }); } catch (e) { file = null; }
+  return sendPayload({ text, name, json: { format: 'onetake.perf/1', runs } }, say, o);
+}
+// [P5 H] the share sheet itself (SHARE and the A18 plan's SHARE): text + a JSON file; else the clipboard; else a text box
+async function sendPayload({ text, name, json }, say, o) {
+  let file = null; try { file = new File([JSON.stringify(json, null, 1)], name, { type: 'application/json' }); } catch (e) { file = null; }
   try {
     if (navigator.share) {
       const withFile = file && navigator.canShare?.({ files: [file] }) ? { files: [file] } : {};
@@ -263,7 +271,7 @@ async function sharePerf(o, say) {
       return;
     }
   } catch (e) { if (e?.name === 'AbortError') return; }
-  try { await navigator.clipboard.writeText(text); say((o.perfText || '') + '\n\nCopied: paste it into a message.'); return; } catch (e) { /* no clipboard */ }
+  try { await navigator.clipboard.writeText(text); say(text.split('\n\nperf-digest')[0] + '\n\nCopied: paste it into a message.'); return; } catch (e) { /* no clipboard */ }
   const ta = document.createElement('textarea'); ta.value = text; ta.readOnly = true;
   ta.style.cssText = 'display:block;width:100%;height:9em;margin-top:8px;font:11px ui-monospace,Menlo,monospace;background:#111;color:#eee;border:1px solid #444';
   document.getElementById('perfProbe')?.appendChild(ta); ta.focus(); ta.select();

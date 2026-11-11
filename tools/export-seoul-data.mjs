@@ -501,26 +501,41 @@ async function contentFiles(root, files, assetMap) {
   return out;
 }
 
-/** [P5 D, native #2] One lightmap, one key: the export ships the file the game fetches (seoul/light/night-lm.bin, written
- *  by `node tools/bakelm.mjs --night`) byte for byte as light/night-lm.bin, when its key matches this build's (lmKey over the
- *  emitters, the layout and the light model; layoutSha256 rides beside it). A stale or missing file is a warning (the
- *  export --strict fails), never a second, differently baked map. (Phase 4 baked its own RGBA16F light/lightmap.bin here.) */
+/** [P5 H, native #1 / #2] One lightmap, one key. The game fetches seoul/light/night-lm.bin (D's bake: RGB9E5, NLM2 header +
+ *  gzip of 4 row-delta byte planes) and uses it when the file's key equals lmKey over this build's bake inputs (emitters,
+ *  layout, model constants). The export ships that same file, byte for byte, as light/night-lm.bin, with the same key in
+ *  light.json: a port reads exactly what the browser reads (RGB9E5 is MTLPixelFormatRGB9E5Float on Apple GPUs). The
+ *  headless build computes the key (ctl.stats.lightmap.key); a stale or missing file is a warning (--strict fails: re-run
+ *  node tools/bakelm.mjs --night and commit it). P4's second bake (RGBA16F light/lightmap.bin) is gone: it was a
+ *  different file with no key the game knew. Only when the committed file is stale does the in-line bake still ship as
+ *  light/lightmap.bin, marked stale-fallback, so a port has a map while the warning stands. */
 async function lightmapFile(root, ctl, files, layoutSha) {
-  const N = await import(pathToFileURL(join(root, 'seoul-nightlm.js')).href), rel = N.NIGHT_LM.file.replace(/^\.\//, ''), f = join(root, rel);
-  const st = ctl?.stats?.lightmap, U = ctl?.uniforms || {};
-  if (!st?.key) return { status: 'pending', note: `no lightmap key from the headless attach (mode ${st?.mode ?? 'none'})` };
-  if (!existsSync(f)) return { status: 'missing', note: `${rel} is missing: run node tools/bakelm.mjs --night` };
-  const buf = readFileSync(f), F = N.lmFileHeader(buf);
-  if (!F || F.header.key !== st.key) return { status: 'stale', note: `${rel} has key ${F?.header?.key ?? 'none'}, this build ${st.key}: run node tools/bakelm.mjs --night` };
-  files['light/night-lm.bin'] = buf;
+  const N = await import(pathToFileURL(join(root, 'seoul-nightlm.js')).href), NL = N.NIGHT_LM || {};
+  const st = ctl?.stats?.lightmap, U = ctl?.uniforms || {}, key = st?.key ?? null;
   const v4 = (k) => (U[k]?.value?.toArray ? U[k].value.toArray().map((x) => +x.toFixed(6)) : null);
-  return { file: 'light/night-lm.bin', key: st.key, layoutSha256: layoutSha, width: F.header.w, height: F.header.h, bytes: buf.length, sha256: sha256(buf),
-    format: "'NLM2' | u32 header length | header JSON {key, w, h, version, enc, texels, ...} | gzip of the texels as 4 byte planes, each delta-coded along its rows (seoul-nightlm.js lmFile / lmUnplanes); texels RGB9E5 (GL RGB9_E5, 4 bytes), rows bottom-up as a GL DataTexture (row 0 = v 0)",
-    content: 'scene-linear irradiance x NITS (rgb); static emitters (no K limit, heightfield-occluded) + the volume\'s indirect part (seoul-nightlm.js bakeLM); invalid texels dilated from their neighbours',
+  const common = {
     uniforms: { uCityLM: v4('uCityLM'), uCityLMG: v4('uCityLMG'), uCityLMA: v4('uCityLMA'), uCityLMR: v4('uCityLMR') },
     lookup: 'the ground map sits at the atlas origin (uCityLMG: x0, z0, gw, gh); wall rects pack round it (uCityLMA: atlas w, h, raster w, h); the 1 m raster of the two nearest exposed edges and the edge table are rows uCityLMR.x.. of light/records.bin (seoul-light.js CITY_HEAD cityLM)',
-    plan: st.edges != null ? { edges: st.edges, atlas: st.atlas, ground: st.ground } : null, texels: F.header.texels, NIGHT_LM: N.NIGHT_LM,
-    source: `${rel} (D: node tools/bakelm.mjs --night), byte for byte: the file the game fetches` };
+    content: 'scene-linear irradiance x NITS (rgb); static emitters (no K limit, heightfield-occluded) + the volume\'s indirect part (seoul-nightlm.js); invalid texels dilated from valid neighbours (NIGHT_LM.dilate)',
+    plan: st?.edges != null ? { edges: st.edges, atlas: st.atlas, ground: st.ground } : null, NIGHT_LM: NL, layoutSha256: layoutSha,
+  };
+  const rel = String(NL.file || './seoul/light/night-lm.bin').replace(/^\.\//, ''), p = join(root, rel);
+  const F = existsSync(p) ? N.lmFileHeader(readFileSync(p)) : null;
+  if (F && key && F.header.key === key) {
+    files['light/night-lm.bin'] = readFileSync(p);
+    return { file: 'light/night-lm.bin', key, keyOf: 'seoul-nightlm.js lmKey over the bake inputs (the game uses the file only when its header key equals its own)', source: `${rel} (D, shipped; byte for byte what the game fetches)`,
+      format: 'NLM2: "NLM2" | u32 LE header bytes | header JSON {key, w, h, version, enc, texels, bytes} | gzip payload: the w x h RGB9E5 texels (u32 LE, rows bottom-up as a GL DataTexture) as 4 byte planes, each delta-coded along the rows (seoul-nightlm.js lmUnplanes)',
+      width: F.header.w, height: F.header.h, version: F.header.version, texels: F.header.texels, bytes: files['light/night-lm.bin'].length, gpu: 'RGB9E5 (MTLPixelFormatRGB9E5Float / GL_RGB9_E5), 4 bytes per texel', ...common };
+  }
+  const why = !key ? `the headless build computed no key (lightmap mode ${st?.mode ?? 'none'})` : !F ? `${rel} is missing or not an NLM2 file` : `${rel} is stale (file key ${F.header.key}, this build ${key})`;
+  const out = { status: 'stale', key, note: `${why}: re-run node tools/bakelm.mjs --night and commit ${rel}` };
+  const tex = ctl?.uniforms?.tCityLM?.value;   // the stale fallback: this build's in-line bake, so the port still has a map
+  if (st?.ready && tex?.image?.data && tex.image.width >= 2) {
+    const im = tex.image, d = im.data, bytes = new Uint8Array(d.buffer, d.byteOffset, d.byteLength).slice();
+    const pk = packBin(files, 'light/lightmap.bin', bytes, 4);
+    Object.assign(out, { file: 'light/lightmap.bin', fallback: true, format: 'the in-line bake as the GPU holds it (RGB9E5 u32 LE when NIGHT_LM ships RGB9E5), rows bottom-up', width: im.width, height: im.height, ...common, ...pk });
+  }
+  return out;
 }
 
 /** Asset coverage (native #2): every file a Seoul runtime module (or the level's levels.json entry) names that exists in
@@ -584,7 +599,7 @@ export const SEOUL_RUNTIME_ONLY = {
   headlightPools: 'additive pools under each vehicle head lamp (life)',
   steam: 'steam puffs (Points), count QUALITY[q].steam (light)',
   airlight: 'closed-form single-scatter airlight sprites (one instanced quad) round the AIRLIGHT.n brightest emitters in view, re-picked every 3 frames (light)',
-  light: 'the clustered light grid is binned at load from emitters.json (light.json rules); the night lightmap ships baked (light/night-lm.bin: the game\'s own file, keyed; light.json lightmap)',
+  light: 'the clustered light grid is binned at load from emitters.json (light.json rules); the night lightmap ships as the file the game fetches (light/night-lm.bin, RGB9E5, keyed: light.json lightmap.key)',
 };
 
 export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = console.log, note = log, warn = log, meshopt = null } = {}) {
@@ -667,12 +682,12 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
   let light = null;
   if (dx) {
     try { const r = await dx(layout, ctx); light = r?.['light.json'] ?? r; if (light && lctl) light = { ...(await lightTables(light, lctl, files)), source: 'seoul-light attach() -> exportData() (live controller, headless)' };
-      if (light && lctl) { light.lightmap = await lightmapFile(root, lctl, files, layoutSha); if (light.lightmap.status) warn(`light/lightmap.bin: ${light.lightmap.note}`); } }
+      if (light && lctl) { light.lightmap = await lightmapFile(root, lctl, files, layoutSha); if (light.lightmap.status) warn(`light lightmap: ${light.lightmap.note}`); } }
     catch (e) { warn(`seoul-light exportData() threw: ${e.stack || e.message}; using the shim`); light = null; }
   }
   else note('seoul-light has no exportData() yet (D, native #2): light.json from the shim');
   light ||= lightShim(parts, X[PARTNERS.light] || {}, lightMod);
-  if (light) { await put('light.json', light); data.light = { file: 'light.json', count: light.count ?? 1, source: light.source ?? 'seoul-light exportData()', ...(light.lightmap ? { lightmap: light.lightmap.file ?? light.lightmap.status } : {}) }; } else data.light = { status: 'pending', count: 0 };
+  if (light) { await put('light.json', light); data.light = { file: 'light.json', count: light.count ?? 1, source: light.source ?? 'seoul-light exportData()', ...(light.lightmap ? { lightmap: light.lightmap.status ? `${light.lightmap.status}${light.lightmap.file ? ' (' + light.lightmap.file + ')' : ''}` : light.lightmap.file, lightmapKey: light.lightmap.key ?? null } : {}) }; } else data.light = { status: 'pending', count: 0 };
 
   // ---- life.json
   const gx = exporterOf(lifeMod);

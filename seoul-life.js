@@ -2389,17 +2389,22 @@ export function build(layout, ctx = {}) {
   if (ctx.lifeWorker && typeof ctx.lifeWorker === 'object') lwAttach(ctx.lifeWorker);
   else if (ctx.lifeWorker !== false && lwq !== '0' && (ctx.lifeWorker === true || typeof window !== 'undefined') && LifeWorker.supported()) {
     LW.state = 'starting';
-    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles) }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
+    // [P5 H, perf #2] warmTo: the worker reaches the warm clock before 'ready' (it used to pay that 75 s of traffic on its
+    // first frame: 2.65-22 s with no frame back); until then, and after a seek until a post-seek frame lands, inline
+    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
   }
   function lwFrame(tNow, cam) {   // -> the worker frame to draw at tNow, or null (inline)
     const w = LW.w; if (!w) return null;
     if (w.error) { LW.state = 'failed: ' + w.error; LW.w = null; return null; }
     if (LW.last != null) { const d = tNow - LW.last; if (d > 0 && d < 0.1) LW.dt += (d - LW.dt) * 0.2; }
     LW.last = tNow;
-    w.request(tNow + LW.dt, [cam.x, camP.y, cam.z, cam.fx, cam.fz]);
+    // [P5 H] fr: the crowd's frame counter the next update would evaluate with (its far / behind-camera stagger keys on
+    // it): the worker evaluates in the inline sim's phase (P4 didn't: a 7.9 % tier-total gap on the frames the stagger flips)
+    const c = crowd.frame || 0;
+    w.request(tNow + LW.dt, [cam.x, camP.y, cam.z, cam.fx, cam.fz], c + 2);
     const f = w.latest(); if (f) { if (LW.f) w.release(LW.f); LW.f = f; }
     const use = LW.f && Math.abs(LW.f.t - tNow) <= 0.25 ? LW.f : null;
-    if (use) LW.used++; else LW.inline++;
+    if (use) { LW.used++; crowd.frame = c + 1; } else LW.inline++;   // (inline: evaluate advances it)
     return use;
   }
   function update(t, camPos, camQuat) {

@@ -130,13 +130,18 @@ if (process.argv.includes('--record') || process.argv.includes('--record-take'))
 }
 
 // 1 + 2. committed logs
-for (const f of readdirSync(DIR).filter((f) => f.endsWith('.otil')).sort()) {
-  const log = InputLog.fromBytes(readFileSync(join(DIR, f)));
+// [P5 H] --log FILE: replay that log only (the CI browser job records a fresh one in headless Chromium every run and
+// replays it here: browser -> node parity on the current world; a log that matches no world fails)
+const LOGARG = (() => { const i = process.argv.indexOf('--log'); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : null; })();
+const LOGPATHS = LOGARG ? [LOGARG] : readdirSync(DIR).filter((f) => f.endsWith('.otil')).sort().map((f) => join(DIR, f));
+for (const lp of LOGPATHS) {
+  const f = lp.split(/[\\/]/).pop(), LDIR = dirname(lp);
+  const log = InputLog.fromBytes(readFileSync(lp));
   const w = byHash.get(log.header.world);
   if (!w) {
     const msg = `STALE ${f}: recorded on world ${log.header.world}, which none of [${[...byHash.keys()].join(', ')}] match (re-record it)`;
     // --strict (CI): a stale scripted log fails (node tests/replay.mjs --record fixes it); a browser-recorded one warns
-    if (STRICT && SCRIPTS[log.header.meta?.script]) ok(false, msg);
+    if ((STRICT && SCRIPTS[log.header.meta?.script]) || LOGARG) ok(false, msg);
     else console.log(STRICT ? `::warning file=tests/${f}::${msg}` : msg);
     continue;
   }
@@ -147,7 +152,7 @@ for (const f of readdirSync(DIR).filter((f) => f.endsWith('.otil')).sort()) {
   ok(b.maxErr <= TOL, `${f}: re-synced max error ${(b.maxErr * 1000).toFixed(3)} mm`);
   ok(JSON.stringify(a.final) === JSON.stringify(c.final), `${f}: two replays end in identical state`);
   // 5. take parity
-  const tf = join(DIR, f.replace(/\.otil$/, '.take.json'));
+  const tf = join(LDIR, f.replace(/\.otil$/, '.take.json'));
   let exp = null; try { exp = JSON.parse(readFileSync(tf, 'utf8')); } catch (e) {}
   if (!exp) { const msg = `${f}: no expected Take events (tests/${f.replace(/\.otil$/, '.take.json')}); record with --record-take`; if (STRICT && SCRIPTS[log.header.meta?.script]) ok(false, msg); else console.log(msg); continue; }
   const got = takeEvents(log, w.world);
