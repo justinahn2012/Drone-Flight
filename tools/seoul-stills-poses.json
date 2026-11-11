@@ -1,0 +1,6 @@
+{
+ "walk0": ["o.tp(-36,3,-23,0,(4)-o.drone.c.camTilt)", [0, 0, -3]],
+ "bdA": ["o.tp(27.3,9,-144.8,-36.9,(-12)-o.drone.c.camTilt)", null],
+ "bdB": ["o.tp(63.8,9,-200.7,-44.6,(-12)-o.drone.c.camTilt)", null],
+ "bdC": ["o.tp(183.6,9,-312.9,136.2,(-12)-o.drone.c.camTilt)", null]
+}
