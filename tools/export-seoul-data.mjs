@@ -407,6 +407,7 @@ export const SEOUL_COVERAGE = [
   { id: 'sky', match: { name: '^seoul\\.sky$' }, export: 'light.json NIGHT_SKY (dome)', requires: 'data.light.count' },
   { id: 'airlight', match: { name: '^seoul\\.airlight$' }, export: 'runtimeOnly.airlight (light.json AIRLIGHT + HAZE: single-scatter sprites round the brightest emitters in view)', requires: 'data.light.count' },
   { id: 'steam', match: { name: '^seoul\\.steam$' }, export: 'runtimeOnly.steam (light.json QUALITY.steam)', requires: 'data.light.count' },
+  { id: 'wallpacks', match: { name: '^seoul\\.wallpack' }, export: 'emitters.json (role wallpack) + light.json WALLPACK (the fixture: a 0.36 x 0.2 x 0.3 m housing, the lens at the record) [P4-D]', requires: 'data.light.count' },
   { id: 'dressing', match: { ancestor: '^seoul[-.]dressing' }, export: 'dressing.json (E: runtime parts, cable renderer)', requires: 'data.dressing.count' },
 ];
 export const SEOUL_RUNTIME_ONLY = {

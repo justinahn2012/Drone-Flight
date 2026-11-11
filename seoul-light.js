@@ -35,6 +35,11 @@
 // haze by street kind, airlight halos <= 3 m, none within 4 m of the lens, channel-capped at 2x a street lamp; the
 // volume at 8 layers; night lightmaps (seoul-nightlm.js, a Worker); one BatchedMesh per material for the city and one
 // for the collider (draw calls); a visibility API for G1's crowd culling; world.qualityCap (scale 1.0, phone preset).
+// P4 (stream D): fascia boxes spill light down-and-out (record bits), light boxes get a 0.15 edge lobe, an urban ambient
+// floor in the volume (VOLUME.cityLux), 2700 K wall packs over corner faces and shuttered fronts (wallPacks), damp pavers
+// (C's ground layers 1-2) and glossy wet surfaces, airlight from 2 m at a quarter of its energy, the detail normal tilts
+// the baked light (graphics #5), the night lightmap is shipped (seoul/light/night-lm.bin, keyed) and stored RGB9E5, and
+// the GPU batches carry int8 normals (perf #5).
 //
 // Contract for C (world-seoul.js): call attach() after the world's materials exist and before warm-up; ctx.layout (lots
 // with floors/floorH, streets) feeds the heightfield. Materials opt out with material.userData.cityLight === false; ground
@@ -43,7 +48,7 @@
 // Optional fields read here: lumens (street lamps), forward [x,0,z] (street lamp arm direction; else the nearest street),
 // beam {lumens} (headlights, default 1400 lm at 20,000 nits), nitsMax (animated: binning nominal).
 import * as THREE from 'three';
-import { sstep, lobeStreet, lobeBeam, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM } from './seoul-nightlm.js';
+import { sstep, lobeStreet, lobeBeam, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM, packLM, lmKey, lmFileHeader, lmUnplanes, decodeRGB9E5 } from './seoul-nightlm.js';
 export { NIGHT_LM };
 
 export const NITS = 0.1;                      // scene units per cd/m2 (night worlds)
@@ -52,9 +57,13 @@ const lumaOf = (c) => LUMA[0] * c[0] + LUMA[1] * c[1] + LUMA[2] * c[2];
 
 // Source types (P2: the panel's binding luminance hierarchy). Defaults when an emitter omits a field: luminance (cd/m2, rect
 // mean), colour (linear), omni (0 = Lambertian one-sided face, 1 = all round), range (m).
+// P4 (lighting #2 edge lobe): a light box's sides and halo light 0.5-1.5 m of its own wall (omni 0.15, as channel letters).
+// P4 (lighting #1) spill: a ground-floor fascia box sends `spill` x its face flux down (soffit and canopy LEDs, the
+// underside of the box) as a Lambert lobe about an axis 31 deg out from straight down (~3/4 of it lands in front of the
+// wall, the rest on the facade's own foot); 0.1 steps up to 0.3 (2 record bits). Records may set e.spill.
 export const SOURCE_TYPES = {
   channel:  { nits: 1000,  rgb: [1.0, 1.0, 1.0],   omni: 0.15, range: 26 },   // LED channel-letter cores 600-2000
-  lightbox: { nits: 160,   rgb: [1.0, 0.97, 0.92], omni: 0.0,  range: 24 },   // light-box faces 100-220
+  lightbox: { nits: 160,   rgb: [1.0, 0.97, 0.92], omni: 0.15, range: 24, spill: 0.3 },   // light-box faces 100-220
   neon:     { nits: 1000,  rgb: [1.0, 0.25, 0.55], omni: 0.7,  range: 18 },   // glass neon / LED flex 600-2000
   screen:   { nits: 260,   rgb: [0.8, 0.9, 1.0],   omni: 0.0,  range: 32 },   // LED video walls 180-350
   street:   { nits: 9000,  rgb: [1.0, 0.82, 0.62], omni: 0.0,  range: 34 },   // LED street head (flux from `lumens`)
@@ -76,13 +85,21 @@ export const NIGHT_SKY = { zenith: [0.07, 0.06, 0.05], horizon: [0.5, 0.32, 0.18
 // capped at maxR (3 m: a halo round the lamp, not a cloud over the facade), none within nearM of the camera (fades in
 // over fadeM), and a source's brightest channel is capped at lampCap x the median street lamp's (no violet clouds).
 export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
-export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 4, fadeM: 2, lampCap: 2 };
+// P4 lighting #4 (near air): sources from nearM = 2 m (was 4: close signs floated with no air round them), fading in over
+// fadeM, at nearGain (0.25) of their energy until fullM (4 m), so the halo never veils the lens.
+export const AIRLIGHT = { count: 16, maxR: 3, minL: 0.004, gain: 1.0, nearM: 2, fadeM: 0.5, nearGain: 0.25, fullM: 4, lampCap: 2 };
 // Irradiance volume (lighting #1): probe heights, albedos for the one bounce.
 // windowNits: the mean emission of the facades a probe faces at each probe height (lit windows are not L3 emitters: binding
 // table 55 % lit on floors 2-4, 12-20 % above, 5-25 nits, ~25 % of a wall is glass); multi: 1 / (1 - mean albedo) for the
 // bounces past the first.
 // P3 graphics #4: 8 layers (0.5 ... 50 m) so the upper facades and the towers get their own probes, not a 12-30 m blend.
-export const VOLUME = { heights: [0.5, 2.5, 5, 8, 12, 18, 30, 50], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2, windowNits: [0.3, 1.2, 1.6, 1.5, 1.2, 0.8, 0.5, 0.3], windowRGB: [1.0, 0.86, 0.7], multi: 1.25 };
+// P4 lighting #2 / graphics #1: cityLux, an urban ambient floor (lux, isotropic, per layer): the light every surface of a lit
+// district gets from the city's own glow (the lit cloud deck, the facades and streets past the heightfield horizon, the
+// bounces past the volume's one) that a K-limited, one-bounce model drops. 2 lux at street level (1.5-3), 4.5-6 lux on the
+// upper floors (a wall at the city's ~0.2-0.35 effective albedo then reads 0.3-0.65 nits: the 0.3-0.8 nit floor above
+// 10 m, no black slabs); warm grey.
+export const VOLUME = { heights: [0.5, 2.5, 5, 8, 12, 18, 30, 50], rhoRoad: 0.12, rhoWalk: 0.22, rhoWall: 0.3, rasterM: 2, windowNits: [0.3, 1.2, 1.6, 1.5, 1.2, 0.8, 0.5, 0.3], windowRGB: [1.0, 0.86, 0.7], multi: 1.25,
+  cityLux: [2.0, 2.2, 2.6, 3.2, 4.5, 5.5, 6.0, 5.0], cityRGB: [1.0, 0.9, 0.78] };
 // fractional layer index of a height (piecewise linear between VOLUME.heights): JS and GLSL
 export function layerOf(y, H = VOLUME.heights) { if (y <= H[0]) return 0; for (let k = 1; k < H.length; k++) if (y < H[k]) return k - 1 + (y - H[k - 1]) / (H[k] - H[k - 1]); return H.length - 1; }
 const LAYER_GLSL = (H) => `float cityLayer(float y){ ${H.slice(1).map((h, k) => `if (y < ${h.toFixed(2)}) return ${k.toFixed(1)} + (y - ${H[k].toFixed(2)}) / ${(h - H[k]).toFixed(2)};`).join(' ')} return ${(H.length - 1).toFixed(1)}; }`;
@@ -251,12 +268,12 @@ void cityOne(const in highp usampler2D tl, int idx, bool spec, bool lmSkip, vec3
   vec2 br = unpackHalf2x16(rb.z);                                              // I.b, range
   if (d2 >= br.y * br.y) return;
   float d = sqrt(d2); vec3 l = Lw / d;
-  uint m = rb.w, ty = m & 3u, ci = (m >> 2u) & 16383u;
+  uint m = rb.w, ty = m & 3u, ci = (m >> 2u) & 4095u;
   bool dOff = lmSkip && ci == 0u && ((m >> 16u) & 63u) == 0u;                   // P3: baked into the lightmap (diffuse)
   if (dOff && !spec) return;
   vec3 I = ci > 0u ? texelFetch(tCityLC, ivec2(int(ci - 1u) & 255, int(ci - 1u) >> 8), 0).rgb : vec3(unpackHalf2x16(rb.y), br.x);
   float ce = -dot(l, n), omni = float(m >> 26u) / 63.0;
-  float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, omni) : ty == 1u ? cityStreet(-l, n) : cityBeam(-l, n);
+  float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, omni) + float((m >> 14u) & 3u) * 0.1 * max(0.857 * l.y + 0.515 * ce, 0.0) : ty == 1u ? cityStreet(-l, n) : cityBeam(-l, n);   // P4: + the spill (down, 31 deg out)
   float q = d / br.y; q = 1.0 - q * q * q * q;
   uint fh = (m >> 16u) & 63u; float fl = 1.0;
   if (fh != 0u) fl = 1.0 - float((m >> 22u) & 15u) / 15.0 * (0.5 + 0.5 * sin(6.2831853 * float(fh) * 0.25 * uCityTime + mod(float(idx) * 2.399, 6.2831853)));
@@ -366,7 +383,8 @@ float cityContact(vec3 wp){       // soft footprint occlusion under the nearest 
 }
 uniform sampler2D tCityMirror;
 uniform mat4 uCityMirrorVP;
-uniform float uCityWet;
+uniform float uCityWet; uniform float uCityDamp;
+float cityPud = 0.0;
 uniform vec2 uCityMirrorTexel;
 float cityWet = 0.0;
 float cityHash(vec2 p){ p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
@@ -447,8 +465,17 @@ export function splitCells(g, cell = 96, minTris = 12000) {
 // P3 perf #1: one THREE.BatchedMesh per material: every cell is an instance, culled per instance and drawn with
 // WEBGL_multi_draw (one draw call per material however many cells are in view; three loops drawElements without it).
 // Cells are identity-matrix instances of their own geometry (a contiguous vertex range of splitCells' shared buffers).
-export function batchCells(sp, material) {
-  const A = sp.attributes, idx = sp.index, P = sp.parts;
+// P4 perf #5 (opt.qNormal): normals as 4 x int8, normalized (4 bytes a vertex, was 12; the 4th byte pads the stride to
+// 4 for Metal; a vec3 attribute reads the first three): <= 0.45 deg off, invisible on the rough city materials.
+export function quantizeNormals(attr) {
+  if (!attr || attr.itemSize !== 3 || !(attr.array instanceof Float32Array)) return attr;
+  const n = attr.count, a = attr.array, q = new Int8Array(n * 4);
+  for (let i = 0; i < n; i++) { const x = a[i * 3], y = a[i * 3 + 1], z = a[i * 3 + 2], l = Math.hypot(x, y, z) || 1; q[i * 4] = Math.round(x / l * 127); q[i * 4 + 1] = Math.round(y / l * 127); q[i * 4 + 2] = Math.round(z / l * 127); }
+  return new THREE.BufferAttribute(q, 4, true);
+}
+export function batchCells(sp, material, opt = {}) {
+  const A = { ...sp.attributes }, idx = sp.index, P = sp.parts;
+  if (opt.qNormal && A.normal) A.normal = quantizeNormals(A.normal);
   const bm = new THREE.BatchedMesh(P.length, sp.vertices, sp.tris * 3, material);
   const ids = [];
   for (const p of P) {
@@ -465,6 +492,75 @@ export function batchCells(sp, material) {
   return bm;
 }
 
+// ------------------------------------------------------------------------------------------------- wall packs (P4)
+// lighting #2: a 2700 K, 1,500 lm full-cutoff wall pack over every corner face (lotInfo edges that face a second street)
+// and every shuttered front, at 4.35 m (above the 2.9-4.0 m sign bed), placed clear of the 2F windows and of every sign
+// record on that wall (as near the face's middle as that allows). Pure CPU: records (kind 'street', role 'wallpack', a
+// type-II lobe thrown off the wall) + fixture boxes for wallPackMesh(). Deterministic (no RNG).
+export const WALLPACK = { lumens: 1500, cct: 2700, rgb: [1.558, 0.902, 0.331], y: 4.35, w: 0.3, h: 0.12, every: 12, clearW: 0.45, clearS: 0.6 };
+export function wallPacks(lotInfo, emitters = [], P = WALLPACK) {
+  const out = [], vals = !lotInfo ? [] : lotInfo instanceof Map ? [...lotInfo.values()] : Object.values(lotInfo);
+  // sign rects near a wall: bucket the emitters by 8 m cell for the clearance test
+  const B = new Map(), key = (x, z) => (Math.floor(x / 8) + 4096) * 8192 + (Math.floor(z / 8) + 4096);
+  for (const e of emitters) { if (!e?.pos || e.kind === 'vehicle' || e.dynamic || e.moving) continue; const k = key(e.pos[0], e.pos[2]); if (!B.has(k)) B.set(k, []); B.get(k).push(e); }
+  const nearby = (x, z) => { const r = []; for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) { const b = B.get(key(x + i * 8, z + j * 8)); if (b) r.push(...b); } return r; };
+  const BW = new Map(); for (const info of vals) for (const w of info.windows || []) { if (w.f !== 1) continue; const k = key(w.c[0], w.c[2]); if (!BW.has(k)) BW.set(k, []); BW.get(k).push(w); }   // 2F windows of every lot (a neighbour's too)
+  const nearWin = (x, z) => { const r = []; for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) { const b = BW.get(key(x + i * 8, z + j * 8)); if (b) r.push(...b); } return r; };
+  const nits = Math.round(P.lumens / (Math.PI * P.w * P.h));
+  for (const info of vals) {
+    for (const ed of info.edges || []) {
+      const want = ed.streetSide && ed.open ? Math.max(1, Math.floor(ed.L / P.every)) : ed.front && info.shutter ? 1 : 0;
+      if (!want || ed.L < 2.4) continue;
+      const wins = (info.windows || []).filter((w) => w.f === 1 && w.n[0] * ed.nx + w.n[2] * ed.nz > 0.9);
+      const signs = nearby((ed.a[0] + ed.b[0]) / 2, (ed.a[1] + ed.b[1]) / 2).filter((e) => { const n = e.normal || [0, 0, 1]; const off = (e.pos[0] - ed.a[0]) * ed.nx + (e.pos[2] - ed.a[1]) * ed.nz; return off > -0.2 && off < 1.6 && n[0] * ed.nx + n[2] * ed.nz > 0.5; });
+      const ok = (t) => {
+        for (const w of wins) { const s = (w.c[0] - ed.a[0]) * ed.tx + (w.c[2] - ed.a[1]) * ed.tz; if (Math.abs(s - t) < w.w / 2 + P.clearW && Math.abs(w.c[1] - P.y) < w.h / 2 + 0.25) return false; }
+        for (const e of signs) { const s = (e.pos[0] - ed.a[0]) * ed.tx + (e.pos[2] - ed.a[1]) * ed.tz, hw = (e.w || 0.5) / 2, hh = (e.h || 0.5) / 2; if (Math.abs(s - t) < hw + P.clearS && Math.abs(e.pos[1] - P.y) < hh + 0.3) return false; }
+        { const x = ed.a[0] + ed.tx * t, z = ed.a[1] + ed.tz * t; for (const w of nearWin(x, z)) if (Math.hypot(w.c[0] - x, w.c[2] - z) < w.w / 2 + P.clearW && Math.abs(w.c[1] - P.y) < w.h / 2 + 0.25) return false; }   // a neighbour's window, a corner's other face
+        return true;
+      };
+      for (let q = 0; q < want; q++) {
+        const c = ed.L * (q + 0.5) / want; let best = null;
+        for (let d = 0; d <= ed.L / want / 2; d += 0.25) { for (const t of [c - d, c + d]) if (t > 0.8 && t < ed.L - 0.8 && ok(t)) { best = t; break; } if (best != null) break; }
+        if (best == null) continue;
+        const x = ed.a[0] + ed.tx * best + ed.nx * 0.24, z = ed.a[1] + ed.tz * best + ed.nz * 0.24;
+        out.push({ id: `wallpack:${info.id}:${out.length}`, pos: [+x.toFixed(2), P.y, +z.toFixed(2)], normal: [0, -1, 0], forward: [+ed.nx.toFixed(3), 0, +ed.nz.toFixed(3)], w: P.w, h: P.h,
+          rgb: P.rgb, nits, kind: 'street', role: 'wallpack', animated: false, lumens: P.lumens, cct: P.cct, lot: info.id, range: 22 });
+      }
+    }
+  }
+  return out;
+}
+// the fixtures: one housing mesh (patched by attach: lit like the walls) and one lens mesh (unlit, at the record's nits)
+function wallPackMesh(list, NS) {
+  if (!list.length) return null;
+  const hp = [], hn = [], lp = [], lc = [];
+  const box = (c, t, n, w, h, d) => {   // 5 faces (no back): centre c, tangent t, outward n
+    const u = [t[0] * w / 2, 0, t[2] * w / 2], v = [0, h / 2, 0], o = [n[0] * d / 2, 0, n[2] * d / 2];
+    const P = (a, b, s) => [c[0] + u[0] * a + o[0] * s, c[1] + v[1] * b, c[2] + u[2] * a + o[2] * s];
+    const quad = (A, Bq, C, D, nn) => { for (const p of [A, Bq, C, A, C, D]) { hp.push(...p); hn.push(...nn); } };
+    quad(P(-1, -1, 1), P(1, -1, 1), P(1, 1, 1), P(-1, 1, 1), n);                        // front
+    quad(P(-1, 1, 1), P(1, 1, 1), P(1, 1, -1), P(-1, 1, -1), [0, 1, 0]);               // top
+    quad(P(-1, -1, -1), P(1, -1, -1), P(1, -1, 1), P(-1, -1, 1), [0, -1, 0]);          // bottom (the lens sits under it)
+    quad(P(1, -1, 1), P(1, -1, -1), P(1, 1, -1), P(1, 1, 1), t);                       // +t side
+    quad(P(-1, -1, -1), P(-1, -1, 1), P(-1, 1, 1), P(-1, 1, -1), [-t[0], 0, -t[2]]);   // -t side
+  };
+  for (const e of list) {
+    const n = e.forward, t = [-n[2], 0, n[0]], c = [e.pos[0] - n[0] * 0.08, e.pos[1] + 0.1, e.pos[2] - n[2] * 0.08];
+    box(c, t, n, 0.36, 0.2, 0.3);
+    const y = e.pos[1] - 0.005, hw = e.w / 2, hd = e.h / 2, Q = (a, b) => [e.pos[0] + t[0] * a + n[0] * b, y, e.pos[2] + t[2] * a + n[2] * b];
+    for (const p of [Q(-hw, -hd), Q(hw, hd), Q(hw, -hd), Q(-hw, -hd), Q(-hw, hd), Q(hw, hd)]) lp.push(...p);
+    const L = e.nits * NS; for (let k = 0; k < 6; k++) lc.push(e.rgb[0] * L, e.rgb[1] * L, e.rgb[2] * L);
+  }
+  const hg = new THREE.BufferGeometry(); hg.setAttribute('position', new THREE.Float32BufferAttribute(hp, 3)); hg.setAttribute('normal', new THREE.Float32BufferAttribute(hn, 3));
+  const housing = new THREE.Mesh(hg, new THREE.MeshStandardMaterial({ color: new THREE.Color(0.08, 0.08, 0.085), roughness: 0.55, metalness: 0.3 }));
+  const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3)); lg.setAttribute('color', new THREE.Float32BufferAttribute(lc, 3));
+  const lens = new THREE.Mesh(lg, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, toneMapped: false }));
+  housing.name = 'seoul.wallpack'; lens.name = 'seoul.wallpack.lens';
+  for (const m of [housing, lens]) { m.matrixAutoUpdate = false; m.updateMatrix(); m.geometry.computeBoundingSphere(); }
+  return { housing, lens };
+}
+
 // ------------------------------------------------------------------------------------------------- build
 export function attach(world, emitters = [], ctx = {}) {
   const T00 = (globalThis.performance || Date).now(), now = () => (globalThis.performance || Date).now();
@@ -475,6 +571,9 @@ export function attach(world, emitters = [], ctx = {}) {
   const Q = { ...(QUALITY[ctx.quality] || QUALITY.auto), ...(ctx.K ? { K: ctx.K } : {}) };
   const cell = ctx.cell || 4;
   const OM = omega();
+  // P4 lighting #2: wall packs join the caller's emitter list (world.emitters: the native export sees them too)
+  const packs = ctx.wallPacks === false || !ctx.lotInfo || !Array.isArray(emitters) ? [] : wallPacks(ctx.lotInfo, emitters, ctx.wallPack || WALLPACK);
+  if (packs.length) emitters.push(...packs);
   const all = (emitters || []).filter((e) => e && e.pos);
   const isMov = (e) => !!(e.kind === 'vehicle' || e.dynamic || e.moving);
   const isAnim = (e) => !!e.animated && !isMov(e);
@@ -539,6 +638,9 @@ export function attach(world, emitters = [], ctx = {}) {
     let hl = 0; if (ty === LT.lambert) { const w = e.w || 0.5, h = e.h || 0.5, lo = Math.max(w, h), sh = Math.min(w, h); if (lo - sh > 0.5) hl = (w >= h ? 1 : -1) * (lo - sh) / 2; }
     m.x = e.pos[0]; m.y = e.pos[1]; m.z = e.pos[2]; m.A = A; m.omni = e.omni ?? T.omni; m.n = n; m.I = I; m.range = range; m.ty = ty; m.peak = peak; m.flick = e.flicker;
     m.hl = hl; m.a = Math.abs(hl);
+    // P4 spill (Lambert faces only): records' own e.spill, else the type's for a ground-floor fascia (box bottom under 3.4 m)
+    m.down = ty !== LT.lambert ? 0 : Math.max(0, Math.min(0.3, e.spill ?? (T.spill && Math.abs(n[1]) < 0.3 && e.pos[1] - (e.h || 0.5) / 2 < 3.4 ? T.spill : 0)));
+    m.down = Math.round(m.down * 10) / 10;
     if (hl > 0) { const tl = Math.hypot(n[2] + 1e-5, n[0]); m.tx = (n[2] + 1e-5) / tl; m.ty_ = 0; m.tz = -n[0] / tl; } else { m.tx = 0; m.ty_ = 1; m.tz = 0; }
     return m;
   }
@@ -551,7 +653,7 @@ export function attach(world, emitters = [], ctx = {}) {
     if (d2 >= m.range * m.range) return 0;
     const d = Math.sqrt(d2), ux = lx / d, uy = ly / d, uz = lz / d; L3[0] = ux; L3[1] = uy; L3[2] = uz;
     let fe;
-    if (m.ty === LT.lambert) { const ce = -(ux * m.n[0] + uy * m.n[1] + uz * m.n[2]); fe = Math.max(ce, 0) * (1 - m.omni) + (0.55 + 0.45 * ce) * m.omni; }
+    if (m.ty === LT.lambert) { const ce = -(ux * m.n[0] + uy * m.n[1] + uz * m.n[2]); fe = Math.max(ce, 0) * (1 - m.omni) + (0.55 + 0.45 * ce) * m.omni + m.down * Math.max(0.857 * uy + 0.515 * ce, 0); }
     else if (m.ty === LT.street) fe = lobeStreet(-ux, -uy, -uz, m.n[0], m.n[2]);
     else fe = lobeBeam(-ux, -uy, -uz, m.n[0], m.n[2]);
     if (fe <= 0) return 0;
@@ -563,13 +665,13 @@ export function attach(world, emitters = [], ctx = {}) {
     }
     return fe * q * q / (d2 + m.A * 0.3183);
   }
-  function pack(m, u32, i, ci = 0) {   // misc: lobe 2 | colour index 14 | flicker hz x4 6 | depth x15 4 | omni x63 6
+  function pack(m, u32, i, ci = 0) {   // misc: lobe 2 | colour index 12 | spill x10 2 | flicker hz x4 6 | depth x15 4 | omni x63 6
     const k = ((i >> 8) * LW * 2 + (i & (LW - 1)) * 2) * 4;
     let hz = Math.min(63, Math.round((m.flick?.hz || 0) * 4)), dep = Math.min(15, Math.round(Math.min(1, m.flick?.depth || 0) * 15));
     if (!hz || !dep) hz = dep = 0;
     u32[k] = fbits(m.x); u32[k + 1] = fbits(m.y); u32[k + 2] = fbits(m.z); u32[k + 3] = h2(m.A, m.hl);
     u32[k + 4] = oct(m.n[0], m.n[1], m.n[2]); u32[k + 5] = h2(m.I[0], m.I[1]); u32[k + 6] = h2(m.I[2], m.range);
-    u32[k + 7] = (m.ty | (ci << 2) | (hz << 16) | (dep << 22) | (Math.min(63, Math.round(m.omni * 63)) << 26)) >>> 0;
+    u32[k + 7] = (m.ty | (Math.min(4095, ci) << 2) | (Math.min(3, Math.round((m.down || 0) * 10)) << 14) | (hz << 16) | (dep << 22) | (Math.min(63, Math.round(m.omni * 63)) << 26)) >>> 0;
   }
   const recTex = (n, extra = 0) => {
     const w = LW * 2, h = Math.max(1, Math.ceil(n / LW)) + extra;
@@ -714,6 +816,7 @@ export function attach(world, emitters = [], ctx = {}) {
   const EgL = blurR.map((r) => { if (!blurs.has(r)) blurs.set(r, blur(Eg, r)); return blurs.get(r); }); marks.blur = +(now() - tV0).toFixed(0);
   const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.zenith[j] + NIGHT_SKY.horizon[j]) * NS * Math.PI);   // pi L of the dome
   const skyLum = lumaOf(skyL);
+  const cityF = new Float32Array(NL * 3); { const CL = ctx.cityLux ?? VOLUME.cityLux, cr = VOLUME.cityRGB, cl = lumaOf(cr); for (let k = 0; k < NL; k++) for (let j = 0; j < 3; j++) cityF[k * 3 + j] = (CL[k] ?? CL[CL.length - 1]) * NS * cr[j] / cl; }
   const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4), ok = new Uint8Array(NP);
   const VI = new Float32Array(NP * 4);   // P3: the indirect part alone (bounce, windows, sky) + its vertical L1, for the lightmap bake
   const oo = new Float32Array(NL), cc = new Float32Array(NL);
@@ -740,6 +843,8 @@ export function attach(world, emitters = [], ctx = {}) {
       a0 += wn * VOLUME.windowRGB[0]; a1 += wn * VOLUME.windowRGB[1]; a2 += wn * VOLUME.windowRGB[2];
       // sky: an upper hemisphere through the horizon
       a0 += oo[k] * skyL[0] / 2; a1 += oo[k] * skyL[1] / 2; a2 += oo[k] * skyL[2] / 2; by += oo[k] * skyLum / 2;
+      // P4: the urban ambient floor (isotropic: every face of every orientation gets cityLux)
+      a0 += cityF[k * 3]; a1 += cityF[k * 3 + 1]; a2 += cityF[k * 3 + 2];
       const al = Math.max(1e-7, LUMA[0] * a0 + LUMA[1] * a1 + LUMA[2] * a2);
       VA[p * 4] = a0; VA[p * 4 + 1] = a1; VA[p * 4 + 2] = a2; VA[p * 4 + 3] = 4 * tal + oo[k] * skyLum;   // haze fluence
       // direction / ambient, clamped (|b|/a <= 2 is a single delta source)
@@ -770,7 +875,7 @@ export function attach(world, emitters = [], ctx = {}) {
       for (let i = 0; i < na; i++) { const p = addP[i], o = i * 12; for (let j = 0; j < 4; j++) { VA[p * 4 + j] = addV[o + j]; VB[p * 4 + j] = addV[o + 4 + j]; VI[p * 4 + j] = addV[o + 8 + j]; } ok[p] = 1; }
       if (!na) break;
     } }
-  for (let p = 0; p < NP; p++) if (!ok[p]) { VA[p * 4] = skyL[0] * 0.1; VA[p * 4 + 1] = skyL[1] * 0.1; VA[p * 4 + 2] = skyL[2] * 0.1; VB[p * 4 + 1] = 1; VB[p * 4 + 3] = 1; }
+  for (let p = 0; p < NP; p++) if (!ok[p]) { const k = p % NL; VA[p * 4] = skyL[0] * 0.1 + cityF[k * 3]; VA[p * 4 + 1] = skyL[1] * 0.1 + cityF[k * 3 + 1]; VA[p * 4 + 2] = skyL[2] * 0.1 + cityF[k * 3 + 2]; VB[p * 4 + 1] = 0.1; VB[p * 4 + 3] = 1; VI[p * 4] = VA[p * 4]; VI[p * 4 + 1] = VA[p * 4 + 1]; VI[p * 4 + 2] = VA[p * 4 + 2]; }
   marks.fill = +(now() - tV0).toFixed(0);
   const vol3 = (src) => {   // [cz][cx][k] -> 3D texture (x = cx, y = cz, z = layer)
     const d = new Uint16Array(NP * 4);
@@ -787,12 +892,17 @@ export function attach(world, emitters = [], ctx = {}) {
 
   // ------------------------------------------------------------------------------------- night lightmap (P3 lighting #3)
   // seoul-nightlm.js bakes every static emitter (no K limit, heightfield-occluded) + the volume's indirect onto the
-  // ground (0.5 m) and the exposed walls (0.5 m atlas). Browser: in a module Worker, so the level opens on the volume and
-  // the lightmap fades in when it lands (~1-3 s); node / ctx.lightmapSync: in line. ctx.lightmap === false: off.
-  const half4 = (w, h, data) => { const t = new THREE.DataTexture(data || new Uint16Array(w * h * 4), w, h, THREE.RGBAFormat, THREE.HalfFloatType);
-    t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.generateMipmaps = false; t.needsUpdate = true; return t; };
-  let tLM = half4(1, 1);
+  // ground (0.5 m) and the exposed walls (0.5 m atlas). P4 perf #3: the browser first fetches the shipped bake
+  // (NIGHT_LM.file, written by `node tools/bakelm.mjs --night`) and uses it when its key matches this build's inputs
+  // (lmKey: emitters, layout, model constants); else, or if it can't be read in `fileTimeout` s, it bakes in a module
+  // Worker (killed after `workerTimeout` s: the volume stays). Node / ctx.lightmapSync: in line. ctx.lightmap === false:
+  // off. P4 perf #5: RGB9E5 (4 bytes a texel; was RGBA16F, 8): 14 MB, not 28. ctl.lightmapReady resolves true / false.
+  const rgb9 = (w, h, data) => { const t = new THREE.DataTexture(data || new Uint32Array(w * h), w, h, THREE.RGBFormat, THREE.UnsignedInt5999Type);
+    t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.generateMipmaps = false; t.unpackAlignment = 4; t.needsUpdate = true; return t; };
+  let tLM = rgb9(1, 1);
   const uLM = { value: new THREE.Vector4(0, NIGHT_LM.gres, NIGHT_LM.fres, NIGHT_LM.near) }, uLMG = { value: new THREE.Vector4() }, uLMA = { value: new THREE.Vector4(1, 1, 1, 1) }, uLMR = { value: new THREE.Vector4(LMR0, LMR1, 0, 0) };
+  lm.whenReady = new Promise((r) => { lm.settle = r; });
+  if (!lm.on) lm.settle(false);
   if (lm.on) {
     const plan = lmPlan;
     const cs = new Int32Array(NC + 1); for (let q = 0; q < pairs; q++) cs[pc[q] + 1]++; for (let c = 0; c < NC; c++) cs[c + 1] += cs[c];
@@ -800,27 +910,65 @@ export function attach(world, emitters = [], ctx = {}) {
     for (let q = 0; q < pairs; q++) { const o = fillc[pc[q]]++; pe[o] = pi[q]; po[o] = pb[q]; }
     const M = new Float32Array(stat.length * LM_MS);
     metas.forEach((m, i) => packMeta(m, M, i, i >= animBase || (m.flick?.hz > 0 && m.flick?.depth > 0) ? 1 : 0));   // screens and flicker stay per fragment
-    const job = { plan: { ...plan, raster: null }, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI };
+    // the key: everything the bake reads (the volume's indirect is a function of the same inputs and constants)
+    const tK = now();
+    lm.key = lmKey({ consts: { v: NIGHT_LM.version, NIGHT_LM: { ...NIGHT_LM, file: 0 }, VOLUME, NIGHT_SKY, HAZE, SOURCE_TYPES, OMEGA, E_MIN, NS }, M, n: stat.length, layout: ctx.layout, grid: [x0, z0, cell, gw, gh, plan.atlasW, plan.atlasH, plan.nE] });
+    lm.keyMs = +(now() - tK).toFixed(1);
+    let job = { plan: { ...plan, raster: null }, M, cs, pe, po, grid: { x0, z0, cell, gw, gh }, YS, H: { H: HF.H.slice(), nx: HF.nx, nz: HF.nz, res: HF.res, x0: HF.x0, z0: HF.z0 }, VI };
     uLMG.value.set(plan.x0, plan.z0, plan.gw, plan.gh); uLMA.value.set(plan.atlasW, plan.atlasH, plan.rw, plan.rh);
     lm.plan = { edges: plan.nE, atlas: [plan.atlasW, plan.atlasH], ground: [plan.gw, plan.gh], planMs: +lmPlanMs.toFixed(0) };
-    const apply = (res) => {
-      if (!res?.atlas || lm.disposed) return;
-      tLM.dispose(); tLM = half4(plan.atlasW, plan.atlasH, res.atlas); lm.data = res.atlas;
-      U.tCityLM.value = tLM; uLM.value.x = 1;
-      lm.ready = true; lm.ms = res.ms; lm.texels = res.texels;
-    };
+    lm.size = [plan.atlasW, plan.atlasH];
     const IS_NODE = typeof window === 'undefined';
+    const apply = (res) => {   // res: { data: RGB9E5 Uint32Array (atlasW x atlasH), texels, ms, valid? }
+      if (lm.ready) return true;
+      if (!res?.data || lm.disposed || res.data.length !== plan.atlasW * plan.atlasH) return false;
+      tLM.dispose(); tLM = rgb9(plan.atlasW, plan.atlasH, res.data); lm.data = res.data; lm.valid = res.valid || null;
+      // P4 perf #5: in the browser the CPU copy (14 MB) goes once the GPU has it (lightmapAt then answers null);
+      // node and ctx.keepLightmapData keep it (tests, the bake tool)
+      if (renderer && !IS_NODE && ctx.keepLightmapData !== true) { const t = tLM; t.onUpdate = () => { t.image.data = null; t.onUpdate = null; if (lm.data === res.data) { lm.data = null; lm.valid = null; } }; }
+      U.tCityLM.value = tLM; uLM.value.x = 1;
+      lm.ready = true; lm.ms = res.ms; lm.texels = res.texels; job = null; lm.settle(true);
+      return true;
+    };
+    const fail = (mode, why) => { if (lm.ready || lm.disposed) return; lm.mode = mode; console.warn(`[D] night lightmap: ${why}; the volume stays`); job = null; lm.settle(false); };
     lm.apply = apply;
-    if (ctx.lightmapSync || IS_NODE || typeof Worker === 'undefined') { lm.mode = 'sync'; lm.pending = bakeLM(job); }   // applied once U exists
-    else {
+    function startWorker(why) {
+      if (lm.disposed || lm.ready || !job || lm.worker) return;
       try {
-        lm.mode = 'worker';
+        lm.mode = 'worker'; lm.why = why; const t0 = now();
         const w = lm.worker = new Worker(new URL('./seoul-nightlm-worker.js', import.meta.url), { type: 'module' });
-        w.onmessage = (ev) => { apply(ev.data); w.terminate(); lm.worker = null; };
-        w.onerror = (e) => { console.warn('[D] night lightmap worker failed; the volume stays', e?.message || e); w.terminate(); lm.worker = null; lm.mode = 'failed'; };
+        const kill = lm.kill = setTimeout(() => { w.terminate(); lm.worker = null; fail('timeout', `the worker bake ran past ${ctx.lightmapWorkerTimeout ?? 60} s`); }, (ctx.lightmapWorkerTimeout ?? 60) * 1000);
+        w.onmessage = (ev) => { clearTimeout(kill); w.terminate(); lm.worker = null; if (lm.ready) return; if (apply({ ...ev.data, ms: Math.round(now() - t0) })) lm.mode = 'worker'; else fail('failed', 'the worker sent a malformed map'); };
+        w.onerror = (e) => { clearTimeout(kill); w.terminate(); lm.worker = null; fail('failed', 'worker error ' + (e?.message || e)); };
         w.postMessage(job, [job.M.buffer, job.cs.buffer, job.pe.buffer, job.po.buffer, job.H.H.buffer]);
-      } catch (e) { console.warn('[D] no lightmap worker', e); lm.mode = 'failed'; }
+      } catch (e) { fail('failed', 'no worker (' + (e?.message || e) + ')'); }
     }
+    async function fromFile() {   // the shipped bake. A miss starts the worker; so does a slow file (lightmapFileTimeout s),
+      // without cancelling the fetch: whichever lands first is applied (a main thread blocked by shader compiles made a
+      // 15 s abort fire on a file that had arrived: browser run P4-2)
+      const t0 = now();
+      const slow = setTimeout(() => { if (!lm.ready && !lm.disposed && !lm.worker) { lm.fileSlow = true; startWorker(`file slower than ${ctx.lightmapFileTimeout ?? 30} s`); } }, (ctx.lightmapFileTimeout ?? 30) * 1000);
+      try {
+        const r = await fetch(new URL(ctx.lightmapFile || NIGHT_LM.file, import.meta.url));
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const F = lmFileHeader(await r.arrayBuffer()); if (!F) throw new Error('not a night-lm file');
+        lm.fileKey = F.header.key;
+        if (F.header.key !== lm.key || F.header.w !== plan.atlasW || F.header.h !== plan.atlasH) throw new Error(`stale (file key ${F.header.key}, this build ${lm.key}: re-run node tools/bakelm.mjs --night)`);
+        if (typeof DecompressionStream === 'undefined') throw new Error('no DecompressionStream');
+        const planes = new Uint8Array(await new Response(new Blob([F.payload]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+        if (planes.length !== plan.atlasW * plan.atlasH * 4) throw new Error('payload size ' + planes.length);
+        clearTimeout(slow);
+        if (lm.ready || lm.disposed) return;   // the worker won
+        if (apply({ data: lmUnplanes(planes, plan.atlasW, plan.atlasH), texels: F.header.texels, ms: Math.round(now() - t0) })) {
+          lm.mode = 'file'; lm.fileBytes = F.header.bytes;
+          if (lm.worker) { clearTimeout(lm.kill); lm.worker.terminate(); lm.worker = null; }
+        }
+      } catch (e) { clearTimeout(slow); if (!lm.disposed && !lm.ready) { lm.fileMiss = String(e?.message || e); console.info('[D] night lightmap file:', lm.fileMiss, '-> worker bake'); if (!lm.worker) startWorker('file: ' + lm.fileMiss); } }
+    }
+    if (ctx.lightmapSync || IS_NODE || typeof Worker === 'undefined') {   // applied once U exists
+      lm.mode = 'sync'; const r = bakeLM(job), p = packLM(r.atlas, plan.atlasW, plan.atlasH); lm.pending = { data: p.data, valid: p.valid, texels: r.texels, ms: r.ms };
+    } else if (ctx.lightmapFile !== false && typeof fetch === 'function') { lm.mode = 'file?'; fromFile(); }
+    else startWorker('no file');
   }
   // volume statistics (exterior probes at 0.5 m on streets): irradiance on an up and a side face, lux
   const volStat = (() => { let n = 0, up = 0, side = 0; for (let c = 0; c < NC; c++) { if (!roadMask[c] || inner[c * NL]) continue; const p = c * NL; const a = lumaOf([VA[p * 4], VA[p * 4 + 1], VA[p * 4 + 2]]); up += a * Math.max(0, 1 + VB[p * 4 + 1]); side += a; n++; } return { streetProbes: n, upLux: +(up / Math.max(1, n) / NS).toFixed(2), sideLux: +(side / Math.max(1, n) / NS).toFixed(2) }; })();
@@ -839,7 +987,7 @@ export function attach(world, emitters = [], ctx = {}) {
     uCityAO: aoU?.uAO || { value: blackTex }, uCityAOOn: aoU?.uAOOn || { value: 0 }, uCityAOScale: aoU?.uAOScale || { value: new THREE.Vector2(1, 1) },
     uCityCar: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uCityCarS: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) },
     uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, uCityLMR: uLMR, tCityLM: { value: tLM },
-    tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
+    tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityDamp: { value: ctx.damp ?? 0.3 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
   if (lm.pending) { lm.apply(lm.pending); lm.pending = null; }
@@ -850,15 +998,23 @@ export function attach(world, emitters = [], ctx = {}) {
     if (!mat || patched.has(mat) || !(mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) || mat.userData.cityLight === false) return false;
     patched.add(mat);
     const wet = !!(opt.wet ?? mat.userData.wet);
+    let paver = false;   // set per program: C's atlas ground shader (sgLi = the layer) gets damp pavers
     const prevOBC = mat.onBeforeCompile, prevKey = mat.customProgramCacheKey;
     mat.onBeforeCompile = function (sh, r) {
       if (prevOBC) prevOBC.call(this, sh, r);
       Object.assign(sh.uniforms, U);
+      paver = wet && /\bsgLi\b/.test(sh.fragmentShader) && /tCityDiff/.test(sh.fragmentShader);
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${CITY_HEAD}${wet ? WET_HEAD : ''}`)
         .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>
   vec3 cityNW = normalize(transpose(mat3(viewMatrix)) * geometryNormal), cityLMv;
   cityLMOn = cityLightmap(cityWorldPos(geometryPosition), cityNW, cityLMv);
+  // P4 (graphics #5, detail in the darks): the lightmap is irradiance on the flat face; the normal and detail maps tilt
+  // it by the volume's L1 gradient (E(n) / E(n0), clamped), so pavers, brick and render keep their relief where only
+  // baked light falls
+  if (cityLMOn) { vec3 cb = texture(tCityIrrB, cityVolUVW(cityWorldPos(geometryPosition))).xyz, cn0 = normalize(transpose(mat3(viewMatrix)) * nonPerturbedNormal);
+    cityLMv *= clamp(max(0.0, 1.0 + dot(cb, cityNW)) / max(0.3, 1.0 + dot(cb, cn0)), 0.4, 1.6); }
+  ${wet ? 'material.roughness = mix(mix(material.roughness, max(0.3, material.roughness * 0.6), smoothstep(0.0, 0.35, cityWet)), 0.12, cityPud / max(uCityWet, 1e-3));   // P4: wet = glossy (film 0.3-0.4, puddles 0.12)' : ''}
   cityLights(geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
   ${wet ? `float cityCC = cityContact(cityWorldPos(geometryPosition)); reflectedLight.directDiffuse *= mix(1.0, cityCC, 0.75); reflectedLight.directSpecular *= mix(1.0, cityCC, 0.75);` : 'float cityCC = 1.0;'}
   #if defined( RE_IndirectDiffuse )
@@ -870,8 +1026,9 @@ export function attach(world, emitters = [], ctx = {}) {
           .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
   { vec3 wpw = cityWorldPos(-vViewPosition);
     float pn = cityNoise(wpw.xz * 0.21) * 0.6 + cityNoise(wpw.xz * 0.83 + 7.1) * 0.3 + cityNoise(wpw.xz * 3.1) * 0.1;
-    cityWet = uCityWet * smoothstep(0.38, 0.62, pn);                               // puddles + damp film
-    cityWet = max(cityWet, uCityWet * 0.35);
+    ${paver ? 'bool cityPaver = sgLi > 0;' : 'bool cityPaver = false;'}                   // P4 lighting #5: C's ground layers (0 asphalt, 1-2 pavers)
+    cityPud = uCityWet * (cityPaver ? smoothstep(0.63, 0.70, pn) : smoothstep(0.38, 0.62, pn));   // puddles: ~50 % of the asphalt, ~15 % of the pavers
+    cityWet = max(cityPud, cityPaver ? uCityDamp : uCityWet * 0.35);                 // + the damp film
     diffuseColor.rgb *= mix(1.0, 0.55, cityWet); }                                  // wet asphalt darkens`)
           .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
   { vec3 wpw = cityWorldPos(-vViewPosition);
@@ -884,7 +1041,7 @@ export function attach(world, emitters = [], ctx = {}) {
     totalEmissiveRadiance += texture(tCityMirror, muv).rgb * (F * cityWet * inb); }`);
       }
     };
-    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW3' : '|city3'); };
+    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW4' : '|city4'); };
     mat.needsUpdate = true;
     return true;
   }
@@ -904,7 +1061,9 @@ export function attach(world, emitters = [], ctx = {}) {
       cull.from++; cull.vertsBefore += sp.srcVertices; cull.vertsAfter += sp.vertices;
       const ud = { ...o.userData, seoulKey: o.name.slice(6) };
       if (batch) {
-        const tb = now(), bm = batchCells(sp, o.material); cull.tBatch = (cull.tBatch || 0) + now() - tb;
+        const qN = !!renderer && ctx.quantize !== false && !/glass|lamp|glow/.test(o.name);   // P4 perf #5 (the GPU path only: node exports keep floats)
+        const tb = now(), bm = batchCells(sp, o.material, { qNormal: qN }); cull.tBatch = (cull.tBatch || 0) + now() - tb;
+        if (qN && sp.attributes.normal) cull.normalBytesSaved = (cull.normalBytesSaved || 0) + sp.vertices * 8;
         bm.name = o.name; bm.userData = { ...ud, ...bm.userData, cells: sp.parts.length };
         bm.receiveShadow = o.receiveShadow; bm.castShadow = o.castShadow; bm.renderOrder = o.renderOrder;
         if (o.frustumCulled === false) { bm.frustumCulled = false; bm.perObjectFrustumCulled = false; }
@@ -963,6 +1122,9 @@ export function attach(world, emitters = [], ctx = {}) {
     cull.ms = +(now() - tc0).toFixed(0);
   }
 
+  // P4: the wall-pack fixtures (housings are patched below with the city)
+  const packMesh = scene ? wallPackMesh(packs, NS) : null;
+  if (packMesh) scene.add(packMesh.housing, packMesh.lens);
   // patch every world material (after the split: same materials)
   let nMat = 0, nWet = 0;
   scene.traverse((o) => {
@@ -1144,7 +1306,7 @@ export function attach(world, emitters = [], ctx = {}) {
   all.forEach((e, i) => { const m = allMeta.get(e) || meta(e); const [I, c] = glowOf(e, m); airI[i] = I; airCol[i] = c; });
   // P3 lighting #5: no source's airlight outshines lampCap x a street lamp's in any channel (the brightest channel of a
   // luminance-normalised blue is 7-14x its luminance: that made the violet clouds)
-  { const ref = []; all.forEach((e, i) => { if (e.kind === 'street' && airI[i] > 0) ref.push(airI[i] * Math.max(...airCol[i])); });
+  { const ref = []; all.forEach((e, i) => { if (e.kind === 'street' && e.role !== 'wallpack' && airI[i] > 0) ref.push(airI[i] * Math.max(...airCol[i])); });
     ref.sort((a, b) => a - b); const cap = (ctx.airLampCap ?? AIRLIGHT.lampCap) * (ref.length ? ref[ref.length >> 1] : 100);
     let nc = 0; all.forEach((e, i) => { const pk = airI[i] * Math.max(...airCol[i]); if (pk > cap) { airI[i] *= cap / pk; nc++; } });
     air.cap = +cap.toFixed(1); air.capped = nc; }
@@ -1188,7 +1350,7 @@ export function attach(world, emitters = [], ctx = {}) {
       if (isMov(e) || isAnim(e)) { if (!(e.nits > 0)) continue; if (isAnim(e)) I *= Math.min(1, e.nits / Math.max(1, (e.nitsMax ?? SOURCE_TYPES.screen.nits))); }
       const d = Math.hypot(e.pos[0] - camPos.x, e.pos[1] - camPos.y, e.pos[2] - camPos.z);
       if (d < AIRLIGHT.nearM) continue;
-      I *= sstep(AIRLIGHT.nearM, AIRLIGHT.nearM + AIRLIGHT.fadeM, d);              // fades in past nearM
+      I *= sstep(AIRLIGHT.nearM, AIRLIGHT.nearM + AIRLIGHT.fadeM, d) * (AIRLIGHT.nearGain + (1 - AIRLIGHT.nearGain) * sstep(AIRLIGHT.nearM + AIRLIGHT.fadeM, AIRLIGHT.fullM, d));   // P4: in past nearM at nearGain, full by fullM
       const R = Math.min(AIRLIGHT.maxR, 0.4 * d + 0.5, sig * I / (8 * minL));
       if (R < 0.2) continue;
       const hmin = Math.max(0.08, 0.5 * Math.sqrt(m ? m.A : (e.w || 0.5) * (e.h || 0.5)));
@@ -1418,8 +1580,8 @@ export function attach(world, emitters = [], ctx = {}) {
     emitters: all.length, static: still.length, animated: nAnim, moving: nMov, dynamicSlots: Q.Nd, grid: [gw, gh, cell], K, Kd: KD,
     binMs: +binMs.toFixed(1), volMs: +volMs.toFixed(1), attachMs: 0, pairs, occludedPairs: occl,
     cells: cellsUsed, mean: +(used / Math.max(1, cellsUsed)).toFixed(2), full, volume: volStat,
-    materials: nMat, wetMaterials: nWet, mirror: mirror.on, cull: { meshes: cull.meshes, from: cull.from, batched: cull.batch ? cull.batches.length : 0, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
-    get lightmap() { return { mode: lm.mode, ready: lm.ready, ms: lm.ms, texels: lm.texels, ...(lm.plan || {}) }; },
+    materials: nMat, wetMaterials: nWet, mirror: mirror.on, wallPacks: packs.length, cull: { normalMBSaved: +((cull.normalBytesSaved || 0) / 1048576).toFixed(1), meshes: cull.meshes, from: cull.from, batched: cull.batch ? cull.batches.length : 0, vertsBefore: cull.vertsBefore, vertsAfter: cull.vertsAfter, colliderCells: cull.col, ms: cull.ms, cell: cull.cell },
+    get lightmap() { return { mode: lm.mode, ready: lm.ready, ms: lm.ms, texels: lm.texels, key: lm.key, keyMs: lm.keyMs, ...(lm.fileKey ? { fileKey: lm.fileKey } : {}), ...(lm.fileMiss ? { fileMiss: lm.fileMiss } : {}), ...(lm.why ? { why: lm.why } : {}), format: 'RGB9E5', gpuMB: lm.size ? +(lm.size[0] * lm.size[1] * 4 / 1048576).toFixed(1) : 0, ...(lm.plan || {}) }; },
     pools: !!pool.mesh, airlight: air.n, airCap: air.cap, airCapped: air.capped, update: uStats, marks,
   };
   function exportData() {   // native #2: the model (exportParams) + this level's grid and baked volume
@@ -1456,8 +1618,8 @@ export function attach(world, emitters = [], ctx = {}) {
   // CPU mirror of cityLightmap (tests, diagnostics): lux at (x, y, z) on a face with world normal n, null = volume
   function lightmapAt(x, y, z, nx = 0, ny = 1, nz = 0) {
     if (!lm.ready || !lm.data) return null;
-    const P = lmPlan, D = lm.data, AW = P.atlasW, hf = THREE.DataUtils.fromHalfFloat;
-    const read = (u, v) => { const i = Math.floor(u), j = Math.floor(v), o = (j * AW + i) * 4; if (i < 0 || j < 0 || i >= AW || j >= P.atlasH || !hf(D[o + 3])) return null; return (LUMA[0] * hf(D[o]) + LUMA[1] * hf(D[o + 1]) + LUMA[2] * hf(D[o + 2])) / NS; };
+    const P = lmPlan, D = lm.data, V = lm.valid, AW = P.atlasW, c3 = [0, 0, 0];   // P4: RGB9E5 texels (+ the bake's valid mask in node)
+    const read = (u, v) => { const i = Math.floor(u), j = Math.floor(v), o = j * AW + i; if (i < 0 || j < 0 || i >= AW || j >= P.atlasH || (V ? !V[o] : !D[o])) return null; decodeRGB9E5(D[o], c3); return (LUMA[0] * c3[0] + LUMA[1] * c3[1] + LUMA[2] * c3[2]) / NS; };
     if (ny > 0.7 && y < 0.6) return read((x - P.x0) / P.gres, (z - P.z0) / P.gres);
     if (Math.abs(ny) > 0.35) return null;
     const rx = Math.floor(x - P.x0), rz = Math.floor(z - P.z0); if (rx < 0 || rz < 0 || rx >= P.rw || rz >= P.rh) return null;
@@ -1472,10 +1634,12 @@ export function attach(world, emitters = [], ctx = {}) {
   }
   const ctl = {
     update, patchMaterial, qualityCap, lightmapAt, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
-    setWet(v) { U.uCityWet.value = v; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
+    lightmapReady: lm.whenReady,   // P4: resolves true when the night lightmap is on the GPU, false if it never will be
+    get lightmapData() { return lm.ready ? { key: lm.key, w: lm.size[0], h: lm.size[1], data: lm.data, valid: lm.valid, texels: lm.texels } : null; },
+    setWet(v, damp) { U.uCityWet.value = v; if (damp != null) U.uCityDamp.value = damp; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
     dispose() {
       for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex, U.tCityLM.value]) t.dispose();
-      lm.disposed = true; lm.worker?.terminate();
+      lm.disposed = true; lm.worker?.terminate(); lm.settle?.(false);
       U.tCityMirror.value?.dispose?.();
       mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); quad.geometry.dispose();
       if (steam) { steam.geometry.dispose(); steam.material.dispose(); scene.remove(steam); }
@@ -1483,6 +1647,7 @@ export function attach(world, emitters = [], ctx = {}) {
       if (pool.mesh) pool.mesh.material.dispose();
       scene.remove(sky); mirror.on = false;
       for (const bm of cull.batches) bm.dispose?.(); colBatch?.dispose?.();
+      if (packMesh) for (const m of [packMesh.housing, packMesh.lens]) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); }
     },
   };
   // the world had no dispose(): chain ours in (main.js calls world.dispose on a level switch; the city textures leaked)
@@ -1498,14 +1663,16 @@ export function attach(world, emitters = [], ctx = {}) {
 export function exportParams() {
   const OM = omega();
   return {
-    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, VOLUME, HEADLIGHT, QUALITY, cell: 4, window: DW, eMin: E_MIN,
+    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
     lobes: {
-      lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni); ce = dot(lamp->point, normal)' },
+      lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni) + spill max(0.857 (-D.y) + 0.515 ce, 0); ce = dot(lamp->point D, normal); spill = record bits 14-15 x 0.1 (P4: a fascia box\'s soffit light, a Lambert lobe 31 deg out from straight down)' },
       street: { id: 1, omega: OM.street, f: 'min(1/cos^3, 30) x (1 - smoothstep(0.8 tc, 1.15 tc, tan)); tc = 3.1 along the road, 1.75 forward, 0.7 back', flux: 'lumens' },
       beam: { id: 2, omega: OM.beam, f: 'exp(-(th/0.42)^2) exp(-((tv+0.035)/sv)^2) (1 - smoothstep(-0.02, 0.015, tv)); sv 0.05 up, 0.16 down', flux: 'beam.lumens (1400) x min(1, nits/20000)' },
     },
     geometry: 'point: E = I fe / (d^2 + A/pi); line (long faces, |w-h| > 0.5 m): representative point, E = I fe (atan((a-x)/r) + atan((a+x)/r)) / (2 a r), r^2 = perp^2 + hs^2/pi',
-    record: '2 x RGBA32UI: [pos.xyz f32, half(area, signed half length)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe 2 | colour idx 14 | flicker hz x4 6 | depth x15 4 | omni x63 6]',
+    record: '2 x RGBA32UI: [pos.xyz f32, half(area, signed half length)], [oct snorm16 normal|forward, half(I.r, I.g), half(I.b, range), lobe 2 | colour idx 12 | spill x10 2 | flicker hz x4 6 | depth x15 4 | omni x63 6]',
+    lightmap: 'P4: night lightmap atlas RGB9E5 (seoul/light/night-lm.bin: NLM2 header + gzip of 4 byte planes, row-delta; key = lmKey over the bake inputs); ground map at the atlas origin (gres m), wall rects per exposed footprint edge (fres m); lookup raster + edge table in tCityL rows uCityLMR',
+    volumeFloor: 'P4: VOLUME.cityLux (lux per layer, isotropic, colour VOLUME.cityRGB) is added to every probe (the urban ambient floor)',
     volume: 'probes at cell centres x VOLUME.heights; A = ambient rgb + haze fluence, B = L1 direction / ambient luminance + haze extinction factor (x HAZE.density, by street kind); E(n) = A.rgb max(0, 1 + B.n) x SSAO',
     glsl: CITY_HEAD,
   };

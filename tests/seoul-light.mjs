@@ -5,7 +5,7 @@
 // non-negative and fills interior probes; 7 splitCells keeps every triangle; 8 the real block: attach + update budget.
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY } from '../seoul-light.js';
+import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY, VOLUME, wallPacks } from '../seoul-light.js';
 
 let pass = 0, fail = 0;
 const ok = (c, msg) => { if (c) pass++; else { fail++; console.log('FAIL', msg); } };
@@ -51,7 +51,8 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(west.lights >= 1 && west.direct > 1, `lit in front of the wall: ${west.direct.toFixed(1)} lux`);
   // (the P3 sky is ~0.64 lux on an open up-face: the light's share behind the block must stay under 0.5 lux on top of it)
   const skyLux = Math.PI * 0.5 * [NIGHT_SKY.zenith, NIGHT_SKY.horizon].reduce((s, c) => s + 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], 0);
-  ok(east.lights === 0 && east.volume < 0.5 + skyLux, `nothing behind the block: ${east.lights} lights, volume ${east.volume.toFixed(2)} lux (sky ${skyLux.toFixed(2)})`);
+  // (P4: plus the isotropic urban floor, VOLUME.cityLux, which no block shadows)
+  ok(east.lights === 0 && east.volume < 0.5 + skyLux + VOLUME.cityLux[0], `nothing behind the block: ${east.lights} lights, volume ${east.volume.toFixed(2)} lux (sky ${skyLux.toFixed(2)}, floor ${VOLUME.cityLux[0]})`);
   ok(C.stats.occludedPairs > 0, 'occluded pairs counted');
   const HF = C.heightField; ok(HF.occ(-3, 3, 0, 14, 0, [0.5, 4, 60]) === 0b011, 'heightfield: blocked at 0.5 and 4 m, clear at 60 m');
   C.dispose();
@@ -118,6 +119,9 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(bm.isBatchedMesh && bm.instanceCount === sp.parts.length && bm.geometry.index.count >= tris * 3, `one BatchedMesh, ${bm.instanceCount} cell instances`);
   { const sph = new THREE.Sphere(); bm.getBoundingSphereAt(0, sph); ok(Math.abs(sph.radius - sp.parts[0].sphere.radius) < 1, 'instance bounds match the cell'); }
   bm.dispose();
+  // P4 perf #5: int8 x 4 normals in the GPU batches (12 -> 4 bytes a vertex)
+  { const bq = batchCells(sp, new THREE.MeshBasicMaterial(), { qNormal: true }), nq = bq.geometry.getAttribute('normal');
+    ok(nq.array instanceof Int8Array && nq.itemSize === 4 && nq.normalized && Math.abs(nq.getY(0) - 1) < 0.01 && bq.geometry.getAttribute('position').count === bm.geometry.getAttribute('position').count, 'quantised normals: int8 x 4, normalized, up = (0, 1, 0)'); bq.dispose(); }
   const hf = heightField({ lots: [{ footprint: [[0, 0], [4, 0], [4, 4], [0, 4]], floors: 1, floorH: 3 }] }, -10, -10, 10, 10, 2);
   ok(hf.at(2, 2) > 3 && hf.at(-5, -5) === 0, 'heightfield raster');
 }
@@ -162,6 +166,22 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   ok(!('tCityLMR' in C.uniforms) && C.uniforms.tCityLM && C.uniforms.uCityLMR.value.y > C.uniforms.uCityLMR.value.x, 'lightmap = one sampler (lookup rows in tCityL)');
   C.dispose();
 }
+// 7e P4 lighting #1/#2: the fascia spill (a downward Lambert lobe, `spill` x the face flux, 2 record bits), the light
+// box edge lobe (omni 0.15) and the urban ambient floor
+{
+  const box = (spill) => ({ id: 'L1:fascia0', pos: [0, 3.3, 0.15], normal: [0, 0, 1], w: 4, h: 1, nits: 100, kind: 'lightbox', rgb: [1, 1, 1], ...(spill != null ? { spill } : {}) });
+  const flux = (C) => { let f = 0; for (let x = -12; x < 12; x += 0.25) for (let z = 0.1; z < 12; z += 0.25) { const p = C.probe(x + 0.125, 0.0, z + 0.125); if (p) f += p.direct * 0.0625; } return f; };
+  const C0 = attach(world(), [box(0)], { layout: flat, steam: false, airlight: false, cull: false });
+  const C1 = attach(world(), [box()], { layout: flat, steam: false, airlight: false, cull: false });
+  const f0 = flux(C0), f1 = flux(C1), face = 100 * Math.PI * 4;   // lm: L pi A
+  console.log(`fascia spill: ground flux ${f0.toFixed(0)} -> ${f1.toFixed(0)} lm (face ${face.toFixed(0)} lm)`);
+  ok(f1 - f0 > 0.17 * face && f1 - f0 < 0.27 * face, `spill puts ~0.2 of the face flux on the ground in front (${((f1 - f0) / face).toFixed(3)})`);
+  const u = C1.uniforms.tCityL.value.image.data; ok(((u[7] >>> 14) & 3) === 3 && Math.abs((u[7] >>> 26) / 63 - 0.15) < 0.01, 'record carries spill 0.3 and omni 0.15');
+  const nearWall = C1.probe(0, 4.3, 0.05, 0, 0, 1).direct, nearWall0 = attach(world(), [{ ...box(0), omni: 0 }], { layout: flat, steam: false, airlight: false, cull: false }).probe(0, 4.3, 0.05, 0, 0, 1).direct;
+  ok(nearWall > nearWall0 + 1, `edge lobe lights the wall above the box: ${nearWall0.toFixed(1)} -> ${nearWall.toFixed(1)} lux`);
+  ok(C1.probe(30, 12, 30).volume >= VOLUME.cityLux[4] * 0.9, 'urban floor on an open face at 12 m');
+  C0.dispose(); C1.dispose();
+}
 // 8 the real block (signs + C's emitters), when the partner modules are present
 {
   const R = new URL('..', import.meta.url).pathname;
@@ -173,6 +193,10 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
     try { const S = await import('../seoul-signs.js'); const s = await S.seoulSigns.build(layout, { layout, nitScale: 0.1, lotInfo: geo.lotInfo, seed: 11, loadFonts: false, streetById: new Map(layout.streets.map((x) => [x.id, x])), lotById: new Map(layout.lots.map((l) => [l.id, l])) }); em = em.concat(s.emitters); } catch (e) { console.log('signs skipped:', e.message); }
     const scene = new THREE.Scene(); for (const [k, g] of Object.entries(geo.merged)) scene.add(Object.assign(new THREE.Mesh(g, new THREE.MeshStandardMaterial()), { name: 'seoul:' + k }));
     const w = { scene };
+    // P4 lighting #2: wall packs over corner faces and shuttered fronts, clear of the 2F windows
+    const packs = wallPacks(geo.lotInfo, em);
+    let hitWin = 0; for (const p of packs) for (const i of geo.lotInfo.values()) for (const wd of i.windows || []) if (wd.f === 1 && Math.abs(wd.c[1] - p.pos[1]) < wd.h / 2 && Math.hypot(wd.c[0] - p.pos[0], wd.c[2] - p.pos[2]) < wd.w / 2 + 0.2) hitWin++;
+    console.log(`wall packs: ${packs.length}`); ok(packs.length > 60 && hitWin === 0, `wall packs placed (${packs.length}), none over a 2F window (${hitWin})`);
     const C = attach(w, em, { layout, steam: false, nitScale: 0.1 });
     const st = C.stats;
     console.log(`block: ${st.emitters} emitters, attach ${st.attachMs} ms (bin ${st.binMs}, volume ${st.volMs}, cull ${st.cull.ms}), K ${st.K}, ${st.pairs} pairs (${st.occludedPairs} occluded), cells ${st.cells} (full ${st.full}), volume ${JSON.stringify(st.volume)}, world ${st.cull.vertsBefore} -> ${st.cull.vertsAfter} verts in ${st.cull.meshes} meshes`);
@@ -183,6 +207,39 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
     console.log(`block update ${((performance.now() - t0) / 60).toFixed(2)} ms`);
     w.dispose();
   }
+}
+// 9 P4 perf #3: the shipped night lightmap (seoul/light/night-lm.bin): it decodes; its key against this build (a stale
+// file is a WARN: re-run node tools/bakelm.mjs --night after merging), and when current it matches a fresh bake exactly
+{
+  const R = new URL('..', import.meta.url).pathname, N = await import('../seoul-nightlm.js'), f = R + N.NIGHT_LM.file.replace(/^\.\//, '');
+  if (fs.existsSync(f) && fs.existsSync(R + 'world-seoul.js')) {
+    const zlib = await import('node:zlib'), F = N.lmFileHeader(fs.readFileSync(f));
+    ok(F && F.header.w > 0 && F.header.key, 'night-lm.bin header');
+    const planes = zlib.gunzipSync(F.payload), D = N.lmUnplanes(planes, F.header.w, F.header.h);
+    ok(planes.length === F.header.w * F.header.h * 4 && D.some((v) => v), `night-lm.bin decodes (${F.header.w} x ${F.header.h}, ${(fs.statSync(f).size / 1048576).toFixed(2)} MB)`);
+    const { bakeNight } = await import('../tools/bakelm-night.mjs');
+    const fresh = await bakeNight({ log: () => {} });
+    if (fresh.header.key !== F.header.key) console.log(`WARN night-lm.bin is stale (file ${F.header.key}, this build ${fresh.header.key}): the game bakes in a Worker until node tools/bakelm.mjs --night is re-run`);
+    else { const G = N.lmFileHeader(fresh.file), D2 = N.lmUnplanes(zlib.gunzipSync(G.payload), G.header.w, G.header.h); let diff = 0; for (let i = 0; i < D.length; i++) if (D[i] !== D2[i]) diff++; ok(diff === 0, `night-lm.bin is current (${F.header.key}) and bit-identical to a fresh bake (${diff} texels differ)`); }
+    // the browser path in node (window, fetch, Worker stubbed): the current file is fetched, inflated (DecompressionStream)
+    // and applied with no Worker; a stale file falls back to the Worker; the fetch never aborts
+    if (fresh.header.key === F.header.key) {
+      const { buildNightWorld } = await import('../tools/bakelm-night.mjs');
+      const { fileURLToPath } = await import('node:url');
+      const g0 = { window: globalThis.window, fetch: globalThis.fetch, Worker: globalThis.Worker };
+      let workers = 0; globalThis.window = {}; globalThis.Worker = class { constructor() { workers++; } postMessage() {} terminate() {} };
+      globalThis.fetch = async (u) => { const p = fileURLToPath(u); if (!fs.existsSync(p)) return new Response('', { status: 404 }); await new Promise((r) => setTimeout(r, 50)); return new Response(fs.readFileSync(p)); };
+      try {
+        const run = async (file) => { const w = await buildNightWorld(); const c = attach(w, w.emitters, { layout: w.layout, lotInfo: w.lotInfo, nitScale: w.NITS, steam: false, airlight: false, cull: false, ...(file ? { lightmapFile: file } : {}) }); return c; };
+        const c1 = await run(null), r1 = await Promise.race([c1.lightmapReady, new Promise((r) => setTimeout(() => r('timeout'), 20000))]);
+        const st = c1.stats.lightmap, d1 = c1.lightmapData?.data; let diff = d1 ? 0 : -1; if (d1) for (let i = 0; i < D.length; i++) if (D[i] !== d1[i]) diff++;
+        ok(r1 === true && st.mode === 'file' && workers === 0 && diff === 0, `browser path: the shipped file is applied (${r1}, mode ${st.mode}, ${workers} workers, ${diff} texels differ, key ${st.keyMs} ms)`);
+        const c2 = await run('./seoul/light/missing-night-lm.bin'); await new Promise((r) => setTimeout(r, 200));
+        ok(c2.stats.lightmap.mode === 'worker' && workers === 1 && /404/.test(c2.stats.lightmap.fileMiss || ''), `browser path: a missing file falls back to the worker (${c2.stats.lightmap.mode}, ${c2.stats.lightmap.fileMiss})`);
+        c1.dispose(); c2.dispose();
+      } finally { for (const [k, v] of Object.entries(g0)) { if (v === undefined) delete globalThis[k]; else globalThis[k] = v; } }
+    }
+  } else console.log('night-lm.bin absent: skipped');
 }
 console.log(`seoul-light tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

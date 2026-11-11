@@ -570,7 +570,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
   // ---------------- street lights. [P2-C] (lighting #6) nits from lumens for a Lambertian head (nits = lm / (pi x area)), so
   // the L3 records are self-consistent (12 klm cobra head: ~28,000 nits; phase 1 had 9,000, a third of its flux); main roads
   // get opposite pairs every 32 m (was staggered), pedestrian posts 4 klm, and every second alley pole a 3000 K security lamp.
-  const LAMP = { main: { lumens: 12000, cct: 4000, w: 0.56, h: 0.24 }, ped: { lumens: 4000, cct: 3500, w: 0.56, h: 0.24 }, security: { lumens: 3000, cct: 3000, w: 0.3, h: 0.15 } };
+  const LAMP = { main: { lumens: 12000, cct: 4000, w: 0.56, h: 0.24 }, ped: { lumens: 6000, cct: 3500, w: 0.56, h: 0.24 }, security: { lumens: 3000, cct: 3000, w: 0.3, h: 0.15 } };
   const lampHead = (x, z, ox, oz, h, arm, spec = LAMP.main, pole = true) => {
     const px = x + ox * arm, pz = z + oz * arm, nits = Math.round(spec.lumens / (Math.PI * spec.w * spec.h)), rgb = lightRGB(spec.cct), hw = spec.w / 2, hd = spec.h / 2;
     if (pole) A('pole').tube([[x, 0, z], [x, h, z], [x + ox * 0.4, h + 0.3, z + oz * 0.4], [px, h + 0.35, pz]], 0.09, 6);
@@ -590,11 +590,16 @@ export function buildSeoulGeometry(layout, opts = {}) {
       if (clearSpot(px, pz, 0.8)) lampHead(px, pz, -ox, -oz, 8.5, 1.6, LAMP.main); } });
   }
   // walking and club streets: 4.5 m pedestrian posts, staggered, at the edge of the paving (pulled in where facades close in)
+  // [P4-D] posts keep 2 m (post + arm) off every gate and pre-gate of lines.json (a gate's centre line, c +- u w/2)
+  const gateSegs = []; for (const ln of lineData?.lines || []) for (const G of [ln, ...(ln.pre || [])]) if (G?.c && G.u && G.w) gateSegs.push([G.c[0] - G.u[0] * G.w / 2, G.c[2] - G.u[2] * G.w / 2, G.c[0] + G.u[0] * G.w / 2, G.c[2] + G.u[2] * G.w / 2]);
+  // ... and 4 m off every start point (lines.json startPoints / takeStart, the layout spawn): nothing in the lens at a start
+  for (const sp of [...(lineData?.startPoints || []), lineData?.takeStart, layout.spawn]) if (sp?.pos) gateSegs.push([sp.pos[0], sp.pos[2], sp.pos[0], sp.pos[2], 4.0]);
+  const offGates = (x, z) => gateSegs.every(([ax, az, bx, bz, r = 2.0]) => { const vx = bx - ax, vz = bz - az, t = Math.max(0, Math.min(1, ((x - ax) * vx + (z - az) * vz) / (vx * vx + vz * vz || 1))); return Math.hypot(ax + vx * t - x, az + vz * t - z) > r; });
   let side = 1;
   for (const s of streets) {
     if (s.kind !== 'walking' && s.kind !== 'club') continue;
-    along(s.points, 24, (x, z, tx, tz) => { side = -side; const ox = -tz * side, oz = tx * side;
-      for (let off = s.width / 2 - 0.4; off >= 1.2; off -= 0.5) { const px = x + ox * off, pz = z + oz * off; if (clearSpot(px, pz, 0.6)) { lampHead(px, pz, -ox, -oz, 4.5, 0.5, LAMP.ped); break; } } });
+    along(s.points, 16, (x, z, tx, tz) => { side = -side; const ox = -tz * side, oz = tx * side;   // [P4-D] lighting #1: 6 klm every 16 m (was 4 klm / 24 m)
+      for (let off = s.width / 2 - 0.4; off >= 1.2; off -= 0.5) { const px = x + ox * off, pz = z + oz * off; if (clearSpot(px, pz, 0.6) && offGates(px, pz)) { lampHead(px, pz, -ox, -oz, 4.5, 0.5, LAMP.ped); break; } } });
   }
 
   // ---------------- utility poles and cables along alleys and club streets (overhead lines are the norm off the main roads)
