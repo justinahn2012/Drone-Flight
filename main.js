@@ -2581,7 +2581,10 @@ const MANUAL = new URLSearchParams(location.search).has('manual');
 function frame(now) {
   if (!MANUAL) requestAnimationFrame(frame);
   if (clipOpen) { last = now; return; }             // F2: clip modal up (or encoding): the game is paused
-  let dt = Math.min(0.1, (now - last) / 1000); last = now;
+  // [H] never a negative dt: a rAF timestamp can be older than `last` when step() (performance.now()) ran in between, and a
+  // dt of -21 s made rigCamera's slerp factor 1 - exp(-dt / 0.03) = -Infinity: a NaN camera (black frame) and a NaN
+  // listener (seoul-audio AudioParam page errors). Same-clock frames are unchanged.
+  let dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = Math.max(last, now);
   if (S.fps === '30') { acc30 += dt; if (acc30 < 1 / 30 - 0.006) return; dt = Math.min(0.1, acc30); acc30 = 0; }
   frameN++;
   fpv.frameTiming(dt * 1000);
