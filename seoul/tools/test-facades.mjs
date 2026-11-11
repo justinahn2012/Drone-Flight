@@ -17,16 +17,20 @@ const geo = buildSeoulGeometry(layout, { dressing: false });
 const kind = new Map(layout.streets.map((s) => [s.id, s.kind]));
 
 // 1. windows
-const by = { low: [0, 0], high: [0, 0] }, litN = [], unlitN = [];
+const by = { low: [0, 0], high: [0, 0], tower: [0, 0] }, litN = [], unlitN = [], dimN = [];
 for (const l of layout.lots) {
   const i = geo.lotInfo.get(l.id), comm = kind.get(l.street) !== 'alley';
-  for (const w of i.windows) { (w.lit ? litN : unlitN).push(w.nits); if (!comm) continue; const k = w.f <= 3 ? 'low' : 'high'; by[k][1]++; if (w.lit) by[k][0]++; }
+  // [P4-C] a tall lot (8F+) on a main road or the walking street is an office tower, lit 35 % above 4F (lighting #3)
+  const tw = l.floors >= 8 && ['main', 'walking'].includes(kind.get(l.street));
+  for (const w of i.windows) { (w.lit ? litN : w.dim ? dimN : unlitN).push(w.nits); if (!comm) continue; const k = w.f <= 3 ? 'low' : tw ? 'tower' : 'high'; by[k][1]++; if (w.lit) by[k][0]++; }
 }
 const share = (k) => by[k][0] / by[k][1];
 ok(share('low') > 0.48 && share('low') < 0.62, `2F-4F commercial lit share ${share('low').toFixed(3)} (55 %)`);
-ok(share('high') >= 0.12 && share('high') <= 0.2, `5F+ commercial lit share ${share('high').toFixed(3)} (12-20 %)`);
+ok(share('high') >= 0.12 && share('high') <= 0.2, `5F+ commercial lit share ${share('high').toFixed(3)} (12-20 %, towers apart)`);
+ok(share('tower') >= 0.27 && share('tower') <= 0.4, `5F+ tower lit share ${share('tower').toFixed(3)} (35 %, lighting #3)`);
 ok(litN.every((n) => n >= 5 && n <= 25), `lit windows 5-25 nits (${Math.min(...litN)}-${Math.max(...litN)})`);
-ok(unlitN.every((n) => n >= 0.5 && n <= 5), `unlit windows 0.5-5 nits (${Math.min(...unlitN)}-${Math.max(...unlitN)})`);
+ok(unlitN.every((n) => n >= 0.5 && n <= 1.2), `unlit windows 0.5-1.2 nits (${Math.min(...unlitN)}-${Math.max(...unlitN)})`);
+{ const d = dimN.length / (dimN.length + unlitN.length); ok(d > 0.1 && d < 0.2 && dimN.every((n) => n >= 1.5 && n <= 3), `dim-lit windows ${(d * 100).toFixed(1)} % of the dark ones at 1.5-3 nits (fpv #3)`); }
 // the aEm channel really carries those luminances (rgb luminance / NITS)
 { const e = geo.merged.glass.getAttribute('aEm'), wk = geo.merged.glass.getAttribute('aWin'); let lo = Infinity, hi = 0;
   for (let i = 0; i < e.count; i += 6) { if (wk.getZ(i) >= 4) continue; const Y = (0.2126 * e.getX(i) + 0.7152 * e.getY(i) + 0.0722 * e.getZ(i)) / NITS; lo = Math.min(lo, Y); hi = Math.max(hi, Y); }
@@ -78,6 +82,6 @@ ok(bad.facts.dressing.error === 'boom' && bad.facts.colTris === geo.facts.colTri
 const mock = buildSeoulGeometry(layout, { dressing: { geometry: () => ({ merged: { metal: new THREE.BoxGeometry(1, 1, 1) }, colTris: new THREE.BoxGeometry(1, 1, 1).translate(0, 50, 0), emitters: [{ id: 'm', kind: 'tent', pos: [0, 50, 0], nits: 50 }], setPieces: [{ id: 'x' }] }) } });
 ok(mock.facts.colTris === geo.facts.colTris + 12 && mock.setPieces.length === 1 && mock.emitters.length === geo.emitters.length + 1, 'dressing colTris, emitters and set pieces merge');
 
-console.log(`lit share 2F-4F ${(share('low') * 100).toFixed(1)} %, 5F+ ${(share('high') * 100).toFixed(1)} %; windows ${geo.facts.windows}, tris ${geo.facts.tris}, collider ${geo.facts.colTris}`);
+console.log(`lit share 2F-4F ${(share('low') * 100).toFixed(1)} %, 5F+ ${(share('high') * 100).toFixed(1)} %, towers 5F+ ${(share('tower') * 100).toFixed(1)} %; windows ${geo.facts.windows}, tris ${geo.facts.tris}, collider ${geo.facts.colTris}`);
 console.log(`facade tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

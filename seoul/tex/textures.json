@@ -130,8 +130,7 @@
    "id": "blue_metal_plate",
    "map": "diff",
    "mats": [
-    "metal",
-    "shutter"
+    "metal"
    ],
    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_metal_plate/blue_metal_plate_diff_1k.jpg",
    "sourceSha256": "a0162bffce47d4a35613a12af22571b28c18412dc5805cbb69eac343554ef750",
@@ -160,7 +159,7 @@
    "id": "blue_metal_plate",
    "map": "nor_gl",
    "mats": [
-    "shutter"
+    "metal"
    ],
    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_metal_plate/blue_metal_plate_nor_gl_1k.jpg",
    "sourceSha256": "970f0273c9e2e3b4fc8338bfd58a28c413b70ac4d1734d9dc8a136724bde56e6",
@@ -427,71 +426,12 @@
     "isYFlip": true
    }
   },
-  "concrete_tile_facade_diff.ktx2": {
-   "id": "concrete_tile_facade",
-   "map": "diff",
-   "mats": [
-    "tile"
-   ],
-   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_tile_facade/concrete_tile_facade_diff_1k.jpg",
-   "sourceSha256": "5ee9dbcaf3351b3d8193a5bd9e024adb484a078a60acf90eb240f7aaae1b53cd",
-   "sourceBytes": 625160,
-   "size": [
-    1024,
-    1024
-   ],
-   "bytes": 210734,
-   "sha256": "816eb515cb7e364427e46e15a1e44c7b1d0dab472439a2082759aee3ba522f6e",
-   "colorSpace": "srgb",
-   "codec": "ETC1S",
-   "mips": true,
-   "encoder": "ktx2-encoder 0.6.0",
-   "params": {
-    "isUASTC": false,
-    "qualityLevel": 255,
-    "compressionLevel": 2,
-    "isPerceptual": true,
-    "isSetKTX2SRGBTransferFunc": true,
-    "generateMipmap": true,
-    "isYFlip": true
-   }
-  },
-  "concrete_tile_facade_nor_gl.ktx2": {
-   "id": "concrete_tile_facade",
-   "map": "nor_gl",
-   "mats": [
-    "tile"
-   ],
-   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_tile_facade/concrete_tile_facade_nor_gl_1k.jpg",
-   "sourceSha256": "a11ac18036dac0a5a548552a3d859ddec778d4f1eb82e051b5169379125fd987",
-   "sourceBytes": 936569,
-   "size": [
-    1024,
-    1024
-   ],
-   "bytes": 732839,
-   "sha256": "90678e1b6811ffac06c8e34f3684fb6b9918d47cd0de462e10af761f46506095",
-   "colorSpace": "linear",
-   "codec": "UASTC",
-   "mips": true,
-   "encoder": "ktx2-encoder 0.6.0",
-   "params": {
-    "isUASTC": true,
-    "needSupercompression": true,
-    "enableRDO": true,
-    "rdoQualityLevel": 4,
-    "isNormalMap": true,
-    "isPerceptual": false,
-    "isSetKTX2SRGBTransferFunc": false,
-    "generateMipmap": true,
-    "isYFlip": true
-   }
-  },
   "concrete_wall_008_diff.ktx2": {
    "id": "concrete_wall_008",
    "map": "diff",
    "mats": [
-    "concrete"
+    "concrete",
+    "sill"
    ],
    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_wall_008/concrete_wall_008_diff_1k.jpg",
    "sourceSha256": "a203166d280d3cfc6a91bbc9ffdae406eb9555b4a4f658cd92619063eb17c147",
@@ -546,7 +486,189 @@
     "generateMipmap": true,
     "isYFlip": true
    }
+  },
+  "granite_tile_03_diff.ktx2": {
+   "id": "granite_tile_03",
+   "map": "diff",
+   "mats": [
+    "stone"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/granite_tile_03/granite_tile_03_diff_1k.jpg",
+   "sourceSha256": "bdb28bea17413f1a05b0498b43e9f61f253bb72d753d3bf6b555cbf5f3c9b1b4",
+   "sourceBytes": 1056664,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 257726,
+   "sha256": "e09e7e65d1985065296fa3a5400f0c6294ae5a8615daa5e5f62a46e1e46f6a42",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "granite_tile_03_nor_gl.ktx2": {
+   "id": "granite_tile_03",
+   "map": "nor_gl",
+   "mats": [
+    "stone"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/granite_tile_03/granite_tile_03_nor_gl_1k.jpg",
+   "sourceSha256": "016a678038f885f58fdb2ab642835dddd5a4d1302dbec8cb656e37ddd17dbbff",
+   "sourceBytes": 778769,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 688002,
+   "sha256": "d39451280aa8a9eb2a78d36e22bc75aa4ef9c1a9a6e552b2132ad5112ae184f0",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "painted_metal_shutter_diff.ktx2": {
+   "id": "painted_metal_shutter",
+   "map": "diff",
+   "mats": [
+    "shutter",
+    "shutterR"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/painted_metal_shutter/painted_metal_shutter_diff_1k.jpg",
+   "sourceSha256": "278394aabcb5a5bd560d9904358682acc5af23666b22bd1f12558789da4aa4d2",
+   "sourceBytes": 627333,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 211755,
+   "sha256": "b243f1be9990bf00eecb2e2b70ab8e6f054bf5cdb5df0b2d8bd8d1005f24b379",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "painted_metal_shutter_nor_gl.ktx2": {
+   "id": "painted_metal_shutter",
+   "map": "nor_gl",
+   "mats": [
+    "shutter",
+    "shutterR"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/painted_metal_shutter/painted_metal_shutter_nor_gl_1k.jpg",
+   "sourceSha256": "7545d778669c55e3e9bdc89355ce7190077c3ffdfb324e988ff9803a5bae5a46",
+   "sourceBytes": 730726,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 629080,
+   "sha256": "6688e0badcf026b87afae654a7b4df8587899e43dcb92a85d92009d92185c13c",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "rounded_square_tiled_wall_diff.ktx2": {
+   "id": "rounded_square_tiled_wall",
+   "map": "diff",
+   "mats": [
+    "tile"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rounded_square_tiled_wall/rounded_square_tiled_wall_diff_1k.jpg",
+   "sourceSha256": "18f75c52bb66e985c21d2ec8770a92227848cef9024a5aa25a39ef13aa0d1450",
+   "sourceBytes": 706150,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 228861,
+   "sha256": "0cc344dbf871b02db0a4a12f32bb9116078f5147aa764d0579300f3acfef9520",
+   "colorSpace": "srgb",
+   "codec": "ETC1S",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": false,
+    "qualityLevel": 255,
+    "compressionLevel": 2,
+    "isPerceptual": true,
+    "isSetKTX2SRGBTransferFunc": true,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
+  },
+  "rounded_square_tiled_wall_nor_gl.ktx2": {
+   "id": "rounded_square_tiled_wall",
+   "map": "nor_gl",
+   "mats": [
+    "tile"
+   ],
+   "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rounded_square_tiled_wall/rounded_square_tiled_wall_nor_gl_1k.jpg",
+   "sourceSha256": "7121d66175ffc7676c86b96280efd79ca88049da40f678c16dc2991be9d2e7ec",
+   "sourceBytes": 825799,
+   "size": [
+    1024,
+    1024
+   ],
+   "bytes": 747313,
+   "sha256": "9a22186ad4548a2f4c005e10a628d44ea211932121385b20ca67492bcacc03d4",
+   "colorSpace": "linear",
+   "codec": "UASTC",
+   "mips": true,
+   "encoder": "ktx2-encoder 0.6.0",
+   "params": {
+    "isUASTC": true,
+    "needSupercompression": true,
+    "enableRDO": true,
+    "rdoQualityLevel": 4,
+    "isNormalMap": true,
+    "isPerceptual": false,
+    "isSetKTX2SRGBTransferFunc": false,
+    "generateMipmap": true,
+    "isYFlip": true
+   }
   }
  },
- "bytes": 8533337
+ "bytes": 10352501
 }

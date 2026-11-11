@@ -31,13 +31,20 @@ export const SEOUL_MATS = {
   road: { id: 'asphalt_02', tile: 6.0, maps: ['diff', 'nor_gl'], color: [0.9, 0.9, 0.92], rough: 0.55, albedo: [0.10, 0.10, 0.10] },     // wet-ish: S3 owns the reflection
   walk: { id: 'concrete_pavers_02', tile: 2.4, maps: ['diff', 'nor_gl'], color: [0.95, 0.95, 0.95], rough: 0.7, albedo: [0.25, 0.24, 0.23] },
   plaza: { id: 'brick_pavement_02', tile: 2.0, maps: ['diff', 'nor_gl'], color: [0.85, 0.8, 0.8], rough: 0.7, albedo: [0.22, 0.17, 0.15] },
-  tile: { grime: 1, id: 'concrete_tile_facade', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.0, 0.98, 0.95], rough: 0.6, albedo: [0.40, 0.38, 0.35] },   // beige/white facade tile
-  brick: { grime: 1, id: 'brown_brick_02', tile: 2.2, maps: ['diff', 'nor_gl'], color: [1.0, 0.95, 0.95], rough: 0.85, albedo: [0.26, 0.15, 0.12] },     // Hongdae's red-brown brick
-  plaster: { grime: 1, id: 'beige_wall_001', tile: 3.0, maps: ['diff', 'nor_gl'], color: [0.95, 0.95, 0.95], rough: 0.9, albedo: [0.45, 0.42, 0.38] },
-  concrete: { grime: 1, id: 'concrete_wall_008', tile: 3.0, maps: ['diff', 'nor_gl'], color: [0.9, 0.9, 0.9], rough: 0.9, albedo: [0.30, 0.29, 0.27] },
+  // [P4-C] art #2 (walls you can see): `color` is the gain that takes each scan's measured mean (tools/texmean.py) to the
+  // albedo in `albedo` (texture mean x color); per-lot tint x grime x detail take ~16 % off that on the wall. Phase 3's
+  // 'tile' was concrete_tile_facade, a charcoal tile with a 0.04 mean: 37 % of the low lots and 60 % of the towers (every
+  // hero wall in walk0, walk180, w21, club90 and station) were black whatever the light did.
+  tile: { grime: 1, id: 'rounded_square_tiled_wall', tile: 2.0, maps: ['diff', 'nor_gl'], color: [2.3, 2.7, 3.3], rough: 0.45, albedo: [0.541, 0.495, 0.431] },   // beige mosaic tile (2 m scan, 7 cm tiles)
+  brick: { grime: 1, id: 'brown_brick_02', tile: 1.0, maps: ['diff', 'nor_gl'], color: [1.0, 0.85, 0.95], rough: 0.85, albedo: [0.476, 0.244, 0.137] },     // Hongdae's red-brown brick (1 m scan: 9 cm courses; P3's 2.2 m tile drew 20 cm bricks)
+  plaster: { grime: 1, id: 'beige_wall_001', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.64, 2.02, 2.55], rough: 0.9, albedo: [0.559, 0.530, 0.479] },    // cream-white painted render
+  concrete: { grime: 1, id: 'concrete_wall_008', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.35, 1.48, 2.0], rough: 0.9, albedo: [0.359, 0.350, 0.323] },
+  stone: { grime: 1, id: 'granite_tile_03', tile: 1.8, maps: ['diff', 'nor_gl'], color: [3.2, 3.7, 4.3], rough: 0.5, albedo: [0.403, 0.379, 0.359] },        // [P4-C] grey granite cladding (towers, podiums): 60 cm panels
   roof: { grime: 1, id: 'concrete_floor_02', tile: 4.0, maps: ['diff', 'nor_gl'], color: [0.55, 0.75, 0.6], rough: 0.8, albedo: [0.17, 0.22, 0.18] },   // green roof paint (T5)
-  metal: { grime: 1, id: 'blue_metal_plate', tile: 2.0, maps: ['diff'], color: [0.6, 0.62, 0.65], rough: 0.5, metal: 0.4, albedo: [0.20, 0.21, 0.22] },
-  shutter: { grime: 1, id: 'blue_metal_plate', tile: 1.2, maps: ['diff', 'nor_gl'], color: [0.75, 0.75, 0.78], rough: 0.45, metal: 0.5, albedo: [0.24, 0.24, 0.25] },
+  metal: { grime: 1, id: 'blue_metal_plate', tile: 2.0, maps: ['diff', 'nor_gl'], color: [0.6, 0.62, 0.65], rough: 0.5, metal: 0.4, albedo: [0.20, 0.21, 0.22] },
+  // [P4-C] roll shutters are painted galvanised slats (a 2 m scan of one), not P3's blue-black plate (0.04): club90's dead
+  // ground floor was a shutter
+  shutter: { grime: 1, id: 'painted_metal_shutter', tile: 2.0, maps: ['diff', 'nor_gl'], color: [1.05, 1.0, 0.98], rough: 0.45, metal: 0.3, albedo: [0.225, 0.228, 0.233] },
   white: { color: [0.42, 0.42, 0.40], rough: 0.6, albedo: [0.42, 0.42, 0.40], grime: 1 },          // AC units, tanks (ivory-grey enamel under grime)
   // [P2-C] the sign bed: aluminium composite panel above the shop glass, charcoal / grey / dull white per lot (vertex colour);
   // phase 1's 32 cm white slab showed round S2's boxes as pale plates
@@ -45,7 +52,7 @@ export const SEOUL_MATS = {
   frame: { color: [0.07, 0.072, 0.078], rough: 0.38, metal: 0.6, albedo: [0.07, 0.072, 0.078] },   // anodised mullions, door frames
   // [P3-C] facade kit (art #2, graphics #1), render only: downpipes, conduit, meter boxes (pipe); Korea's yellow gas risers
   pipe: { color: [0.5, 0.5, 0.48], rough: 0.55, albedo: [0.5, 0.5, 0.48], grime: 1 },
-  shutterR: { grime: 1, id: 'blue_metal_plate', tile: 1.2, maps: ['diff', 'nor_gl'], color: [0.75, 0.75, 0.78], rough: 0.45, metal: 0.5, albedo: [0.24, 0.24, 0.25] },   // corner-face shutters (render only)
+  shutterR: { grime: 1, id: 'painted_metal_shutter', tile: 2.0, maps: ['diff', 'nor_gl'], color: [1.05, 1.0, 0.98], rough: 0.45, metal: 0.3, albedo: [0.225, 0.228, 0.233] },   // corner-face shutters (render only)
   bed: { color: [1, 1, 1], rough: 0.5, metal: 0.25, albedo: [0.12, 0.12, 0.125], grime: 1 },   // a corner face's sign bed (render only: lines.json gates)
   gaspipe: { color: [0.72, 0.52, 0.05], rough: 0.5, albedo: [0.72, 0.52, 0.05] },
   sill: { id: 'concrete_wall_008', tile: 3.0, maps: ['diff'], color: [0.8, 0.8, 0.78], rough: 0.85, albedo: [0.28, 0.27, 0.25] },    // window sills (render only)
@@ -274,7 +281,10 @@ export function buildSeoulGeometry(layout, opts = {}) {
   // each pane, reveal and mullions in-shader), sills and leak streaks, a charcoal sign bed, shopfront bays with a framed door,
   // posters and a vinyl curtain on pochas. Per-lot tint and age and the contact darkening at the ground are vertex colour and
   // multiply decals ('ao'). Lit share (PLAN-P2): 2F-4F on commercial streets 55 %, 5F and up 12-20 %; lit 5-25 nits.
-  const facadeOf = (l) => { const r = hash(l.id + 'f'); if (l.floors >= 9) return r < 0.6 ? 'tile' : 'concrete'; return r < 0.38 ? 'brick' : r < 0.75 ? 'tile' : r < 0.9 ? 'plaster' : 'concrete'; };
+  // [P4-C] art #2: beige tile or cream render (albedo 0.40-0.45 on the wall) on 48 % of the low lots, red-brown brick 28 %;
+  // towers are granite, tile or render (a third of P3's towers were bare concrete)
+  const facadeOf = (l) => { const r = hash(l.id + 'f'); if (l.floors >= 9) return r < 0.4 ? 'stone' : r < 0.7 ? 'tile' : r < 0.85 ? 'plaster' : 'concrete';
+    return r < 0.28 ? 'brick' : r < 0.58 ? 'tile' : r < 0.76 ? 'plaster' : r < 0.9 ? 'concrete' : 'stone'; };
   const lotInfo = new Map();
   let nearKind = 'alley';
   const streetDist = (x, z) => { let d = Infinity; for (const s of streets) for (let i = 0; i < s.points.length - 1; i++) { const q = segD(x, z, s.points[i][0], s.points[i][1], s.points[i + 1][0], s.points[i + 1][1]) - s.width / 2; if (q < d) { d = q; nearKind = s.kind; } } return d; };
@@ -342,13 +352,26 @@ export function buildSeoulGeometry(layout, opts = {}) {
     const age = hash(l.id + 'age'), tv = 0.9 + hash(l.id + 'tv') * 0.2, cast = (hash(l.id + 'tc') - 0.5) * 0.1;
     const tint = [tv * (1 - age * 0.2) * (1 + cast), tv * (1 - age * 0.22), tv * (1 - age * 0.25) * (1 - cast)], dim = (k) => tint.map((v) => v * k);
     // facade rhythm
-    const typ = l.floors >= 8 ? (R() < 0.5 ? 'curtain' : 'punched') : comm && l.floors <= 7 && R() < 0.45 ? 'ribbon' : !comm && l.floors >= 3 && R() < 0.4 ? 'villa' : 'punched';
+    let typ = l.floors >= 8 ? (R() < 0.5 ? 'curtain' : 'punched') : comm && l.floors <= 7 && R() < 0.45 ? 'ribbon' : !comm && l.floors >= 3 && R() < 0.4 ? 'villa' : 'punched';
     const rh = { bay: typ === 'villa' ? 2.6 + R() * 1.0 : 2.4 + R() * 1.7, ratio: 0.42 + R() * 0.38, h: 1.15 + R() * 0.65, sill: 0.75 + R() * 0.25, paneW: 1.5 + R() * 1.1,
       ribbonTop: 1 + Math.floor(R() * 3), bands: R() < 0.55, depth: 3.5 + R() * 2.5 };
     // tenants: one per upper floor; lit floors are whole floors
     const tower = l.floors >= 8 && (skind === 'main' || skind === 'walking');   // [P3-C] art #1: the station towers were black above 2F
     const pLow = comm ? 0.61 : 0.46, pHigh = Math.max(0.06, (l.use === 'hotel' ? 0.22 : tower ? 0.15 : 0.13) + (hash(l.id + 'ph') - 0.5) * 0.08);   // x 0.9 per window below
     for (let f = 1; f < l.floors; f++) { let use = draw(UPPER[skind] || UPPER.alley, R()); if (l.use === 'hotel' || l.use === 'motel') use = l.use; info.floors[f] = { f, lit: R() < (f <= 3 ? pLow : pHigh), use }; }
+    // [P4-C] art #4 / lighting #3 (main-road towers): a tall lot is an office slab in bands. Curtain wall (1.5 m panes) or
+    // band windows (1.2-1.5 m panes, 1.5-1.9 m tall, a 1.2-1.6 m spandrel) on every floor and every open wall (P3 gave its
+    // side walls a few service windows: station2's "sticker" squares), floors 3F+ office, lit 35 % (towers) / 22 % (other
+    // tall lots) at 4000-5000 K. Its own stream R3, so the low-rise stays as it was.
+    const tall = l.floors >= 8, R3 = rng(l.id + ':p4');
+    if (tall) {
+      const r = R3(); typ = r < 0.45 ? 'curtain' : r < 0.85 ? 'band' : 'punched';
+      rh.paneW = 1.2 + R3() * 0.3; rh.bandH = 1.5 + R3() * 0.4; rh.bandSill = 0.75 + R3() * 0.2; rh.bands = rh.bands || typ === 'band';
+      if (typ === 'punched') { rh.bay = Math.min(rh.bay, 2.6); rh.ratio = Math.max(rh.ratio, 0.6); rh.h = Math.max(rh.h, 1.5); }
+      const pT = (tower ? 0.39 : 0.24) + (hash(l.id + 'pt') - 0.5) * 0.08;   // x 0.9 per window: 35 % / 22 %
+      for (let f = 1; f < l.floors; f++) { const T = info.floors[f]; T.lit = R3() < (f <= 3 ? pLow : pT); if (f >= 2 && l.use !== 'hotel' && l.use !== 'motel' && R3() < 0.8) T.use = 'office'; }
+    }
+    info.typ = typ;
     // walls + parapet
     for (let i = 0; i < P.length; i++) {
       R = R1;
@@ -386,10 +409,13 @@ export function buildSeoulGeometry(layout, opts = {}) {
       }
       // ---- window layout for this wall
       const wins = [];
-      if (front || streetSide) {
+      if (tall) R = R3;   // [P4-C] a tall lot's windows draw from its own stream
+      const gridWall = front || streetSide || (tall && !slot && L > 4);   // [P4-C] a tower has windows on every open wall
+      if (gridWall) {
         for (let f = 1; f < l.floors; f++) {
           const fy = f * l.floorH;
           if (typ === 'curtain') { const n = Math.max(1, Math.round((L - 0.4) / 1.5)), pw = (L - 0.4) / n; for (let k = 0; k < n; k++) wins.push({ f, s: 0.2 + (k + 0.5) * pw, w: pw - 0.08, h: l.floorH - 0.95, y0: fy + 0.1 }); }
+          else if (typ === 'band') { const n = Math.max(1, Math.round((L - 0.6) / rh.paneW)), pw = (L - 0.6) / n; for (let k = 0; k < n; k++) wins.push({ f, s: 0.3 + (k + 0.5) * pw, w: pw - 0.06, h: Math.min(rh.bandH, l.floorH - rh.bandSill - 0.25), y0: fy + rh.bandSill, band: true }); }
           else if (typ === 'ribbon' && f <= rh.ribbonTop) { const n = Math.max(1, Math.round((L - 0.8) / rh.paneW)), pw = (L - 0.8) / n; for (let k = 0; k < n; k++) wins.push({ f, s: 0.4 + (k + 0.5) * pw, w: pw - 0.1, h: l.floorH - 0.85, y0: fy + 0.35 }); }
           else {
             const bays = Math.max(1, Math.floor((L - 0.6) / rh.bay)), bw = Math.min(typ === 'villa' ? 1.4 : 2.2, ((L - 0.6) / bays) * rh.ratio), h = Math.min(typ === 'villa' ? 1.25 : rh.h, l.floorH - rh.sill - 0.3);
@@ -420,8 +446,12 @@ export function buildSeoulGeometry(layout, opts = {}) {
           else if (o === TENANT.office) fr = r < 0.35 ? FRONT.blinds : 0;
           else if (!lit) fr = r < 0.3 ? FRONT.blinds : r < 0.45 ? FRONT.curtain : 0;
         }
-        const u = R(), nits = lit ? lerp(o.nits[0], o.nits[1], u) : 0.5 + u * 1.3;
-        const em = emOf(lit ? o : SPILL, nits, R(), room + 32 * fr + Math.min(0.999, R()));
+        // [P4-C] fpv #3: 15 % of the dark windows are dim-lit at 1.5-3 nits (a TV in a dark room, a lamp left on, a corridor
+        // light on an office floor), the rest 0.5-1.2 (spill), so a dark facade is not one flat value. Keyed by a hash, not R.
+        const u = R(), wh = hash(l.id + ':w' + i + ':' + W.f + ':' + W.s.toFixed(1)), dimLit = !lit && !W.stair && wh < 0.15;
+        if (dimLit) { if (o === TENANT.home || o === TENANT.study || W.small) { room = wh < 0.08 ? ROOM.tv : ROOM.home; fr = room === ROOM.tv ? 0 : fr; } facts.windowsDim = (facts.windowsDim || 0) + 1; }
+        const nits = lit ? lerp(o.nits[0], o.nits[1], u) : dimLit ? 1.5 + u * 1.5 : 0.5 + u * 0.7;
+        const em = emOf(lit ? o : dimLit ? (room === ROOM.tv ? { cct: 6500 } : { cct: room === ROOM.office ? 4500 : 2900 }) : SPILL, nits, R(), room + 32 * fr + Math.min(0.999, R()));
         facts.windows++; if (lit) facts.windowsLit++; facts.winNits += nits;
         const sillLocal = Math.max(0.05, Math.min(1.6, W.y0 - W.f * l.floorH - (W.stair ? l.floorH * 0.5 : 0)));
         // [P3-C] security grilles (방범창) on 2F-3F flats and service windows: drawn by the glass shader at the facade plane
@@ -429,7 +459,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
         const grille = !W.stair && W.f <= 2 && homeLike && R2() < (front || streetSide ? 0.55 : 0.7);
         if (grille) facts.grilles++;
         pane('glass', [cx, cz], t2, n2, W.w, W.h, W.y0, em, [W.w, W.h, sillLocal, (W.stair ? 2.5 : rh.depth + u) + (grille ? 100 : 0)]);
-        if (front || streetSide) info.windows.push({ f: W.f, c: [+cx.toFixed(2), +(W.y0 + W.h / 2).toFixed(2), +cz.toFixed(2)], n: [nx, 0, nz], t: [tx, 0, tz], w: +W.w.toFixed(2), h: +W.h.toFixed(2), lit, nits: +nits.toFixed(1) });
+        if (gridWall) info.windows.push({ f: W.f, c: [+cx.toFixed(2), +(W.y0 + W.h / 2).toFixed(2), +cz.toFixed(2)], n: [nx, 0, nz], t: [tx, 0, tz], w: +W.w.toFixed(2), h: +W.h.toFixed(2), lit, nits: +nits.toFixed(1), ...(dimLit ? { dim: true } : {}), ...(front || streetSide ? {} : { side: true }) });
         // sill (render only) and, on older buildings, a leak streak from one end of it
         if (W.sill && !W.stair) {
           { const hw = W.w / 2 + 0.06, y1 = W.y0 - 0.005, y0 = W.y0 - 0.075, o = 0.09, Q = (s, y, d) => [a[0] + tx * (W.s + s) + nx * d, y, a[1] + tz * (W.s + s) + nz * d];
@@ -442,7 +472,8 @@ export function buildSeoulGeometry(layout, opts = {}) {
         // AC units: side and back walls by a window, or high on older fronts (the real Seoul pattern), with a rust streak
         // [P3-C] art #2: ~1 unit per 2 windows on side and rear walls (phase 2's 30 % from R, the rest from R2)
         let Q = null;
-        if (W.f >= 1 && !slot && !W.stair) { if (R() < (front || streetSide ? (age > 0.4 ? 0.1 : 0.03) : 0.3)) Q = R; else if (!front && !streetSide && R2() < 0.18) Q = R2; }
+        // [P4-C] no split units on a tower's glass
+        if (W.f >= 1 && !slot && !W.stair && !(tall && typ !== 'punched')) { if (R() < (front || streetSide ? (age > 0.4 ? 0.1 : 0.03) : 0.3)) Q = R; else if (!front && !streetSide && R2() < 0.18) Q = R2; }
         if (Q) {
           facts.ac++; const sd = Q() < 0.5 ? -1 : 1, sa = W.s + (W.w / 2 + 0.55) * sd; if (sa < 0.5 || sa > L - 0.5) continue;
           const ax = a[0] + tx * sa + nx * 0.2, az = a[1] + tz * sa + nz * 0.2, ac = 0.8 + Q() * 0.25, ay = W.y0 - 0.25;
@@ -453,6 +484,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
           wallDecal(a, t2, n2, sa - 0.06, sa + 0.06, Math.max(0.2, W.y0 - 1.6), W.y0 - 0.6, 0.8, 1.0);
         }
       }
+      if (tall) R = R1;
       // [P3-C] art #1 / art bug (club90's 20 m dead frontage): a corner lot's second face on a commercial street is a shopfront too
       const sideShop = !front && streetSide && sideKind !== 'alley' && L > 3.2;
       if (front || streetSide || (open && !slot)) facadeKit(l, info, a, t2, n2, L, H, Ht, yaw, typ, rh, R2, front, front || streetSide);
@@ -725,11 +757,11 @@ function conform(g0, like) {
   for (const name of Object.keys(g.attributes)) if (!like.attributes[name]) g.deleteAttribute(name);
   return g;
 }
-// ---- [P3-C] atlas groups (perf #1, native #3). Layer order is fixed for our keys (ground 0-2, city 3-15); E's plain opaque
+// ---- [P3-C] atlas groups (perf #1, native #3). Layer order is fixed for our keys (ground 0-2, city 3-20); E's plain opaque
 // keys (no texture, emission, transparency, alpha or decal; `fold: false` opts out) are appended per build.
 export const SEOUL_GROUPS = {
   ground: ['road', 'walk', 'plaza'],
-  city: ['tile', 'brick', 'plaster', 'concrete', 'roof', 'metal', 'shutter', 'white', 'fascia', 'frame', 'sill', 'dark', 'pole', 'pipe', 'gaspipe', 'bed', 'shutterR'],
+  city: ['tile', 'brick', 'plaster', 'concrete', 'roof', 'metal', 'shutter', 'white', 'fascia', 'frame', 'sill', 'dark', 'pole', 'pipe', 'gaspipe', 'bed', 'shutterR', 'stone'],   // [P4-C] stone appended: P3's indices hold
   glass: ['glass', 'shop', 'lamp'],
   lanepaint: ['stripe', 'yellow'],
   ao: ['ao'],
