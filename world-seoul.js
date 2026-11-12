@@ -47,7 +47,9 @@ export const SEOUL_MATS = {
   plaster: { grime: 1, id: 'beige_wall_001', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.15, 1.41, 1.79], rough: 0.9, albedo: [0.391, 0.371, 0.335] },    // cream-white painted render
   concrete: { grime: 1, id: 'concrete_wall_008', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.35, 1.48, 2.0], rough: 0.9, albedo: [0.359, 0.350, 0.323] },
   stone: { grime: 1, id: 'granite_tile_03', tile: 1.8, maps: ['diff', 'nor_gl'], color: [3.2, 3.7, 4.3], rough: 0.5, albedo: [0.403, 0.379, 0.359] },        // [P4-C] grey granite cladding (towers, podiums): 60 cm panels
-  roof: { grime: 1, id: 'concrete_floor_02', tile: 4.0, maps: ['diff', 'nor_gl'], color: [0.55, 0.75, 0.6], rough: 0.8, albedo: [0.17, 0.22, 0.18] },   // green roof paint (T5)
+  // [P6-C] art #5 (high's roofs read (14,16,17), black slabs that hid E's 919 props): Seoul's urethane waterproofing is a
+  // light green (or, per lot, light grey: vertex tint) at ~0.3, not 0.2
+  roof: { grime: 1, id: 'concrete_floor_02', tile: 4.0, maps: ['diff', 'nor_gl'], color: [0.82, 1.1, 0.88], rough: 0.7, albedo: [0.25, 0.32, 0.26] },   // green roof paint (T5)
   metal: { grime: 1, id: 'blue_metal_plate', tile: 2.0, maps: ['diff', 'nor_gl'], color: [0.6, 0.62, 0.65], rough: 0.5, metal: 0.4, albedo: [0.20, 0.21, 0.22] },
   // [P4-C] roll shutters are painted galvanised slats (a 2 m scan of one), not P3's blue-black plate (0.04): club90's dead
   // ground floor was a shutter
@@ -87,6 +89,10 @@ const USE_LOOK = {
   office: { nits: [35, 50], cct: 5000, room: [8], shut: 0.8 }, hotel: { nits: [42, 58], cct: 3200, room: [1], shut: 0.1 },
   lobby: { nits: [85, 110], cct: 4300, room: [9] },
 };
+// [P6-C] art #3: shop rooms by the sign's trade (seoul-signs tradeOf: 1 coin laundry, 2 photo studio, 3 salon, 4 claw
+// machines); the glass shader draws each room's fixtures (aWin.w + 1000 x trade)
+const TRADE_LOOK = { 1: { nits: [52, 62], cct: 6300, room: [0] }, 2: { nits: [30, 40], cct: 4300, room: [5] }, 3: { nits: [46, 58], cct: 5000, room: [5] },
+  4: { nits: [40, 52], rgb: [1.0, 0.72, 0.95], room: [0] } };
 // upper-floor tenants (2F and up) by street kind, and the interior + luminance a lit floor shows (lit windows: 5-25 nits)
 const UPPER = { walking: { bar: 3, karaoke: 2, cafe: 3, pc: 1, office: 1, home: 1, restaurant: 2 }, club: { bar: 4, karaoke: 2, pc: 1, home: 2, cafe: 1, restaurant: 1, motel: 1 },
   main: { office: 4, cafe: 2, pc: 1, karaoke: 1, bar: 1, restaurant: 1, home: 1 }, alley: { home: 5, office: 2, bar: 1, cafe: 1, karaoke: 1, study: 1 } };
@@ -633,14 +639,17 @@ export function buildSeoulGeometry(layout, opts = {}) {
           A(front ? 'metal' : 'shutterR').box(Pt((w0 + w1) / 2, K.shopTop + 0.15, 0.19), [gw / 2, 0.15, 0.15], yaw, false);   // the shutter box above (corner faces: render only)
         } else {
           facts.shopsLit++;
-          let nitsS = lerp(look.nits[0], look.nits[1], R()), cu = R(), room = look.room[Math.floor(R() * look.room.length)];
-          const lobF = tower && front, lk = lobF ? USE_LOOK.lobby : look;
+          // [P6-C] art #3: the room follows the trade the sign names (same draws: the shutter, the collider and parity hold)
+          const trade = front && l.use === 'shop' && SIGNS?.groundName ? SIGNS.tradeOf(SIGNS.groundName(l, seed)) : 0, tl = TRADE_LOOK[trade] || look;
+          if (trade) facts.trades = (facts.trades || 0) + 1;
+          let nitsS = lerp(tl.nits[0], tl.nits[1], R()), cu = R(), room = tl.room[Math.floor(R() * tl.room.length)];
+          const lobF = tower && front, lk = lobF ? USE_LOOK.lobby : tl;
           if (lobF) { nitsS = lerp(lk.nits[0], lk.nits[1], cu); room = ROOM.lobby; }   // [P4-C] the podium is a lobby that renders
           const fr = look.front && R() < look.front[1] ? look.front[0] : 0, D = 5 + R() * 4;
           const nb = Math.max(1, Math.round(gw / (1.8 + hash(l.id + 'bw') * 1.2))), bwid = gw / nb, door = nb === 1 ? 0 : nb >= 3 && R() < 0.4 ? Math.floor(nb / 2) : R() < 0.5 ? 0 : nb - 1;
           for (let k = 0; k < nb; k++) {
             const sc = w0 + (k + 0.5) * bwid, isDoor = k === door;
-            pane('shop', [a[0] + tx * sc + nx * 0.04, a[1] + tz * sc + nz * 0.04], t2, n2, bwid - 0.02, K.shopTop, 0, emOf(lk, nitsS, cu, room + 32 * (lobF ? 0 : isDoor && fr === FRONT.cafeCurtain ? 0 : fr) + Math.min(0.999, R())), [bwid - 0.02, K.shopTop, (isDoor ? 2 : 1) * 4, D]);
+            pane('shop', [a[0] + tx * sc + nx * 0.04, a[1] + tz * sc + nz * 0.04], t2, n2, bwid - 0.02, K.shopTop, 0, emOf(lk, nitsS, cu, room + 32 * (lobF ? 0 : isDoor && fr === FRONT.cafeCurtain ? 0 : fr) + Math.min(0.999, R())), [bwid - 0.02, K.shopTop, (isDoor ? 2 : 1) * 4, D + 1000 * trade]);
             if (k < nb - 1) A('frame').box(Pt(w0 + (k + 1) * bwid, K.shopTop / 2, 0.08), [0.035, K.shopTop / 2, 0.05], yaw, true);
             if (isDoor) {   // door: jambs, header at 2.2 m, a push bar
               for (const e of [-1, 1]) A('frame').box(Pt(sc + e * (bwid / 2 - 0.05), 1.1, 0.09), [0.03, 1.1, 0.045], yaw, true);
@@ -679,9 +688,12 @@ export function buildSeoulGeometry(layout, opts = {}) {
     }
     // roof (triangulated) and rooftop dressing
     { const contour = P.map(([x, z]) => new THREE.Vector2(x, z)), tris = THREE.ShapeUtils.triangulateShape(contour, []);
+      // [P6-C] art #5: 40 % of the roofs are grey urethane (tint takes the green paint to a neutral ~0.3), the rest green, +-8 %
+      const rh6 = hash(l.id + ':roof6'), rv = 0.92 + 0.16 * hash(l.id + ':roofv'); Acc.tint = rh6 < 0.4 ? [1.2 * rv, 0.95 * rv, 1.15 * rv] : [rv, rv, rv];
       for (const [i, j, k] of tris) { const a = [P[i][0], H, P[i][1]], b = [P[j][0], H, P[j][1]], c = [P[k][0], H, P[k][1]];
         const cr = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);   // y of (b-a) x (c-a)
         if (cr >= 0) A('roof').tri(a, b, c, [a[0], a[2]], [b[0], b[2]], [c[0], c[2]]); else A('roof').tri(a, c, b, [a[0], a[2]], [c[0], c[2]], [b[0], b[2]]); } }
+    Acc.tint = WHITE;
     const area = Math.abs(polyArea(P)), [x0, x1, z0, z1] = l._bb;
     // a point inside the roof at least `m` from its edge (sampled)
     const roofSpot = (m) => { for (let t = 0; t < 14; t++) { const x = lerp(x0, x1, R()), z = lerp(z0, z1, R()); if (pip(x, z, P) && polyD(x, z, P) > m) return [x, z]; } return null; };
@@ -1041,9 +1053,78 @@ vec3 sgStock(float room, float h) {
     : (k < 0.15 ? vec3(0.75, 0.08, 0.06) : k < 0.3 ? vec3(0.85, 0.55, 0.05) : k < 0.42 ? vec3(0.08, 0.25, 0.7) : k < 0.54 ? vec3(0.1, 0.5, 0.15) : k < 0.7 ? vec3(0.85, 0.85, 0.82) : k < 0.8 ? vec3(0.9, 0.3, 0.05) : k < 0.9 ? vec3(0.6, 0.1, 0.45) : vec3(0.05));
   return c * (0.75 + 0.5 * fract(h * 11.3));
 }
+// [P6-C] art #3 (tenant-true interiors): the room's fixtures by trade, on the walls the ray hits (side: u = depth, back:
+// u = across). Albedo x L x 1.4 as the shelves; lamps, screens and cabinets emit (x L). 1 coin laundry: stacked front
+// loaders (dryers over washers) down both side walls and the back, white enamel, dark porthole doors with a chrome rim and
+// a tumble of colour in a third, a control strip with a green LED; pale blue-white walls above, grey tile floor.
+// 2 photo studio: charcoal walls with framed prints, a seamless paper backdrop (pink, mint, sky, butter or grey) on the back
+// wall sweeping onto the floor, a softbox glowing on one side wall. 3 salon: a mirror station every 1.1 m (mirror,
+// bulb frame, white counter), blush walls. 4 claw machines: cabinets 0.9 m wide down every wall, a coloured body, a lit
+// glass case with plush heaped in its lower half, a marquee on top.
+vec3 sgTradeRoom(float trade, vec3 hit, float Wr, float Hr, float D, float sideW, float backW, float floorW, float ceilW, float seed, vec3 L, float lit, vec3 col) {
+  float onW = max(sideW, backW), u = sideW > 0.5 ? hit.z + sign(hit.x) * 13.0 : hit.x + Wr * 0.5, v = hit.y, hs = fract(seed * 17.3);
+  if (trade < 1.5) {   // coin laundry
+    if (onW > 0.5 && v < 1.9 && (sideW < 0.5 || hit.z > 0.6)) {
+      float cw = 0.68, ci = floor(u / cw), cu = fract(u / cw) * cw - cw * 0.5, row = step(0.97, v), y0 = row > 0.5 ? 1.0 : 0.08, y1 = row > 0.5 ? 1.86 : 0.94;
+      if (abs(cu) > cw * 0.5 - 0.012 || v < y0 || v > y1) return vec3(0.04) * L * 1.4;   // gaps between machines
+      float cy = y0 + (y1 - y0) * 0.45, dr = length(vec2(cu, v - cy)), hm = sgHash(vec2(ci, row + floor(seed * 41.0)));
+      if (v > y1 - 0.11) { float led = step(length(vec2(cu - 0.2, v - y1 + 0.055)), 0.012); return mix(vec3(0.08) * L * 1.4, vec3(0.1, 1.0, 0.3) * L * 4.0, led); }
+      if (dr < 0.2) return (hm < 0.35 ? mix(vec3(0.6, 0.15, 0.2), vec3(0.15, 0.3, 0.7), fract(hm * 7.0)) * (0.5 + 0.5 * sgVN(vec2(cu, v) * 20.0 + hm * 9.0)) : vec3(0.05, 0.06, 0.07)) * L * 1.4;
+      if (dr < 0.245) return vec3(0.55, 0.56, 0.58) * L * 1.4;   // chrome rim
+      return vec3(0.82, 0.82, 0.8) * L * 1.4;                     // enamel
+    }
+    if (floorW > 0.5) { float ck = mod(floor(hit.x / 0.3) + floor(hit.z / 0.3), 2.0); return vec3(0.42 + 0.06 * ck) * L * 1.4; }
+    if (ceilW > 0.5) return col;
+    return vec3(0.72, 0.8, 0.86) * L * 1.4;
+  }
+  if (trade < 2.5) {   // photo studio
+    vec3 pc = hs < 0.2 ? vec3(0.95, 0.55, 0.65) : hs < 0.4 ? vec3(0.55, 0.85, 0.7) : hs < 0.6 ? vec3(0.55, 0.72, 0.95) : hs < 0.8 ? vec3(0.95, 0.85, 0.5) : vec3(0.55);
+    if (backW > 0.5 || (floorW > 0.5 && hit.z > D - 1.6)) return pc * L * 1.6 * (floorW > 0.5 ? 0.8 : 1.0);
+    if (sideW > 0.5) {
+      float sb = step(abs(hit.z - D * 0.55), 0.35) * step(abs(v - 1.8), 0.45) * step(0.0, hit.x * (fract(seed * 3.3) < 0.5 ? 1.0 : -1.0));
+      if (sb > 0.5) return L * 9.0;                              // the softbox
+      float fu = fract(u / 0.95), fv = (v - 1.15) / 0.75, fh = sgHash(vec2(floor(u / 0.95), floor(seed * 23.0)));
+      if (fv > 0.0 && fv < 1.0 && fu > 0.12 && fu < 0.88 && fh < 0.75) {
+        if (fu < 0.16 || fu > 0.84 || fv < 0.06 || fv > 0.94) return vec3(0.02) * L * 1.4;   // frame
+        return mix(vec3(0.7, 0.5, 0.4), vec3(0.3, 0.4, 0.55), fh) * (0.6 + 0.6 * sgVN(vec2(fu, fv) * 6.0 + fh * 11.0)) * L * 1.4;
+      }
+      return vec3(0.07, 0.07, 0.075) * L * 1.4;
+    }
+    if (floorW > 0.5) return vec3(0.1, 0.09, 0.085) * L * 1.4;
+    return vec3(0.05) * L * 1.4;
+  }
+  if (trade < 3.5) {   // salon
+    if (sideW > 0.5 && hit.z > 0.6) {
+      float mu = fract(u / 1.1) * 1.1 - 0.55;
+      if (abs(mu) < 0.36 && v > 0.95 && v < 1.95) {
+        float fr = min(0.36 - abs(mu), min(v - 0.95, 1.95 - v));
+        if (fr < 0.045) { float b = step(fract((abs(mu) + v) / 0.12), 0.3); return mix(vec3(0.85) * L * 1.4, L * 6.0, b); }   // the bulb frame
+        return mix(vec3(0.25, 0.24, 0.26), vec3(0.6, 0.58, 0.55), sgVN(vec2(mu * 3.0, v * 2.0) + hs * 9.0)) * L * 1.4;   // mirror: the lit room, soft
+      }
+      if (v > 0.72 && v < 0.82) return vec3(0.9) * L * 1.4;   // counter
+    }
+    if (floorW > 0.5) return vec3(0.55, 0.5, 0.48) * L * 1.4;
+    if (ceilW > 0.5) return col;
+    return vec3(0.92, 0.72, 0.72) * L * 1.4;
+  }
+  // claw machines
+  if (onW > 0.5 && v < 2.15) {
+    float cw = 0.92, ci = floor(u / cw), cu = fract(u / cw) * cw, hm = sgHash(vec2(ci, floor(seed * 29.0)));
+    vec3 body = hm < 0.25 ? vec3(0.9, 0.1, 0.35) : hm < 0.5 ? vec3(0.1, 0.45, 0.95) : hm < 0.75 ? vec3(0.95, 0.75, 0.1) : vec3(0.2, 0.85, 0.5);
+    if (cu < 0.04 || cu > cw - 0.04) return vec3(0.03) * L * 1.4;
+    if (v < 0.9) return body * L * 1.4 * (abs(v - 0.7) < 0.08 ? 0.3 : 1.0);
+    if (v > 1.85) return body * L * 5.0;                        // the marquee
+    float plush = step(v, 1.12 + 0.12 * sgVN(vec2(cu * 9.0, ci))), ph = sgHash(vec2(floor(cu / 0.12), floor(v / 0.1) + ci));
+    vec3 pcol = ph < 0.25 ? vec3(0.95, 0.6, 0.7) : ph < 0.5 ? vec3(0.9, 0.85, 0.6) : ph < 0.75 ? vec3(0.5, 0.75, 0.95) : vec3(0.75, 0.5, 0.35);
+    return plush > 0.5 ? pcol * L * 2.2 : mix(vec3(0.9, 0.95, 1.0), body, 0.2) * L * 2.0;   // the lit case
+  }
+  if (floorW > 0.5) return vec3(0.12) * L * 1.4;
+  return vec3(0.1, 0.08, 0.12) * L * 1.4;
+}
 void seoulGlass(inout vec4 dc) {
-  float gr = step(50.0, sWin.w);   // [P3-C] aWin.w + 100: a security grille in front of the pane
-  float w = max(sWin.x, 0.05), h = max(sWin.y, 0.05), kind = floor(sWin.z * 0.25 + 0.001), sill = sWin.z - kind * 4.0, D = max(sWin.w - 100.0 * gr, 0.1);
+  float trade = floor(sWin.w / 1000.0 + 0.0005), wv = sWin.w - 1000.0 * trade;   // [P6-C] art #3: aWin.w + 1000 x the shop's trade
+  float gr = step(50.0, wv);   // [P3-C] aWin.w + 100: a security grille in front of the pane
+  float w = max(sWin.x, 0.05), h = max(sWin.y, 0.05), kind = floor(sWin.z * 0.25 + 0.001), sill = sWin.z - kind * 4.0, D = max(wv - 100.0 * gr, 0.1);
   float code = floor(sEm.w + 0.0005), seed = sEm.w - code, room = mod(code, 32.0), front = floor(code / 32.0 + 0.001);
   vec3 L = sEm.rgb; float lit = step(0.2, dot(L, vec3(0.2126, 0.7152, 0.0722)));
   // [P4-C] fpv #3 / graphics #1: a TV room flickers (a cut every 1.5-4 s, a shimmer between), so a dark block has life in it
@@ -1103,7 +1184,7 @@ void seoulGlass(inout vec4 dc) {
       float hs = fract(seed * 13.71), retail = (room < 0.5 || abs(room - 5.0) < 0.5 || abs(room - 6.0) < 0.5) ? 1.0 : 0.0;
       if (c.a > 0.98 && max(sideW, backW) > 0.5) { float tp = fract(seed * 29.3);
         col *= tp < 0.22 ? vec3(0.36, 0.35, 0.34) : tp < 0.34 ? vec3(0.78, 0.9, 0.8) : tp < 0.44 ? vec3(1.0, 0.82, 0.8) : tp < 0.56 ? vec3(0.85, 0.66, 0.48) : vec3(1.0, 0.96, 0.9); }
-      if (sideW > 0.5 && hs < (retail > 0.5 ? 0.7 : 0.35) && hit.y > 0.12 && hit.y < 1.85 && hit.z > 0.5 && hit.z < D - 0.3) {
+      if (sideW > 0.5 && trade < 0.5 && retail > 0.5 && hs < 0.7 && hit.y > 0.12 && hit.y < 1.85 && hit.z > 0.5 && hit.z < D - 0.3) {
         float sy = (hit.y - 0.12) / 0.36, si = floor(sy), sf = fract(sy) * 0.36, z = hit.z + sign(hit.x) * 7.0;
         vec3 st;
         if (fract(z / 0.9) < 0.035) st = vec3(0.05);
@@ -1114,6 +1195,7 @@ void seoulGlass(inout vec4 dc) {
           st = (pf > 0.1 && sf - 0.045 < ph) ? sgStock(room, hp) * (0.75 + 0.6 * (sf - 0.045) / 0.315) : vec3(0.05); }
         col = st * L * 1.4;
       }
+      if (trade > 0.5) col = sgTradeRoom(trade, hit, Wr, Hr, D, sideW, backW, floorW, ceilW, seed, L, lit, col);
       col *= lf;
       if (lit > 0.5 && (retail > 0.5 || hs > 0.6)) {
         float sx = abs(abs(hit.x) - Wr * 0.22);
@@ -1123,7 +1205,7 @@ void seoulGlass(inout vec4 dc) {
     } else col *= lf;
   }
   // [P3-C] mid-depth layer (art #3): shelves, counters, menu boards, diners 1.2-2 m behind shop glass and office windows
-  float mid = room < 6.5 ? room : (room > 7.5 && room < 8.5 ? 7.0 : -1.0);
+  float mid = trade > 0.5 ? -1.0 : room < 6.5 ? room : (room > 7.5 && room < 8.5 ? 7.0 : -1.0);
   if (mid > -0.5) {
     float zm = 1.2 + fract(seed * 3.17) * 0.8, tm = zm / rr.z;
     if (zm < D - 0.4 && tm < t) {
@@ -1138,7 +1220,7 @@ void seoulGlass(inout vec4 dc) {
   // [P4-C] fpv #2 / graphics #2: a near layer 0.5-0.9 m behind shop glass (the third depth): shoppers in a convenience store,
   // clothes or phone shop (one per 1 m of strip, half the cells empty), people at a cafe's window bar facing out
   float nl = (room < 0.5 || abs(room - 5.0) < 0.5 || abs(room - 6.0) < 0.5) ? 10.0 : abs(room - 1.0) < 0.5 ? 15.0 : -1.0;
-  if (kind > 0.5 && nl > 0.0 && fract(seed * 5.91) < (nl > 12.0 ? 0.6 : 0.8)) {
+  if (kind > 0.5 && trade < 0.5 && nl > 0.0 && fract(seed * 5.91) < (nl > 12.0 ? 0.6 : 0.8)) {
     float zn = 0.5 + fract(seed * 2.37) * 0.4, tn = zn / rr.z;
     if (tn < t && zn < D - 1.0) {
       vec3 hn = p0 + rr * tn; float xm = hn.x + fract(seed * 7.7) * 3.0;
@@ -1439,7 +1521,7 @@ export async function buildGeometry({ seed = SEOUL_SEED, layout = null, lines = 
       layers: geo.layers.map((l) => ({ key: l.key, diff: l.diff, nor: l.nor, id: l.id, tile: l.tile, color: l.color, rough: l.rough, metal: l.metal, grime: l.grime, albedo: l.albedo })),
       textures: { ids: SEOUL_TEX_IDS, diff: SEOUL_TEX_IDS.map((id) => `tex/${id}_diff.ktx2`), nor: SEOUL_TEX_IDS.map((id) => `tex/${id}_nor_gl.ktx2`), detail: { fn: 'world-seoul.js detailMap(512)', scales: [0.83, 3.1], weights: [0.6, 0.4] } },
       interiorAtlas: { module: 'seoul-interiors.js', fn: 'buildInteriorAtlas', width: A.width, height: A.height, tile: A.tile, cols: A.cols, rows: A.rows, boost: A.boost, colour: 'sRGB rgb, linear alpha (1 - light boost / boost)', mean: [...A.mean], near: A.near, strip: A.strip, backEV: A.backEV, roomTiles: '0-9, 11-14 (9 = tower lobby); 10 / 15 near layers (u = strip metres, v = 0..3 m); front layers 1-3, 6 procedural (sgFront in the glass shader)' },
-      attributes: { aLay: 'ground / city: layer index into extra.layers', aEm: 'rgb = mean luminance seen through the pane x NITS; w = room + 32 x front + seed', aWin: 'width, height, kind x 4 + sill (kind 0 window, 1 shop bay, 2 door, 3 poster), room depth', color: 'vertex colour: per-lot tint, age, contact darkening (multiply on albedo)' } },
+      attributes: { aLay: 'ground / city: layer index into extra.layers', aEm: 'rgb = mean luminance seen through the pane x NITS; w = room + 32 x front + seed', aWin: 'width, height, kind x 4 + sill (kind 0 window, 1 shop bay, 2 door, 3 poster), room depth (+100: grille; +1000 x trade on shops: 1 laundry, 2 studio, 3 salon, 4 claw)', color: 'vertex colour: per-lot tint, age, contact darkening (multiply on albedo)' } },
   };
 }
 

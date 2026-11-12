@@ -301,6 +301,19 @@ function synthSlots(lot, F, sides, st) {
   for (const Fr of [F, ...sides]) for (let f = 1; f < Math.min(lot.floors - 1, 7); f++) bands.push(at(Fr, (f + 1) * F.fh - 0.6, 0.02, { f, w: Fr.L * 0.9, h: 1.2, side: Fr !== F }));
   return { fascias, bands, windows: [], roofSign: null, floors: [], synth: true };
 }
+// [P6-C] art #3 (tenant-true interiors: walk180's 청춘코인빨래방 was stocked like a library, KIWI STUDIO a white box): the
+// ground tenant's trade as its sign names it, for world-seoul's shop rooms. Replays generateSigns' first draws for the lot
+// (the ground tenant's name comes first in its geometry stream), so it never disagrees with the sign.
+// -> 0 none, 1 coin laundry, 2 photo / studio, 3 salon (hair, nails, lashes, tattoo), 4 claw machines / arcade
+export const TRADE = { none: 0, laundry: 1, studio: 2, salon: 3, claw: 4 };
+export function groundName(lot, seed = 0x5e0a1) {
+  const r = new Rng((seed >>> 0) ^ hashStr(lot.id)), use = lot.use;
+  return makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05);
+}
+export function tradeOf(name) {
+  const t = `${name?.cat || ''} ${name?.sub || ''} ${name?.main || ''}`;
+  return /빨래방/.test(t) ? 1 : /사진관|STUDIO|스튜디오/.test(t) ? 2 : /네일|헤어|미용실|속눈썹|타투/.test(t) ? 3 : /인형뽑기|오락실/.test(t) ? 4 : 0;
+}
 // [P6-C] the spawn line: the street the spawn stands on (Eoulmadang-ro, s065: walk0 / walk180 / w21 all look down it).
 // -> lot => true when the lot's footprint centroid is within `m` of that street's polyline
 export function spawnCorridor(layout, streets, m = 40) {
@@ -404,7 +417,9 @@ export function generateSigns(layout, opts = {}) {
         let sh = g;
         if (i > 0) { const use = pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant);
           sh = { f: 0, use, name: makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05), lit: r.next() < (LIT_P[use] ?? 0.5), phone: fakePhone(r), tag: pick(r, TAGS) }; }
-        const on = r.next(), shop = sh.lit && !open && on >= 0.15 ? { ...sh, lit: false } : sh;
+        // [P6-C] art #4 (w21's 노을빈티지 was grey paint on a dark band): near the spawn line a shop sign runs on its timer
+        // whether or not the shop is shuttered or its tenant drew dark
+        const on = r.next(), shop = near ? { ...sh, lit: true } : sh.lit && !open && on >= 0.15 ? { ...sh, lit: false } : sh;
         const u0 = bay * i;
         // art #1: the sign fills the bed (60-95 % of the bay; the bed is the slot the building gives it)
         const lo = open ? by0 + 0.05 : Math.max(by0 + 0.05, SLOT.shutterTop + 0.04), hi = by1 - 0.04;
@@ -1557,5 +1572,5 @@ export async function build(layout, ctx = {}) {
   };
 }
 
-export const seoulSigns = { build, buildData, exportData, generateSigns, signStats, designFace, colliderTris, loadFonts, NIT_SCALE, NITS, CENSUS, SHIPPED, PUSH_BY_KIND, K };
+export const seoulSigns = { build, buildData, exportData, generateSigns, signStats, designFace, colliderTris, groundName, tradeOf, loadFonts, NIT_SCALE, NITS, CENSUS, SHIPPED, PUSH_BY_KIND, K };
 export default seoulSigns;
