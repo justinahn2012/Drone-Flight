@@ -26,6 +26,7 @@
 // pack, the sign wash: a Lambert record with omni >= washOmni lights its own wall within washM as if the wall faced it at
 // washCos x (1 - d / washM)^2: the colour of a box or a letter on the wall round it).
 // P6: 4 (the drawn sky dome in the bake, the wall-pack pool lobe, the store spill's trapezoid).
+// P8: 5 (the store spill 0.7, wall packs on shuttered and dark fronts).
 export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 4, file: './seoul/light/night-lm.bin', dilate: 6,
   packFloorM: 3, washM: 1.5, washCos: 0.25, washOmni: 0.25 };
 
@@ -64,6 +65,9 @@ export function lobePack(dx, dy, dz, fx, fz) {
 // glass's upper rows throw farther than the lower), at gain 0.98 so the flux on the ground is the P6 spill's (tested):
 // 1 m out ~0.6x, 3 m out ~7x, 4 m out from 0 to ~0.4x the 1 m value. Same flux, a longer pool.
 export const SPILL_TRAP = { side: [0.4, 0.8, 0.15], far: [2.8, 3.6], gain: 0.98, lift: 0.6 };
+// P8 (lighting #1, the first 15 m of the walking-street floor: the lit glass had no pool in front of it; the panel's 0.7 x the
+// glass's exitance): a shop's glass spills 0.7 of its face flux down through the trapezoid (was 0.5). SPILL code 3.
+export const SHOP_SPILL = 0.7;
 export function spillTrap(vx, vy, vz, nx, nz, A, a, hl) {
   const out = vx * nx + vz * nz, drop = -vy; if (out <= 0 || drop <= 0) return 0;
   const sh = Math.sqrt(a * a + A) - a, Wh = hl > 0 ? a + sh / 2 : sh / 2, T = SPILL_TRAP;
@@ -91,7 +95,7 @@ export function kAtP(M, i, px, py, pz, L) {
   const ty0 = M[o + 12], n0 = M[o + 5], n1 = M[o + 6], n2 = M[o + 7];
   let fe;
   if (ty0 === 0) { const om = M[o + 4], ce = -(ux * n0 + uy * n1 + uz * n2), sp = M[o + 19]; fe = Math.max(ce, 0) * (1 - om) + (0.55 + 0.45 * ce) * om;
-    if (sp > 0) fe += sp * Math.max(0.857 * uy + 0.515 * ce, 0) * (sp === 0.5 ? spillTrap(px - mx, py - my, pz - mz, n0, n2, M[o + 3], a, M[o + 13]) : 1); }
+    if (sp > 0) fe += sp * Math.max(0.857 * uy + 0.515 * ce, 0) * (sp === SHOP_SPILL ? spillTrap(px - mx, py - my, pz - mz, n0, n2, M[o + 3], a, M[o + 13]) : 1); }
   else if (ty0 === 1) fe = lobeStreet(-ux, -uy, -uz, n0, n2);
   else if (ty0 === 3) fe = lobePack(-ux, -uy, -uz, n0, n2);
   else fe = lobeBeam(-ux, -uy, -uz, n0, n2);

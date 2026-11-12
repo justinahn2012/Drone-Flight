@@ -48,7 +48,7 @@
 // Optional fields read here: lumens (street lamps), forward [x,0,z] (street lamp arm direction; else the nearest street),
 // beam {lumens} (headlights, default 1400 lm at 20,000 nits), nitsMax (animated: binning nominal).
 import * as THREE from 'three';
-import { sstep, lobeStreet, lobeBeam, lobePack, spillTrap, SPILL_TRAP, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM, packLM, lmKey, lmFileHeader, lmUnplanes, decodeRGB9E5 } from './seoul-nightlm.js';
+import { sstep, lobeStreet, lobeBeam, lobePack, spillTrap, SPILL_TRAP, SHOP_SPILL, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM, packLM, lmKey, lmFileHeader, lmUnplanes, decodeRGB9E5 } from './seoul-nightlm.js';
 export { NIGHT_LM };
 
 export const NITS = 0.1;                      // scene units per cd/m2 (night worlds)
@@ -70,7 +70,7 @@ export const SOURCE_TYPES = {
   neon:     { nits: 1000,  rgb: [1.0, 0.25, 0.55], omni: 0.7,  range: 18 },   // glass neon / LED flex 600-2000
   screen:   { nits: 260,   rgb: [0.8, 0.9, 1.0],   omni: 0.0,  range: 32 },   // LED video walls 180-350
   street:   { nits: 9000,  rgb: [1.0, 0.82, 0.62], omni: 0.0,  range: 34 },   // LED street head (flux from `lumens`)
-  store:    { nits: 80,    rgb: [0.9, 0.97, 1.0],  omni: 0.0,  range: 16, spill: 0.5 },   // shop interiors through glass 30-130
+  store:    { nits: 80,    rgb: [0.9, 0.97, 1.0],  omni: 0.0,  range: 16, spill: SHOP_SPILL },   // P8: 0.7   // shop interiors through glass 30-130
   tent:     { nits: 120,   rgb: [1.0, 0.55, 0.25], omni: 0.4,  range: 12 },   // pojangmacha tarp lit from inside
   vehicle:  { nits: 20000, rgb: [1.0, 0.95, 0.88], omni: 0.0,  range: 40 },   // head lamps (beam lobe, 25 m pool); tails ~250-1500 red
   // P3 lighting #4 (main-road architecture; C places them, contract P3-CD): a tower's glazed podium lobby (80-150 nits,
@@ -105,12 +105,24 @@ export const NIGHT_SKY = { zenith: [1.0, 0.72, 0.45], horizon: [1.3, 0.75, 0.38]
 // 3 sigma (P7's 13 taps stopped at e^-2 of the peak, so a lamp's blur ended in a hard oval), and the mirror is soft-compressed
 // at `knee` scene units before it is blurred (c / (1 + luma / knee)): a 20,000-nit headlamp no longer fills the kernel's support.
 export const MIRROR_STREAK = { clamp: 0.02, fade: [6, 12], farCut: 0.75, blur: 3.0, xBlur: 0.6, knee: 250, hi: { thr: 1.5, len: 0.04, fade: [15, 30], cut: 0.5 },
-  person: [0.5, 1.7, 0.32], vehicleShrink: 0.86 };
+  person: [0.5, 1.7, 0.32], personR: 45, vehicleShrink: 0.86 };
 // P7 (colour #1 / fpv #2): the sky's in-scatter through the canyon band (see skyMat): gain (A grades), band top (m, the
 // volume's top layer), max ray length (m), fluence cap per sample (cityHaze caps its two-point mean at 10), march steps
 export const SKY_AIR = { gain: 1.0, top: 50, maxT: 160, cap: 20, steps: 8 };
+// P8 (lighting #3, the sign wash, carried over three phases): every sign, screen and lit shop window is drawn at 1/8 res from
+// the camera (its emitter card, grown to >= 1.5 texels with its radiance divided to match), blurred to sigma `sigma` px of the
+// full frame, and added to the diffuse irradiance of whatever lies within `near`..`far` m of the blurred emitters' depth, at
+// `gain` x pi x the blurred radiance: the coloured halo a sign throws on its own wall, and the lit patch on the floor in front
+// of a shop window. `kinds`: the card kinds that wash (street heads, wall packs and headlamps are lit by the grid already).
+export const WASH = { scale: 8, sigma: 40, gain: 0.25, near: 1.5, far: 3.0, minTexels: 1.5, kinds: ['channel', 'lightbox', 'neon', 'screen', 'store', 'tent', 'lobby'] };
+// P8 (lighting #6, the rim): sky-facing verticals reflect the dome (three's own indirect-specular BRDF, roughness and
+// Fresnel), seen where the reflected ray points up (smoothstep(up[0], up[1], r.y)) x SSAO; gain 0 = off
+export const RIM = { gain: 1.0, up: [0.05, 0.5], vertical: 0.35 };
 // P7: how much of fpvcam's SSAO the lightmap term takes: walls 45 % (P3), up-faces x0.5 of that (fpv #4)
-export const AO_LM = { wall: 0.45, ground: 0.5 };
+// P8 (lighting #1): up-faces x0.25 (11 %): a crowd's screen-space AO still dimmed the shop pools on the walking street
+export const AO_LM = { wall: 0.45, ground: 0.25 };
+// P8 (graphics #4 / lighting #1: the walk0 floor reflected almost nothing): the pavers' puddle band of the noise, ~35 % (P6 0.56-0.64, ~25 %)
+export const PUDDLE = { paver: [0.51, 0.59] };
 // P7 perf #1: detail batches hidden past this distance (m, camera to the cell's sphere): see farDetail()
 export const FAR_DETAIL = { 'seoul:ao': 90, 'seoul:dr_glow': 90, 'seoul:dr_ac': 90 };
 export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
@@ -157,7 +169,7 @@ const QUALITY = {
   high: { K: 12, Kd: 8, Nd: 96, refl: 0.33, steam: 200, air: 16 },
 };
 const LW = 256;             // lights per record-texture row (2 texels each)
-export const SPILL = [0, 0.15, 0.3, 0.5];   // P5: a record's 2 spill bits (GLSL citySpill)
+export const SPILL = [0, 0.15, 0.3, SHOP_SPILL];   // P5: a record's 2 spill bits (GLSL citySpill); P8: code 3 = the shop glass, 0.7
 const spillCode = (v) => { let b = 0; for (let c = 1; c < 4; c++) if (Math.abs(SPILL[c] - v) < Math.abs(SPILL[b] - v)) b = c; return b; };
 const E_MIN = 0.01;         // irradiance (scene units, = 0.1 lux) below which a light is out of range
 const NONE = 0xffff;        // empty grid slot
@@ -278,6 +290,8 @@ uniform float uCityIrrGain;
 uniform vec4 uCityHaze;            // density (1/m), height scale (m), scatter albedo, max
 uniform vec3 uCitySkyGlow;         // haze colour with no local light (sky glow at the horizon, scene units)
 uniform sampler2D uCityAO; uniform float uCityAOOn; uniform vec2 uCityAOScale;   // fpvcam's SSAO (contract C3)
+uniform sampler2D tCityWash; uniform vec4 uCityWash;   // [P8-D] sign wash: gain, 1 / viewport w, 1 / viewport h, -
+uniform vec4 uCityRim; uniform vec3 uCityRimZen; uniform vec3 uCityRimHor;   // [P8-D] rim: gain, up0, up1, vertical |n.y| limit; the dome
 uniform vec4 uCityLM;              // P3 night lightmap: on, ground m/texel, facade m/texel, near (m)
 uniform vec4 uCityLMG;             // ground map x0, z0, texels w, h (the raster shares x0, z0 at 1 m)
 uniform vec4 uCityLMA;             // atlas w, h (the ground map at its origin), raster w, h
@@ -285,7 +299,7 @@ uniform vec4 uCityLMR;             // tCityL rows: edge table, raster
 uniform highp sampler2D tCityLM;
 bool cityLMOn = false;
 vec3 cityOct(vec2 e){ vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y)); if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * (step(0.0, v.xy) * 2.0 - 1.0); return normalize(v); }
-float citySpill(uint c){ return c == 3u ? 0.5 : float(c) * 0.15; }   // P5: SPILL[] (JS)
+float citySpill(uint c){ return c == 3u ? ${SHOP_SPILL.toFixed(2)} : float(c) * 0.15; }   // P5: SPILL[] (JS); P8 code 3 = 0.7
 float cityTrap(vec3 v, vec3 n, float A, float a, float hl){   // P6: spillTrap (seoul-nightlm.js), the shop glass's trapezoid
   float o = dot(v.xz, n.xz), dr = -v.y; if (o <= 0.0 || dr <= 0.0) return 0.0;
   float sh = sqrt(a * a + A) - a, wh = hl > 0.0 ? a + sh * 0.5 : sh * 0.5, le = max(0.0, abs(v.x * n.z - v.z * n.x) - wh);
@@ -364,6 +378,14 @@ vec3 cityVolUVW(vec3 wp){
   return vec3(g, (ly + 0.5) / ${VOLUME.heights.length.toFixed(1)});
 }
 float cityAOf(){ return uCityAOOn > 0.5 ? mix(1.0, texture(uCityAO, gl_FragCoord.xy * uCityAOScale).r, 0.85) : 1.0; }
+// [P8-D] the sign wash at this pixel: the blurred emitter radiance, kept where the surface lies within WASH.near..far m of the
+// emitters' (radiance-weighted) depth; pv = the view-space position. Irradiance (scene units): gain x pi x radiance.
+vec3 cityWash(vec3 pv){
+  if (uCityWash.x <= 0.0) return vec3(0.0);
+  vec4 w = texture(tCityWash, gl_FragCoord.xy * uCityWash.yz);
+  float l = dot(w.rgb, vec3(0.2126, 0.7152, 0.0722)); if (l <= 1e-6) return vec3(0.0);
+  return w.rgb * (uCityWash.x * 3.14159265 * (1.0 - smoothstep(${WASH.near.toFixed(2)}, ${WASH.far.toFixed(2)}, abs(w.a / l + pv.z))));
+}
 vec3 cityIrradiance(vec3 wp, vec3 nW){
   vec3 uvw = cityVolUVW(wp);
   vec4 A = texture(tCityIrrA, uvw), B = texture(tCityIrrB, uvw);
@@ -548,7 +570,9 @@ export function batchCells(sp, material, opt = {}) {
 // P5-A colour #4 (mixed white balance): wall packs are whatever the owner bought: 2700 / 4000 / 5700 K at 40 / 30 / 30 %
 // (mix: [cct, share, rgb], rgb = world-seoul lightRGB(cct) against the camera's 4300 K white), picked per pack by a hash
 // of its id; `cct` / `rgb` stay the first entry's for callers that read one colour.
-export const WALLPACK = { lumens: 1500, cct: 2700, rgb: [1.558, 0.902, 0.331], y: 4.35, w: 0.3, h: 0.12, every: 12, clearW: 0.45, clearS: 0.6,
+// P8 (lighting #5, a scallop where the camera looks: club270's tile face had one pack 14 m out): a shuttered front gets a pack
+// every everyShut m (was one at its middle), and a dark front (no lit shop) of >= 6 m one, so the long blank faces carry the pattern
+export const WALLPACK = { lumens: 1500, cct: 2700, rgb: [1.558, 0.902, 0.331], y: 4.35, w: 0.3, h: 0.12, every: 12, everyShut: 6, clearW: 0.45, clearS: 0.6,
   mix: [[2700, 0.4, [1.558, 0.902, 0.331]], [4000, 0.3, [1.069, 0.989, 0.902]], [5700, 0.3, [0.78, 1.031, 1.341]]] };
 const packHash = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; return (h >>> 0) / 4294967296; };
 function packCCT(id, P) { if (!P.mix) return [P.cct, P.rgb]; let u = packHash(id); for (const [K, w, rgb] of P.mix) { u -= w; if (u < 0) return [K, rgb]; } const l = P.mix[P.mix.length - 1]; return [l[0], l[2]]; }
@@ -563,7 +587,7 @@ export function wallPacks(lotInfo, emitters = [], P = WALLPACK) {
   const nits = Math.round(P.lumens / (Math.PI * P.w * P.h));
   for (const info of vals) {
     for (const ed of info.edges || []) {
-      const want = ed.streetSide && ed.open ? Math.max(1, Math.floor(ed.L / P.every)) : ed.front && info.shutter ? 1 : 0;
+      const want = ed.streetSide && ed.open ? Math.max(1, Math.floor(ed.L / P.every)) : ed.front && info.shutter ? Math.max(1, Math.floor(ed.L / P.everyShut)) : ed.front && info.shopLit === false && ed.L >= 6 ? 1 : 0;
       if (!want || ed.L < 2.4) continue;
       const wins = (info.windows || []).filter((w) => w.f === 1 && w.n[0] * ed.nx + w.n[2] * ed.nz > 0.9);
       const signs = nearby((ed.a[0] + ed.b[0]) / 2, (ed.a[1] + ed.b[1]) / 2).filter((e) => { const n = e.normal || [0, 0, 1]; const off = (e.pos[0] - ed.a[0]) * ed.nx + (e.pos[2] - ed.a[1]) * ed.nz; return off > -0.2 && off < 1.6 && n[0] * ed.nx + n[2] * ed.nz > 0.5; });
@@ -734,7 +758,7 @@ export function attach(world, emitters = [], ctx = {}) {
     const d = Math.sqrt(d2), ux = lx / d, uy = ly / d, uz = lz / d; L3[0] = ux; L3[1] = uy; L3[2] = uz;
     let fe;
     if (m.ty === LT.lambert) { const ce = -(ux * m.n[0] + uy * m.n[1] + uz * m.n[2]); fe = Math.max(ce, 0) * (1 - m.omni) + (0.55 + 0.45 * ce) * m.omni;
-      if (m.down > 0) fe += m.down * Math.max(0.857 * uy + 0.515 * ce, 0) * (m.down === 0.5 ? spillTrap(px - m.x, py - m.y, pz - m.z, m.n[0], m.n[2], m.A, m.a, m.hl) : 1); }   // P6: the shop's trapezoid
+      if (m.down > 0) fe += m.down * Math.max(0.857 * uy + 0.515 * ce, 0) * (m.down === SHOP_SPILL ? spillTrap(px - m.x, py - m.y, pz - m.z, m.n[0], m.n[2], m.A, m.a, m.hl) : 1); }   // P6: the shop's trapezoid
     else if (m.ty === LT.street) fe = lobeStreet(-ux, -uy, -uz, m.n[0], m.n[2]);
     else if (m.ty === LT.pack) fe = lobePack(-ux, -uy, -uz, m.n[0], m.n[2]);
     else fe = lobeBeam(-ux, -uy, -uz, m.n[0], m.n[2]);
@@ -1077,10 +1101,15 @@ export function attach(world, emitters = [], ctx = {}) {
     uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, uCityLMR: uLMR, tCityLM: { value: tLM },
     uCitySkyAir: { value: new THREE.Vector4(ctx.skyAir ?? SKY_AIR.gain, SKY_AIR.top, SKY_AIR.maxT, SKY_AIR.cap) },   // P7: the canyon sky's light term
     tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityDamp: { value: ctx.damp ?? 0.45 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
+    tCityWash: { value: null }, uCityWash: { value: new THREE.Vector4(0, 1, 1, 0) },
+    uCityRim: { value: new THREE.Vector4(ctx.rim ?? RIM.gain, RIM.up[0], RIM.up[1], RIM.vertical) },
+    uCityRimZen: { value: new THREE.Vector3(...NIGHT_SKY.zenith.map((v) => v * NS)) }, uCityRimHor: { value: new THREE.Vector3(...NIGHT_SKY.horizon.map((v) => v * NS)) },
     uCityStreak: { value: new THREE.Vector4(MIRROR_STREAK.clamp, MIRROR_STREAK.fade[0], MIRROR_STREAK.fade[1], MIRROR_STREAK.farCut) },
     uCityStreakHi: { value: new THREE.Vector4(MIRROR_STREAK.hi.thr, MIRROR_STREAK.hi.len, MIRROR_STREAK.hi.fade[0], MIRROR_STREAK.hi.fade[1]) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
+  const washBlack = (() => { const t = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1); t.needsUpdate = true; return t; })();
+  U.tCityWash.value = washBlack;
   if (lm.pending) { lm.apply(lm.pending); lm.pending = null; }
 
   // ------------------------------------------------------------------------------------- material patch
@@ -1113,6 +1142,13 @@ export function attach(world, emitters = [], ctx = {}) {
   // at half that (22.5 %): the screen-space AO of a crowd's bodies darkened the whole paver under them, a direct-light pool it
   // can't occlude; the bodies' own contact shadows are G1's decals (crowd-contact) and cityContact
   irradiance += (cityLMOn ? cityLMv * (uCityGain * mix(1.0, cityAOf(), cityNW.y > 0.7 ? ${(AO_LM.wall * AO_LM.ground).toFixed(3)} : ${AO_LM.wall.toFixed(3)})) : cityIrradiance(cityWorldPos(geometryPosition), cityNW)) * cityCC;
+  irradiance += cityWash(geometryPosition) * cityCC;   // [P8-D] the sign wash
+  #endif
+  #if defined( RE_IndirectSpecular )
+  if (uCityRim.x > 0.0 && abs(cityNW.y) < uCityRim.w) {   // [P8-D] the rim: a vertical face reflects the dome where its mirror ray climbs
+    vec3 cvW = normalize(cameraPosition - cityWorldPos(geometryPosition)), rW = reflect(-cvW, cityNW);
+    if (rW.y > 0.0) radiance += mix(uCityRimHor, uCityRimZen, smoothstep(0.0, ${(NIGHT_SKY.glowH * 3).toFixed(2)}, rW.y)) * (uCityRim.x * smoothstep(uCityRim.y, uCityRim.z, rW.y) * cityAOf());
+  }
   #endif`)
         .replace('#include <opaque_fragment>', `#include <opaque_fragment>\n  gl_FragColor.rgb = cityHaze(gl_FragColor.rgb, -vViewPosition);`);
       if (wet) {
@@ -1124,7 +1160,7 @@ export function attach(world, emitters = [], ctx = {}) {
     // P6 (plan #1 / graphics #1 / lighting #2: the wet mirror on the walking and club pavers): puddles on ~25 % of the pavers
     // (was ~13 %), the damp film 0.45 (uCityDamp, was 0.3), and a paver darkens less than asphalt when wet (x0.72 at full
     // wetness, asphalt x0.55: a sealed concrete paver soaks less), so the pavers keep their diffuse and gain the mirror
-    cityPud = uCityWet * (cityPaver ? smoothstep(0.56, 0.64, pn) : smoothstep(0.38, 0.62, pn));   // puddles: ~50 % of the asphalt, ~25 % of the pavers
+    cityPud = uCityWet * (cityPaver ? smoothstep(${PUDDLE.paver[0].toFixed(2)}, ${PUDDLE.paver[1].toFixed(2)}, pn) : smoothstep(0.38, 0.62, pn));   // puddles: ~50 % of the asphalt, ~35 % of the pavers (P8; P6 25 %)
     cityWet = max(cityPud, cityPaver ? uCityDamp : uCityWet * 0.35);                 // + the damp film
     diffuseColor.rgb *= mix(1.0, cityPaver ? 0.72 : 0.55, cityWet); }               // wet asphalt darkens`)
           .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
@@ -1157,7 +1193,7 @@ export function attach(world, emitters = [], ctx = {}) {
     totalEmissiveRadiance += mr * (F * cityWet * inb); }`);
       }
     };
-    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW5' : '|city4'); };
+    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW6' : '|city5'); };
     mat.needsUpdate = true;
     return true;
   }
@@ -1338,7 +1374,9 @@ export function attach(world, emitters = [], ctx = {}) {
   const cardList = stat.concat(mov), NCard = Math.max(1, cardList.length);
   const cards = new THREE.InstancedMesh(cardGeo, cardMat, NCard);
   const aRad = new THREE.InstancedBufferAttribute(new Float32Array(NCard * 3), 3), aFl = new THREE.InstancedBufferAttribute(new Float32Array(NCard * 3), 3);
-  cardGeo.setAttribute('aRad', aRad); cardGeo.setAttribute('aFl', aFl);
+  const aWash = new THREE.InstancedBufferAttribute(new Float32Array(NCard), 1);   // [P8-D] 1 = this card washes its surroundings (WASH.kinds)
+  cardGeo.setAttribute('aRad', aRad); cardGeo.setAttribute('aFl', aFl); cardGeo.setAttribute('aWash', aWash);
+  const washKinds = new Set(WASH.kinds);
   cards.frustumCulled = false; cards.count = cardList.length;
   const IM = cards.instanceMatrix.array;
   function setCard(i, e, ph = i) {   // plane facing e.normal (written directly: no Matrix4/Quaternion per call); ph: the flicker phase slot
@@ -1352,10 +1390,11 @@ export function attach(world, emitters = [], ctx = {}) {
     IM[o + 8] = nx; IM[o + 9] = ny; IM[o + 10] = nz; IM[o + 11] = 0;
     IM[o + 12] = e.pos[0] + nx * 0.05; IM[o + 13] = e.pos[1] + ny * 0.05; IM[o + 14] = e.pos[2] + nz * 0.05; IM[o + 15] = 1;
     const r = rad(e, _r); aRad.array[i * 3] = r[0]; aRad.array[i * 3 + 1] = r[1]; aRad.array[i * 3 + 2] = r[2];
+    aWash.array[i] = washKinds.has(e.kind) && !isMov(e) ? 1 : 0;
     aFl.array[i * 3] = e.flicker?.hz || 0; aFl.array[i * 3 + 1] = Math.min(1, e.flicker?.depth || 0); aFl.array[i * 3 + 2] = (ph * 2.399) % 6.283;
   }
   cardList.forEach((e, i) => setCard(i, e));
-  cards.instanceMatrix.needsUpdate = true; aRad.needsUpdate = true; aFl.needsUpdate = true;
+  cards.instanceMatrix.needsUpdate = true; aRad.needsUpdate = true; aFl.needsUpdate = true; aWash.needsUpdate = true;
   cards.instanceMatrix.setUsage(THREE.DynamicDrawUsage); aRad.setUsage(THREE.DynamicDrawUsage);
   const clipUp = [new THREE.Plane(new THREE.Vector3(0, 1, 0), -(mirror.y + 0.05))];
   const occMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide, clippingPlanes: clipUp });
@@ -1366,11 +1405,12 @@ export function attach(world, emitters = [], ctx = {}) {
   const blurMat = new THREE.ShaderMaterial({
     uniforms: { tSrc: { value: null }, uDir: { value: new THREE.Vector2() }, uTexel: { value: new THREE.Vector2() }, uKnee: { value: 0 } },
     vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-    // [P8-D] 13 taps at sigma = 2 taps (uDir = sigma / 2 texels per tap): the kernel ends at e^-4.5 of its peak, not P7's e^-2
-    // (a hard oval round every clipped lamp); uKnee > 0 soft-compresses each tap first (the first pass only)
+    // [P8-D] 19 taps at sigma = 3 taps (uDir = sigma / 3 texels per tap, 1.0 at the default): the kernel ends at e^-4.5 of its
+    // peak, not P7's e^-2 (a hard oval round every clipped lamp), and the step stays <= 1 texel (P6's 2.2 drew a lamp's
+    // reflection as copies: the coloured bands); uKnee > 0 soft-compresses each tap first (the first pass only)
     fragmentShader: `uniform sampler2D tSrc; uniform vec2 uDir; uniform vec2 uTexel; uniform float uKnee; varying vec2 vUv;
       void main(){ vec3 c = vec3(0.0); float w = 0.0;
-        for (int i = -6; i <= 6; i++) { float k = exp(-float(i * i) / 8.0); vec3 t = texture(tSrc, vUv + uDir * uTexel * float(i)).rgb;
+        for (int i = -9; i <= 9; i++) { float k = exp(-float(i * i) / 18.0); vec3 t = texture(tSrc, vUv + uDir * uTexel * float(i)).rgb;
           if (uKnee > 0.0) t /= 1.0 + dot(t, vec3(0.2126, 0.7152, 0.0722)) / uKnee;
           c += t * k; w += k; }
         gl_FragColor = vec4(c / w, 1.0); }`,
@@ -1380,16 +1420,20 @@ export function attach(world, emitters = [], ctx = {}) {
   const quadScene = new THREE.Scene(); quadScene.add(quad);
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const Rm = new THREE.Matrix4().set(1, 0, 0, 0, 0, -1, 0, 2 * mirror.y, 0, 0, 1, 0, 0, 0, 0, 1);
-  const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _sz = new THREE.Vector2(), _cp = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  const _wc = new THREE.Color(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _sz = new THREE.Vector2(), _cp = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
   const hidden = [];
   // [P7-D] fpv #1: the crowd and the traffic are black in the mirror (as the buildings are): a car's or a walker's body
   // now hides the shop glass and signs behind it in the puddle, instead of the reflection running through them as a
   // translucent column. Proxies, not the real meshes: a 12-triangle box per vehicle, 2 crossed quads per person, sharing
   // the life part's own instance buffers (vehicles: instanceMatrix; people: iPos = x, y, z, yaw; near and mid tiers), so
   // nothing is uploaded twice and the mirror pass adds ~6-8k triangles, not the 0.4-1 M of the bodies. Built lazily (the avatar tiers arrive after the build).
-  const moverOcc = new Map(), lifeGroup = () => world.parts?.life?.group || null;
+  // [P8-D] perf #6 (GL draws +10-41 in P7): P7 drew one proxy per source mesh (5 traffic types + near/lod1/mid x every avatar
+  // body: ~29 draws, more with G1's new bodies). Now two: every person's iPos (x, y, z, yaw) within MIRROR_STREAK.personR m is
+  // copied into one instanced quad pair, and every vehicle's world matrix x its type's box into one instanced unit box
+  // (a few KB a frame). The sources are read, never written.
+  const lifeGroup = () => world.parts?.life?.group || null;
   const personGeo = (() => { const [w, h, d] = MIRROR_STREAK.person;   // two crossed quads (4 tris, double-sided): a body's silhouette from any side
-    const a = new THREE.PlaneGeometry(w, h).translate(0, h / 2, 0), b = new THREE.PlaneGeometry(d, h).rotateY(Math.PI / 2).translate(0, h / 2, 0), g = new THREE.BufferGeometry();
+    const a = new THREE.PlaneGeometry(w, h).translate(0, h / 2, 0), b = new THREE.PlaneGeometry(d, h).rotateY(Math.PI / 2).translate(0, h / 2, 0), g = new THREE.InstancedBufferGeometry();
     const P = new Float32Array([...a.attributes.position.array, ...b.attributes.position.array]); g.setAttribute('position', new THREE.BufferAttribute(P, 3));
     g.setIndex([...a.index.array, ...Array.from(b.index.array, (i) => i + 4)]); a.dispose(); b.dispose(); return g; })();
   const personMat = new THREE.ShaderMaterial({
@@ -1398,34 +1442,53 @@ export function attach(world, emitters = [], ctx = {}) {
       gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0); }`,
     fragmentShader: 'void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }', side: THREE.DoubleSide,
   });
-  function moverProxy(src) {
-    if (src.isInstancedMesh && /^traffic-/.test(src.name || '')) {
-      const g = src.geometry; if (!g.boundingBox) g.computeBoundingBox();
-      const bb = g.boundingBox, sz = bb.getSize(new THREE.Vector3()), c = bb.getCenter(new THREE.Vector3()), k = MIRROR_STREAK.vehicleShrink;
-      const bg = new THREE.BoxGeometry(sz.x * k, sz.y * 0.92, sz.z * k).translate(c.x, bb.min.y + sz.y * 0.46, c.z);
-      const p = new THREE.InstancedMesh(bg, occMat, 1); p.instanceMatrix = src.instanceMatrix; p.count = 0;
-      p.frustumCulled = false; p.matrixAutoUpdate = false; p.name = 'mirror-occ-' + src.name; return p;
-    }
-    const ip = src.geometry?.attributes?.iPos;
-    // (not crowd-far: those people are 40 m+ out, under a pixel's worth of occlusion in a 1/4-res mirror, and ~2k bodies)
-    if (ip && /^crowd-/.test(src.name || '') && !/^crowd-(far|contact)/.test(src.name) && src.geometry.isInstancedBufferGeometry) {
-      const g = new THREE.InstancedBufferGeometry(); g.index = personGeo.index; g.setAttribute('position', personGeo.attributes.position); g.setAttribute('iPos', ip);
-      g.instanceCount = 0; g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
-      const p = new THREE.Mesh(g, personMat); p.frustumCulled = false; p.matrixAutoUpdate = false; p.name = 'mirror-occ-' + src.name; return p;
-    }
-    return null;
-  }
-  function syncMovers() {
-    const G = lifeGroup(); if (!G) return;
+  const occP = { cap: 0, attr: null, mesh: null }, occV = { cap: 0, mesh: null, box: new Map() };
+  const personOcc = new THREE.Mesh(personGeo, personMat); personOcc.frustumCulled = false; personOcc.matrixAutoUpdate = false; personOcc.name = 'mirror-occ-people'; personOcc.visible = false;
+  personGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5); personGeo.instanceCount = 0;
+  const vehicleOcc = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), occMat, 1); vehicleOcc.count = 0; vehicleOcc.frustumCulled = false; vehicleOcc.matrixAutoUpdate = false; vehicleOcc.name = 'mirror-occ-vehicles'; vehicleOcc.visible = false;
+  vehicleOcc.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mirror.scene.add(personOcc, vehicleOcc);
+  const _mA = new THREE.Matrix4(), _mB = new THREE.Matrix4();
+  const typeBox = (src) => {   // the vehicle type's box (shrunk) as a matrix on the unit box at y 0..1
+    let m = occV.box.get(src.geometry); if (m) return m;
+    const g = src.geometry; if (!g.boundingBox) g.computeBoundingBox();
+    const bb = g.boundingBox, sz = bb.getSize(new THREE.Vector3()), c = bb.getCenter(new THREE.Vector3()), k = MIRROR_STREAK.vehicleShrink;
+    m = new THREE.Matrix4().makeScale(sz.x * k, sz.y * 0.92, sz.z * k).setPosition(c.x, bb.min.y, c.z); occV.box.set(src.geometry, m); return m;
+  };
+  const shown = (o) => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+  function syncMovers(cp) {
+    const G = lifeGroup(); if (!G) { personOcc.visible = vehicleOcc.visible = false; return; }
+    let np = 0, nv = 0; const R2 = MIRROR_STREAK.personR * MIRROR_STREAK.personR;
     for (const src of G.children) {
-      if (!moverOcc.has(src)) { const p = moverProxy(src); moverOcc.set(src, p); if (p) mirror.scene.add(p); }
-      const p = moverOcc.get(src); if (!p) continue;
-      let vis = true; for (let o = src; o; o = o.parent) if (!o.visible) { vis = false; break; }
-      if (p.isInstancedMesh) { p.instanceMatrix = src.instanceMatrix; p.count = src.count; p.matrix.copy(src.matrixWorld); p.matrixWorldNeedsUpdate = true; p.visible = vis && src.count > 0; }
-      else { const n = src.geometry.instanceCount; p.geometry.instanceCount = Number.isFinite(n) ? n : 0; p.visible = vis && p.geometry.instanceCount > 0; }
+      const nm = src.name || '';
+      if (src.isInstancedMesh && /^traffic-/.test(nm)) {
+        if (!shown(src) || !(src.count > 0)) continue;
+        if (occV.cap < nv + src.count) {   // grow (rare: the fleet's caps)
+          const cap = Math.max(64, (nv + src.count) * 2), im = new THREE.InstancedBufferAttribute(new Float32Array(cap * 16), 16); im.setUsage(THREE.DynamicDrawUsage);
+          im.array.set(vehicleOcc.instanceMatrix.array.subarray(0, nv * 16)); vehicleOcc.instanceMatrix = im; occV.cap = cap;
+        }
+        const B = typeBox(src), A = src.instanceMatrix.array, D = vehicleOcc.instanceMatrix.array;
+        for (let i = 0; i < src.count; i++) { _mA.fromArray(A, i * 16).premultiply(src.matrixWorld).multiply(B); _mA.toArray(D, (nv++) * 16); }
+        continue;
+      }
+      const ip = src.geometry?.attributes?.iPos;
+      // (not crowd-far: 40 m+ out, under a pixel's worth of occlusion in a 1/4-res mirror)
+      if (!ip || !/^crowd-/.test(nm) || /^crowd-(far|contact)/.test(nm) || !src.geometry.isInstancedBufferGeometry || !shown(src)) continue;
+      const n = Number.isFinite(src.geometry.instanceCount) ? Math.min(src.geometry.instanceCount, ip.count) : 0; if (!n) continue;
+      if (occP.cap < np + n) {
+        const cap = Math.max(256, (np + n) * 2), at = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4); at.setUsage(THREE.DynamicDrawUsage);
+        if (occP.attr) at.array.set(occP.attr.array.subarray(0, np * 4));
+        personGeo.setAttribute('iPos', at); occP.attr = at; occP.cap = cap;
+      }
+      const S = ip.array, st = ip.itemSize || 4, D = occP.attr.array;
+      for (let i = 0; i < n; i++) { const o = i * st, dx = S[o] - cp.x, dz = S[o + 2] - cp.z; if (dx * dx + dz * dz > R2) continue; const q = (np++) * 4; D[q] = S[o]; D[q + 1] = S[o + 1]; D[q + 2] = S[o + 2]; D[q + 3] = S[o + 3]; }
     }
+    vehicleOcc.count = nv; vehicleOcc.visible = nv > 0; if (nv) { vehicleOcc.instanceMatrix.clearUpdateRanges(); vehicleOcc.instanceMatrix.addUpdateRange(0, nv * 16); vehicleOcc.instanceMatrix.needsUpdate = true; }
+    personGeo.instanceCount = np; personOcc.visible = np > 0; if (np) { occP.attr.clearUpdateRanges(); occP.attr.addUpdateRange(0, np * 4); occP.attr.needsUpdate = true; }
+    mirror.occluded = { people: np, vehicles: nv };
   }
-  mirror.movers = () => [...moverOcc.values()].filter(Boolean).length;
+  mirror.movers = () => (occP.attr ? 1 : 0) + (occV.cap ? 1 : 0);
+  mirror.syncMovers = syncMovers; mirror.occMeshes = { people: personOcc, vehicles: vehicleOcc };   // (tests)
   function renderMirror(r, cam) {
     const prev = r.getRenderTarget();
     const W = Math.max(64, Math.round((prev ? prev.viewport.z : r.getDrawingBufferSize(_sz).x) * Q.refl)), H = Math.max(36, Math.round((prev ? prev.viewport.w : _sz.y) * Q.refl));
@@ -1454,7 +1517,7 @@ export function attach(world, emitters = [], ctx = {}) {
       r.localClippingEnabled = lc;
       for (const h of hidden) { if (Array.isArray(h)) h[0].setVisibleAt(h[1], true); else h.visible = true; }
     }
-    syncMovers();
+    syncMovers(_cp.setFromMatrixPosition(cam.matrixWorld));
     r.render(mirror.scene, mc);
     _v.set(0, 0, -20).applyMatrix4(cam.matrixWorld); _v.y = mirror.y;
     _v2.copy(_v).add(UP).project(mc); _v.project(mc);
@@ -1462,7 +1525,7 @@ export function attach(world, emitters = [], ctx = {}) {
     blurMat.uniforms.uTexel.value.set(1 / W, 1 / H);
     r.autoClear = true;
     // P8: sigma in texels (P6 2.2-step = 6.6, P7 1.0-step = 3); the knee on the first pass; the cross pass at xBlur of it
-    const sg = mirror.streak.blur / 2, sx = mirror.streak.xBlur * 3 / 2;
+    const sg = mirror.streak.blur / 3, sx = mirror.streak.xBlur;   // texels per tap (sigma = 3 taps)
     blurMat.uniforms.tSrc.value = mirror.rt.texture; blurMat.uniforms.uDir.value.set(dx * sg, dy * sg); blurMat.uniforms.uKnee.value = mirror.streak.knee;
     r.setRenderTarget(mirror.rt2); r.render(quadScene, quadCam);
     blurMat.uniforms.tSrc.value = mirror.rt2.texture; blurMat.uniforms.uDir.value.set(-dy * sx, dx * sx); blurMat.uniforms.uKnee.value = 0;
@@ -1478,6 +1541,62 @@ export function attach(world, emitters = [], ctx = {}) {
       prevOBR?.call(this, r, sc, cam, target);
       if (!mirror.on || !cam?.isPerspectiveCamera) return;
       try { renderMirror(r, cam); } catch (e) { mirror.on = false; console.warn('[D] wet mirror off', e); }
+    };
+  }
+  // ------------------------------------------------------------------------------------- sign wash (P8, lighting #3)
+  // The emitter cards again (same instance buffers: no upload), from the camera at 1/WASH.scale res: rgb = radiance (each card
+  // grown to >= WASH.minTexels texels, its radiance divided by the growth so its flux holds), a = view depth x luma (so the
+  // blur keeps a radiance-weighted depth). Two blur passes to sigma WASH.sigma full-res px; the materials read it (cityWash).
+  const wash = { on: !!renderer && ctx.wash !== false, rt: null, rt2: null, frame: -1, ms: 0 };
+  if (wash.on) {
+    const washMat = new THREE.ShaderMaterial({
+      uniforms: { uT: U.uCityTime, uPx: { value: 0.01 } },
+      vertexShader: `attribute vec3 aRad; attribute vec3 aFl; attribute float aWash; uniform float uT; uniform float uPx; varying vec3 vRad; varying float vZ;
+        void main(){ mat4 m = modelMatrix * instanceMatrix; vec4 vc = viewMatrix * (m * vec4(0.0, 0.0, 0.0, 1.0)); float z = max(-vc.z, 0.1);
+          float sx = length(m[0].xyz), sy = length(m[1].xyz), g = ${WASH.minTexels.toFixed(2)} * uPx * z, kx = max(1.0, g / max(sx, 1e-3)), ky = max(1.0, g / max(sy, 1e-3));
+          vRad = aWash * aRad * (1.0 - aFl.y * (0.5 + 0.5 * sin(6.2831853 * aFl.x * uT + aFl.z))) / (kx * ky); vZ = z;
+          gl_Position = aWash > 0.5 ? projectionMatrix * viewMatrix * (m * vec4(position.x * kx, position.y * ky, 0.0, 1.0)) : vec4(2.0, 2.0, 2.0, 1.0); }`,
+      fragmentShader: 'varying vec3 vRad; varying float vZ; void main(){ gl_FragColor = vec4(vRad, vZ * dot(vRad, vec3(0.2126, 0.7152, 0.0722))); }',
+      side: THREE.FrontSide, depthTest: false, depthWrite: false, transparent: true,
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor,
+    });
+    const wcards = new THREE.InstancedMesh(cardGeo, washMat, NCard); wcards.instanceMatrix = cards.instanceMatrix; wcards.frustumCulled = false; wcards.name = 'wash-cards';
+    const washScene = new THREE.Scene(); washScene.add(wcards);
+    const wblur = blurMat.clone(); wblur.uniforms.uKnee.value = 0;
+    const wquad = new THREE.Mesh(quad.geometry, wblur); wquad.frustumCulled = false; const wqScene = new THREE.Scene(); wqScene.add(wquad);
+    // the blur keeps alpha (depth x luma) too
+    // 31 taps at sigma 5 taps, one texel apart (WASH.sigma / WASH.scale = 5 texels): no copies of a one-texel card
+    wblur.fragmentShader = wblur.fragmentShader.replace('vec3 c = vec3(0.0);', 'vec4 c = vec4(0.0);').replace('vec3 t = texture(tSrc, vUv + uDir * uTexel * float(i)).rgb;', 'vec4 t = texture(tSrc, vUv + uDir * uTexel * float(i));')
+      .replace('for (int i = -9; i <= 9; i++) { float k = exp(-float(i * i) / 18.0);', 'for (int i = -15; i <= 15; i++) { float k = exp(-float(i * i) / 50.0);')
+      .replace('if (uKnee > 0.0) t /= 1.0 + dot(t, vec3(0.2126, 0.7152, 0.0722)) / uKnee;', '').replace('gl_FragColor = vec4(c / w, 1.0);', 'gl_FragColor = c / w;');
+    wash.render = (r, cam) => {
+      const fr = r.info.render.frame; if (fr === wash.frame) return; wash.frame = fr;
+      const t0 = now(), prev = r.getRenderTarget(), vw = prev ? prev.viewport.z : r.getDrawingBufferSize(_sz).x, vh = prev ? prev.viewport.w : r.getDrawingBufferSize(_sz).y;
+      const W = Math.max(16, Math.round(vw / WASH.scale)), H = Math.max(9, Math.round(vh / WASH.scale));
+      if (!wash.rt || wash.rt.width !== W || wash.rt.height !== H) {
+        wash.rt?.dispose(); wash.rt2?.dispose();
+        const o = { type: THREE.HalfFloatType, depthBuffer: false, stencilBuffer: false };
+        wash.rt = new THREE.WebGLRenderTarget(W, H, o); wash.rt2 = new THREE.WebGLRenderTarget(W, H, o);
+      }
+      washMat.uniforms.uPx.value = 2 * Math.tan(THREE.MathUtils.degToRad(cam.fov || 70) / 2) / H / (cam.zoom || 1);
+      wcards.count = cards.count;
+      const ac = r.autoClear, cc = r.getClearAlpha(); r.getClearColor(_wc); r.autoClear = true; r.setClearColor(0x000000, 0);
+      r.setRenderTarget(wash.rt); r.render(washScene, cam);
+      const sg = WASH.sigma / WASH.scale / 5;   // texels per tap (sigma = 5 taps)
+      wblur.uniforms.uTexel.value.set(1 / W, 1 / H);
+      wblur.uniforms.tSrc.value = wash.rt.texture; wblur.uniforms.uDir.value.set(sg, 0); r.setRenderTarget(wash.rt2); r.render(wqScene, quadCam);
+      wblur.uniforms.tSrc.value = wash.rt2.texture; wblur.uniforms.uDir.value.set(0, sg); r.setRenderTarget(wash.rt); r.render(wqScene, quadCam);
+      r.setClearColor(_wc, cc); r.autoClear = ac; r.setRenderTarget(prev);
+      U.tCityWash.value = wash.rt.texture; U.uCityWash.value.set(ctx.washGain ?? WASH.gain, 1 / vw, 1 / vh, 1);
+      wash.ms = now() - t0;
+    };
+    wash.dispose = () => { wash.rt?.dispose(); wash.rt2?.dispose(); washMat.dispose(); wblur.dispose(); };
+    wash.setGain = (g) => { ctx.washGain = g; U.uCityWash.value.x = g; if (!(g > 0)) U.tCityWash.value = washBlack; return g; };
+    const prevOBR = scene.onBeforeRender;
+    scene.onBeforeRender = function (r, sc, cam, target) {
+      prevOBR?.call(this, r, sc, cam, target);
+      if (!wash.on || !cam?.isPerspectiveCamera || !((ctx.washGain ?? WASH.gain) > 0)) return;
+      try { wash.render(r, cam); } catch (e) { wash.on = false; U.uCityWash.value.x = 0; U.tCityWash.value = washBlack; console.warn('[D] sign wash off', e); }
     };
   }
   const mirrorBlack = (() => { const t = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1); t.needsUpdate = true; return t; })();
@@ -1873,7 +1992,7 @@ export function attach(world, emitters = [], ctx = {}) {
     return null;
   }
   const ctl = {
-    update, patchMaterial, qualityCap, lightmapAt, uniforms: U, sky, steam, mirror, debug, pool, stats, exportData, heightField: HF, probe, visibility,
+    update, patchMaterial, qualityCap, lightmapAt, uniforms: U, sky, steam, mirror, wash, debug, pool, stats, exportData, heightField: HF, probe, visibility,
     lightmapReady: lm.whenReady,   // P4: resolves true when the night lightmap is on the GPU, false if it never will be
     get lightmapData() { return lm.ready ? { key: lm.key, w: lm.size[0], h: lm.size[1], data: lm.data, valid: lm.valid, texels: lm.texels } : null; },
     setWet(v, damp) { U.uCityWet.value = v; if (damp != null) U.uCityDamp.value = damp; }, setHaze(d) { U.uCityHaze.value.x = d; }, setSkyAir(g) { U.uCitySkyAir.value.x = g; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
@@ -1881,9 +2000,9 @@ export function attach(world, emitters = [], ctx = {}) {
       for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex, U.tCityLM.value]) t.dispose();
       lm.disposed = true; lm.worker?.terminate(); lm.settle?.(false);
       U.tCityMirror.value?.dispose?.();
-      for (const p of moverOcc.values()) if (p) { mirror.scene.remove(p); p.geometry.dispose(); }
+      personGeo.dispose(); personMat.dispose(); vehicleOcc.geometry.dispose();
       personGeo.dispose(); personMat.dispose();
-      mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); mirrorBlack.dispose(); quad.geometry.dispose();
+      mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); mirrorBlack.dispose(); washBlack.dispose(); wash.dispose?.(); quad.geometry.dispose();
       if (steam) { steam.geometry.dispose(); steam.material.dispose(); scene.remove(steam); }
       if (air.mesh) { air.g.dispose(); air.mat.dispose(); scene.remove(air.mesh); }
       if (pool.mesh) pool.mesh.material.dispose();
@@ -1905,9 +2024,9 @@ export function attach(world, emitters = [], ctx = {}) {
 export function exportParams() {
   const OM = omega();
   return {
-    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, SKY_AIR, MIRROR_STREAK, AO_LM, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
+    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, SKY_AIR, MIRROR_STREAK, AO_LM, WASH, RIM, PUDDLE, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
     lobes: {
-      lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni) + spill max(0.857 (-D.y) + 0.515 ce, 0); ce = dot(lamp->point D, normal); spill = SPILL[record bits 14-15] = 0, 0.15, 0.3, 0.5 (P5; P4: a fascia box\'s soffit light, a Lambert lobe 31 deg out from straight down)' },
+      lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni) + spill max(0.857 (-D.y) + 0.515 ce, 0); ce = dot(lamp->point D, normal); spill = SPILL[record bits 14-15] = 0, 0.15, 0.3, 0.7 (P5, P8 0.5 -> 0.7; P4: a fascia box\'s soffit light, a Lambert lobe 31 deg out from straight down)' },
       pack: { id: 3, omega: OM.pack, f: 'P6 wall pack: c = -D.y 0.9397 + dot(D.xz, forward.xz) 0.342 (the axis 20 deg out from down); c <= 0.42: 0; else (0.3 + 0.7 c^2) smoothstep(0.42, 0.58, c)', flux: 'lumens (WALLPACK.lumens)' },
       street: { id: 1, omega: OM.street, f: 'min(1/cos^3, 30) x (1 - smoothstep(0.8 tc, 1.15 tc, tan)); tc = 3.1 along the road, 1.75 forward, 0.7 back', flux: 'lumens' },
       beam: { id: 2, omega: OM.beam, f: 'exp(-(th/0.42)^2) exp(-((tv+0.035)/sv)^2) (1 - smoothstep(-0.02, 0.015, tv)); sv 0.05 up, 0.16 down', flux: 'beam.lumens (1400) x min(1, nits/20000)' },
@@ -1921,5 +2040,5 @@ export function exportParams() {
   };
 }
 
-export const seoulLight = { attach, stringAxes, NITS, SOURCE_TYPES, NIGHT_SKY, SKY_AIR, MIRROR_STREAK, HAZE, VOLUME, HEADLIGHT, AIRLIGHT, emitterRadiance, heightField, splitCells, exportParams };
+export const seoulLight = { attach, stringAxes, NITS, SOURCE_TYPES, NIGHT_SKY, SKY_AIR, MIRROR_STREAK, WASH, RIM, PUDDLE, HAZE, VOLUME, HEADLIGHT, AIRLIGHT, emitterRadiance, heightField, splitCells, exportParams };
 export default seoulLight;

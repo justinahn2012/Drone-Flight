@@ -48,6 +48,16 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   const fs0 = C.sky.material.fragmentShader, u = C.uniforms.uCitySkyAir.value;
   ok(/citySkyAir\(cameraPosition/.test(fs0) && u.x === SKY_AIR.gain && u.y === SKY_AIR.top && C.sky.material.uniforms.uCitySkyAir === C.uniforms.uCitySkyAir, `sky air term wired (gain ${u.x}, top ${u.y} m)`);
   C.setSkyAir(0.5); ok(C.sky.material.uniforms.uCitySkyAir.value.x === 0.5, 'setSkyAir reaches the sky'); C.setSkyAir(SKY_AIR.gain);
+  // [P8 D] perf #6: the mirror's mover occluders are two draws (people within personR, every vehicle as its type's box)
+  { const g = new THREE.Group(), car = new THREE.InstancedMesh(new THREE.BoxGeometry(1.8, 1.5, 4.5).translate(0, 0.75, 0), new THREE.MeshBasicMaterial(), 4); car.name = 'traffic-car'; car.count = 3;
+    for (let i = 0; i < 3; i++) car.setMatrixAt(i, new THREE.Matrix4().makeTranslation(i * 10, 0, 0)); g.add(car);
+    const pg = new THREE.InstancedBufferGeometry(); pg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(9), 3)); const ip = new THREE.InstancedBufferAttribute(new Float32Array([0, 0, 5, 0, 1, 0, 6, 0, 2, 0, 7, 0, 90, 0, 0, 0, 0, 0, 80, 0]), 4); pg.setAttribute('iPos', ip); pg.instanceCount = 5;
+    for (const nm of ['crowd-near-a', 'crowd-mid-a', 'crowd-far']) { const m = new THREE.Mesh(nm === 'crowd-mid-a' ? pg.clone() : pg, new THREE.MeshBasicMaterial()); m.name = nm; g.add(m); }
+    const W = world({ parts: { life: { group: g } } }); g.updateMatrixWorld(true);
+    const C2 = attach(W, [], { layout: flat, steam: false, airlight: false, cull: false });
+    C2.mirror.syncMovers({ x: 0, y: 2, z: 0 }); const o = C2.mirror.occluded, vm = C2.mirror.occMeshes.vehicles, e = vm.instanceMatrix.array;
+    ok(o && o.people === 6 && o.vehicles === 3 && Math.abs(e[16 + 12] - 10) < 1e-4 && Math.abs(e[0] - 1.8 * MIRROR_STREAK.vehicleShrink) < 1e-4 && C2.mirror.occMeshes.people.geometry.instanceCount === 6, `mirror occluders merged: ${JSON.stringify(o)}`);
+    C2.dispose(); }
   ok(MIRROR_STREAK.clamp <= 0.02 && MIRROR_STREAK.fade[1] - MIRROR_STREAK.fade[0] === 6 && MIRROR_STREAK.blur <= 3.6, 'mirror streak (dim part): clamp <= 2 % of the frame, 6 m fade, blur sigma <= 3.6 texels');
   // [P8 D] the highlight part streaks 3-6 % of the frame and fades only past 15 m; the blur ends at <= 2 % of its peak; a knee
   const H = MIRROR_STREAK.hi;
