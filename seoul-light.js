@@ -48,7 +48,7 @@
 // Optional fields read here: lumens (street lamps), forward [x,0,z] (street lamp arm direction; else the nearest street),
 // beam {lumens} (headlights, default 1400 lm at 20,000 nits), nitsMax (animated: binning nominal).
 import * as THREE from 'three';
-import { sstep, lobeStreet, lobeBeam, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM, packLM, lmKey, lmFileHeader, lmUnplanes, decodeRGB9E5 } from './seoul-nightlm.js';
+import { sstep, lobeStreet, lobeBeam, lobePack, spillTrap, SPILL_TRAP, planLM, bakeLM, packMeta, MS as LM_MS, NIGHT_LM, packLM, lmKey, lmFileHeader, lmUnplanes, decodeRGB9E5 } from './seoul-nightlm.js';
 export { NIGHT_LM };
 
 export const NITS = 0.1;                      // scene units per cd/m2 (night worlds)
@@ -82,9 +82,15 @@ export const SOURCE_TYPES = {
 // Night sky (plan-L5 2F; P3 lighting #5 / color #4): zenith and horizon radiance in cd/m2. Seoul's sky at 1 am is the
 // city's own sodium/LED light scattered by a low deck: brown-grey overhead, orange-brown at the horizon, never blue.
 // [P5 integ, A's sky (p5/A-to-D-sky.md)] the visible dome at 1-2 cd/m2 so it reads 18-30 codes at the P5 exposure (EV -2..-3.7),
-// warm so R >= G >= B survives the grade; `bake` holds the P4 dome for the lightmap's ambient and the facade sky glow, so the
-// brighter visible sky adds no light to the street.
-export const NIGHT_SKY = { zenith: [1.0, 0.8, 0.55], horizon: [1.25, 0.8, 0.45], glowH: 0.3, bake: { zenith: [0.07, 0.06, 0.05], horizon: [0.5, 0.32, 0.18] } };
+// warm so R >= G >= B survives the grade.
+// P6 (plan #1, graphics #4 / bug: the bake's dome was 1/14 of the drawn one, so roofs and E's roof props baked black): the
+// volume and the lightmap now bake under the dome the camera sees (zenith / horizon; no separate `bake` dome). An open
+// up-face gets pi x the dome's mean, ~2.5 lux (was 0.64): roofs at 0.17-0.22 albedo read ~0.2-0.3 nits. In a canyon the
+// sky term is weighted by the probe's openness, so the street gains a few tenths of a lux at most (open plazas ~1.5 lux).
+// P6 colour #5 (the sky's hue: club270's sky read neutral-green (22,23,20)): zenith [1.0, 0.72, 0.45], horizon
+// [1.3, 0.75, 0.38], warmer so R > G > B survives the split-tone. `haze`: the haze's no-local-light glow (uCitySkyGlow),
+// held at its P5 value (0.6 x P5's bake horizon) so far facades don't wash out under the brighter dome.
+export const NIGHT_SKY = { zenith: [1.0, 0.72, 0.45], horizon: [1.3, 0.75, 0.38], glowH: 0.3, haze: [0.3, 0.192, 0.108] };
 // Air (lighting #3; P3 #5): haze extinction (1/m), scale height (m), scatter albedo, max opacity; byKind: the extinction
 // over each street kind (grill smoke and a closed canyon on the walking and club streets, open air on the main road),
 // blended over 8 m and stored per probe as a factor of `density`; airlight sprites. P3: an airlight sprite's radius is
@@ -139,7 +145,7 @@ const spillCode = (v) => { let b = 0; for (let c = 1; c < 4; c++) if (Math.abs(S
 const E_MIN = 0.01;         // irradiance (scene units, = 0.1 lux) below which a light is out of range
 const NONE = 0xffff;        // empty grid slot
 const DW = 48;              // dynamic window, cells per side (192 m at 4 m cells)
-const LT = { lambert: 0, street: 1, beam: 2 };
+const LT = { lambert: 0, street: 1, beam: 2, pack: 3 };   // P6: 3 = wall pack (lobePack)
 
 // ------------------------------------------------------------------------------------------------- lobes (JS == GLSL)
 // D = unit direction lamp -> point; f = the lamp's horizontal forward (street: arm toward the road; beam: heading).
@@ -154,9 +160,9 @@ export function lobeIntegral(fn) {
   }
   return s * (Math.PI / NT) * (2 * Math.PI / NP);
 }
-const OMEGA = { street: 12.3205, beam: 0.110828 };   // sr: lobeIntegral(lobeStreet), lobeIntegral(lobeBeam) (~0.2 s to derive)
+const OMEGA = { street: 12.3205, beam: 0.110828, pack: 2.222485 };   // sr: lobeIntegral(lobeStreet), lobeIntegral(lobeBeam), lobeIntegral(lobePack) (~0.2 s to derive)
 const omega = () => OMEGA;
-export const LOBES = { street: lobeStreet, beam: lobeBeam };
+export const LOBES = { street: lobeStreet, beam: lobeBeam, pack: lobePack };
 
 // ------------------------------------------------------------------------------------------------- packing helpers
 const _f32 = new Float32Array(1), _u32 = new Uint32Array(_f32.buffer);
@@ -263,12 +269,18 @@ uniform highp sampler2D tCityLM;
 bool cityLMOn = false;
 vec3 cityOct(vec2 e){ vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y)); if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * (step(0.0, v.xy) * 2.0 - 1.0); return normalize(v); }
 float citySpill(uint c){ return c == 3u ? 0.5 : float(c) * 0.15; }   // P5: SPILL[] (JS)
+float cityTrap(vec3 v, vec3 n, float A, float a, float hl){   // P6: spillTrap (seoul-nightlm.js), the shop glass's trapezoid
+  float o = dot(v.xz, n.xz), dr = -v.y; if (o <= 0.0 || dr <= 0.0) return 0.0;
+  float sh = sqrt(a * a + A) - a, wh = hl > 0.0 ? a + sh * 0.5 : sh * 0.5, le = max(0.0, abs(v.x * n.z - v.z * n.x) - wh);
+  return ${SPILL_TRAP.gain.toFixed(3)} * (1.0 - smoothstep(${SPILL_TRAP.side[0].toFixed(3)} * o, ${SPILL_TRAP.side[1].toFixed(3)} * o + ${SPILL_TRAP.side[2].toFixed(3)}, le)) * (1.0 - smoothstep(${SPILL_TRAP.far[0].toFixed(3)}, ${SPILL_TRAP.far[1].toFixed(3)}, o / max(dr, 0.3))); }
 float cityStreet(vec3 D, vec3 f){ float c = -D.y; if (c <= 1e-4) return 0.0; float hl = length(D.xz), t = hl / c;
   float fw = hl > 1e-5 ? dot(D.xz, f.xz) / hl : 0.0; float tc = fw >= 0.0 ? mix(3.1, 1.75, fw) : mix(3.1, 0.7, -fw);
   return min(1.0 / (c * c * c), 30.0) * (1.0 - smoothstep(tc * 0.8, tc * 1.15, t)); }
 float cityBeam(vec3 D, vec3 f){ float fw = dot(D.xz, f.xz); if (fw <= 1e-4) return 0.0;
   float th = (D.x * f.z - D.z * f.x) / fw, tv = D.y / fw, dv = tv + 0.035, sv = dv > 0.0 ? 0.05 : 0.16;
   return exp(-(th * th) / 0.1764) * exp(-(dv * dv) / (sv * sv)) * (1.0 - smoothstep(-0.02, 0.015, tv)); }
+float cityPack(vec3 D, vec3 f){ float c = -D.y * 0.9397 + dot(D.xz, f.xz) * 0.342; if (c <= 0.42) return 0.0;   // P6: lobePack
+  return (0.3 + 0.7 * c * c) * smoothstep(0.42, 0.58, c); }
 vec3 cityWorldPos(vec3 pv){ return transpose(mat3(viewMatrix)) * (pv - viewMatrix[3].xyz); }
 void cityOne(const in highp usampler2D tl, int idx, bool spec, bool lmSkip, vec3 wp, vec3 geometryPosition, vec3 geometryNormal, vec3 geometryViewDir, vec3 geometryClearcoatNormal, PhysicalMaterial material, inout ReflectedLight reflectedLight){
   ivec2 b0 = ivec2((idx & ${LW - 1}) * 2, idx >> 8);
@@ -287,7 +299,8 @@ void cityOne(const in highp usampler2D tl, int idx, bool spec, bool lmSkip, vec3
   if (dOff && !spec) return;
   vec3 I = ci > 0u ? texelFetch(tCityLC, ivec2(int(ci - 1u) & 255, int(ci - 1u) >> 8), 0).rgb : vec3(unpackHalf2x16(rb.y), br.x);
   float ce = -dot(l, n), omni = float(m >> 26u) / 63.0;
-  float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, omni) + citySpill((m >> 14u) & 3u) * max(0.857 * l.y + 0.515 * ce, 0.0) : ty == 1u ? cityStreet(-l, n) : cityBeam(-l, n);   // P4: + the spill (down, 31 deg out)
+  uint spc = (m >> 14u) & 3u;
+  float fe = ty == 0u ? mix(max(ce, 0.0), 0.55 + 0.45 * ce, omni) + citySpill(spc) * max(0.857 * l.y + 0.515 * ce, 0.0) * (spc == 3u ? cityTrap(v, n, aa.x, a, aa.y) : 1.0) : ty == 1u ? cityStreet(-l, n) : ty == 3u ? cityPack(-l, n) : cityBeam(-l, n);   // P4: + the spill (down, 31 deg out)
   float q = d / br.y; q = 1.0 - q * q * q * q;
   uint fh = (m >> 16u) & 63u; float fl = 1.0;
   if (fh != 0u) fl = 1.0 - float((m >> 22u) & 15u) / 15.0 * (0.5 + 0.5 * sin(6.2831853 * float(fh) * 0.25 * uCityTime + mod(float(idx) * 2.399, 6.2831853)));
@@ -645,7 +658,10 @@ export function attach(world, emitters = [], ctx = {}) {
     const c = e.rgb || T.rgb, cl = Math.max(1e-4, lumaOf(c));
     let nits = e.nits ?? T.nits; if (nominal) nits = Math.max(nits, e.nitsMax ?? 0, T.nits * 0.6);
     let ty = LT.lambert, I0, peak;
-    if (e.kind === 'street' && n[1] < -0.7) {
+    if (e.role === 'wallpack' && n[1] < -0.7) {   // P6: the wall pack's pool lobe
+      const [fx, fz] = streetForward(e), flux = e.lumens ?? nits * Math.PI * A;
+      I0 = flux / OM.pack * NS / cl; n[0] = fx; n[1] = 0; n[2] = fz; ty = LT.pack; peak = I0 * cl;
+    } else if (e.kind === 'street' && n[1] < -0.7) {
       const [fx, fz] = streetForward(e), flux = e.lumens ?? nits * Math.PI * A;
       I0 = flux / OM.street * NS / cl; n[0] = fx; n[1] = 0; n[2] = fz; ty = LT.street; peak = I0 * cl * 30;
     } else if (e.beam) {
@@ -674,8 +690,10 @@ export function attach(world, emitters = [], ctx = {}) {
     if (d2 >= m.range * m.range) return 0;
     const d = Math.sqrt(d2), ux = lx / d, uy = ly / d, uz = lz / d; L3[0] = ux; L3[1] = uy; L3[2] = uz;
     let fe;
-    if (m.ty === LT.lambert) { const ce = -(ux * m.n[0] + uy * m.n[1] + uz * m.n[2]); fe = Math.max(ce, 0) * (1 - m.omni) + (0.55 + 0.45 * ce) * m.omni + m.down * Math.max(0.857 * uy + 0.515 * ce, 0); }
+    if (m.ty === LT.lambert) { const ce = -(ux * m.n[0] + uy * m.n[1] + uz * m.n[2]); fe = Math.max(ce, 0) * (1 - m.omni) + (0.55 + 0.45 * ce) * m.omni;
+      if (m.down > 0) fe += m.down * Math.max(0.857 * uy + 0.515 * ce, 0) * (m.down === 0.5 ? spillTrap(px - m.x, py - m.y, pz - m.z, m.n[0], m.n[2], m.A, m.a, m.hl) : 1); }   // P6: the shop's trapezoid
     else if (m.ty === LT.street) fe = lobeStreet(-ux, -uy, -uz, m.n[0], m.n[2]);
+    else if (m.ty === LT.pack) fe = lobePack(-ux, -uy, -uz, m.n[0], m.n[2]);
     else fe = lobeBeam(-ux, -uy, -uz, m.n[0], m.n[2]);
     if (fe <= 0) return 0;
     let q = d / m.range; q = 1 - q * q * q * q;
@@ -835,7 +853,7 @@ export function attach(world, emitters = [], ctx = {}) {
   // the ground a probe sees widens with its height: blur radius (cells) ~ height / 2 cells, capped at 6 (P3: per layer)
   const blurR = YS.map((h) => Math.min(6, Math.round(h / (2 * cell)))); let blurs = new Map();
   let EgL = blurR.map((r) => { if (!blurs.has(r)) blurs.set(r, blur(Eg, r)); return blurs.get(r); }); marks.blur = +(now() - tV0).toFixed(0);
-  const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.bake.zenith[j] + NIGHT_SKY.bake.horizon[j]) * NS * Math.PI);   // pi L of the dome
+  const skyL = [0, 1, 2].map((j) => 0.5 * (NIGHT_SKY.zenith[j] + NIGHT_SKY.horizon[j]) * NS * Math.PI);   // pi L of the dome (P6: the drawn one)
   const skyLum = lumaOf(skyL);
   const cityF = new Float32Array(NL * 3); { const CL = ctx.cityLux ?? VOLUME.cityLux, cr = VOLUME.cityRGB, cl = lumaOf(cr); for (let k = 0; k < NL; k++) for (let j = 0; j < 3; j++) cityF[k * 3 + j] = (CL[k] ?? CL[CL.length - 1]) * NS * cr[j] / cl; }
   const VA = new Float32Array(NP * 4), VB = new Float32Array(NP * 4); let ok = new Uint8Array(NP);
@@ -933,7 +951,7 @@ export function attach(world, emitters = [], ctx = {}) {
     metas.forEach((m, i) => packMeta(m, M, i, i >= animBase || (m.flick?.hz > 0 && m.flick?.depth > 0) ? 1 : 0));   // screens and flicker stay per fragment
     // the key: everything the bake reads (the volume's indirect is a function of the same inputs and constants)
     const tK = now();
-    lm.key = lmKey({ consts: { v: NIGHT_LM.version, NIGHT_LM: { ...NIGHT_LM, file: 0 }, VOLUME, NIGHT_SKY, HAZE, SOURCE_TYPES, OMEGA, E_MIN, NS }, M, n: stat.length, layout: ctx.layout, grid: [x0, z0, cell, gw, gh, plan.atlasW, plan.atlasH, plan.nE] });
+    lm.key = lmKey({ consts: { v: NIGHT_LM.version, NIGHT_LM: { ...NIGHT_LM, file: 0 }, VOLUME, NIGHT_SKY, HAZE, SOURCE_TYPES, OMEGA, E_MIN, NS, SPILL_TRAP }, M, n: stat.length, layout: ctx.layout, grid: [x0, z0, cell, gw, gh, plan.atlasW, plan.atlasH, plan.nE] });
     lm.keyMs = +(now() - tK).toFixed(1);
     // P5 lighting #3: the bake drops the urban floor (cityF, per layer) near the wall packs (WP: x, y, z each)
     const WP = new Float32Array(packs.length * 3); packs.forEach((e, i) => WP.set(e.pos, i * 3));
@@ -1010,11 +1028,11 @@ export function attach(world, emitters = [], ctx = {}) {
     uCityDyn: { value: new THREE.Vector4(0, 0, DW, 0) },
     uCityTime: { value: 0 }, uCityGain: { value: ctx.gain ?? 1 }, uCityIrrGain: { value: ctx.irrGain ?? 1 },
     uCityHaze: { value: new THREE.Vector4(ctx.haze?.density ?? HAZE.density, ctx.haze?.height ?? HAZE.height, ctx.haze?.scatter ?? HAZE.scatter, ctx.haze?.max ?? HAZE.max) },
-    uCitySkyGlow: { value: new THREE.Vector3(...NIGHT_SKY.bake.horizon.map((v) => v * NS * 0.6)) },
+    uCitySkyGlow: { value: new THREE.Vector3(...NIGHT_SKY.haze.map((v) => v * NS)) },
     uCityAO: aoU?.uAO || { value: blackTex }, uCityAOOn: aoU?.uAOOn || { value: 0 }, uCityAOScale: aoU?.uAOScale || { value: new THREE.Vector2(1, 1) },
     uCityCar: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uCityCarS: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) },
     uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, uCityLMR: uLMR, tCityLM: { value: tLM },
-    tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityDamp: { value: ctx.damp ?? 0.3 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
+    tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityDamp: { value: ctx.damp ?? 0.45 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
   if (lm.pending) { lm.apply(lm.pending); lm.pending = null; }
@@ -1054,9 +1072,12 @@ export function attach(world, emitters = [], ctx = {}) {
   { vec3 wpw = cityWorldPos(-vViewPosition);
     float pn = cityNoise(wpw.xz * 0.21) * 0.6 + cityNoise(wpw.xz * 0.83 + 7.1) * 0.3 + cityNoise(wpw.xz * 3.1) * 0.1;
     ${paver ? 'bool cityPaver = sgLi > 0;' : 'bool cityPaver = false;'}                   // P4 lighting #5: C's ground layers (0 asphalt, 1-2 pavers)
-    cityPud = uCityWet * (cityPaver ? smoothstep(0.63, 0.70, pn) : smoothstep(0.38, 0.62, pn));   // puddles: ~50 % of the asphalt, ~15 % of the pavers
+    // P6 (plan #1 / graphics #1 / lighting #2: the wet mirror on the walking and club pavers): puddles on ~25 % of the pavers
+    // (was ~13 %), the damp film 0.45 (uCityDamp, was 0.3), and a paver darkens less than asphalt when wet (x0.72 at full
+    // wetness, asphalt x0.55: a sealed concrete paver soaks less), so the pavers keep their diffuse and gain the mirror
+    cityPud = uCityWet * (cityPaver ? smoothstep(0.56, 0.64, pn) : smoothstep(0.38, 0.62, pn));   // puddles: ~50 % of the asphalt, ~25 % of the pavers
     cityWet = max(cityPud, cityPaver ? uCityDamp : uCityWet * 0.35);                 // + the damp film
-    diffuseColor.rgb *= mix(1.0, 0.55, cityWet); }                                  // wet asphalt darkens`)
+    diffuseColor.rgb *= mix(1.0, cityPaver ? 0.72 : 0.55, cityWet); }               // wet asphalt darkens`)
           .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
   { vec3 wpw = cityWorldPos(-vViewPosition);
     vec2 rip = (vec2(cityNoise(wpw.xz * 2.3 + uCityTime * 0.2), cityNoise(wpw.zx * 2.3 - uCityTime * 0.17)) - 0.5) * 0.06 * (1.0 - cityWet);
@@ -1321,7 +1342,7 @@ export function attach(world, emitters = [], ctx = {}) {
   const airI = new Float32Array(all.length), airCol = [];   // per emitter: effective intensity (scene cd, luminance) + colour
   const glowOf = (e, m) => {
     const c = e.rgb || (SOURCE_TYPES[e.kind] || SOURCE_TYPES.lightbox).rgb, cl = Math.max(1e-4, lumaOf(c));
-    const I = m.ty === LT.lambert ? (e.nits ?? 0) * NS * m.A * 0.5 : m.ty === LT.street ? m.peak / 30 * 2.2 : m.peak * 0.3;
+    const I = m.ty === LT.lambert ? (e.nits ?? 0) * NS * m.A * 0.5 : m.ty === LT.street ? m.peak / 30 * 2.2 : m.ty === LT.pack ? m.peak * 2.2 : m.peak * 0.3;
     return [I, [c[0] / cl, c[1] / cl, c[2] / cl]];
   };
   if (air.n > 0) {
@@ -1713,6 +1734,7 @@ export function exportParams() {
     version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
     lobes: {
       lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni) + spill max(0.857 (-D.y) + 0.515 ce, 0); ce = dot(lamp->point D, normal); spill = SPILL[record bits 14-15] = 0, 0.15, 0.3, 0.5 (P5; P4: a fascia box\'s soffit light, a Lambert lobe 31 deg out from straight down)' },
+      pack: { id: 3, omega: OM.pack, f: 'P6 wall pack: c = -D.y 0.9397 + dot(D.xz, forward.xz) 0.342 (the axis 20 deg out from down); c <= 0.42: 0; else (0.3 + 0.7 c^2) smoothstep(0.42, 0.58, c)', flux: 'lumens (WALLPACK.lumens)' },
       street: { id: 1, omega: OM.street, f: 'min(1/cos^3, 30) x (1 - smoothstep(0.8 tc, 1.15 tc, tan)); tc = 3.1 along the road, 1.75 forward, 0.7 back', flux: 'lumens' },
       beam: { id: 2, omega: OM.beam, f: 'exp(-(th/0.42)^2) exp(-((tv+0.035)/sv)^2) (1 - smoothstep(-0.02, 0.015, tv)); sv 0.05 up, 0.16 down', flux: 'beam.lumens (1400) x min(1, nits/20000)' },
     },

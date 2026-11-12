@@ -25,7 +25,8 @@
 // P5: 3 (store spill 0.5 and SPILL codes, omni 0.3 on signs, the falling urban floor, no floor within packFloorM of a wall
 // pack, the sign wash: a Lambert record with omni >= washOmni lights its own wall within washM as if the wall faced it at
 // washCos x (1 - d / washM)^2: the colour of a box or a letter on the wall round it).
-export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 3, file: './seoul/light/night-lm.bin', dilate: 6,
+// P6: 4 (the drawn sky dome in the bake, the wall-pack pool lobe, the store spill's trapezoid).
+export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 4, file: './seoul/light/night-lm.bin', dilate: 6,
   packFloorM: 3, washM: 1.5, washCos: 0.25, washOmni: 0.25 };
 
 // ---- lobes (seoul-light.js imports these: one copy for JS, the GLSL mirror lives there)
@@ -40,6 +41,30 @@ export function lobeBeam(dx, dy, dz, fx, fz) {      // low beam: +-23 deg wide, 
   const fw = dx * fx + dz * fz; if (fw <= 1e-4) return 0;
   const th = (dx * fz - dz * fx) / fw, tv = dy / fw, dv = tv + 0.035, sv = dv > 0 ? 0.05 : 0.16;
   return Math.exp(-(th * th) / (0.42 * 0.42)) * Math.exp(-(dv * dv) / (sv * sv)) * (1 - sstep(-0.02, 0.015, tv));
+}
+
+// P6 (lighting #3, plan #1 "light pools from the wall lamps"): a wall pack is not a type-II street head (that lobe lays an
+// even sheet of light to its cutoff, so P5's packs drew no pool and no scallop). A full-cutoff wall pack is a 120 deg cone
+// about an axis 20 deg out from straight down, brightest on the axis (0.3 + 0.7 cos^2): with the plain 1/d^2 that is a
+// pool on the pavers that falls to ~1/8 at 7 m out, and a V scallop on the wall under it (the wall 1 m below the fixture
+// gets ~4x the pavers under it). D = lamp -> point, f = the forward off the wall.
+export function lobePack(dx, dy, dz, fx, fz) {
+  const c = -dy * 0.9397 + (dx * fx + dz * fz) * 0.342;   // cos to the axis
+  if (c <= 0.42) return 0;
+  return (0.3 + 0.7 * c * c) * sstep(0.42, 0.58, c);
+}
+
+// P6 (lighting #5, plan #1 "shop spill on the pavers"): a shop's glass spill (SPILL code 3, 0.5) was a broad Lambert lobe,
+// a wash with no shape. Now it lands as the window's trapezoid: within ~1.6-2.4 x the drop below the glass's centre out from
+// the facade (~3 m for a ground-floor shop) and within the glass's half width + 0.4-0.8 x the distance out to the side (the
+// jambs' spread), at gain x the lobe so the spill's flux is unchanged (2.2: tests/seoul-light.mjs integrates it).
+// v = point - light centre, n = the face's horizontal normal, A / a / hl = the record's area, half length, signed half length.
+export const SPILL_TRAP = { side: [0.4, 0.8, 0.15], far: [1.6, 2.4], gain: 2.2 };
+export function spillTrap(vx, vy, vz, nx, nz, A, a, hl) {
+  const out = vx * nx + vz * nz, drop = -vy; if (out <= 0 || drop <= 0) return 0;
+  const sh = Math.sqrt(a * a + A) - a, Wh = hl > 0 ? a + sh / 2 : sh / 2, T = SPILL_TRAP;
+  const le = Math.max(0, Math.abs(vx * nz - vz * nx) - Wh);
+  return T.gain * (1 - sstep(T.side[0] * out, T.side[1] * out + T.side[2], le)) * (1 - sstep(T.far[0], T.far[1], out / Math.max(drop, 0.3)));
 }
 
 // ---- packed light metas (seoul-light.js meta() -> packMeta): MS floats per light
@@ -60,8 +85,10 @@ export function kAtP(M, i, px, py, pz, L) {
   const d = Math.sqrt(d2), ux = lx / d, uy = ly / d, uz = lz / d; L[0] = ux; L[1] = uy; L[2] = uz;
   const ty0 = M[o + 12], n0 = M[o + 5], n1 = M[o + 6], n2 = M[o + 7];
   let fe;
-  if (ty0 === 0) { const om = M[o + 4], ce = -(ux * n0 + uy * n1 + uz * n2); fe = Math.max(ce, 0) * (1 - om) + (0.55 + 0.45 * ce) * om + M[o + 19] * Math.max(0.857 * uy + 0.515 * ce, 0); }
+  if (ty0 === 0) { const om = M[o + 4], ce = -(ux * n0 + uy * n1 + uz * n2), sp = M[o + 19]; fe = Math.max(ce, 0) * (1 - om) + (0.55 + 0.45 * ce) * om;
+    if (sp > 0) fe += sp * Math.max(0.857 * uy + 0.515 * ce, 0) * (sp === 0.5 ? spillTrap(px - mx, py - my, pz - mz, n0, n2, M[o + 3], a, M[o + 13]) : 1); }
   else if (ty0 === 1) fe = lobeStreet(-ux, -uy, -uz, n0, n2);
+  else if (ty0 === 3) fe = lobePack(-ux, -uy, -uz, n0, n2);
   else fe = lobeBeam(-ux, -uy, -uz, n0, n2);
   if (fe <= 0) return 0;
   let q = d / range; q = 1 - q * q * q * q;

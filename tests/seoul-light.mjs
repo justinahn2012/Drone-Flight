@@ -14,7 +14,20 @@ const world = (extra = {}) => ({ scene: new THREE.Scene(), ...extra });
 const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width: 10, kind: 'main' }, { id: 't', points: [[0, -60], [0, 60]], width: 10, kind: 'main' }] };
 
 // 0 the hardcoded lobe integrals match their functions
-{ const P = exportParams().lobes; for (const k of ['street', 'beam']) { const w = lobeIntegral(LOBES[k]); ok(approx(w, P[k].omega, 1e-4), `omega ${k} ${w} vs ${P[k].omega}`); } }
+{ const P = exportParams().lobes; for (const k of ['street', 'beam', 'pack']) { const w = lobeIntegral(LOBES[k]); ok(approx(w, P[k].omega, 1e-4), `omega ${k} ${w} vs ${P[k].omega}`); } }
+// 0b P6: the shop spill's trapezoid keeps the spill's flux on the ground (spillTrap's gain), and the wall pack draws a pool
+// (a lit wall face under it brighter than the pavers, the pavers under it several x those 7 m out)
+{ const { spillTrap, lobePack } = await import('../seoul-nightlm.js');
+  const W = 3, H = 2.5, A = W * H, a = (W - H) / 2, my = 1.55, gy = 0.15;
+  const E = (px, pz, trap) => { let lx = -px, ly = my - gy, lz = -pz; const x = -lx, c = Math.max(-a, Math.min(a, x)); lx += c;
+    const d2 = lx * lx + ly * ly + lz * lz, d = Math.sqrt(d2), uy = ly / d, ce = -lz / d; let fe = Math.max(0.857 * uy + 0.515 * ce, 0); if (fe <= 0) return 0;
+    if (trap) fe *= spillTrap(px, gy - my, pz, 0, 1, A, a, a); return fe * uy / (d2 + A * 0.3183); };
+  let s0 = 0, s1 = 0; for (let x = -30; x < 30; x += 0.1) for (let z = -5; z < 30; z += 0.1) { s0 += E(x, z, false); s1 += E(x, z, true); }
+  ok(s1 / s0 > 0.9 && s1 / s0 < 1.1, `shop spill trapezoid keeps the flux: ${(s1 / s0).toFixed(3)}`);
+  ok(E(0, 1, true) > 2 * E(0, 1, false) && E(0, 4, true) === 0 && E(4, 1, true) === 0, 'trapezoid: brighter in front of the glass, dark 4 m out and 4 m to the side');
+  const g = (dx, dy, dz) => { const d = Math.hypot(dx, dy, dz); return lobePack(dx / d, dy / d, dz / d, 1, 0) * (-dy / d) / (d * d); };   // pavers 4.2 m under, forward +x
+  const w1 = (() => { const dx = -0.24, dy = -1, d = Math.hypot(dx, dy); return lobePack(dx / d, dy / d, 0, 1, 0) * (0.24 / d) / (d * d); })();
+  ok(g(0.5, -4.2, 0) > 4 * g(7, -4.2, 0) && w1 > 2 * g(0.5, -4.2, 0) && g(-1, -4.2, 0) >= 0 && lobePack(0, 1, 0, 1, 0) === 0, `wall pack pool: under ${g(0.5, -4.2, 0).toFixed(4)}, 7 m out ${g(7, -4.2, 0).toFixed(4)}, wall 1 m below ${w1.toFixed(4)}`); }
 // 1 flux
 {
   const C = attach(world(), [{ id: 'street:0', pos: [20, 8.7, -6], normal: [0, -1, 0], w: 0.56, h: 0.24, rgb: [1, 0.93, 0.82], nits: 9000, kind: 'street', lumens: 12000 }], { layout: flat, steam: false, airlight: false, cull: false });
