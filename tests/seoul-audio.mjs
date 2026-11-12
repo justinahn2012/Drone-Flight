@@ -129,10 +129,14 @@ function rhythm(L, R, lo = 300, hi = 1000) {
   return [p28 / pall, sd / mu];
 }
 const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.23], [-50.95, 27.11]], CLUB = [[64.93, 125.07], [63.73, 129.56], [37.53, 216.53]];
+// P8 (sound #2): the station hover's dynamics (seed 11, t0 30: green into red). Main ef3369b: p95 - p50 4.4 dB, CV 0.48,
+// -2.9 LU (flat and hot); P8: 5.6, 0.60, -5.3. The level cap keeps the arterial from going back to a steady wash; the
+// station >= walking + 4.5 gate above holds its floor
+const GATE_STATION_DYN = { sp: 5, cv: 0.55, lu: -4 };
 {
   const spots = { walking: { x: -36, y: 3, z: -23 }, junction: { x: -40, y: 3, z: -150 }, club: { x: 63.7, y: 3, z: 129.6 }, station: { x: 31.8, y: 8, z: -309 }, alley: { x: -37.2, y: 3, z: -87.3 } }, res = {};
   const L0wet = (await import('../seoul-audio.js')).SND.wet;
-  for (const [k, cam] of Object.entries(spots)) { const c = await cityAt(cam); const o = octaves(c.L, c.R); res[k] = { lu: lufs(c.L, c.R) - HOVER_LUFS, ph: phoneLU(c.L, c.R) - HOVER_LUFS, cen: centroid(c.L, c.R), low: o.low, oct: o.oct, o63: o.o63, sp: spread(c.L, c.R), cv: k === 'walking' ? rhythm(c.L, c.R, 300, 3000)[1] : 0, st: c.stats }; }
+  for (const [k, cam] of Object.entries(spots)) { const c = await cityAt(cam); const o = octaves(c.L, c.R); res[k] = { lu: lufs(c.L, c.R) - HOVER_LUFS, ph: phoneLU(c.L, c.R) - HOVER_LUFS, cen: centroid(c.L, c.R), low: o.low, oct: o.oct, o63: o.o63, sp: spread(c.L, c.R), cv: k === 'walking' || k === 'station' ? rhythm(c.L, c.R, 300, 3000)[1] : 0, st: c.stats }; }
   console.log('city vs a hover (LU / through a phone LU / centroid / < 120 Hz / p95-p50): ' + Object.entries(res).map(([k, v]) => `${k} ${v.lu.toFixed(1)} / ${v.ph.toFixed(1)} / ${v.cen.toFixed(0)} Hz / ${(100 * v.low).toFixed(0)} % / ${v.sp.toFixed(1)} dB`).join(', '));
   ok(res.walking.lu > -11 && res.walking.lu < -9, `the city is audible under a hover on the walking street: ${res.walking.lu.toFixed(1)} LU (-10 +- 1; P1 -14, P4 main -7.6, P5 on the game's city -9.1, P6 -9.6: a 0.4 margin)`);
   const four = Object.entries(res).filter(([k]) => k !== 'alley');
@@ -156,6 +160,9 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
     // the loudest (P6 -9.7 on the full chain, -8.6 here; trucks and buses at 20-30 m: within 3-4 dB of the peak)
     ok(res.station.o63 >= -6 && res.station.low < 0.3, `Yanghwa-ro has a sub floor: the 63 Hz octave ${res.station.o63.toFixed(1)} dB re the loudest (>= -6; P6 -8.6), ${(100 * res.station.low).toFixed(0)} % under 120 Hz (< 30, a phone)`);
     ok(so[6] - mx <= -10 && res.station.cen < 1200 && so[4] <= lm - 3 && st.passbys >= 1, `Yanghwa-ro roars, not hisses: 8 kHz ${(so[6] - mx).toFixed(1)} dB re the loudest octave (<= -10; P4 -5.6), centroid ${res.station.cen.toFixed(0)} Hz (< 1200; P4 1.5 k, P5 on the game's city 1.33 k), 2 kHz ${(so[4] - lm).toFixed(1)} dB re the loudest of 250 Hz-1 kHz (<= -3; P5 +1.8), pass-bys ${st.passbys} in 12 s (3-6 s apart), p95 - p50 ${res.station.sp.toFixed(1)} dB (P4 0.6)`); }
+  // P8 (sound #2, station dynamics; panel 7: G1's fuller platoons flattened Yanghwa-ro to p95 - p50 3.6 dB, CV 0.43, -1.4 LU
+  // under the props on the full chain, and no gate saw it): the arterial breathes. GATE_STATION_DYN below
+  { const st = res.station; ok(st.sp >= GATE_STATION_DYN.sp && st.cv >= GATE_STATION_DYN.cv && st.lu <= GATE_STATION_DYN.lu, `Yanghwa-ro breathes: the station hover's p95 - p50 ${st.sp.toFixed(1)} dB (>= ${GATE_STATION_DYN.sp}), the 300-3000 Hz envelope's CV ${st.cv.toFixed(2)} (>= ${GATE_STATION_DYN.cv}), ${st.lu.toFixed(1)} LU under a hover (<= ${GATE_STATION_DYN.lu}); arterial lull x${(+st.st.artLull).toFixed(2)}, its traffic near ${(+st.st.trafA).toFixed(1)}`); }
   // P5 sound #4: Hongdae's own voices: shop callers on the walking street, glasses and bottles at the tables
   ok(res.walking.st.callers >= 1 && res.club.st.clinks >= 1, `Hongdae's own voices: shop callers ${res.walking.st.callers} at the walking-street hover, clinks ${res.club.st.clinks} on the club street (12 s each)`);
   ok(res.club.lu <= -6 && res.club.lu > -12, `the club doors are cooled: the club spot is ${res.club.lu.toFixed(1)} LU (-12 to -6; P3 -3.4)`);
