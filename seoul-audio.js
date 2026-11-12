@@ -58,7 +58,10 @@ export const SND = {
   // and her clapping (sound #4), glasses and soju bottles in w21, a group talking past (sound #5), the train under exit 9
   // integ11 (sound #3, G1's P6 crowd: 14 avatars, mixed lanes held the hover at p95 - p50 4.2, CV 0.67): the crowd bed
   // -4 dB and its waves +-4 -> 5.5 dB; the names called +2 dB
-  passby: 96, diesel: 91, caller: 83, clap1: 79, clink: 76, group: 77, train: 82,
+  // P8 (sound #2): passby 96 -> 95: the pass-bys are the arterial's loudness once the bed stops scaling with the platoon
+  // (Yanghwa-ro full chain -2.4 LU under the props at 96, -3.0 at 95; 94.5 put the harness station 4.4 over the walking
+  // street, under its +4.5 gate)
+  passby: 95, diesel: 91, caller: 83, clap1: 79, clink: 76, group: 77, train: 82,
   // P6 (sound #6): exit 9's T-money beeps (at the stair mouth, 1 m) and its escalator's hum (within the exit voice, re SND.exit)
   tmoney: 74, escalator: -16,
   pools: { engine: 6, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1, queue: 2, exit: 1 },
@@ -73,6 +76,14 @@ export const SND = {
   // P7 (sound #2, the arterial's floor; P6 63 Hz -9.7 dB re max at Yanghwa-ro): the buses' and trucks' 40-90 Hz diesel
   // layer, dB over the diesel bed, and how far it swells (x, gain) as the arterial pulls away on its green
   dieselSub: 3, subSwell: 1.8,
+  // P8 (sound #2, the arterial breathes again; P7 Yanghwa-ro hover p95-p50 3.6 dB, env CV 0.46, city -1.3 LU under the props
+  // after G1's fuller platoons took trafficNear 1.4 -> 6.2): the arterials' (>= 13 m) share of the traffic bed grows as
+  // sqrt(their traffic near / trafKnee) past the knee, not linearly (the voices and pass-bys carry the platoon's detail;
+  // the walking street, club streets and alleys are untouched: trafKnee 1.5 / 0.8 / 0.5 / 0.3 / 0.15 gave the Yanghwa-ro
+  // hover's full chain p95-p50 4.7 / 4.7 / 5.1 / 5.2 / 5.2, CV 0.53 / 0.55 / 0.56 / 0.56 / 0.57), and that share
+  // drops by artLull dB while the nearest arterial crossing shows its cars red (and swells x artRelease for the first
+  // releaseS s of green), ~lullTau s to settle. The buses' and trucks' diesel idle is not lulled (they rumble at the line)
+  trafKnee: 0.15, artLull: 6, artRelease: 1.25, releaseS: 8, lullTau: 2.5,
   // P7 (sound #3, the club street's own character): the 19-gil / 21-gil club streets' cars and the door queues (dB), and
   // a shut club door's gain (P6 0.32, -10 dB: a steady bass carpet; now the bass comes with the door: -24 dB shut)
   clubCars: -3, queueTrim: -4, doorShut: 0.06,
@@ -513,7 +524,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     if (ref) { const P0 = st.path.at(pr.s, {}); crossings.push({ id: 'X9', x: ex[0] + P0.tx * 4, z: ex[2] + P0.tz * 4, ref, audioOnly: true }); }
   }
   const phaseOf = (c, t) => life.crossPhase(c.ref || c, t);
-  const S = { trafOcc: 0, doorPops: 0, tmoney: 0, passbys: 0, callers: 0, clinks: 0, groups: 0, trains: 0, music: 0, club: 0, busk: 0, engine: 0, scooter: 0, bus: 0, hiss: 0, horns: 0, laughs: 0, applause: 0, steps: 0, chimes: 0, guides: 0, occluded: 0, voices: 0, talks: 0, yelps: 0, reacts: 0, calls: 0, queue: 0, exit: 0, swells: 0, names: 0, phones: 0, beeps: 0, crowdNear: 0, trafficNear: 0, canyon: 0 };
+  const S = { trafOcc: 0, doorPops: 0, tmoney: 0, passbys: 0, callers: 0, clinks: 0, groups: 0, trains: 0, music: 0, club: 0, busk: 0, engine: 0, scooter: 0, bus: 0, hiss: 0, horns: 0, laughs: 0, applause: 0, steps: 0, chimes: 0, guides: 0, occluded: 0, voices: 0, talks: 0, yelps: 0, reacts: 0, calls: 0, queue: 0, exit: 0, swells: 0, names: 0, phones: 0, beeps: 0, crowdNear: 0, trafficNear: 0, canyon: 0, artLull: 1, trafA: 0 };
   const api = { stats: S, sites, attached: false };
   const occl = makeOccluder(layout);
   let A = null;   // the live graph
@@ -826,25 +837,33 @@ export function createSeoulAudio(layout, life, opts = {}) {
       // 120 m and every 1.5 s past it, at most 24 rays a scan); an occluded one adds to Ec (the bed's 800 Hz path) at
       // occG's loss. (sound bug: the side alley gave 6 engine voices to cars behind its buildings) a vehicle is voiced only
       // while its level at the camera, the occlusion taken off, is over SND.voiceFloor
-      let E = 0, Ed = 0, Ec = 0, heavy = 0, rays = 0; const laneMv = g.laneMv || (g.laneMv = new Map()), vOcc = g.vOcc || (g.vOcc = new Map()); laneMv.clear();
+      // P8 (sound #2): the arterial's signal at the nearest crossing over a >= 13 m road (car red: the lull; the first
+      // SND.releaseS s of green: the release), smoothed over SND.lullTau s (a pure function of the clock and the path)
+      let aw = 1; if (life?.crossPhase && crossings.length) { let cb = null, cd = 220; for (const c of crossings) { const m = (c.ref || c).main; if (!(m?.width >= 13)) continue; const d = Math.hypot(c.x - cam.x, c.z - cam.z); if (d < cd) { cd = d; cb = c; } }
+        if (cb) { const ph = phaseOf(cb, t), cc = cb.ref || cb, P = 120; let gu = 0; if (ph.car === 'G' && cc.kind === 'X') { const S = P - 10, G0 = cc.g0 ?? S / 2; gu = (((ph.tc - (cc.axis ? G0 + 5 : 0)) % P) + P) % P; } else if (ph.car === 'G') gu = ph.tc;
+          aw = ph.car === 'G' ? (gu < SND.releaseS ? SND.artRelease : 1) : Math.pow(10, -SND.artLull / 10); } }
+      const kl = g.lullT == null ? 1 : Math.min(1, Math.abs(t - g.lullT) / SND.lullTau); g.lull = g.lull == null ? aw : g.lull + (aw - g.lull) * kl; g.lullT = t; S.artLull = g.lull;
+      // the arterials' own vehicles (>= 13 m roads) keep a bed of their own (Ab: open, distance-weighted, occluded) so the
+      // square-root law below touches only them (the walking street's and alleys' few cars stay as they were)
+      let E = 0, Ed = 0, Ec = 0, heavy = 0, rays = 0, trafA = 0; const Ab = [0, 0, 0]; const laneMv = g.laneMv || (g.laneMv = new Map()), vOcc = g.vOcc || (g.vOcc = new Map()); laneMv.clear();
       // P7 (sound bug: at t = 0 the alley voiced 3 engines and 2 scooters before their rays were cast): the first scan casts
       // up to 96 rays, and a vehicle whose path hasn't been checked yet (unk) is bed, not voice
       const rayMax = g.occInit ? 24 : 96; g.occInit = true; let unk = false;
       const occOf = (id, x, z, d) => { let o = vOcc.get(id); if ((!o || Math.abs(t - o[1]) > (d < 120 ? 0.5 : 1.5)) && rays < rayMax) { rays++; o = [d > 3 ? occl(cam.x, cam.y, cam.z, x, 1.0, z, true) : 0, t]; vOcc.set(id, o); } unk = !o; return o ? o[0] : 0; };
       if (sim) for (const v of sim.traffic.vehicles) {
         if (v.hidden) continue; const p = sim.traffic.pose(v, 1, PO), d = Math.hypot(p.x - cam.x, p.z - cam.z, cam.y - 0.6);
-        if (d < 150) trafN += (0.3 + v.v / 12) / (1 + (d / 15) * (d / 15));
+        const isA = v.lane?.street?.width >= 13; if (d < 150) { const q = (0.3 + v.v / 12) / (1 + (d / 15) * (d / 15)); trafN += q; if (isA) trafA += q; }
         if (d > 250) continue;
         // P7 (sound #3): the club streets' cars SND.clubCars dB (they crawl past the queues; the street is the doors')
         const ck = v.lane?.street?.kind === 'club' ? SND.clubCars : 0;
-        const n = occOf(v.id, p.x, p.z, d), e0 = Math.pow(10, (SND[v.type] + ck - 105) / 10) * (0.1 + Math.min(3, (v.v / 12) ** 2)) * (1 + 0.6 * g.wet * Math.min(1, v.v / 8)) / Math.max(9, d * d) * Math.pow(10, -0.006 * Math.max(0, d - 20)), e = e0 * occG(n) ** 2;
-        if (n) Ec += e; else { E += e; Ed += e * d; } if (d < 80 && v.v > 3 && v.lane?.street?.kind === 'main') laneMv.set(v.lane, (laneMv.get(v.lane) || 0) + 1);
+        const n = occOf(v.id, p.x, p.z, d), e0 = (isA ? g.lull : 1) * Math.pow(10, (SND[v.type] + ck - 105) / 10) * (0.1 + Math.min(3, (v.v / 12) ** 2)) * (1 + 0.6 * g.wet * Math.min(1, v.v / 8)) / Math.max(9, d * d) * Math.pow(10, -0.006 * Math.max(0, d - 20)), e = e0 * occG(n) ** 2;
+        if (isA) { if (n) Ab[2] += e; else { Ab[0] += e; Ab[1] += e * d; } } else if (n) Ec += e; else { E += e; Ed += e * d; } if (d < 80 && v.v > 3 && v.lane?.street?.kind === 'main') laneMv.set(v.lane, (laneMv.get(v.lane) || 0) + 1);
         if ((v.type === 'bus' || v.type === 'truck') && d < 120) heavy += occG(n) ** 2 / Math.max(1, (d / 20) ** 2);
         if (d > 120) continue; const pool = v.type === 'bus' ? 'bus' : v.type === 'scooter' ? 'scooter' : 'engine', score = (SND[v.type] + ck + 10 * Math.log10(0.2 + v.v / 10)) - 20 * Math.log10(d + 1) + 20 * Math.log10(occG(n));
-        if (score >= SND.voiceFloor && !unk) cand[pool].push({ v, d, e, n, score });
+        if (score >= SND.voiceFloor && !unk) cand[pool].push({ v, d, e, n, score, isA });
       }
       // the voiced vehicles (each pool's top scores, as the pools below pick them) leave the bed
-      for (const pool of ['engine', 'bus', 'scooter']) { const C = cand[pool].sort((a, b) => b.score - a.score); for (let i = 0; i < Math.min(C.length, g.pv[pool].length); i++) { if (C[i].n) Ec -= C[i].e; else { E -= C[i].e; Ed -= C[i].e * C[i].d; } } }
+      for (const pool of ['engine', 'bus', 'scooter']) { const C = cand[pool].sort((a, b) => b.score - a.score); for (let i = 0; i < Math.min(C.length, g.pv[pool].length); i++) { const c = C[i]; if (c.isA) { if (c.n) Ab[2] -= c.e; else { Ab[0] -= c.e; Ab[1] -= c.e * c.d; } } else if (c.n) Ec -= c.e; else { E -= c.e; Ed -= c.e * c.d; } } }
       for (const k of vOcc.keys()) if (Math.abs(t - vOcc.get(k)[1]) > 5) vOcc.delete(k);
       // the arterials' through flow (Yanghwa-ro, World Cup buk-ro: roads >= 13 m): SND.artFlow moving vehicles per metre
       // of road width within 80 m (8 lanes: ~9, a Friday-night 2,000-3,000 veh/h). What the sim's moving main-road
@@ -867,11 +886,12 @@ export function createSeoulAudio(layout, life, opts = {}) {
         const P0 = artAt[0].path.at(artAt[1], {}); if (!g.artOcc || Math.abs(t - g.artOcc[1]) > 0.5 || Math.hypot(cam.x - g.artOcc[2], cam.z - g.artOcc[3]) > 4 || g.artOcc[4] !== artAt[0]) g.artOcc = [occl(cam.x, cam.y, cam.z, P0.x, 1.0, P0.z, true), t, cam.x, cam.z, artAt[0]];
         if (g.artOcc[0]) { art *= occG(g.artOcc[0]) ** 2; artC = true; }
       }
-      // platoons: while the nearest crossing in reach shows WALK the arterial holds (x0.45), then it releases (x1.25), ~4 s
-      if (art > 0 && life?.crossPhase && crossings.length) {
-        let cb = null, cd = 200; for (const c of crossings) { const d = Math.hypot(c.x - cam.x, c.z - cam.z); if (d < cd) { cd = d; cb = c; } }
-        const want = cb && phaseOf(cb, t).walk ? 0.45 : 1.25, kp = g.platT == null ? 1 : Math.min(1, Math.abs(t - g.platT) / 4); g.platoon = g.platoon == null ? want : g.platoon + (want - g.platoon) * kp; g.platT = t; art *= g.platoon;
-      }
+      // platoons: the through flow follows the arterial's own signal (P8: its car phase at the nearest arterial crossing;
+      // P4-P7 held x0.45 while the nearest crossing of any road showed WALK)
+      art *= g.lull;
+      // P8 (sound #2): past SND.trafKnee the arterials' bed grows as the square root of their traffic near (energy), not
+      // linearly; the voices and pass-bys carry the platoon's detail
+      { const kc = Math.min(1, Math.sqrt(SND.trafKnee / Math.max(1e-6, trafA))); E += kc * Ab[0]; Ed += kc * Ab[1]; Ec += kc * Ab[2]; art *= kc; S.trafA = trafA; }
       const fl = Math.pow(10, (SND.beds.traffic - 105) / 10), Eo = Math.max(0, E) + (artC ? 0 : art) + fl, Eoc = Math.max(0, Ec) + (artC ? art : 0), Eb = Eo + Eoc, dS = g.trafT == null ? 1 : Math.min(1, Math.abs(t - g.trafT) / 0.8);
       g.trafE = g.trafE == null ? Eb : g.trafE + (Eb - g.trafE) * dS; g.trafT = t;   // ~0.8 s smoothing (live and clip alike)
       g.trafOs = g.trafOs == null ? Eoc / Eb : g.trafOs + (Eoc / Eb - g.trafOs) * dS; S.trafOcc = g.trafOs;
