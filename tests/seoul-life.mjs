@@ -145,6 +145,17 @@ ok(mv > 5 && st > 0, `traffic flows and queues (moving ${mv}, stopped ${st})`);
   ok(T.entries.road.every((l) => l.start && l.start.boundary), `road traffic re-enters only at map-edge lanes (${T.entries.road.length})`);
   void E;
 }
+// (P7, life #1) station2 (31.8, -309, the game's seed 11): its near carriageway was empty at take clock 0 (one car on eight
+// lanes: the still opened in the lull between Yanghwa-ro's eastbound platoons). >= 6 vehicles heading +x within 60 m, at
+// take clock 0 and through the first 15 s of a take
+{
+  const L = new LifeSim(layout, { seed: 11 }), T = L.traffic, o = {}; let at0 = -1, mn = 1e9, mv0 = 0;
+  for (let t = LIFE.warm + 0.5; t <= LIFE.warm + 15; t += 0.5) { L.advanceTo(t); let n = 0, mv = 0;
+    for (const v of T.vehicles) { if (v.hidden || v.lane.shared) continue; const ln = v.lane; ln.base.at(T.toBase(ln, v.s), o);
+      const x = o.x + o.nx * ln.lat, z = o.z + o.nz * ln.lat; if (Math.hypot(x - 31.8, z + 309) < 60 && o.tx * ln.dir > 0.3) { n++; if (v.v > 1) mv++; } }
+    if (at0 < 0) { at0 = n; mv0 = mv; } mn = Math.min(mn, n); }
+  ok(at0 >= 6 && mn >= 6, `station2: ${at0} vehicles heading +x within 60 m at take clock 0 (${mv0} moving), >= ${mn} through 15 s (P6: 3, min 1)`);
+}
 // junction conflicts (life #3, P3): vehicle boxes that interpenetrate > 0.1 m, sampled every second from 30 s to 600 s.
 // P2 had ~3.7 pairs per sample, 85 % on crossing paths in junction boxes.
 {
@@ -195,7 +206,31 @@ if (existsSync('seoul/people/people.json')) {
   // and how often a near person's avatar repeats on another near person within 8 m (reported: 14 bodies can't keep a
   // 0.37 p/m^2 street free of repeats; the per-person clothes, hair and skin tints carry the rest)
   { const meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), ea = L2.avatars.tiers.flat().reduce((a, t, k) => a + (meta.avatars[k % meta.avatars.length].ea ? t.n : 0), 0);
-    ok(ea / nAv >= 0.65, `East Asian bodies: ${(100 * ea / nAv).toFixed(0)} % of ${nAv} near/mid people at walk0 (${meta.avatars.length} avatars; P5 0 %)`); }
+    ok(ea / nAv >= 0.65, `East Asian bodies: ${(100 * ea / nAv).toFixed(0)} % of ${nAv} near/mid people at walk0 (${meta.avatars.length} avatars; P5 0 %)`);
+    // (P7, life #2) pairs of people within 8 m of each other (walk0, w21, club90; 25 m round the camera) in the same body and
+    // the same tone of top (dark / mid / light): P6 7.6 %; groups, clusters and queues no longer share one (assignAvatars)
+    const S = new LifeSim(layout, { seed: 11 }), C = S.crowd, AV = lifeMod.assignAvatars(C.people, meta, lifeMod.avatarWeights(meta)), tone = (i) => lifeMod.tintClass(AV.tops[i] || C.people[i].look.top);
+    let pairs = 0, same = 0, sameB = 0, grp = 0, grpSame = 0;
+    for (const [cx, cz] of [[-36, -23], [-66.7, 88], [63.7, 129.6]]) for (let t = 75; t < 135; t += 6) {
+      C.evaluate(t, null, { avoid: false }); const nr = []; for (let i = 0; i < C.people.length; i++) if (C.VIS[i] && Math.hypot(C.X[i] - cx, C.Z[i] - cz) < 25) nr.push(i);
+      for (const i of nr) for (const j of nr) { if (j <= i || Math.hypot(C.X[i] - C.X[j], C.Z[i] - C.Z[j]) > 8) continue; pairs++; const g = C.people[i].unit >= 0 && C.people[i].unit === C.people[j].unit; if (g) grp++;
+        if (AV[i] === AV[j]) { sameB++; if (tone(i) === tone(j)) { same++; if (g) grpSame++; } } } }
+    ok(same / pairs <= 0.065 && grpSame === 0, `crowd repeats: ${(100 * same / pairs).toFixed(1)} % of pairs within 8 m share a body and a tone of top (P6 7.6 %; gate 6.5 %), ${grpSame} of ${grp} pairs inside a group (same body alone ${(100 * sameB / pairs).toFixed(1)} %: 4 casual East Asian bodies carry 70 %)`); }
+}
+// (P7, perf #1 with D) vehicles are culled for drawing (render only): behind the camera and past VCULL.far nothing is drawn;
+// every vehicle within VCULL.near still is. P6 drew all ~171 at every pose (0.46 M triangles a pass)
+{
+  const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
+  const L = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene(), lifeWorker: false, preroll: false, seed: 11 });
+  const ims = []; L.group.traverse((o) => { if (o.isInstancedMesh && o.geometry.attributes.iState) ims.push(o); });
+  const q = new THREE.Quaternion(), res = [];
+  for (const [x, y, z, yaw] of [[-36, 3, -23, 0], [31.8, 8, -309, Math.PI], [-66.7, 3, 88, 0]]) {
+    const cam = new THREE.Vector3(x, y, z); q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw); for (let k = 0; k < 3; k++) L.update(0.3 + k / 30, cam, q);
+    let tris = 0, behind = 0, nearMiss = 0; const M = new THREE.Matrix4(), P = new THREE.Vector3(), fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+    for (const m of ims) { tris += m.count * m.geometry.index.count / 3; for (let i = 0; i < m.count; i++) { m.getMatrixAt(i, M); P.setFromMatrixPosition(M).sub(cam); if (P.length() > 40 && P.dot(fwd) < -0.3 * P.length()) behind++; } }
+    const T = L.sim.traffic; for (const v of T.vehicles) { if (v.hidden) continue; const p = T.pose(v, L.sim.aT, {}); if (Math.hypot(p.x - x, p.z - z) < lifeMod.VCULL.near - 3) { let found = false; for (const m of ims) for (let i = 0; i < m.count; i++) { m.getMatrixAt(i, M); P.setFromMatrixPosition(M); if (Math.hypot(P.x - p.x, P.z - p.z) < 0.5) found = true; } if (!found) nearMiss++; } }
+    res.push({ tris, behind, nearMiss }); }
+  ok(res.every((r) => r.tris < 0.3e6 && r.behind === 0 && r.nearMiss === 0), `vehicles culled for drawing: ${res.map((r) => (r.tris / 1e6).toFixed(2)).join(' / ')} M triangles a pass at walk0 / station2 / w21 (P6 0.46 M at every pose), none drawn behind the camera, none missing within ${lifeMod.VCULL.near - 3} m`);
 }
 // life #4 (P4): people react to a low drone (render side; the soft colliders stay on the sim's positions). A walker the drone
 // hovers beside at 1.5 m height is drawn slower (0.4x), stepped aside ~0.5 m away from it, and flinches on the first moment.
@@ -283,6 +318,15 @@ if (existsSync('seoul/people/people.json')) {
     for (const [k, v] of Object.entries(by)) { const o = v[1] / v[0], n = v[2] / v[0]; worst.push([`${ty}:${k}`, o, n]); if (o < 0.95 || n < 0.95) allOk = false; }
   }
   worst.sort((p, q) => Math.min(p[1], p[2]) - Math.min(q[1], q[2]));
+  // (P7, life #4) a part id never interpolates through others across a visible triangle (P6's bus rear: paint 0 to glass 5
+  // drew a headlamp-white and a tail-red band across the rear). The bus loft's 6 mm ledges at the window band (part 0 to
+  // 5 at one height) are the only blends left: <= 0.2 m2 in all, none on an end face
+  { let ends = 0, area = 0, rear = 0; for (const ty of ['car', 'taxi', 'truck', 'bus', 'scooter']) { const g = vehicleGeo(ty), P = g.attributes.position.array, I = g.index.array, part = g.attributes.part.array;
+      for (let t = 0; t < I.length; t += 3) { const [a, b, c] = [I[t], I[t + 1], I[t + 2]]; if (ty === 'bus' && part[a] === 13) rear++;
+        if (Math.max(part[a], part[b], part[c]) - Math.min(part[a], part[b], part[c]) <= 1) continue;
+        const u = [0, 1, 2].map((k) => P[b * 3 + k] - P[a * 3 + k]), v = [0, 1, 2].map((k) => P[c * 3 + k] - P[a * 3 + k]), n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]], l = Math.hypot(...n);
+        area += l / 2; if (l > 0 && Math.abs(n[2]) / l > 0.5) ends++; } }
+    ok(ends === 0 && area <= 0.2 && rear >= 12, `vehicle parts never blend across an end face (${ends}; P6: 4, 3.24 m2 in all), ${area.toFixed(2)} m2 of ledges; the bus has a rear window panel (${rear} triangles)`); }
   ok(allOk, `vehicles right side out: every part of car/taxi/truck/bus/scooter >= 95 % outward and normal-true (worst ${worst[0][0]} ${(100 * worst[0][1]).toFixed(0)} % / ${(100 * worst[0][2]).toFixed(0)} %; P3: car body 2 %, glass 0 %)`);
 }
 // life #1 (P4): masks where masks go, and no dark hair cards on a brown or blond scalp. seoul/people/aux.png (people-aux.py):

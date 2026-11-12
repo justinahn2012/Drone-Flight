@@ -1229,7 +1229,16 @@ void seoulGlass(inout vec4 dc) {
     if (tn < t && zn < D - 1.0) {
       vec3 hn = p0 + rr * tn; float xm = hn.x + fract(seed * 7.7) * 3.0;
       if (hn.y > 0.0 && hn.y < 3.0 && (nl > 12.0 || sgHash(vec2(floor(xm), floor(seed * 97.0))) < 0.5)) {
-        vec4 nc = sgTile(nl, vec2(fract(xm / 3.0), hn.y / 3.0), clamp(log2(px * 512.0 / 3.0), 0.0, 6.0));
+        // [P7-G1] life #3 / fpv #5: the figures live (P6 read as mannequins). Per figure (1 m cell, phase-offset per window):
+        // shoppers browse (a slow +-12 cm drift along the shelf), shift their weight (+-3 cm at 0.5-0.9 Hz) and bob on the
+        // step; at the window bar the seated half sways (+-2 cm) and leans in over the counter, the counter stays put.
+        // Cells are 1 m and a figure is <= 0.45 m wide, so a shift never pulls in the next cell's figure.
+        float fc = floor(xm), fp = sgHash(vec2(fc + 3.1, floor(seed * 53.0))) * 6.2832, ft = uSeoulTime;
+        float fw = 0.5 + 0.4 * fract(fp * 1.37), fy = hn.y, fx;
+        if (nl > 12.0) { float up = smoothstep(1.06, 1.12, hn.y); fx = up * (0.02 * sin(ft * fw + fp) + 0.015 * sin(ft * 0.23 + fp * 2.1)); fy -= up * 0.012 * max(0.0, sin(ft * 0.31 + fp)); }
+        else { fx = 0.12 * sin(ft * (0.11 + 0.05 * fract(fp)) + fp) + 0.03 * sin(ft * fw + fp * 1.7); fy -= 0.008 * abs(sin(ft * fw * 2.0 + fp)); }
+        xm = fc + clamp(xm - fc - fx, 0.0, 0.999);
+        vec4 nc = sgTile(nl, vec2(fract(xm / 3.0), clamp(fy, 0.0, 2.999) / 3.0), clamp(log2(px * 512.0 / 3.0), 0.0, 6.0));
         col = mix(col, nc.rgb * uSeoulNorm[int(room)] * L * 0.9, nc.a);
       }
     }

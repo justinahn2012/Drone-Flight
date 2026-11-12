@@ -55,7 +55,10 @@ export const LIFE = {
   // warm: the city's head start (s) at take clock 0; (P5, life #6) a retry opens 0..warmMax - warm s later (attemptTicks)
   // retryPrerollMs (P6): the most a retry spends topping up the pre-roll (attemptTicks)
   retryPrerollMs: 60,
-  warm: 75, warmMax: 240, maxAgents: 15500, nearR0: 6, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 1500, maxDrawnLow: 900,
+  // (P7, perf #1: people were 0.48-0.86 M of the main pass) at most maxLod0 people on the 3.4k LOD (the nearest; the rest
+  // of nearR0 on lod1), avatars' mid LOD to midR 42 m (P6 55; past it the 218-triangle far body, P6 282)
+  maxLod0: 60,
+  warm: 75, warmMax: 240, maxAgents: 15500, nearR0: 6, nearR: 18, midR: 42, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 1500, maxDrawnLow: 900,
   counterShare: 0.22,          // (P6, life #3) walkers on the 'wrong' side of the walkway (prefD)
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
   phoneShare: 0.32,            // walkers alone looking at a phone (P5, life #3: with groups at 0.2, 25 % of walkers; P4 18 % alone, 8 % in groups)
@@ -66,7 +69,8 @@ export const LIFE = {
   // s; walk = after green+amber+allRed. (P5, life #1) a 120 s cycle (Seoul arterials run 120-160 s; P4's 70 s spent 10 s of
   // every 70 in inter-greens and held the arterial to 36 s of green). Junctions: 2 x (3 s amber + 2 s all-red), the major
   // axis 55-60 % of the cycle
-  signal: { period: 120, green: 84, amber: 3, allRed: 1, walk: 30 },
+  // shift (P7, life #1): the whole plan runs 98 s later, so station2 (take clock 0 = sim 75 s) opens on an eastbound platoon
+  signal: { period: 120, green: 84, amber: 3, allRed: 1, walk: 30, shift: 98 },
   nitScale: 1e-3,
 };
 
@@ -296,6 +300,9 @@ export function buildNetwork(layout) {
       addCross({ kind: 'T', main: m, sc, toward: 0, axis: 0, offset: nearX ? (nearX.offset - (nearX.axis ? nearX.g0 + 5 : 0) + P) % P : near ? near.offset : (ci * 13) % P });
     }
   }
+  // (P7, life #1) the city's signal plan as a whole runs LIFE.signal.shift s later (green wave kept): station2 opened in the
+  // lull between Yanghwa-ro's eastbound platoons (one car on the near carriageway at take clock 0)
+  { const P = LIFE.signal.period, sh = LIFE.signal.shift || 0; if (sh) for (const c of [...crossings, ...signals]) c.offset = (((c.offset + sh) % P) + P) % P; }
   return { streets, mains, nodes, crossings, signals, bounds: boundsOf(layout, streets) };
 }
 function boundsOf(layout, streets) {
@@ -317,6 +324,8 @@ export const VEH = {
   scooter: { L: 1.9, W: 0.75, H: 1.45, v0: 12.5, a: 2.4, b: 3.0, s0: 1.2, T: 0.8 },
 };
 const VTYPES = ['car', 'taxi', 'truck', 'bus', 'scooter'];
+// (P7) render-only vehicle cull: m, m, rad added to the camera's half-angle
+export const VCULL = { near: 12, far: 220, pad: 0.26 };
 // Seoul night palettes (sRGB): mostly white / black / grey-silver; taxis silver-white or orange
 const PAINT = {
   car: [[0.92, 0.92, 0.9], [0.92, 0.92, 0.9], [0.9, 0.91, 0.92], [0.05, 0.05, 0.06], [0.06, 0.06, 0.07], [0.55, 0.56, 0.58], [0.38, 0.39, 0.41], [0.68, 0.69, 0.7], [0.12, 0.17, 0.3], [0.45, 0.07, 0.07]],
@@ -1723,6 +1732,36 @@ export function lookFor(R, male) {
   return { top, bottom: pick(BOTTOMS), hair: hairC, skin: pick(SKIN), wear, coat, bag: R.next() < (male ? 0.2 : 0.55) ? 1 : 0, style, acc, pocket: R.next() < 0.3 ? 1 : 0, umb: 0 };
 }
 
+// (P7, life #2: walk0 and w21 repeated a coat silhouette inside 10 m) each person's Rocketbox body, once, and the tone of
+// their top: a weighted hash of the id (avatars.w: East Asian x4, suits x0.1, as P6). People are created together (a group
+// walking as a unit, a chat cluster, a queue, a pocha table), so within the previous `span` people no two share a body in
+// the same tone of top (tintClass: dark / mid / light): a clash keeps the body and re-dyes the top into a tone nobody
+// there wears (P6: groups of friends in one body and one black coat), or, with all three taken, re-draws the body.
+// -> Int16Array of avatar indices (-1: no body of that sex), with .tops: per person null or a new sRGB top
+export const tintClass = (c) => { const l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; return l < 0.2 ? 0 : l < 0.6 ? 1 : 2; };
+export function assignAvatars(people, meta, w, span = 6) {
+  const lists = { m: [], f: [] }; meta.avatars.forEach((av, i) => lists[av.sex === 'm' ? 'm' : 'f'].push(i));
+  const out = new Int16Array(people.length).fill(-1), cls = new Int8Array(people.length), tops = new Array(people.length).fill(null);
+  const PAL = [0, 1, 2].map((c) => [...DARK, ...MID, ...LIGHT].filter((x) => tintClass(x) === c));
+  for (let i = 0; i < people.length; i++) {
+    const a = people[i], list = lists[a.male ? 'm' : 'f']; cls[i] = tintClass(a.look.top); if (!list.length) continue;
+    let tot = 0; for (const j of list) tot += w[j];
+    for (let tr = 0; tr < 8; tr++) {
+      const hsh = tr ? h32(a.id, tr, 0x5a1) : (a.id * 2654435761) >>> 0;
+      let u = ((hsh >>> 7) / 33554432) * tot, av = list[list.length - 1]; for (const j of list) { u -= w[j]; if (u < 0) { av = j; break; } }
+      let used = 0; for (let k = Math.max(0, i - span); k < i; k++) if (out[k] === av) used |= 1 << cls[k];
+      if (!(used & (1 << cls[i]))) { out[i] = av; break; }
+      const free = [1, 2, 0].find((c) => !(used & (1 << c)));
+      if (free !== undefined) { const P = PAL[free]; tops[i] = P[h32(a.id, 0x70b) % P.length]; cls[i] = tintClass(tops[i]); out[i] = av; break; }
+      if (tr === 7) out[i] = av;
+    }
+  }
+  out.tops = tops;
+  return out;
+}
+// the avatar weights: suits a tenth, the East Asian bodies (people.json `ea`) x4 (Hongdae on a Friday is 85 %+ Korean)
+export const avatarWeights = (meta) => meta.avatars.map((av) => (/^Business/i.test(av.name) ? 0.1 : av.ea ? 4 : 1));
+
 export class LifeSim {
   // setPieces / obstacles: E's (world-seoul ctx); sites: explicit busking sites (override the set pieces')
   constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles, holes } = {}) {
@@ -1808,6 +1847,7 @@ export class LifeSim {
 }
 
 // ================================================================ rendering
+const STATIC_ATTR = new Set(['iTop', 'iBot', 'iHair', 'iSkin', 'iWear']);   // (P7) per-person, constant
 const lin = (c) => c.map((v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
 
 // ---- procedural human (art #6, life #3/#4). CC0 by construction (built here, no asset). Bones: 0 pelvis/torso, 1 head,
@@ -1873,20 +1913,21 @@ function buildHumanGeo(lod) {
   // legs (x = +-0.095), hip pivot y 0.9, knee 0.48, ankle 0.09
   for (const [sx, th, sh, ft] of [[0.095, 2, 3, 13], [-0.095, 4, 5, 14]]) {
     add(tube([[0.9, 0.08, 0.084, sx, 0], [0.7, 0.069, 0.071, sx, 0.005], [0.5, 0.055, 0.058, sx, 0.01]], th, 3));
-    add(tube([[0.5, 0.055, 0.058, sx, 0.01], [0.32, 0.05, 0.055, sx, -0.005], [0.12, 0.037, 0.04, sx, 0]], sh, 3));
-    if (lod < 2) add(box(sx - 0.046, 0, -0.06, sx + 0.046, 0.115, 0.17, ft, 4)); else add(box(sx - 0.045, 0, -0.05, sx + 0.045, 0.11, 0.14, ft, 4));
+    // (P7, perf #1: the far tier is ~1100 people a shot) far: no foot box, the shin runs to the ground, closed (a shoe-dark cap)
+    if (lod < 2) { add(tube([[0.5, 0.055, 0.058, sx, 0.01], [0.32, 0.05, 0.055, sx, -0.005], [0.12, 0.037, 0.04, sx, 0]], sh, 3)); add(box(sx - 0.046, 0, -0.06, sx + 0.046, 0.115, 0.17, ft, 4)); }
+    else add(tube([[0.5, 0.055, 0.058, sx, 0.01], [0.1, 0.045, 0.06, sx, 0.02], [0.0, 0.045, 0.07, sx, 0.035]], sh, (y) => (y < 0.11 ? 4 : 3), false, true));
   }
   // pelvis + torso (back is -z, chest +z), shoulders y 1.39
-  add(tube([[0.84, 0.15, 0.105], [0.98, 0.16, 0.105], [1.12, 0.155, 0.11], [1.3, 0.18, 0.12], [1.39, 0.2, 0.105], [1.44, 0.1, 0.07]], 0, (y) => (y < 0.97 ? 3 : 2), true, true));
-  // head + neck (all skin; hair is shells)
-  add(tube([[1.42, 0.05, 0.05, 0, 0.01], [1.5, 0.05, 0.05, 0, 0.01]], 1, 0));
+  add(tube(lod < 2 ? [[0.84, 0.15, 0.105], [0.98, 0.16, 0.105], [1.12, 0.155, 0.11], [1.3, 0.18, 0.12], [1.39, 0.2, 0.105], [1.44, 0.1, 0.07]]
+    : [[0.84, 0.15, 0.105], [0.98, 0.16, 0.105], [1.3, 0.18, 0.12], [1.42, 0.17, 0.09]], 0, (y) => (y < 0.97 ? 3 : 2), true, true));   // (P7) far: 4 rings
+  // head + neck (all skin; hair is shells; far: the head sits on the shoulders' cap)
+  if (lod < 2) add(tube([[1.42, 0.05, 0.05, 0, 0.01], [1.5, 0.05, 0.05, 0, 0.01]], 1, 0));
   add(shell(1, 0, () => true, () => 1, hs, rs));
   // arms: shoulder pivot (+-0.2, 1.38), elbow y 1.1, wrist 0.86; a mitten hand
   for (const [sx, ua, fa] of [[0.205, 6, 7], [-0.205, 8, 9]]) {
     add(tube([[1.41, 0.05, 0.052, sx, 0], [1.25, 0.046, 0.048, sx, 0], [1.1, 0.042, 0.044, sx, 0.005]], ua, 2, true));
     add(tube([[1.1, 0.042, 0.044, sx, 0.005], [0.9, 0.036, 0.037, sx, 0.01], [0.85, 0.034, 0.033, sx, 0.01]], fa, 2, false, true));
-    if (lod < 2) add(box(sx - 0.02, 0.72, -0.02, sx + 0.02, 0.85, 0.045, fa, 0));
-    else add(box(sx - 0.02, 0.76, -0.015, sx + 0.02, 0.85, 0.03, fa, 0));
+    if (lod < 2) add(box(sx - 0.02, 0.72, -0.02, sx + 0.02, 0.85, 0.045, fa, 0));   // (P7) far: no hand box
   }
   if (lod < 2) {
     // phone in the right hand (screen faces the body)
@@ -2106,6 +2147,9 @@ const HUMAN_ANIM = /* glsl */`
   vAlb = alb; vUv = auv; vHairC = iHair.rgb;
   vRest = position; vMisc = vec4(region, bone, coat, acc);
   vScreen = (region > 4.5 && region < 5.5) ? max(phoneP, filmP) : 0.0;
+  // (P7, life bug: station2's phones were floating white dots at 25 m, a 160-nit screen spread by the bloom) the screen
+  // fades to 15 % between 12 and 20 m
+  vScreen *= 1.0 - 0.85 * smoothstep(12.0, 20.0, distance(p, cameraPosition));
   // shopfront fill (lux) arriving from direction iFill.w, wrapped diffuse + a weak overhead/street term
   vec3 L = vec3(sin(iFill.w), 0.25, cos(iFill.w));
   float wrap = max(0.0, (dot(normalize(nrm), normalize(L)) + 0.35) / 1.35);
@@ -2305,8 +2349,11 @@ export function vehicleGeo(type) {
       const c0 = I.length / 3, cb = P.length / 3, z = zs[zi], sz = front ? 1 : -1;
       for (const sx of [1, -1]) for (let j = 0; j < nr; j++) {
         const q = base + (sx > 0 ? 0 : side) + zi * nr + j, y = P[q * 3 + 1];
-        const glass = front ? y > 0.84 && y < H - 0.13 : y > 1.45 && y < top + 0.01;
-        P.push(P[q * 3], y, z); N.push(0, 0, sz); C.push(glass ? (front ? 1 : 5) : 0);
+        // (P7, life #4 / fpv #6) the rear cap is body colour only: P6 tagged its top rows glass (part 5) and the rows under
+        // them paint, so the part id interpolated 0 -> 5 across one triangle and the rear read as a white (part 3, headlamp)
+        // slab over a red (part 4, tail lamp) band. The rear window is its own panel now (part 13, below)
+        const glass = front && y > 0.84 && y < H - 0.13;
+        P.push(P[q * 3], y, z); N.push(0, 0, sz); C.push(glass ? 1 : 0);
       }
       for (let j = 0; j < nr - 1; j++) { const a = cb + j, b2 = cb + nr + j; triO(a, a + 1, b2); triO(a + 1, b2 + 1, b2); }
       prims.push({ kind: 'loft', c: [0, 0.45, 0], start: c0, count: I.length / 3 - c0 });
@@ -2317,6 +2364,12 @@ export function vehicleGeo(type) {
     box(-0.55, top + 0.04, -hl - 0.005, 0.55, H - 0.16, -hl + 0.06, 6);        // rear route LED
     box(-hw + 0.2, 0.52, hl - 0.03, -hw + 0.42, 0.62, hl + 0.012, 3); box(hw - 0.42, 0.52, hl - 0.03, hw - 0.2, 0.62, hl + 0.012, 3);
     box(-hw + 0.08, 0.75, -hl - 0.012, -hw + 0.2, 1.05, -hl + 0.03, 4); box(hw - 0.2, 0.75, -hl - 0.012, hw - 0.08, 1.05, -hl + 0.03, 4);
+    // (P7, life #4 / fpv #6) the rear: a window onto the lit cabin (part 13: the aisle seen end-on in the shader), a dark
+    // engine grille, a second row of lamps over it and a high-mounted stop lamp under the roof
+    box(-0.74, 1.45, -hl - 0.01, 0.74, top - 0.04, -hl + 0.02, 13);
+    box(-0.7, 0.62, -hl - 0.014, 0.7, 1.02, -hl + 0.03, 2);
+    for (const sx of [1, -1]) box(Math.min(sx * 0.5, sx * 0.76), 1.12, -hl - 0.012, Math.max(sx * 0.5, sx * 0.76), 1.24, -hl + 0.03, 4);
+    box(-0.3, H - 0.13, -hl - 0.006, 0.3, H - 0.085, -hl + 0.03, 4);
     box(-hw * 0.75, 0.33, hl - 0.04, hw * 0.75, 0.48, hl + 0.03, 2); box(-hw * 0.8, 0.33, -hl - 0.03, hw * 0.8, 0.5, -hl + 0.04, 2);   // bumpers
     box(-hw - 0.012, 0.44, -hl + 0.5, hw + 0.012, 0.6, hl - 0.5, 12);     // livery skirt band under the colour
     box(-0.26, 0.6, hl + 0.025, 0.26, 0.71, hl + 0.04, 11);                // plate
@@ -2379,12 +2432,12 @@ vec3 cityEnv(vec3 R) {
 float pt = floor(vPart + 0.5);
 // B/C pillars and the window frames read through the glass band as black trim
 if (pt > 0.5 && pt < 1.5 && abs(vWN.y) < 0.75 && vLoc.y > 0.5 && vLoc.y < 2.0 && abs(vLoc.z) < 3.0 && abs(vLoc.z - 0.02) < 0.07) pt = 2.0;
-vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.012, 0.014, 0.016) : pt < 2.5 ? vec3(0.022) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.012, 0.014, 0.016) : pt < 6.5 ? vec3(0.02) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : pt < 9.5 ? vec3(0.55, 0.12, 0.08) : pt < 10.5 ? vec3(0.42, 0.43, 0.45) : pt < 11.5 ? vec3(0.75, 0.75, 0.72) : vec3(0.62, 0.64, 0.66);
+vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.012, 0.014, 0.016) : pt < 2.5 ? vec3(0.022) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.012, 0.014, 0.016) : pt < 6.5 ? vec3(0.02) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : pt < 9.5 ? vec3(0.55, 0.12, 0.08) : pt < 10.5 ? vec3(0.42, 0.43, 0.45) : pt < 11.5 ? vec3(0.75, 0.75, 0.72) : pt < 12.5 ? vec3(0.62, 0.64, 0.66) : vec3(0.012, 0.014, 0.016);
 if (pt > 9.5 && pt < 10.5) { float a = atan(vLoc.y - 0.33, vLoc.z), r = length(vec2(vLoc.y, vLoc.z)); float sp = smoothstep(0.55, 0.75, abs(sin(a * 2.5))); alb *= mix(0.25, 1.0, sp); }   // five spokes
 if (pt > 10.5 && pt < 11.5) { float ch = step(0.45, fract(vLoc.x * 14.0)) * step(0.3, fract(vLoc.y * 18.0 + 0.2)); alb = mix(alb, vec3(0.03), ch * 0.8); }   // plate characters
 diffuseColor.rgb = alb;`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-roughnessFactor = pt < 0.5 || pt > 11.5 ? 0.24 : (pt < 1.5 || (pt > 4.5 && pt < 5.5)) ? 0.05 : pt > 9.5 && pt < 10.5 ? 0.3 : 0.6;`)
+roughnessFactor = pt < 0.5 || (pt > 11.5 && pt < 12.5) ? 0.24 : (pt < 1.5 || (pt > 4.5 && pt < 5.5) || pt > 12.5) ? 0.05 : pt > 9.5 && pt < 10.5 ? 0.3 : 0.6;`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 // nits (binding table, PLAN-P2): lamps are point sources (low-beam core ~3k off-axis, tail 250, brake 1500, hazard 600);
 // bodies are not emissive; the bus interior is 20-40 nits seen through dark glass, broken by window posts, seat backs
@@ -2433,6 +2486,28 @@ else if (pt > 5.5 && pt < 6.5) {
   e = (vState.w > -1.0 && abs(vLoc.z) > 1.0) ? vec3(1.0, 0.55, 0.12) * 250.0 * lit : vec3(1.0, 0.86, 0.6) * 180.0 * (1.0 - 0.85 * stroke * step(0.1, abs(vLoc.z + 0.17)));
 }
 else if (pt > 6.5 && pt < 7.5) e = vec3(1.0, 0.45, 0.03) * 600.0 * vState.y * blink;
+else if (pt > 12.5) {
+  // (P7, life #4 / fpv #6) the bus's rear window: the cabin seen down the aisle through tinted glass (~24 nits, as the
+  // sides), two ceiling LED rows, the rear bench's backs to 1.62 m with the backs of heads over them (black hair, ~60 %
+  // taken), a smaller row further in, sometimes a standing rider, the centre post
+  float x = vLoc.x, y = vLoc.y, sd = floor(vState.w * 97.0);
+  vec3 cabin = vec3(0.95, 0.97, 1.0) * 30.0 * mix(0.55, 1.0, smoothstep(1.6, 2.6, y));
+  cabin *= 1.0 + 1.2 * step(2.6, y) * (1.0 - smoothstep(0.03, 0.07, abs(abs(x) - 0.42)));
+  vec3 pc = y < 1.62 ? vec3(0.14, 0.15, 0.19) * 3.0 : cabin;
+  for (int k = 0; k < 4; k++) {   // the far row first: the near bench draws over it
+    float xs = -0.36 + 0.24 * float(k), r = vh21(vec2(float(k) + 7.0, sd));
+    if (r < 0.5) { vec2 q = vec2((x - xs) / 0.065, (y - 1.9) / 0.075); if (dot(q, q) < 1.0) pc = vec3(0.9, 0.85, 0.8) * 0.6; else if (abs(x - xs) < 0.11 && y < 1.83 && y > 1.62) pc = vec3(0.3, 0.3, 0.34) * 2.0; }
+  }
+  for (int k = 0; k < 4; k++) {
+    float xs = -0.54 + 0.36 * float(k), r = vh21(vec2(float(k), sd));
+    if (r < 0.6) { vec2 q = vec2((x - xs) / 0.1, (y - 1.76) / 0.12); if (dot(q, q) < 1.0) pc = vec3(0.9, 0.85, 0.8) * (0.7 + 0.8 * smoothstep(0.2, 0.9, q.y)); else if (abs(x - xs) < 0.19 && y < 1.66) pc = vec3(0.2, 0.2, 0.24) * (1.5 + 2.0 * r); }
+  }
+  float rs = vh21(vec2(11.0, sd));
+  if (rs > 0.75) { float xs = rs > 0.87 ? 0.12 : -0.12; vec2 q = vec2((x - xs) / 0.09, (y - 2.27) / 0.11);
+    if (dot(q, q) < 1.0) pc = vec3(0.9, 0.85, 0.8) * 1.0; else if (abs(x - xs) < 0.17 && y < 2.16 && y > 1.62) pc = vec3(0.25, 0.25, 0.3) * 3.0; }
+  pc *= 1.0 - (1.0 - smoothstep(0.02, 0.04, abs(x))) * 0.95;   // centre post
+  e = pc * 0.8;
+}
 // clearcoat and glass: Fresnel x the street they face
 if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5) || pt > 11.5) {
   vec3 Vw = normalize(cameraPosition - vWP), Nw = normalize(vWN), Rw = reflect(-Vw, Nw);
@@ -2441,7 +2516,7 @@ if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5) || pt > 11.5) 
 }
 totalEmissiveRadiance += e * uNit;`);
   };
-  m.customProgramCacheKey = () => 'seoul-vehicle-5';
+  m.customProgramCacheKey = () => 'seoul-vehicle-6';
   return m;
 }
 
@@ -2569,7 +2644,7 @@ export function build(layout, ctx = {}) {
   const tiers = [0, 1, 2].map((lod) => {
     const g = buildHumanGeo(lod), cap = [LIFE.maxNear, LIFE.maxMid, LIFE.maxDrawn][lod], A = instAttrs(g, cap);
     const m = new THREE.Mesh(g, humanMat); m.frustumCulled = false; m.name = ['crowd-near', 'crowd-mid', 'crowd-far'][lod]; group.add(m);
-    return { g, A, cap, mesh: m, tris: g.index.count / 3, n: 0, pid: new Int32Array(cap) };   // (pid: the person in each slot)
+    return { g, A, cap, mesh: m, tris: g.index.count / 3, n: 0, pid: new Int32Array(cap), prev: new Int32Array(cap).fill(-1), lo: 0, hi: -1 };   // (pid: the person in each slot; prev: last frame's, lo..hi: slots whose person changed)
   });
   // ---- Rocketbox avatars (life #1, art #5, graphics #6; MIT, seoul/people): 8 rigged, textured bodies baked onto the crowd's
   // rig for the near (3.4k tris) and mid (0.77k) tiers; the procedural body stays as the far tier and the fallback (node, no
@@ -2585,10 +2660,7 @@ export function build(layout, ctx = {}) {
     return g;
   };
   // people.json + people.bin (+ atlases): build the avatar tiers. data = { meta, bin, atlas?, hair? } (node tests pass it)
-  const avatarOf = (a, list) => {   // a person's own avatar, stable (hash of the id), weighted by avatars.w
-    let tot = 0; for (const i of list) tot += avatars.w ? avatars.w[i] : 1;
-    let u = (((a.id * 2654435761) >>> 7) / 33554432) * tot; for (const i of list) { u -= avatars.w ? avatars.w[i] : 1; if (u < 0) return i; } return list[list.length - 1];
-  };
+  const avatarOf = (a) => avatars.of[a.id];   // (P7) assigned once in attachAvatars (assignAvatars)
   function attachAvatars(data) {
     const { meta, bin } = data; const nA = meta.avatars.length;
     avatars.mats = meta.avatars.map((av) => {
@@ -2600,7 +2672,7 @@ export function build(layout, ctx = {}) {
     avatars.tiers = Array.from({ length: nL }, (_, lod) => meta.avatars.map((av, ai) => {
       const mid = lod === nL - 1, L = av.lods[lod], g = avatarGeo(bin, L), cap = mid ? Math.ceil(LIFE.maxMid * 0.5) : Math.ceil(LIFE.maxNear * (nL === 3 && lod === 0 ? 0.3 : 0.5)), A = instAttrs(g, cap);
       const m = new THREE.Mesh(g, avatars.mats[ai]); m.frustumCulled = false; m.name = `crowd-${mid ? 'mid' : L.name || 'near'}-${av.name}`; group.add(m);
-      return { g, A, cap, mesh: m, tris: L.tris, n: 0, near: !mid, pid: new Int32Array(cap) };
+      return { g, A, cap, mesh: m, tris: L.tris, n: 0, near: !mid, pid: new Int32Array(cap), prev: new Int32Array(cap).fill(-1), lo: 0, hi: -1 };
     }));
     avatars.male = meta.avatars.map((av, i) => (av.sex === 'm' ? i : -1)).filter((i) => i >= 0);
     avatars.female = meta.avatars.map((av, i) => (av.sex === 'f' ? i : -1)).filter((i) => i >= 0);
@@ -2608,7 +2680,10 @@ export function build(layout, ctx = {}) {
     // are picked a tenth as often (~3 % of people); the rest share evenly
     // (P6, life #1) Hongdae on a Friday is 85 %+ Korean: the East Asian bodies (people.json `ea`) are picked 4x as often as
     // the others (suits a tenth, whoever wears them): ~80 % of the crowd's near and mid people
-    avatars.w = meta.avatars.map((av) => (/^Business/i.test(av.name) ? 0.1 : av.ea ? 4 : 1));
+    avatars.w = avatarWeights(meta); avatars.of = assignAvatars(people, meta, avatars.w);
+    // (P7) re-dyed tops into the packed attributes (and every slot rewritten once)
+    avatars.of.tops.forEach((c, i) => { if (c) { const l = lin(c); STAT[i * 20] = l[0]; STAT[i * 20 + 1] = l[1]; STAT[i * 20 + 2] = l[2]; if (people[i].look.style !== 5 && people[i].look.style !== 7) { STAT[i * 20 + 16] = l[0]; STAT[i * 20 + 17] = l[1]; STAT[i * 20 + 18] = l[2]; } } });
+    for (const t of tiers) t.prev.fill(-1);
     avatars.n = nA; avatars.ready = true; avatars.patched = false;
     for (const L of avatars.tiers) for (const t of L) if (t.near) motionMeshes.push(t.mesh);   // (the same array scene.userData.motionMeshes spreads: re-list; near tiers only, P4 perf #2)
     if (ctx.scene?.userData) ctx.scene.userData.motionMeshes = [...(ctx.scene.userData.motionMeshes || []).filter((m) => !motionMeshes.includes(m)), ...motionMeshes];
@@ -2636,7 +2711,13 @@ export function build(layout, ctx = {}) {
   // (P4) 16: a white KF94 instead of a black one, on 35 % of the masks (a hash, so the look RNG stream is unchanged)
   const accOf = people.map((a) => (a.look.acc & 7) | (a.look.pocket ? 8 : 0) | (a.look.acc & 4 && h32(a.id, 0x3a5c) % 100 < 35 ? 16 : 0));
   const seedOf = people.map((a) => ((a.id * 2654435761) >>> 0) / 4294967296);
+  // (P7, perf #3 / life #6) the per-person attributes that never change, packed once: top rgb + coat, bottom + bag, hair +
+  // width, skin + umbrella, wear + style (20 floats). A slot is rewritten (and uploaded) only when its person changes: P6
+  // wrote and uploaded all five from JS arrays for every drawn person every frame (~35 % of the render-side loop)
   const umbOf = people.map((a, i) => (rain && a.kind !== K_SEAT && a.kind !== K_PERF && ((i * 2654435761) >>> 0) % 100 < 62 ? 1 : 0));   // ~60% under umbrellas in rain
+  const STAT = new Float32Array(NP * 20);
+  people.forEach((a, i) => { const L = look[i], s = i * 20; STAT.set(L.top, s); STAT[s + 3] = a.look.coat; STAT.set(L.bot, s + 4); STAT[s + 7] = a.look.bag;
+    STAT.set(L.hair, s + 8); STAT[s + 11] = a.wide; STAT.set(L.skin, s + 12); STAT[s + 15] = umbOf[i]; STAT.set(L.wear, s + 16); STAT[s + 19] = a.look.style; });
   // look-at state (render side only): head yaw/pitch toward the drone, attention time (phones come up after ~1.2 s)
   const LY = new Float32Array(NP), LP = new Float32Array(NP), ATT = new Float32Array(NP);
   // (P4, life #4) reaction to a low drone, render side only (the soft colliders stay where the sim puts people): RX 0-1 how
@@ -2783,7 +2864,7 @@ export function build(layout, ctx = {}) {
     const X = CA.X, Z = CA.Z, VIS = CA.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
     const VZ = ctx.scene?.userData?.seoulLight?.visibility;   // D's frustum + heightfield occlusion (P3), else ctx.visible
     const cosFov = Math.cos(Math.min(1.55, ctx.fovHalf ?? 1.15)), visTest = VZ && typeof VZ.visible === 'function' ? (x, y, z, r) => VZ.visible(x, y, z, r) : typeof ctx.visible === 'function' ? ctx.visible : null;
-    let nN = 0, nM = 0, nF = 0, nC = 0; for (const t of tiers) t.n = 0; if (avatars.ready) for (const L of avatars.tiers) for (const t of L) t.n = 0;
+    let nN = 0, nM = 0, nF = 0, nC = 0, n0 = 0; for (const t of tiers) { t.n = 0; t.lo = 1e9; t.hi = -1; } if (avatars.ready) for (const L of avatars.tiers) for (const t of L) { t.n = 0; t.lo = 1e9; t.hi = -1; }
     if (avatars.ready && !avatars.patched) { const SL = ctx.scene?.userData?.seoulLight; if (SL?.patchMaterial) { for (const m of avatars.mats) SL.patchMaterial(m); avatars.patched = true; } }
     const T0 = tiers[0].A, T1 = tiers[1].A, T2 = tiers[2].A, mr2 = LIFE.midR * LIFE.midR;
     hist.fill(0); near.crowdN = 0; near.feet.length = 0;
@@ -2844,14 +2925,16 @@ export function build(layout, ctx = {}) {
       if (lod === 0) nN++; else if (lod === 1) nM++; else nF++;
       let AT = null;
       if (lod < 2 && avatars.ready) {   // the person's own avatar (by sex, then a hash), unless that avatar's buffer is full
-        const list = a.male ? avatars.male : avatars.female, av = avatarOf(a, list), al = lod === 0 ? (avatars.nL === 3 && d2 >= LIFE.nearR0 * LIFE.nearR0 ? 1 : 0) : avatars.nL - 1; AT = avatars.tiers[al][av];
-        if (AT.n >= AT.cap) AT = null;
+        const av = avatarOf(a), al = lod === 0 ? (avatars.nL === 3 && (d2 >= LIFE.nearR0 * LIFE.nearR0 || n0 >= LIFE.maxLod0) ? 1 : 0) : avatars.nL - 1; AT = av >= 0 ? avatars.tiers[al][av] : null;
+        if (AT && al === 0) n0++;
+        if (AT && AT.n >= AT.cap) AT = null;
       }
       if (!AT) AT = tiers[lod];
       T = AT.A; k = AT.n++; AT.pid[k] = i;
+      const gyx = groundAt(x, z);
       if (lod < 2 && nC < capC) {   // contact footprint: full strength standing, a touch lighter and longer walking; fades out by 50 m
         const w = CA.WALK[i] > 0.5 ? 1 : 0, fade = 1 - Math.min(1, Math.max(0, (Math.sqrt(h2) - 38) / 12));
-        contactA.setXYZW(nC, x, z, CA.YAW[i], w + Math.min(0.999, (a.kind === K_SEAT ? 0.45 : 0.62) * fade * (w ? 0.85 : 1))); contactY.setX(nC, groundAt(x, z)); nC++;
+        contactA.setXYZW(nC, x, z, CA.YAW[i], w + Math.min(0.999, (a.kind === K_SEAT ? 0.45 : 0.62) * fade * (w ? 0.85 : 1))); contactY.setX(nC, gyx); nC++;
       }
       // look at the drone (life #4): standing people within 14 m turn their heads, filmers raise phones after ~1.2 s;
       // walkers within 8 m glance
@@ -2860,21 +2943,25 @@ export function build(layout, ctx = {}) {
       const R = walker ? 8 : 14;
       if (h2 < R * R && camH < 20 && camH > -1 && a.kind !== K_PERF) {
         const rel = wrapA(Math.atan2(-dx, -dz) - yaw), hd = Math.sqrt(h2);
-        if (Math.abs(rel) < (walker ? 1.3 : 2.2)) { ty = Math.max(-1.1, Math.min(1.1, rel)); tp = -Math.max(-0.25, Math.min(0.9, Math.atan2(camP.y - groundAt(x, z) - 1.55 * a.scale, hd))); }
+        if (Math.abs(rel) < (walker ? 1.3 : 2.2)) { ty = Math.max(-1.1, Math.min(1.1, rel)); tp = -Math.max(-0.25, Math.min(0.9, Math.atan2(camP.y - gyx - 1.55 * a.scale, hd))); }
         ATT[i] += dt;
         if (filmer[i] && ATT[i] > 1.2 && CA.WALK[i] < 0.3) { pose = P_FILM; tp -= 0.05; }
       } else ATT[i] = Math.max(0, ATT[i] - dt * 2);
       LY[i] += (ty - LY[i]) * kL; LP[i] += (tp - LP[i]) * kL;
       if (FL[i] > 0 && a.kind !== K_PERF) pose = P_FLINCH;
-      const o = k * 4, L = look[i];
-      T.iPos.array[o] = x; T.iPos.array[o + 1] = groundAt(x, z) + (a.y0 || 0); T.iPos.array[o + 2] = z; T.iPos.array[o + 3] = yaw;
-      T.iAnim.array[o] = CA.PH[i]; T.iAnim.array[o + 1] = CA.WALK[i] * (1 - 0.6 * RX[i]); T.iAnim.array[o + 2] = pose; T.iAnim.array[o + 3] = a.scale;
-      T.iTop.array.set(L.top, o); T.iTop.array[o + 3] = a.look.coat;
-      T.iBot.array.set(L.bot, o); T.iBot.array[o + 3] = a.look.bag;
-      T.iHair.array.set(L.hair, o); T.iHair.array[o + 3] = a.wide;
-      T.iSkin.array.set(L.skin, o); T.iSkin.array[o + 3] = umbOf[i];
-      T.iWear.array.set(L.wear, o); T.iWear.array[o + 3] = a.look.style;
-      T.iLook.array[o] = LY[i]; T.iLook.array[o + 1] = LP[i]; T.iLook.array[o + 2] = accOf[i]; T.iLook.array[o + 3] = seedOf[i];
+      const o = k * 4;
+      const pA = T.iPos.array; pA[o] = x; pA[o + 1] = gyx + (a.y0 || 0); pA[o + 2] = z; pA[o + 3] = yaw;
+      const nA = T.iAnim.array; nA[o] = CA.PH[i]; nA[o + 1] = CA.WALK[i] * (1 - 0.6 * RX[i]); nA[o + 2] = pose; nA[o + 3] = a.scale;
+      if (AT.prev[k] !== i) {   // (P7) static attributes: only when the slot's person changed
+        AT.prev[k] = i; if (k < AT.lo) AT.lo = k; if (k > AT.hi) AT.hi = k;
+        const s = i * 20, tA = T.iTop.array, bA = T.iBot.array, hA = T.iHair.array, sA = T.iSkin.array, wA = T.iWear.array;
+        tA[o] = STAT[s]; tA[o + 1] = STAT[s + 1]; tA[o + 2] = STAT[s + 2]; tA[o + 3] = STAT[s + 3];
+        bA[o] = STAT[s + 4]; bA[o + 1] = STAT[s + 5]; bA[o + 2] = STAT[s + 6]; bA[o + 3] = STAT[s + 7];
+        hA[o] = STAT[s + 8]; hA[o + 1] = STAT[s + 9]; hA[o + 2] = STAT[s + 10]; hA[o + 3] = STAT[s + 11];
+        sA[o] = STAT[s + 12]; sA[o + 1] = STAT[s + 13]; sA[o + 2] = STAT[s + 14]; sA[o + 3] = STAT[s + 15];
+        wA[o] = STAT[s + 16]; wA[o + 1] = STAT[s + 17]; wA[o + 2] = STAT[s + 18]; wA[o + 3] = STAT[s + 19];
+      }
+      const lA = T.iLook.array; lA[o] = LY[i]; lA[o + 1] = LP[i]; lA[o + 2] = accOf[i]; lA[o + 3] = seedOf[i];
       { const vl = Math.hypot(vx, vz), c = vl > 2.5 ? 2.5 / vl : 1, ov = k * 3; T.instanceVelocity.array[ov] = vx * c; T.instanceVelocity.array[ov + 1] = 0; T.instanceVelocity.array[ov + 2] = vz * c; }   // (P5: as drawn, <= 2.5 m/s)
       fill.at(x, z, tmpF); T.iFill.array[o] = tmpF[0]; T.iFill.array[o + 1] = tmpF[1]; T.iFill.array[o + 2] = tmpF[2]; T.iFill.array[o + 3] = tmpF[3];
     }
@@ -2882,22 +2969,38 @@ export function build(layout, ctx = {}) {
     for (const T of [...tiers, ...(avatars.ready ? avatars.tiers.flat() : [])]) {
       const n = T.n; T.g.instanceCount = n; T.mesh.visible = n > 0; avTris += n * T.tris;
       if (!n) continue;
-      for (const k in T.A) { const at = T.A[k]; at.clearUpdateRanges?.(); at.addUpdateRange?.(0, n * at.itemSize); at.needsUpdate = true; }
+      for (const k in T.A) {
+        const at = T.A[k], st = STATIC_ATTR.has(k); if (st && T.hi < T.lo) continue;   // (P7) static: only the slots whose person changed
+        at.clearUpdateRanges?.(); if (st) at.addUpdateRange?.(T.lo * 4, (T.hi - T.lo + 1) * 4); else at.addUpdateRange?.(0, n * at.itemSize); at.needsUpdate = true;
+      }
     }
     contactG.instanceCount = nC; contactA.clearUpdateRanges?.(); contactA.addUpdateRange?.(0, nC * 4); contactA.needsUpdate = true; contactY.clearUpdateRanges?.(); contactY.addUpdateRange?.(0, nC); contactY.needsUpdate = true;
     stats.contacts = nC;
     stats.crowdMs = c2 - c1;
     // ---- vehicles
     const aT = sim.aT, cnt = {}; for (const ty of VTYPES) cnt[ty] = 0;
+    const vCullOn = ctx.vehicleCull !== false && fwd.lengthSq() > 0, cosV = Math.cos(Math.min(Math.PI, Math.min(1.55, ctx.fovHalf ?? 1.15) + VCULL.pad)); stats.vCulled = 0;
     let np = 0;
     for (const v of traffic.vehicles) {
       const p = traffic.pose(v, aT, PO), [ef, er] = vEm[v.id];
       if (p.hidden) { ef.nits = 0; er.nits = 0; continue; }
+      if (v.type === 'bus') { const tk = v.dwell != null && v.dwellT > 0 ? 1 : 0; v._kn = (v._kn || 0) + (tk - (v._kn || 0)) * Math.min(1, dt * 2.5); }   // (eased even while culled)
+      let y = groundAt(p.x, p.z); const yaw = Math.atan2(p.hx, p.hz), hl = v.L / 2;
+      // the lamps stay lit (D's light bins every emitter, culled or not)
+      ef.pos[0] = p.x + p.hx * hl; ef.pos[1] = y + (v.type === 'bus' ? 0.6 : 0.68); ef.pos[2] = p.z + p.hz * hl; ef.normal[0] = p.hx; ef.normal[2] = p.hz; ef.nits = 40000;
+      er.pos[0] = p.x - p.hx * hl; er.pos[1] = y + 0.75; er.pos[2] = p.z - p.hz * hl; er.normal[0] = -p.hx; er.normal[2] = -p.hz; er.nits = 250 + 1250 * v.brake;
+      // (P7, perf #1 with D: every vehicle was drawn every pass, ~0.44 M triangles, cars 300 m behind the camera included)
+      // render-only cull: within VCULL.far m and inside the view cone widened by VCULL.pad (plus the vehicle's own angular
+      // size), or within VCULL.near m; the headlight pool by its own 14 m reach. The sim, colliders and lamps are untouched.
+      // The kept vehicles pack the instance slots in order (H's depth proxies, A's velocity pass and D's mirror occluders
+      // share instanceMatrix and count)
+      const vdx = p.x - camP.x, vdz = p.z - camP.z, vry = y + 1 - camP.y, vd = Math.sqrt(vdx * vdx + vdz * vdz + vry * vry);
+      const vc = vCullOn ? (vdx * fwd.x + vry * fwd.y + vdz * fwd.z) / Math.max(vd, 1e-3) : 1;
+      const drawV = !vCullOn || vd < VCULL.near || (vd < VCULL.far && vc > cosV - (hl + 1.5) / vd);
+      if (!drawV) { stats.vCulled++; if (vc > cosV - (hl + 14) / vd && vd < VCULL.far + 14) { const I = v.type === 'scooter' ? 0.35 : v.type === 'bus' ? 1.2 : 1; poolA.setXYZW(np++, p.x + p.hx * hl, p.z + p.hz * hl, yaw, I); } continue; }
       const B = vByType[v.type], k = cnt[v.type]; if (k >= B.cap) continue; cnt[v.type]++;
-      let y = groundAt(p.x, p.z); const yaw = Math.atan2(p.hx, p.hz);
       Q.setFromAxisAngle(UP, yaw);
-      if (v.type === 'bus') {   // (P6, life #4) the kneel: -8 cm and a 1.2 deg lean to the kerb while it dwells at a stop (eased)
-        const tk = v.dwell != null && v.dwellT > 0 ? 1 : 0; v._kn = (v._kn || 0) + (tk - (v._kn || 0)) * Math.min(1, dt * 2.5);
+      if (v.type === 'bus') {   // (P6, life #4) the kneel: -8 cm and a 1.2 deg lean to the kerb while it dwells at a stop (eased above)
         if (v._kn > 1e-3) { y -= 0.08 * v._kn; Q.multiply(QK.setFromAxisAngle(FWD, -0.021 * v._kn)); }
       }
       M4.compose(V3.set(p.x, y, p.z), Q, S1); B.im.setMatrixAt(k, M4);
@@ -2905,9 +3008,6 @@ export function build(layout, ctx = {}) {
       B.st.setXYZW(k, v.brake, v.hazard ? 1 : 0, 1, (v.id * 0.37) % 1);
       B.vel.setXYZ(k, p.hx * v.v, 0, p.hz * v.v);
       fill.at(p.x, p.z, tmpF); B.env.setXYZW(k, tmpF[0], tmpF[1], tmpF[2], (v.id * 0.618) % 1);
-      const hl = v.L / 2;
-      ef.pos[0] = p.x + p.hx * hl; ef.pos[1] = y + (v.type === 'bus' ? 0.6 : 0.68); ef.pos[2] = p.z + p.hz * hl; ef.normal[0] = p.hx; ef.normal[2] = p.hz; ef.nits = 40000;
-      er.pos[0] = p.x - p.hx * hl; er.pos[1] = y + 0.75; er.pos[2] = p.z - p.hz * hl; er.normal[0] = -p.hx; er.normal[2] = -p.hz; er.nits = 250 + 1250 * v.brake;
       const I = v.type === 'scooter' ? 0.35 : v.type === 'bus' ? 1.2 : 1;
       poolA.setXYZW(np++, p.x + p.hx * hl, p.z + p.hz * hl, yaw, I);
     }
