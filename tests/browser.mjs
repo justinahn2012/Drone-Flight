@@ -225,6 +225,9 @@ try {
         o.step(33, 1, false); png0 = cv.toDataURL('image/png'); ev0 = evOf();
         if (o.fpv.look) o.fpv.look.retro = retro;
       }
+      // [P8 H, native parity] the camera that drew the still (the drone drifts ~1 m in its 10 steps): Metal renders this pose
+      const C = o.fpv.cam, L = o.fpv.lens || {}, r7 = (v) => +v.toFixed(5);
+      const cam = { pos: C.position.toArray().map(r7), quat: C.quaternion.toArray().map(r7), fov: r7(C.fov), aspect: r7(C.aspect), lens: { k: L.k, F: L.F, hw: L.hw, hh: L.hh, tx: L.tx, ty: L.ty } };
       const q = o.drone.q, up = 1 - 2 * (q.x * q.x + q.z * q.z);   // the craft's up . world up: < 0 = upside down
       const img = new Image(); img.src = url; await img.decode();
       const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0);
@@ -232,7 +235,7 @@ try {
       for (let i = 0; i < d.length; i += 4) h[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
       const n = d.length / 4, pct = (p) => { let s = 0; for (let k = 0; k < 256; k++) { s += h[k]; if (s >= p * n) return k; } return 255; };
       const T = window.__tris, tris = T ? { total: T.total, draws: T.draws, main: Math.max(0, ...T.fb.values()), passes: T.fb.size } : null;
-      return { frames: Number.isFinite(n0) ? o.frameN - n0 : null, tris, url, png, png0, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
+      return { cam, frames: Number.isFinite(n0) ? o.frameN - n0 : null, tris, url, png, png0, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
     }, { tp, vel, gate });
     // [P3 H] main bfe39b1's CI shot spawn upside down once (p50 83 against ~125 upright) and that became the golden:
     // an inverted craft is a harness state, not a look, so shoot it again once and say so
@@ -245,7 +248,7 @@ try {
     // drew dozens of unasked frames (walk0 2153 s against 227 s of steps) and the drone / AE moved between its steps
     const want = 10 + (gate ? 1 : 0);
     ok(r.frames === want, `still ${name}: draws only its own ${want} frames (drew ${r.frames})`);
-    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro } : {}), ...(r.tris ? { tris: r.tris } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
+    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro, cam: r.cam } : {}), ...(r.tris ? { tris: r.tris } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
     if (!BANDO && r.tris?.draws) {   // [P6 H] budgets (Seoul): every pass, and the largest render target (the main pass)
       const M = (v) => (v / 1e6).toFixed(2);
       ok(r.tris.total <= BUDGET.tris, `budget ${name}: triangles ${M(r.tris.total)} M <= ${M(BUDGET.tris)} M (all passes, ${r.tris.draws} draws, ${r.tris.passes} targets)`);
