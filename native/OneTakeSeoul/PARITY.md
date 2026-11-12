@@ -1,7 +1,11 @@
 # Neon Seoul native slice: parity spec (P4 stream H, native #6)
 
-**Status: untested.** This package was written on the Linux export box, which has no Swift or Metal toolchain. Nothing
-here has been compiled. The first job on a Mac is `sh fetch-meshopt.sh && ONETAKE_EXPORT=<export dir> swift test`.
+**Status (P6 H): compiled and passing.** First compiled on Linux with Swift 6.1.2 against main bc45fbe's CI export:
+7/7 tests pass (the P4 code needed no fix; SHA-256 now has a portable path beside CryptoKit, the lightmap reader is new).
+CI runs it on every push after the `test` job, against that commit's own export: `native-linux` (swift:6.1-noble) and
+`native-macos` (macos-15: swift test, plus an iOS-SDK `xcodebuild` of the package). Locally:
+`sh fetch-meshopt.sh && ONETAKE_EXPORT=<export dir> swift test` (`ci/merge-check.mjs` runs it when `swift` is on PATH).
+There is no Metal code yet: section 4 is the order, and its step 1 is the next job on the Mac.
 
 The slice proves one thing before any rendering work: the phone reads the web export and gets the same world. Every
 check below has a JS twin in the exporter (tools/export-world.mjs, tools/export-seoul-data.mjs), which already runs
@@ -19,6 +23,8 @@ it on every CI export, so a Swift failure means the port is wrong, not the data.
 | Traffic | LifeSim port: hash after advanceTo(t) at t = 0, 5, 37.5, 90 | life.json `parity.vectors[].hash` |
 | Flight + Take | replay tests/*.otil at 240 Hz | tests/seoul/parity.json (tests/seoul-parity.mjs) |
 | Packed streams | meshopt_decodeVertexBuffer of each `data.packed` file | `decodedBytes`; lossless |
+| Night lightmap | NightLM: NLM2 header, key == light.json `lightmap.key` (a stale key throws), gunzip, un-plane | `lightmap.texelHash` (testNightLightmap) |
+| SHA-256 | CryptoKit (Apple) and the portable FIPS 180-4 path agree on the standard vectors | testSHA256Vectors |
 | signs.bin columns | decode per column (i32 / f32; fixed point x `scale`) | the JSON values (exact) |
 
 The collider is the contract for collision parity. Keep its triangle order (three-mesh-bvh order) when building the
@@ -38,6 +44,11 @@ Swift BVH, and keep each triangle's vertex order. Ties between equal hit distanc
    light/night-lm.bin: the browser's own file (NLM2 header, gzip of 4 row-delta byte planes of RGB9E5 texels; upload
    as MTLPixelFormatRGB9E5Float). Use it only when its header key equals light.json `lightmap.key`. Use clustered lights in compute with no K cap.
    EDR output keeps sign cores above 1000 nits.
+   **Light-record lobes** (the record's type field; light.json `lobes`): 0 lambert, 1 street, 2 beam, and **3 pack**
+   (P6, stream D: wall packs light a pool and a wall scallop instead of P5's even sheet). `pack`: c = -D.y 0.9397 +
+   dot(D.xz, forward.xz) 0.342; 0 for c <= 0.42, else (0.3 + 0.7 c^2) smoothstep(0.42, 0.58, c); intensity = lumens /
+   2.222485 sr x the lobe. Swift reference: Sources/SeoulBundle/Lobes.swift (testWallPackLobe, vectors from the JS).
+   The Metal light loop must branch on all four ids, or wall packs go dark on the phone.
 3. **Signs:** signs.glb + signs.bin + signs/msdf.png. Draw the 5 batched groups and the sign tiles from an indirect
    command buffer, culled on the GPU.
 4. **Life:** the LifeSim port on its own thread, a pure function of the take clock (section 2's traffic hash).

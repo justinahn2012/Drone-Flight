@@ -48,6 +48,9 @@ const LEVEL_SHOTS = {
     walk0: ['o.tp(-36,3,-23,0,(4)-o.drone.c.camTilt)', [0, 0, -3]],
     club90: ['o.tp(63.7,3,129.6,90,(4)-o.drone.c.camTilt)', [-3, 0, 0]],
     station: ['o.tp(31.8,8,-309,0,(0)-o.drone.c.camTilt)', [0, 0, -3]],
+    // [P6 H, PLAN-P6 gates] the player's first frame: the game's own spawn (respawn to the start, F's pose and pitch), held
+    // still. Last, so the three goldens above are shot exactly as before (respawn moves the take clock to a new city).
+    spawn: ['o.respawn(true)', [0, 0, 0]],
   },
 };
 const SHOT_SET = Object.fromEntries(Object.entries(BANDO ? SHOTS : LEVEL_SHOTS[LEVEL] || {}).filter(([k]) => !ONLY || ONLY.includes(k)));
@@ -55,6 +58,10 @@ const ALLOW = [/favicon\.ico/];   // console errors that are not failures
 const CAMGATE = { 'seoul-hongdae': true };   // [P3 H] levels whose stills feed tools/camgate.py (lossless PNG, retro 0 and shipped)
 const TOL = { p50: 8, p95: 10 };
 const HEAP_MAX = +(process.env.ONETAKE_HEAP_MAX || 450);   // [P5 D] MB, levels other than bando (perf #1, native #3)
+// [P6 H, native #6 / perf #2 / perf #5] budgets as gates (Seoul): GL triangles per frame over every pass (WebGL hook,
+// counted on each still's last frame), the largest single render target's share (the main pass), and the raw heap at
+// 'settled' (before any GC: what Safari's ~1.5 GB tab has to hold). P5 (panel5 perf.md): 2.0-3.9 M, 0.8-2.0 M, 1005 MB.
+const BUDGET = { tris: 2.6e6, mainTris: 1.3e6, rawSettledMB: +(process.env.ONETAKE_RAW_MAX || 700) };
 function writeGolden(now, golden, src) {
   writeFileSync(GOLDEN, JSON.stringify({ note: 'tests/browser.mjs golden stills (SwiftShader, ' + `${W}x${H}, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update, or --golden-from <CI artifact>/stills.json, after an intentional look change.` + (src ? ` From ${src}.` : ''),
     shots: Object.fromEntries(Object.entries(now).map(([k, v]) => [k, { p5: v.p5, p50: v.p50, p95: v.p95, clip: v.clip, tol: golden.shots?.[k]?.tol || TOL }])) }, null, 1) + '\n');
@@ -108,6 +115,33 @@ try {
     if (/fonts\.(googleapis|gstatic)\.com/.test(u)) return route.fulfill({ status: 200, body: '', contentType: 'text/css' });
     return route.continue();
   });
+  // [P6 H] triangle counter: wraps the WebGL2 draw calls (and WEBGL_multi_draw, which three's BatchedMesh uses); counts only
+  // while __tris.on (one frame per still), per bound draw framebuffer (null = the canvas)
+  await page.addInitScript(() => {
+    const T = window.__tris = { on: false, total: 0, draws: 0, fb: new Map() }, ids = new WeakMap(); let nid = 1;
+    const tri = (m, n) => (m === 4 ? Math.floor(n / 3) : m === 5 || m === 6 ? Math.max(0, n - 2) : 0);
+    const add = (gl, m, n, inst = 1) => { if (!T.on) return; const t = tri(m, n) * inst; T.total += t; T.draws++;
+      const f = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING); let k = 0; if (f) { k = ids.get(f); if (!k) ids.set(f, (k = nid++)); } T.fb.set(k, (T.fb.get(k) || 0) + t); };
+    const P = WebGL2RenderingContext.prototype, wrap = (o, name, f) => { const g = o[name]; if (g) o[name] = function (...a) { f(this, a); return g.apply(this, a); }; };
+    wrap(P, 'drawArrays', (gl, a) => add(gl, a[0], a[2])); wrap(P, 'drawElements', (gl, a) => add(gl, a[0], a[1]));
+    wrap(P, 'drawRangeElements', (gl, a) => add(gl, a[0], a[3]));
+    wrap(P, 'drawArraysInstanced', (gl, a) => add(gl, a[0], a[2], a[3])); wrap(P, 'drawElementsInstanced', (gl, a) => add(gl, a[0], a[1], a[4]));
+    const ge = P.getExtension;
+    P.getExtension = function (n) {
+      const x = ge.call(this, n), gl = this;
+      if (x && n === 'WEBGL_multi_draw' && !x.__tris) {
+        x.__tris = 1;
+        const sum = (L, o, c, I, io) => { let t = 0; for (let i = 0; i < c; i++) t += L[o + i] * (I ? I[io + i] : 1); return t; };
+        const many = (m, L, o, c, I, io) => { if (!T.on) return; for (let i = 0; i < c; i++) add(gl, m, L[o + i], I ? I[io + i] : 1); };
+        wrap(x, 'multiDrawArraysWEBGL', (_, a) => many(a[0], a[3], a[4], a[5]));
+        wrap(x, 'multiDrawElementsWEBGL', (_, a) => many(a[0], a[1], a[2], a[6]));
+        wrap(x, 'multiDrawArraysInstancedWEBGL', (_, a) => many(a[0], a[3], a[4], a[7], a[5], a[6]));
+        wrap(x, 'multiDrawElementsInstancedWEBGL', (_, a) => many(a[0], a[1], a[2], a[8], a[6], a[7]));
+        void sum;
+      }
+      return x;
+    };
+  });
   await page.addInitScript((world) => localStorage.setItem('onetake.settings', JSON.stringify({ world, quality: 'auto', v: 3, mode: 'cine', hud: 'off' })), BANDO ? 'yard' : LEVEL);
 
   // ---- 1 + 2. load with ?perf, run the segments
@@ -138,6 +172,8 @@ try {
   if (!BANDO && !SKIP.has('heap')) {
     const st = await page.waitForFunction(() => window.__onetake.levels?.mem?.()?.steps?.find((s) => s.step === 'settled'), null, { timeout: 120000, polling: 1000 }).then((h) => h.jsonValue(), () => null);
     let gcMB = null; try { const cdp = await page.context().newCDPSession(page); await cdp.send('HeapProfiler.collectGarbage'); gcMB = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576)); } catch (e) {}
+    // [P6 H, native #6 / perf #5] the raw mark too: the build's peak garbage is what a phone tab must survive
+    ok(Number.isFinite(st?.mb) && st.mb <= BUDGET.rawSettledMB, `budget: raw JS heap at settled ${st?.mb ?? '?'} MB <= ${BUDGET.rawSettledMB} MB (before any GC)`);
     ok(st && Number.isFinite(gcMB) && gcMB <= HEAP_MAX, `live JS heap at settled ${gcMB ?? '?'} MB <= ${HEAP_MAX} (raw mark ${st?.mb ?? '?'} MB before the GC; the build steps ${JSON.stringify(await page.evaluate(() => window.__onetake.levels.mem().steps.map((s) => [s.step, s.mb])))})`);
   }
 
@@ -174,7 +210,9 @@ try {
       const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };
       for (let i = 0; i < 10; i++) {
         if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
-        const f0 = performance.now(); o.step(33, 1, false); fms.push(Math.round(performance.now() - f0));   // = step(33, 1, i === 9): the grab below happens in the same task, before the buffer is presented
+        const T = window.__tris; if (T && i === 9) { T.total = 0; T.draws = 0; T.fb.clear(); T.on = true; }   // [P6 H] count the graded frame
+        const f0 = performance.now(); o.step(33, 1, false); fms.push(Math.round(performance.now() - f0));
+        if (T) T.on = false;   // = step(33, 1, i === 9): the grab below happens in the same task, before the buffer is presented
         if (i === 9) { url = cv.toDataURL('image/jpeg', 0.92); if (gate) png = cv.toDataURL('image/png'); }
         await new Promise((r) => setTimeout(r, 20));
       }
@@ -191,7 +229,8 @@ try {
       const d = g.getImageData(0, 0, c.width, c.height).data, h = new Uint32Array(256);
       for (let i = 0; i < d.length; i += 4) h[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
       const n = d.length / 4, pct = (p) => { let s = 0; for (let k = 0; k < 256; k++) { s += h[k]; if (s >= p * n) return k; } return 255; };
-      return { url, png, png0, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
+      const T = window.__tris, tris = T ? { total: T.total, draws: T.draws, main: Math.max(0, ...T.fb.values()), passes: T.fb.size } : null;
+      return { tris, url, png, png0, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
     }, { tp, vel, gate });
     // [P3 H] main bfe39b1's CI shot spawn upside down once (p50 83 against ~125 upright) and that became the golden:
     // an inverted craft is a harness state, not a look, so shoot it again once and say so
@@ -200,7 +239,12 @@ try {
     writeFileSync(join(OUT, `${name}.jpg`), Buffer.from(r.url.split(',')[1], 'base64'));
     if (r.png) writeFileSync(join(OUT, 'camgate', `${name}.png`), Buffer.from(r.png.split(',')[1], 'base64'));
     if (r.png0) writeFileSync(join(OUT, 'camgate', `${name}.r0.png`), Buffer.from(r.png0.split(',')[1], 'base64'));
-    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
+    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro } : {}), ...(r.tris ? { tris: r.tris } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
+    if (!BANDO && r.tris?.draws) {   // [P6 H] budgets (Seoul): every pass, and the largest render target (the main pass)
+      const M = (v) => (v / 1e6).toFixed(2);
+      ok(r.tris.total <= BUDGET.tris, `budget ${name}: triangles ${M(r.tris.total)} M <= ${M(BUDGET.tris)} M (all passes, ${r.tris.draws} draws, ${r.tris.passes} targets)`);
+      ok(r.tris.main <= BUDGET.mainTris, `budget ${name}: main pass ${M(r.tris.main)} M <= ${M(BUDGET.mainTris)} M (the largest render target)`);
+    }
     const g = golden.shots[name];
     console.log(`  still ${name}: ${now[name].s} s, steps ${JSON.stringify(now[name].stepS)} s`);
     if (UPDATE || !g || SKIP.has('golden')) console.log(`  still ${name}: p5 ${r.p5} p50 ${r.p50} p95 ${r.p95} clip ${r.clip}${gate ? ` EV ${r.ev?.toFixed?.(2)}` : ''} (${now[name].s} s)${g ? '' : ' (no golden yet)'}`);

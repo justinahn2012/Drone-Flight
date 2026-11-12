@@ -523,7 +523,10 @@ async function lightmapFile(root, ctl, files, layoutSha) {
   const F = existsSync(p) ? N.lmFileHeader(readFileSync(p)) : null;
   if (F && key && F.header.key === key) {
     files['light/night-lm.bin'] = readFileSync(p);
-    return { file: 'light/night-lm.bin', key, keyOf: 'seoul-nightlm.js lmKey over the bake inputs (the game uses the file only when its header key equals its own)', source: `${rel} (D, shipped; byte for byte what the game fetches)`,
+    // [P6 H, native #2] the decoded texels' hash, so a port proves it reads the same map (native/OneTakeSeoul NightLM)
+    const { gunzipSync } = await import('node:zlib'), { GeoHash } = await import(pathToFileURL(join(root, 'geohash.js')).href);
+    const texelHash = new GeoHash().str('nlm').array(N.lmUnplanes(gunzipSync(F.payload), F.header.w, F.header.h)).hex();
+    return { file: 'light/night-lm.bin', key, texelHash, texelHashOf: 'GeoHash mm3x2/1: str("nlm"), then the w x h decoded RGB9E5 u32 texels (count, then each)', keyOf: 'seoul-nightlm.js lmKey over the bake inputs (the game uses the file only when its header key equals its own)', source: `${rel} (D, shipped; byte for byte what the game fetches)`,
       format: 'NLM2: "NLM2" | u32 LE header bytes | header JSON {key, w, h, version, enc, texels, bytes} | gzip payload: the w x h RGB9E5 texels (u32 LE, rows bottom-up as a GL DataTexture) as 4 byte planes, each delta-coded along the rows (seoul-nightlm.js lmUnplanes)',
       width: F.header.w, height: F.header.h, version: F.header.version, texels: F.header.texels, bytes: files['light/night-lm.bin'].length, gpu: 'RGB9E5 (MTLPixelFormatRGB9E5Float / GL_RGB9_E5), 4 bytes per texel', ...common };
   }
