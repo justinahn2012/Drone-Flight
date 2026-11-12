@@ -392,6 +392,16 @@ function frameSpan(Fr, faces) {
 // [P7-C] art #4 / colour #2 (walk0's sign wall was 87 % orange): the frame stacks' hues, per the colourist's walking-street
 // weights: red / orange 50 %, magenta / pink 20 %, cyan / blue 15 %, green 15 %; the first box of each stack is cyan or violet
 const FRAME_HUES = [['red', 0.28], ['orange', 0.22], ['pink', 0.1], ['magenta', 0.1], ['cyan', 0.08], ['blue', 0.07], ['green', 0.15]];
+// [P8-A] colour #1 (walk0 read 82 % warm, 77 % orange, against the refs' 42 % orange / 24 % red): the push table's per-street
+// hue re-weighting. On a walking street named here, every saturated face (not white / warm-white boxes, not a chain's
+// convenience-store colours, not a frame stack, which already has its hue) re-draws its hue from the street's weights, from
+// its own stream (seed ^ lot#p8) drawn after every other draw, so geometry, count, lit and the rc colour stream never move.
+// Only when the street carries a push (> 0): the census mix (push 0) is untouched.
+export const STREET_HUES = { 'Eoulmadang-ro': [['red', 0.28], ['orange', 0.22], ['pink', 0.1], ['magenta', 0.1], ['cyan', 0.08], ['blue', 0.07], ['green', 0.15]] };
+// [P8-A] colour #1: name overrides (the shop's own colour, whatever the draw): 몽글술집 on walk0's left is pink; 해녀감성주점's
+// channel letters (walk0's left 2F, about half the frame's bright saturated pixels on their own, amber -> orange on camera)
+// are white LED modules, Hongdae's commonest channel letter: no single hue draw can move walk0's warm share past one sign
+export const NAME_HUES = { '몽글술집': 'pink', '해녀감성주점': 'white' };
 const CAT_OF_HUE = { red: 'red', orange: 'ygo', amber: 'ygo', yellow: 'ygo', green: 'ygo', pink: 'pink', magenta: 'pink', cyan: 'cyan', teal: 'cyan', blue: 'blue', violet: 'violet', white: 'white', warm: 'white' };
 const CUSE = { home: null, study: 'office' };       // C's floor use -> the sign tenant (null: flats carry no business sign)
 const SINGLE = new Set(['hotel', 'motel', 'office']);
@@ -440,6 +450,7 @@ export function generateSigns(layout, opts = {}) {
     if (lot.use === 'hotel' || lot.use === 'motel') for (const t of tenants) { t.use = lot.use; t.name = tenants[0].name; t.lit = tenants[0].lit; t.home = false; }
     const biz = (f) => { for (let k = Math.min(f, nFloors - 1); k >= 0; k--) if (!tenants[k].home) return tenants[k]; return tenants[0]; };
     let k = 0;
+    const sHues = st.kind === 'walking' && push > 0 ? STREET_HUES[st.name] : null, rH = sHues ? new Rng((seed ^ hashStr(lot.id + '#p8')) >>> 0) : null;   // [P8-A]
     const add = (type, t, geo, extra = {}) => {
       // fixed colour draws per sign, whatever the push, so geometry/count/lit never move with push
       const uCat = rc.next(), uHue = rc.next(), uNeon = rc.next(), uNit = rc.next(), uFlk = rc.next(), uAcc = rc.next();
@@ -449,6 +460,11 @@ export function generateSigns(layout, opts = {}) {
       // [P5-C] the box stacks are warm (red / amber / yellow / green faces, as in refs ccb0 and 8e17): the sign light budget's B/G
       // sits at its 1.05 limit already
       else if (geo.stackBox && (c.cat === 'blue' || c.cat === 'violet' || c.cat === 'cyan' || c.cat === 'white')) { const cat = uHue < 0.45 ? 'red' : 'ygo', hue = pickW(uHue, CAT_HUES[cat]); c = { cat, hue, rgb: srgb(HEX[hue]) }; }
+      // [P8-A] colour #1: the street's hue weights (own stream, one draw per sign, drawn whatever the branch) and name overrides
+      const uS = rH ? rH.next() : 0;
+      if (!geo.hue && rH && c.cat !== 'white' && t.use !== 'conv') { const hue = pickW(uS, sHues); c = { cat: CAT_OF_HUE[hue], hue, rgb: srgb(HEX[hue]) }; }
+      const nh = NAME_HUES[(t.name.main + t.name.sub).replace(/ /g, '')];
+      if (nh && c.cat !== 'white' && t.use !== 'conv') c = { cat: CAT_OF_HUE[nh], hue: nh, rgb: srgb(HEX[nh]) };
       const nightlife = NIGHT_USES.has(t.use) || t.use === 'restaurant' && lot.use === 'pocha';
       const pn = Math.min(1, push * (USE_PUSH[t.use] ?? 0.8));
       let style = type;
@@ -1010,6 +1026,13 @@ const SCREEN_PALETTES = [
   ['#12c86a', '#d8ff3a', '#ffffff'], ['#0a1440', '#3a7bff', '#ffffff'], ['#ff6a3c', '#ffd23a', '#2a0a3a'], ['#00b4d8', '#ff4f9a', '#fafafa'],
   ['#ff2a4a', '#1a1a2a', '#e8e8f0'], ['#e8402a', '#f2c230', '#ffffff'],
 ];
+// [P8-A] colour #2 (the station screen read violet again, mean (100,76,111), violet / magenta 44 % of station's bright hue):
+// the Yanghwa-ro facade screens (kind 'facade') draw only palettes whose grounds' chroma-weighted hue mean sits outside
+// 260-330 deg (palettes 1, 2 and 7 are pink / violet / magenta grounds); door screens and billboards keep all ten
+const palHue = (p) => { let x = 0, y = 0; for (const h of p.slice(0, 2)) { const c = new THREE.Color(h), M = Math.max(c.r, c.g, c.b), m = Math.min(c.r, c.g, c.b);
+  if (M - m < 1e-6) continue; const hsl = {}; c.getHSL(hsl); const w = (M - m); x += Math.cos(hsl.h * 2 * Math.PI) * w; y += Math.sin(hsl.h * 2 * Math.PI) * w; }
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360; };
+export const SCREEN_VIOLET = [260, 330];
 // program ids (keep in sync with the GLSL below)
 export const PROG = { GRADIENT: 0, STAGE: 1, EVENT: 2, BUBBLES: 3, GRIDGAME: 4, CLOCK: 5, WIPE: 6, PSA: 7 };
 // content level of grounds relative to the white text peak (colour #5: mean ~0.3 x peak, soft knee)
@@ -1017,12 +1040,14 @@ export const SCREEN_BG = 0.3;
 // text rows used by each program (main, sub)
 const PROG_TEXT = { 0: [[0, 1], [11, 12]], 1: [[2, 3]], 2: [[4, 5]], 3: [[6, 7]], 4: [[8, 9]], 5: [[10, -1]], 6: [[11, 12], [15, 16]], 7: [[13, 14]] };
 
+const FACADE_PALETTES = SCREEN_PALETTES.filter((p) => { const h = palHue(p); return h < SCREEN_VIOLET[0] || h > SCREEN_VIOLET[1]; });
 function makePlaylist(seed, kind) {
   const r = new Rng(seed); const n = kind === 'small' ? 3 : 4; const list = []; const used = new Set();
   const pool = kind === 'small' ? [0, 3, 6, 5, 2] : [0, 1, 2, 3, 4, 5, 6, 7];
   for (let i = 0; i < n; i++) {
     let p = pick(r, pool); let guard = 0; while (used.has(p) && guard++ < 10) p = pick(r, pool); used.add(p);
-    const pal = SCREEN_PALETTES[Math.floor(r.next() * SCREEN_PALETTES.length)].map((h, k) => (k < 2 ? capChroma(h) : srgb(h)));
+    const pals = kind === 'facade' ? FACADE_PALETTES : SCREEN_PALETTES;
+    const pal = pals[Math.floor(r.next() * pals.length)].map((h, k) => (k < 2 ? capChroma(h) : srgb(h)));
     const tx = pick(r, PROG_TEXT[p]);
     list.push({ prog: p, dur: p === PROG.CLOCK ? 5 : range(r, 6, 10), pal, text: tx, seed: r.next() * 100 });
   }

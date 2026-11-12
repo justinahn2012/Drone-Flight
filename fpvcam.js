@@ -498,8 +498,8 @@ uniform vec2 uRetroShG;   // [P6-A] split-tone gate: absolute Oklab L where it f
 uniform sampler2D tDepthN;// [P6-A] the collider depth (half res, packed as depthMat; cleared to 1 = sky / beyond 100 m)
 uniform vec3 uDepthN;     // [P6-A] xy: source uv -> depth texture uv, z: 1 = no split-tone on the sky
 uniform sampler2D tAir;   // [P7-A] canyon airlight, 1/8 res, output space, exposed (AIR_FS)
-uniform vec2 uAirF;       // [P7-A] x: on, y: the exposed sky luma the airlight fills a dark slot up to (none over it)
-uniform vec2 uHaloE;      // [P7-A] the PSF's edge lobe: x share of the 1/8 block radiance (all of it, no bright-pass threshold), y its
+uniform vec3 uAirF;       // [P7-A] x: on, y: the exposed sky luma the airlight fills a dark slot up to (none over it); [P8-A] z: the cap
+uniform vec4 uHaloE;      // [P8-A] zw: ring share and radius (1/8 texels); [P7-A] the PSF's edge lobe: x share of the 1/8 block radiance (all of it, no bright-pass threshold), y its
                           // exposed cap; unblurred (8 px box + bilinear: sigma ~5-6 px at 1280 wide)
 vec3 nightTone(vec3 e){
   vec3 x = max(e, 0.0);
@@ -903,13 +903,34 @@ void main(){
     float lb = dot(max(sb.rgb, 0.0), LUMA);
     vec3 hb = lb > 1e-4 ? clamp(mix(vec3(1.0), sb.rgb / lb, smoothstep(1e-4, 0.05, lb)), 0.0, 3.0) : vec3(1.0);
     e += hb * (min(sb.a * exp2(ev), uHaloE.y) * uHaloE.x);
+    // [P8-A] colour #4 (the edge reached 120 at 4.5 px, the panel's 8): a ring of 4 taps at uHaloE.w 1/8 texels (8 px at
+    // render res) on the same block radiance; with the bilinear footprint, a lobe of sigma ~8-10 px at uHaloE.z
+    if (uHaloE.z > 0.0) {
+      vec2 tx = uHaloE.w / vec2(textureSize(tSmall, 0)), c0 = uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0);
+      vec3 ring = vec3(0.0);
+      for (int i = 0; i < 4; i++) {
+        vec2 o = vec2(i < 2 ? 0.7071 : -0.7071, (i == 0 || i == 2) ? 0.7071 : -0.7071) * tx;
+        vec4 sr = texture(tSmall, clamp(c0 + o, 0.0, 1.0)); float lr = dot(max(sr.rgb, 0.0), LUMA);
+        vec3 hr = lr > 1e-4 ? clamp(mix(vec3(1.0), sr.rgb / lr, smoothstep(1e-4, 0.05, lr)), 0.0, 3.0) : vec3(1.0);
+        ring += hr * min(sr.a * exp2(ev), uHaloE.y);
+      }
+      e += ring * (0.25 * uHaloE.z);
+    }
   }
   // [P7-A] colour #1 / fpv #2: the canyon airlight, graded on top of D's light term (seoul-light.js citySkyAir, in the scene):
   // on sky-depth pixels a dark slot is lifted toward uAirF.y (exposed luma, ~19 codes) by AIR_FS's weight (enclosure x lit
   // canyon), in its warm tint; a sky D's term (or an open dome) already lifts past that is left alone
   if (uAirF.x > 0.0) {
     float sk = smoothstep(0.985, 0.998, texture(tDepthN, clamp(sG, 0.0, 1.0) * uDepthN.xy).r);
-    if (sk > 0.0) e += texture(tAir, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * (sk * max(uAirF.y - dot(e, LUMA), 0.0));
+    if (sk > 0.0) {
+      vec3 air = texture(tAir, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb;
+      e += air * (sk * max(uAirF.y - dot(e, LUMA), 0.0));
+      // [P8-A] colour #5 (w21's slot read (34,25,22), over the refs' 28): the sum of D's in-scatter and this lift is held
+      // to uAirF.z where AIR_FS weighs the sky as a lit canyon (its luma: enclosure x lit); open domes (weight 0) and bright
+      // points over the sky (lamps, bulbs: 3-6x the cap) are left alone
+      float la = dot(e, LUMA);
+      if (uAirF.z > 0.0 && la > uAirF.z) e *= mix(1.0, uAirF.z / la, sk * clamp(dot(air, LUMA), 0.0, 1.0) * (1.0 - smoothstep(3.0 * uAirF.z, 6.0 * uAirF.z, la)));
+    }
   }
   // [P2-A] FPV #2: tBloom is the PSF's narrow lobe, tHalo its wide lobe (energy fractions of the uncapped bright pass)
   // [P3-A] colour #5 / FPV #6 / graphics #3: ghosts come from GHOST_FS (point sources only, aperture-shaped, desaturated)
@@ -1096,11 +1117,15 @@ export const GRADES = {
   //   32.6; below 16 13.5 / 14.1 / 22.4 / 12.4 %. Modelled at -1.9: 45.9 / 48.8 / 38.7 / 31.6. walk180 meters EV -4.1 (C's
   //   near boards fill a third of it) and its ground is 18: a light / content gap, not exposure (club90 caps any lift).
   //   wb red 1.0 -> 0.98 (colour #5: the fill went amber under the warmer dome, club270 R-G 2.7 -> 8.0, high 7.4 -> 11.5).
+  // [P8-A] PLAN-P8 (panel 7 colour #4 / #5): haloE [share, exposed cap, ring share, ring radius (1/8 texels)] [0.05, 16] ->
+  //   [0.09, 24, 0.03, 1.0]: the edge lobe at 9 % plus a ring of 4 taps 8 px out at 3 % (sigma ~8-10 px): the letter edge
+  //   reaches 120 at ~8 px, not 4.5. air[4] = 0.028: the slot cap (exposed luma, ~24 codes, R ~28): on sky-depth pixels AIR_FS
+  //   weighs as a lit canyon, D's in-scatter + the lift is held there (w21's slot read (34,25,22) against the refs' 28 top).
   night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.98, 1.0, 0.96], wbShade: null, evBias: -1.9, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
-    haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3], haloE: [0.05, 16],
-    air: [0.022, 0.3, 0.2, 4], airTint: [1.3, 0.75, 0.38], airEncl: [0.15, 0.45], airLit: [0.005, 0.025],
+    haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3], haloE: [0.09, 24, 0.03, 1.0],
+    air: [0.022, 0.3, 0.2, 4, 0.028], airTint: [1.3, 0.75, 0.38], airEncl: [0.15, 0.45], airLit: [0.005, 0.025],
     ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
     core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-5.2, -1.6], retroShadow: [230, 0.03], retroShGate: [0.17, 0.26], retroShSky: 1, retroVibGate: [40, 100],
     mag: 0.07, magC: 0.04, magEv: [0.7, 1.6, 3.2, 4.2], grain: 0, grainEv: [0, 0], grainPx: 2,
@@ -1346,7 +1371,7 @@ export class FPVCamera {
       // [P6-A]
       uRetroShG: { value: new V2(0, 0) }, tDepthN: { value: null }, uDepthN: { value: new V3(1, 1, 0) },
       // [P7-A]
-      tAir: { value: null }, uAirF: { value: new V2(0, 0) }, uHaloE: { value: new V2(0, 16) } };
+      tAir: { value: null }, uAirF: { value: new V3(0, 0, 0) }, uHaloE: { value: new V4(0, 16, 0, 1) } };
     const fl = this.final.u;
     const bl = () => pass(BLOOM_FS, { tSrc: { value: null }, uDir: { value: new V2() } });
     this._nightP = {
@@ -2030,7 +2055,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       nf.tHaloW.value = NP.wideOn ? NP.wideRT.texture : NP.haloB.texture; nf.uHaloW.value = NP.wideOn ? lk.haloW[0] * (this.f16 ? 1 : 8) : 0;
       // [P7-A] the edge lobe (colour #3) and the canyon airlight (colour #1, fpv #2): air [target exposed luma, sign-hue share,
       // radius, tap cap], airLit [lit-canyon ramp]
-      const he = lk.haloE; nf.uHaloE.value.set(Array.isArray(he) ? he[0] : he || 0, Array.isArray(he) ? he[1] ?? 16 : 16);
+      const he = lk.haloE; nf.uHaloE.value.set(Array.isArray(he) ? he[0] : he || 0, Array.isArray(he) ? he[1] ?? 16 : 16, Array.isArray(he) ? he[2] ?? 0 : 0, Array.isArray(he) ? he[3] ?? 1 : 1);
       const ai = lk.air, airOn = !!(ai && ai[0] > 0 && world.colliderScene);
       if (airOn) {
         const bw = this.smallRT.width, bh = this.smallRT.height;
@@ -2043,7 +2068,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
         au.uAirTint.value.set(at[0] / al, at[1] / al, at[2] / al); au.uAspect.value = this.outW / this.outH;
         r.setRenderTarget(NP.airRT); r.clear(true, false, false); r.render(NP.air.scene, this.quadCam);
       }
-      nf.tAir.value = airOn ? NP.airRT.texture : NP.haloB.texture; nf.uAirF.value.set(airOn ? 1 : 0, airOn ? ai[0] : 0);
+      nf.tAir.value = airOn ? NP.airRT.texture : NP.haloB.texture; nf.uAirF.value.set(airOn ? 1 : 0, airOn ? ai[0] : 0, airOn ? ai[4] ?? 0 : 0);
       nf.uRetro.value = rt0; nf.uRetroVib.value = lk.retroVib ?? 0.5; nf.uRetroCA.value = (lk.retroCA || 0) * rt0 * 0.004;
       nf.uNoise.value.fromArray(lk.noise || [0.010, 0.0011, 1.6]); nf.uNoiseRGB.value.fromArray(lk.noiseRGB || [1.1, 0.8, 1.5]);
       nf.uNoiseEv.value.set(lk.evMax - (lk.noiseSpan ?? 6), lk.noiseSpan ?? 6);
@@ -2097,10 +2122,10 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
           source: { radiance: lk.coreSrc, flagRamp: lk.coreW, xtalk: lk.coreXtalkSrc, ev: lk.coreEvSrc } },
         ghosts: { list: lk.ghosts, sourceEv: lk.ghostEv, chroma: lk.ghostChroma, fringe: lk.ghostFringe, blades: lk.ghostBlades, resolution: 1 / 8, taps: 37,
           model: 'G(p) = w / s^2 * mean over the aperture (radius R, per channel R * (1 +- fringe)) of S(0.5 + (p - o - 0.5) / s); S = desat(bright pass) * smoothstep(sourceEv, log2(block luma / 0.24))' },
-        air: lk.air ? { target: lk.air[0], signHue: lk.air[1], ringRadius: lk.air[2], tapCap: lk.air[3], tint: lk.airTint, enclosure: lk.airEncl, litCanyon: lk.airLit, model: 'on sky-depth pixels (collider depth >= ~90 m): e += max(target - luma(e), 0) x smoothstep(enclosure, share of 16 ring taps that are not sky) x smoothstep(litCanyon, mean exposed luma of those taps, each capped at tapCap) x mix(tint, signs hue, signHue) (luma 1) (contract P7-A)' } : null,
+        air: lk.air ? { target: lk.air[0], signHue: lk.air[1], ringRadius: lk.air[2], tapCap: lk.air[3], cap: lk.air[4] ?? null, tint: lk.airTint, enclosure: lk.airEncl, litCanyon: lk.airLit, model: 'on sky-depth pixels (collider depth >= ~90 m): e += max(target - luma(e), 0) x smoothstep(enclosure, share of 16 ring taps that are not sky) x smoothstep(litCanyon, mean exposed luma of those taps, each capped at tapCap) x mix(tint, signs hue, signHue) (luma 1) (contract P7-A)' } : null,
         retro: { shadow: lk.retroShadow, shadowGate: lk.retroShGate, shadowSkyCut: !!lk.retroShSky, vibGate: lk.retroVibGate, magenta: { amount: lk.mag, chromaGate: lk.magC, ev: lk.magEv, amberGate: lk.retroVibGate } },
         meter: { grid: [16, 12], reject: lk.aeReject, areaSource: lk.aeArea, areaRule: '[thr, weight, weight when > share of taps are area, share] (soft +-0.05)', matrix: lk.aeMatrix, veilCapEv: lk.veilCapEv, resetSolvesCap: true },
-        psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, mid: { energy: lk.haloM?.[0] ?? 0, spacing: lk.haloM?.[1], passes: lk.haloM?.[2], tint: lk.haloMTint || [1, 1, 1] }, mid2: { energy: lk.haloW?.[0] ?? 0, spacing16: lk.haloW?.[1], passes: lk.haloW?.[2], tint: lk.haloMTint || [1, 1, 1], from: 'mid at 1/16' }, edge: { energy: Array.isArray(lk.haloE) ? lk.haloE[0] : lk.haloE || 0, cap: Array.isArray(lk.haloE) ? lk.haloE[1] : 16, from: 'the 1/8 block radiance (no threshold), bright-pass hue, unblurred' }, ghosts: lk.ghosts, cap: lk.bloomCap },
+        psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, mid: { energy: lk.haloM?.[0] ?? 0, spacing: lk.haloM?.[1], passes: lk.haloM?.[2], tint: lk.haloMTint || [1, 1, 1] }, mid2: { energy: lk.haloW?.[0] ?? 0, spacing16: lk.haloW?.[1], passes: lk.haloW?.[2], tint: lk.haloMTint || [1, 1, 1], from: 'mid at 1/16' }, edge: { energy: Array.isArray(lk.haloE) ? lk.haloE[0] : lk.haloE || 0, cap: Array.isArray(lk.haloE) ? lk.haloE[1] : 16, ring: Array.isArray(lk.haloE) ? { energy: lk.haloE[2] ?? 0, radius8: lk.haloE[3] ?? 1 } : null, from: 'the 1/8 block radiance (no threshold), bright-pass hue, unblurred' }, ghosts: lk.ghosts, cap: lk.bloomCap },
         noise: { shot: (lk.noise || [])[0], read: (lk.noise || [])[1], chroma: (lk.noise || [])[2], floor: lk.noiseFloor, cellPx: lk.noiseCell, chromaDark: lk.chromaDark, temporal: 'mean of this and last frame lattice (corr 0.5)', texture: '256^2 gaussian, seed 0x9e3779b9 mulberry32' },
         codec: lk.codec, sharpDark: lk.sharpDark, objectBlur: { on: lk.objBlur, contract: 'P2-A1: world.motionMeshes / scene.userData.motionMeshes, geometry attribute instanceVelocity (m/s)' },
       } } : {}),

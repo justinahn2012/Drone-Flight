@@ -132,7 +132,11 @@ ok(N.airEncl[1] > N.airEncl[0] && N.airLit[1] > N.airLit[0], 'P7: airlight enclo
   ok(/uHaloE\.x > 0\.0/.test(nf) && /min\(sb\.a \* exp2\(ev\), uHaloE\.y\)/.test(nf), 'P7: night FINAL adds the edge lobe from the 1/8 block radiance (no threshold, capped)');
   ok(!/tAir|uHaloE/.test(pp(C.FINAL_FS, {})), 'P7: bando FINAL has no airlight or edge lobe');
   ok(typeof C.AIR_FS === 'string' && /lensD/.test(C.AIR_FS) && /tDepthN/.test(C.AIR_FS), 'P7: AIR_FS gathers the canyon through the lens and the collider depth'); }
-ok(N.haloE[0] >= 0.03 && N.haloE[0] <= 0.06 && N.haloE[1] > 1, 'P7 colour #3: edge lobe 3-6 % of all the light, capped');
+// [P8-A] re-recorded (intended): panel 7 colour #4 raised the edge lobe 0.05 -> 0.09 (cap 16 -> 24) and added a ring at 8 px
+ok(N.haloE[0] >= 0.07 && N.haloE[0] <= 0.1 && N.haloE[1] > 1 && N.haloE[2] > 0 && N.haloE[2] <= 0.05 && N.haloE[3] >= 0.75, 'P8 colour #4: edge lobe 7-10 % of all the light, capped, plus a 3 % ring ~8 px out');
+{ const nf8 = pp(C.FINAL_FS, { NIGHT: 1 });
+  ok(/uHaloE\.z > 0\.0/.test(nf8) && /textureSize\(tSmall, 0\)/.test(nf8), 'P8: night FINAL adds the edge ring (4 taps of the 1/8 block radiance)');
+  ok(/uAirF\.z > 0\.0 && la > uAirF\.z/.test(nf8) && N.air[4] > N.air[0] && N.air[4] <= 0.032, 'P8 colour #5: the canyon slot is capped (exposed luma 0.022 < cap <= 0.032, ~24-28 codes) where AIR_FS weighs it lit'); }
 ok(N.wb[0] === 0.98 && N.wb[1] === 1.0, 'P7 colour #5: wb red -2 % (the fill went amber under the warmer dome)');
 { const pn7 = cam.profile({ w: 1920, h: 1080 }); ok(pn7.night.air && pn7.night.air.target === N.air[0] && pn7.night.psf.edge.energy === N.haloE[0], 'P7: profile carries the airlight and the edge lobe'); }
 
