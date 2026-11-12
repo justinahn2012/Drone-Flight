@@ -264,7 +264,7 @@ const routes = ROUTE === 'all' ? Object.keys(ROUTES) : ROUTE.split(',');
 const T0 = performance.now();
 for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS).filter(([k]) => !process.env.PILOT || process.env.PILOT.split(',').includes(k))) {
   const R = []; const rng = new Rng(1000 + rn.length * 31 + pn.length * 7);
-  for (let i = 0; i < RUNS; i++) { const path = buildPath(ROUTES[rn], rng, P.spread); if (!path) break; if (process.env.TRACE) console.log('PATH', path.map((v) => v.toArray().map((x) => x.toFixed(2)).join(',')).join(' | ')); R.push(fly(path, P, rng)); }
+  for (let i = 0; i < RUNS; i++) { const path = buildPath(ROUTES[rn], rng, P.spread); if (!path || path.length < 2) { if (!R.length) console.log(`NO PATH ${rn} ${pn}: every leg skipped (no clear approach), route left out`); break; } if (process.env.TRACE) console.log('PATH', path.map((v) => v.toArray().map((x) => x.toFixed(2)).join(',')).join(' | ')); R.push(fly(path, P, rng)); }
   const tot = R.map((r) => r.total);
   results[`${rn}/${pn}`] = { runs: R.length, p25: q(tot, 0.25), p50: q(tot, 0.5), p75: q(tot, 0.75), crash: R.filter((r) => r.crashed).length, by: R.map((r) => r.by).filter(Boolean),
     stars: R.map((r) => r.stars), lines: q(R.map((r) => r.lines), 0.5), micros: q(R.map((r) => r.micros), 0.5), banks: q(R.map((r) => r.banks), 0.5), scrapes: q(R.map((r) => r.scrapes), 0.5),
