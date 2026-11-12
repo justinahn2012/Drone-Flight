@@ -39,6 +39,32 @@ final class ParityTests: XCTestCase {
         XCTAssertThrowsError(try NightLM(d, key: "0000000000000000"), "a stale key must be refused (the game's rule)")
     }
 
+    // [P6 H] D's P6 wall-pack lobe (record type 3): vectors from seoul-nightlm.js lobePack at p6/D-light 14f871e
+    func testWallPackLobe() throws {
+        let v: [[Double]] = [[0, -1, 0, 1, 0, 0.9181252629999999],
+                             [0.34199998461000103, -0.9396999577135028, 0, 1, 0, 1.0000000629999997],
+                             [-0.34199998461000103, -0.9396999577135028, 0, 1, 0, 0.7108064759812946],
+                             [0.502518907629606, -0.7035264706814485, 0.502518907629606, 0, 1, 0.7856818231010101],
+                             [0.8082903768654761, -0.5773502691896258, 0.11547005383792516, 1, 0, 0.7694998583333335],
+                             [0, 1, 0, 1, 0, 0],
+                             [0.204926207831424, -0.973399487199264, -0.102463103915712, 0.6, 0.8, 0.9037651729317584]]
+        for r in v { XCTAssertEqual(Lobes.pack(r[0], r[1], r[2], r[3], r[4]), r[5], accuracy: 1e-12) }
+        // the export's lobe table, once D's change is in it: id 3 and the same solid angle
+        if let b = try? bundle(), let lj = try? JSONSerialization.jsonObject(with: b.data("light.json")) as? [String: Any],
+           let p = Self.find(lj, "pack") {
+            XCTAssertEqual(p["id"] as? Int, Lobe.pack.rawValue)
+            if let om = p["omega"] as? Double { XCTAssertEqual(om, Lobes.packOmega, accuracy: 1e-6) }
+        }
+    }
+    /// the first dictionary under key `k` inside a "lobes" object anywhere in light.json
+    static func find(_ o: Any, _ k: String) -> [String: Any]? {
+        if let d = o as? [String: Any] {
+            if let l = d["lobes"] as? [String: Any], let p = l[k] as? [String: Any] { return p }
+            for v in d.values { if let r = find(v, k) { return r } }
+        } else if let a = o as? [Any] { for v in a { if let r = find(v, k) { return r } } }
+        return nil
+    }
+
     func bundle() throws -> SeoulBundle {
         guard let p = ProcessInfo.processInfo.environment["ONETAKE_EXPORT"] else { throw XCTSkip("set ONETAKE_EXPORT to an export directory") }
         return try SeoulBundle(dir: URL(fileURLWithPath: p))

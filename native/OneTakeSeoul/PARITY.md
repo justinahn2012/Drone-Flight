@@ -44,6 +44,11 @@ Swift BVH, and keep each triangle's vertex order. Ties between equal hit distanc
    light/night-lm.bin: the browser's own file (NLM2 header, gzip of 4 row-delta byte planes of RGB9E5 texels; upload
    as MTLPixelFormatRGB9E5Float). Use it only when its header key equals light.json `lightmap.key`. Use clustered lights in compute with no K cap.
    EDR output keeps sign cores above 1000 nits.
+   **Light-record lobes** (the record's type field; light.json `lobes`): 0 lambert, 1 street, 2 beam, and **3 pack**
+   (P6, stream D: wall packs light a pool and a wall scallop instead of P5's even sheet). `pack`: c = -D.y 0.9397 +
+   dot(D.xz, forward.xz) 0.342; 0 for c <= 0.42, else (0.3 + 0.7 c^2) smoothstep(0.42, 0.58, c); intensity = lumens /
+   2.222485 sr x the lobe. Swift reference: Sources/SeoulBundle/Lobes.swift (testWallPackLobe, vectors from the JS).
+   The Metal light loop must branch on all four ids, or wall packs go dark on the phone.
 3. **Signs:** signs.glb + signs.bin + signs/msdf.png. Draw the 5 batched groups and the sign tiles from an indirect
    command buffer, culled on the GPU.
 4. **Life:** the LifeSim port on its own thread, a pure function of the take clock (section 2's traffic hash).
