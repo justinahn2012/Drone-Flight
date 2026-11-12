@@ -244,6 +244,16 @@
         "re": "main pass ([0-9.]+) M",
         "max": 2.2
       }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] spawn: frame p50",
+      "owner": "F with A (PLAN-P6: the spawn, yaw +6, pitch -8, gate spawn p50 >= 40)",
+      "why": "[P6 H] new still: main's spawn frames mostly night sky from height (p50 21, local SwiftShader run of 41f6ff0 = main's spawn); F's pitch -8 and A's open-shot exposure. Limit ~10 % under main's value",
+      "limit": {
+        "re": "frame p50 ([0-9.]+)",
+        "min": 19
+      }
     }
   ]
 }

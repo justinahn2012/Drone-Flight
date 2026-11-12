@@ -510,3 +510,31 @@ and blur depth. Signs into physics (`SIGN_COLLIDE`) still waits on the 32 gates 
    Display & Brightness > Auto-Lock > Never).
 4. At the end tap **SHARE** once and send it to yourself (Messages, Mail or Notes). It carries a table of the three
    runs and one JSON file with all three; paste or attach it in the chat.
+
+## 11. Phase 6 (stream H): main green and true, the native slice compiled, the P6 gates
+
+**Main's CI.** `test` and `audio` are green on main (run 43139873309, bc45fbe: the full-history checkout fixed P5's
+shallow-clone false red). `browser-seoul` is red on the look rows phase 5 moved past their ratchets (walk0 EV -4.24,
+frame p50 34, ground 14; warm share 97-99 %; room saturation 0.79; white area 0.6 %): stream A's P6 exposure and colour
+re-fit, with C's and D's dark-ground fix. No limit was loosened to turn it green.
+
+**merge-check sees what CI sees.** `node ci/merge-check.mjs` now runs in a fresh clone of the committed HEAD at the
+`fetch-depth` CI's `test` job uses (0 today; `--depth 1` reproduces P5's false red; `--in-place` is the old mode). No
+untracked or ignored file can make a local run green. With `swift` on PATH it also runs `native-linux`.
+
+**The native slice compiles and passes** (native/OneTakeSeoul; PARITY.md). CI jobs after `test`, on that commit's own
+export: `native-linux` (swift:6.1-noble) and `native-macos` (macos-15: `swift test`, then an iOS-SDK `xcodebuild`).
+7 tests (+1 lobe test): GeoHash and SHA-256 vectors, every file's sha256, the collider bit for bit, world.glb within
+2 mm, packed streams, the night lightmap (NLM2 key check, RGB9E5 texels hash-equal to the JS decode:
+light.json `lightmap.texelHash`), and D's P6 wall-pack lobe (record type 3) against the JS function. No Metal code
+yet: PARITY.md section 4, step 1 is the next job, on a Mac.
+
+**Bundle size.** `ci/bundle-size.mjs`: the Seoul export deflated per file (as an .ipa holds it) <= 60 MB; main 44.1 MB
+(81.0 MB raw).
+
+**Gates (PLAN-P6).** tools/camgate.py: ground/wall >= 0.45, below-16 share <= 18 %, spawn p50 >= 40 (a 4th CI still,
+`spawn`, shot last). tests/browser.mjs budgets: triangles <= 2.6 M over all passes and <= 1.3 M in the main pass
+(a WebGL2 draw hook on each still's graded frame), raw heap at 'settled' <= 700 MB. Rows already failing on main are
+ratcheted in ci/known-failures.json at about 10 % past main's value, with owners.
+
+**The A18 run** is unchanged and ready (section 10, `?level=seoul&perf=a18`, one START, one SHARE).
