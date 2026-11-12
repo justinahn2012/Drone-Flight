@@ -36,11 +36,11 @@ export const SND = {
   // the hover's events carry more; the place contrast comes from the parts, not the trim
   world: 3.85,     // trim on the world path, set so the city sits ~10 LU under a hover on the walking street (sound #1)
   // P4: beds.traffic is now the city floor under the energy-summed traffic bed (sound #2); P3 61 dB at the street centre
-  beds: { traffic: 50, crowd: 60, alley: 58, air: 54, rain: 66 },   // P4: crowd 65 -> 63 (plain-RMS babble; the events carry the peaks)
+  beds: { traffic: 50, crowd: 56, alley: 58, air: 54, rain: 66 },   // P4: crowd 65 -> 63 (plain-RMS babble; the events carry the peaks)
   // P6 (sound #2): artFlow 1.5 -> 2.8 on the arterials (>= 13 m; the 9-13 m roads keep P5's flow)
   // P5 (sound #2): artFlow 0.9 -> 1.3, now counted per lane against the sim's own moving (> 3 m/s) vehicles on that lane
   wet: 0.7, artFlow: 2.8,   // P4 (sound #2): the look's wetness (seoul-light uCityWet default); arterial moving vehicles in 80 m per m of width (19.5 m: ~25)
-  crowdFull: 90, crowdWave: 4,   // integ10: the crowd bed's slow waves, +- dB where dense   // P5 (sound #2): crowdN at which the crowd bed reaches its full level (P4 60: every crowded spot sat level)
+  crowdFull: 90, crowdWave: 5.5,   // integ10: the crowd bed's slow waves, +- dB where dense   // P5 (sound #2): crowdN at which the crowd bed reaches its full level (P4 60: every crowded spot sat level)
   // P6 (sound #2): trucks +2, buses +1 (the roar re-voiced into the low mids reads ~2 LU quieter; the engines
   // stay: a car idling at a club-street door is mostly 30-100 Hz, which a phone can't play)
   car: 90, taxi: 88, truck: 96, bus: 98, scooter: 92, tyre: 90,
@@ -48,12 +48,14 @@ export const SND = {
   music: 72, club: 93,   // P5: music 81 -> 75 (a doorway speaker ~70 dB at 2 m; P4 75: a steady wall that held a hover CV at 0.44)
   busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 81, shout: 87, talk: 73, yelp: 92, heel: 72, step: 58,
   applause: 92, cheer: 88, guide: 84, tick: 72, queue: 80, staff: 86, exit: 80, draught: 72,
-  glaugh: 84, name: 96, phone: 73, beep: 84,   // P5: beep 88 -> 84
+  glaugh: 84, name: 98, phone: 73, beep: 84,   // P5: beep 88 -> 84
     // P4 (sound #3): a group's laughter, a name called, a phone's K-pop, a scooter's horn
   // P6 (sound #2): diesel 86 -> 90, passby 92 -> 95 (re-voiced to 480-800 Hz). (sound #3) the crowd trimmed 1 dB (bed, laughs, shouts, talk, swells, names, phones,
   // callers, claps, groups): the game's city (seed 11, E's set pieces) sat the walking-street hover 1.2 LU over seed 7's
   // P5: a pass-by at its closest (sound #3), the diesel idle of the arterial's buses (bed, 1 m), a shop caller's headset PA
   // and her clapping (sound #4), glasses and soju bottles in w21, a group talking past (sound #5), the train under exit 9
+  // integ11 (sound #3, G1's P6 crowd: 14 avatars, mixed lanes held the hover at p95 - p50 4.2, CV 0.67): the crowd bed
+  // -4 dB and its waves +-4 -> 5.5 dB; the names called +2 dB
   passby: 95, diesel: 90, caller: 83, clap1: 79, clink: 76, group: 77, train: 82,
   // P6 (sound #6): exit 9's T-money beeps (at the stair mouth, 1 m) and its escalator's hum (within the exit voice, re SND.exit)
   tmoney: 74, escalator: -16,
