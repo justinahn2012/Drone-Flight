@@ -64,6 +64,7 @@ const RC = 0.9, Y0 = -4, NY = 39;
 // [P6-F design #4] a pilot keeps over the heads: an A* step at street level below LOWY m (the crowd, the cars) costs LOWC x
 // (phase 5's careful hongik takes dipped to 1.0 m under a sign before DOOR QUEUE and met a car: 3 crashes in 8). Below the
 // street (the stair dive) is unaffected.
+const CLIMB_LOOK = 20, CLIMB_V0 = 1.0, CLIMB_DEC = +(process.env.CLIMB_DEC || 2.5);   // [P8-F] braking for a plumb climb
 const LOWY = 1.9, LOWC = +(process.env.LOWC || 4), VLOOK = +(process.env.VLOOK || 0.3), DIVE_LOOK = 6, DIVE_VZ = +(process.env.DIVE_VZ || 0.9); const occ = new Map(), _rd = new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(0, -1, 0));
 const underground = (x, y, z) => { if (y >= 0) return false; _rd.origin.set(x, y, z); return !bvh.raycastFirst(_rd, THREE.DoubleSide, 0, 6); };
 const key = (i, j, k) => (i + 400) * 2e6 + (j + 700) * 1000 + k;
@@ -236,6 +237,13 @@ function fly(path, P, rng) {
     let vCap = Infinity;
     { let acc = 0; for (let k2 = vseg; k2 < path.length - 1 && acc < DIVE_LOOK; k2++) { const a = path[k2], b = path[k2 + 1], dhh = Math.hypot(b.x - a.x, b.z - a.z), sl = dhh > 0.3 ? (a.y - b.y) / dhh : 0;
         if (sl > 0.3 && path.dive?.has(k2)) vCap = Math.min(vCap, DIVE_VZ / sl); acc += k2 === vseg ? Math.max(0, a.distanceTo(b) - p.distanceTo(a)) : a.distanceTo(b); } }
+    // [P8-F] a pilot brakes for a plumb climb (SIGN STACK) too: over the next CLIMB_LOOK m (horizontal) of path, a segment that
+    // rises > 3 m at < 0.5 m across per m up caps the speed at CLIMB_V0 + sqrt(2 x CLIMB_DEC x d), d = the horizontal way to its
+    // foot. Phase 8: the stack moved to a 6-storey lot 31 m on from its via and a sharp pilot reached the foot at 8.7 m/s, slid
+    // 2.9 m past the 2.6 m pre-gate and climbed beside both gates (7 of 8 sharp long takes lost SIGN STACK)
+    { let acc = 0; for (let k2 = vseg; k2 < path.length - 1 && acc < CLIMB_LOOK; k2++) { const a = path[k2], b = path[k2 + 1], dhh = Math.hypot(b.x - a.x, b.z - a.z), up = b.y - a.y;
+        if (up > 3 && dhh < 0.5 * up) { vCap = Math.min(vCap, CLIMB_V0 + Math.sqrt(2 * CLIMB_DEC * acc)); break; }
+        acc += k2 === vseg ? Math.max(0, Math.hypot(b.x - p.x, b.z - p.z)) : dhh; } }
     const vWant = steep ? 0 : Math.min(vCap, vC * Math.max(0.3, Math.cos(Math.min(Math.PI / 2, Math.abs(e) * 1.5))) * (1 - 0.6 * Math.min(1, turn / 1.6)));
     const pitch = Math.max(-1, Math.min(1, vWant / 18 + ou.p * 0.3));
     const roll = Math.max(-1, Math.min(1, -e * 2.2 + ou.r));

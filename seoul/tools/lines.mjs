@@ -153,6 +153,12 @@ function run({ path, name, caption, value, s0, s1, y0, y1, w, cuts = null, segVa
     // [P7-F] f.pinch [sA, sB]: the gate at the narrowest station between (across() centres it between the walls / blades)
     if (f.pinch) { let best = null; for (let sv = f.pinch[0]; sv <= f.pinch[1]; sv += 1) { const T = across(path, S(sv), f.w ?? w, f.y0 ?? y0, f.y1 ?? y1); if (!best || T.w < best.w) best = T; }
       f.gate = best; report.push(`  (${f.name}: narrowest at [${best.c.map((v) => v.toFixed(1))}], ${best.w.toFixed(2)} m between the walls / blades less 0.5 m each)`); }
+    // [P8-F] f.near: the station within +-near m of f.s (2 m steps, nearest first on a tie) whose fitted gate keeps the most area
+    if (f.near && !f.gate) { let best = null; for (const k of [0, ...Array.from({ length: f.near }, (_, i) => (i >> 1) * 2 + 2).map((v, i) => (i % 2 ? -v : v))].filter((v, i, A) => A.indexOf(v) === i && Math.abs(v) <= f.near)) {
+        const T = gateAt(f.s + k, f.y0 ?? y0, f.y1 ?? y1, f.w ?? w); let F = T;   // the area it keeps once fitted (fit's shrink, quietly)
+        for (let j = 0; j < 14 && !clearOf(F).ok; j++) F = { ...F, w: r3(F.w * 0.9), h: r3(F.h * 0.93) };
+        if (!best || F.w * F.h > best.a + 1e-6) best = { G: T, a: F.w * F.h, F, k }; }
+      f.gate = best.G; report.push(`  (${f.name}: s ${f.s} ${best.k >= 0 ? '+' : ''}${best.k} m, fits ${best.F.w.toFixed(2)} x ${best.F.h.toFixed(2)} m)`); }
     const Gf = f.gate || gateAt(f.s, f.y0 ?? y0, f.y1 ?? y1, f.w ?? w);
     add(f.name, cap, f.pts || 500, Gf, { two: true, micro: true, feature: f.what, on: name, ...(f.heads ? { heads: true } : {}) });
   }
@@ -268,7 +274,7 @@ run({ path: red.points, name: 'RED ROAD', caption: 'THE RED *ROAD*!', value: 200
   cuts: [55, 100, 166], label: 'RED ROAD', feats: [
     { name: 'UNDER THE BLADES', s: 22, ...HEADS, pts: 750, what: 'first blade stack (2F blades at 3.55 m), head height' },
     { name: 'BLADE ALLEY', s: 70, ...HEADS, pts: 750, what: 'blade stacks both sides, 58-79 m, head height' },
-    { name: 'THE FORK', s: 133, what: 'the other Eoulmadang-ro branch joins' },
+    { name: 'THE FORK', s: 133, near: 10, what: 'the other Eoulmadang-ro branch joins' },   // [P8-F] near: P8's signs shrank the s = 133 gate to 2.1 x 1.3 m
     { name: 'OVER THE QUEUE', caption: 'OVER THE *QUEUE*!', s: 150, queue: true, ...HEADS, what: 'the club queue at 150 m' },
     { name: 'THE SPLIT', s: 177, what: 'the walking branch splits off' },
   ] });
@@ -875,7 +881,9 @@ const tuning = { stars: [20000, 100000, 340000], bankT: 10.0, holdZone: 1.5, arm
   clipGrace: 0.6, clipT: 20, hintVertReady: 6,
   // [P8-F] design #4: CLEAN TAKE (a CUT at >= 450k with no SCRAPE), the tier above 3 stars (P7: long/sharp p50 482k, regular p75
   // 429k); design #5 / ux #5: say when a street was joined past its start gate
-  cleanTake: 450000, missedStart: true };
+  // [P8-F integ13] 450k -> 480k: with SIGN STACK flown again (the climb braking) regular long p75 is 452k, so 450k was no longer a tier
+  // above regular; sharp p25 505k
+  cleanTake: 480000, missedStart: true };
 // a copy on the first named non-set-piece line for world loaders that pass lines[] only (take.js reads either)
 const firstLine = lines.find((l) => !l.piece && !l.micro && l.pre); if (firstLine) firstLine.tuning = tuning;
 const out = { version: 2, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', tuning, lines, funnels, startPoints,
