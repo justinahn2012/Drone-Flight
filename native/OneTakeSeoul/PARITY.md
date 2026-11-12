@@ -6,6 +6,11 @@ CI runs it on every push after the `test` job, against that commit's own export:
 `native-macos` (macos-15: swift test, plus an iOS-SDK `xcodebuild` of the package). Locally:
 `sh fetch-meshopt.sh && ONETAKE_EXPORT=<export dir> swift test` (`ci/merge-check.mjs` runs it when `swift` is on PATH).
 There is no Metal code yet: section 4 is the order, and its step 1 is the next job on the Mac.
+**Status (P8 H):** the Metal frame (MetalFrame.swift, native-macos) draws walk0 at the camera that drew the browser's
+still, with section 4.1-4.2's static light (lightmap ground + wall rects, the irradiance volume elsewhere), the layer
+albedos, and the browser's retro-0 grade through the fisheye; tools/parity-de.py gates its mean Delta E 2000 against
+Tests/SeoulBundleTests/ref/walk0.r0.png at <= 3 (section 4.6). The CPU halves (CityLight, CityMaterials, NightGrade,
+FisheyeLens) run on Linux too: 13 tests.
 
 The slice proves one thing before any rendering work: the phone reads the web export and gets the same world. Every
 check below has a JS twin in the exporter (tools/export-world.mjs, tools/export-seoul-data.mjs), which already runs
@@ -79,8 +84,22 @@ Swift BVH, and keep each triangle's vertex order. Ties between equal hit distanc
    person (156 bytes; seoul-life.js makeHumanMat, G1): adopting this layout there is the open half of panel4 perf #2.
    **Depth:** the traffic is in the depth pass (seoul-depth.js: each vehicle type's instances, depth-only); the crowd
    is not (its skinning would double the depth pass's triangles).
+   **[P8 H] Walls, materials, volume, grade (done, MetalFrameTests):** the wall rects come from light/records.bin
+   (RGBA32UI, 512 wide; rows uCityLMR.x = the edge table, 2 texels per edge: [x0, z0, ux, uz] and [rect u, v, signed
+   length, height] as floats; uCityLMR.y = the 1 m raster, 2 edge ids per cell); the city takes E x albedo / pi with
+   albedo = world.json `materials[layers[aLay]].albedo` x COLOR_0. Where the lightmap has no texel, the volume:
+   light/volume.bin A then B, RGBA16F [cz][cx][layer], uploaded x = cx, y = cz, z = layer, E = A max(0, 1 + B.n).
+   The grade (Grade.swift) is fpvcam.js FINAL_FS + NIGHT at retro 0 without its screen-space lobes; exposure is the
+   browser's AE EV (stills.json `ev0`), the lens its solved fisheye (stills.json `cam.lens`).
+   **Still to port, in this order:** the records' direct lobes 0-3 and the emitters (cityLights), the sky and SKY_AIR,
+   the signs (step 3), KTX2 -> ASTC maps, the people (step 4), then the bloom / halo lobes of the grade.
 5. **Frame:** MetalFX upscaling from 0.6x. Run at 120 Hz with `ProcessInfo.thermalState` stepping the presets
    (the browser's ?perf SHARE results give the starting point).
+
+6. **[P8 H] The parity gate:** tools/parity-de.py, mean Delta E 2000 over the pixels Metal drew <= 3 against the
+   browser's still of the same camera (CI: native-macos, through ci/run.mjs; the gap is ratcheted in
+   ci/known-failures.json until the steps above land). Re-take Tests/SeoulBundleTests/ref (walk0.r0.png + walk0.json)
+   from one CI browser-seoul artifact whenever the goldens are re-recorded.
 
 ## 5. Not covered yet
 - Screens are procedural (screens.json playlists + SCREEN_FRAG), so the port needs its own shader. Parity there

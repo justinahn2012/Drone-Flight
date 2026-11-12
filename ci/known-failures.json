@@ -5,7 +5,7 @@
       "suite": "tools/camgate.py",
       "match": "[exposure] walk0: ground p50",
       "owner": "A with D (PLAN-P4 lighting #1 light the ground, graphics #1)",
-      "why": "hero-street floor p50 21-23 against 40 [P5-A] min 18 -> 10 [P6-A] 10 -> 16 (PLAN-P6 gates; panel 5 colour/fpv/lighting/graphics: 10 locked in a regression, P5 walk0 ground 14): the floor comes back in C's paver albedo and D's spill, not more exposure, and the new ground/wall >= 0.45 row (tools/camgate.py) holds the ratio [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 15.3 -> min 15. NOT a look change: the old 16 was fitted on frames the drone had drifted further down the street in (unasked rAF frames, real-time dt); this is the first reproducible value, set with no slack",
+      "why": "hero-street floor p50 21-23 against 40 [P5-A] min 18 -> 10 [P6-A] 10 -> 16 (PLAN-P6 gates; panel 5 colour/fpv/lighting/graphics: 10 locked in a regression, P5 walk0 ground 14): the floor comes back in C's paver albedo and D's spill, not more exposure, and the new ground/wall >= 0.45 row (tools/camgate.py) holds the ratio [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 15.3 -> min 15. NOT a look change: the old 16 was fitted on frames the drone had drifted further down the street in (unasked rAF frames, real-time dt); this is the first reproducible value, set with no slack",
       "limit": {
         "re": "ground p50 ([0-9.]+)",
         "min": 15
@@ -15,7 +15,7 @@
       "suite": "tools/camgate.py",
       "match": "[exposure] club90: ground p50",
       "owner": "A with D (PLAN-P4 lighting #1, #5 damp pavers)",
-      "why": "club-street floor p50 7 against 40 (integ8) [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 30.1 -> min 29 (was 5)",
+      "why": "club-street floor p50 7 against 40 (integ8) [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 30.1 -> min 29 (was 5)",
       "limit": {
         "re": "ground p50 ([0-9.]+)",
         "min": 29
@@ -25,7 +25,7 @@
       "suite": "tools/camgate.py",
       "match": "[colour] walk0: room saturation",
       "owner": "C (PLAN-P4 colour #6 shop white, graphics #2) with A",
-      "why": "lit warm surfaces median saturation 0.60-0.63 against 0.55 [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 0.75; the max 0.68 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 0.68 -> max 0.70 (was 0.82)",
+      "why": "lit warm surfaces median saturation 0.60-0.63 against 0.55 [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 0.75; the max 0.68 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 0.68 -> max 0.70 (was 0.82)",
       "limit": {
         "re": "saturation ([0-9.]+)",
         "max": 0.7
@@ -35,7 +35,7 @@
       "suite": "tools/camgate.py",
       "match": "[colour] walk0: warm share",
       "owner": "A with B (PLAN-P4 colour #3 saturated area, #5)",
-      "why": "warm share 66 % against 45-65 % [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 90 %; the max 72 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 88.6 % -> max 90 (PLAN-P8: 99.5 switched the row off; A's colour #1 takes it to <= 70)",
+      "why": "warm share 66 % against 45-65 % [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 90 %; the max 72 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 88.6 % -> max 90 (PLAN-P8: 99.5 switched the row off; A's colour #1 takes it to <= 70)",
       "limit": {
         "re": "warm share ([0-9.]+) %",
         "min": 40,
@@ -46,18 +46,18 @@
       "suite": "tools/camgate.py",
       "match": "[colour] club90: warm share",
       "owner": "A with B (PLAN-P4 colour #3, #5)",
-      "why": "warm share 71 % against 45-65 % (integ8) [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 94 %; the max 77 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 91.2 % -> max 92.5 (PLAN-P8: 99.5 switched the row off)",
+      "why": "warm share 71 % against 45-65 % (integ8) [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 94 %; the max 77 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 91.2-91.5 % -> max 93 (PLAN-P8: 99.5 switched the row off)",
       "limit": {
         "re": "warm share ([0-9.]+) %",
         "min": 40,
-        "max": 92.5
+        "max": 93
       }
     },
     {
       "suite": "tools/camgate.py",
       "match": "[colour] station: warm share",
       "owner": "A with B (PLAN-P4 colour #3, #5)",
-      "why": "warm share 97 % against 45-65 % (integ8) [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 37 %; the min 40 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 44.6-44.8 % -> min 43, max 65 (was 33 / 99.5)",
+      "why": "warm share 97 % against 45-65 % (integ8) [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 37 %; the min 40 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 44.6-44.8 % -> min 43, max 65 (was 33 / 99.5)",
       "limit": {
         "re": "warm share ([0-9.]+) %",
         "min": 43,
@@ -68,7 +68,7 @@
       "suite": "tools/camgate.py",
       "match": "[colour] walk0: white area",
       "owner": "B (PLAN-P4 colour #2 white light boxes)",
-      "why": "white area 5.4 % against 2-5 % (integ8) [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 0.5 %; the min 1.5 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 0.9 % -> min 0.8 (was 0.4)",
+      "why": "white area 5.4 % against 2-5 % (integ8) [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 0.5 %; the min 1.5 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 0.9 % -> min 0.8 (was 0.4)",
       "limit": {
         "re": "white area ([0-9.]+) %",
         "min": 0.8,
@@ -79,7 +79,7 @@
       "suite": "tools/camgate.py",
       "match": "[exposure] walk0: ground/wall",
       "owner": "C with D (PLAN-P6 #1: paver albedo / gloss, the paver mirror and shop pools; then A's re-fit)",
-      "why": "[P6-A] new row, gate 0.45 unchanged: the A + C + D scratch merge (re-baked, evBias -1.85) measures 0.42 at 960 wide (P5 0.25); the ratio is materials and light, not exposure [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 0.41 -> min 0.40 (was 0.38)",
+      "why": "[P6-A] new row, gate 0.45 unchanged: the A + C + D scratch merge (re-baked, evBias -1.85) measures 0.42 at 960 wide (P5 0.25); the ratio is materials and light, not exposure [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 0.41 -> min 0.40 (was 0.38)",
       "limit": {
         "re": "ground/wall ([0-9.]+)",
         "min": 0.4
@@ -89,7 +89,7 @@
       "suite": "tools/camgate.py",
       "match": "[exposure] walk0: below 16",
       "owner": "C with D (PLAN-P6 #1) and A",
-      "why": "[P6-A] new row, gate 18 % unchanged: the A + C + D merge measures 18.3 % (P5 24.8 %); the rest is the crowd's ground and the canyon sky [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 24.2 %; the max 20 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 18.7 % -> max 19.5 (was 26.5)",
+      "why": "[P6-A] new row, gate 18 % unchanged: the A + C + D merge measures 18.3 % (P5 24.8 %); the rest is the crowd's ground and the canyon sky [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 24.2 %; the max 20 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 18.7 % -> max 19.5 (was 26.5)",
       "limit": {
         "re": "below 16 ([0-9.]+) %",
         "max": 19.5
@@ -99,7 +99,7 @@
       "suite": "tests/browser.mjs",
       "match": "budget: raw JS heap at settled",
       "owner": "D (panel5 perf #5: free per stage at materials)",
-      "why": "raw 'settled' 986 MB on main against 700 (the live heap after GC is 172 MB and gated separately). [P6 H] new PLAN-P6 gate row; limit about 10 % past main's CI value (run 43139873309, integ10 bc45fbe) so it binds while the owners land the fix; delete when the notice says it passes [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 970 and 994 MB on p8/H-native, 997 on main run 43218616766; the raw mark is the build's garbage, not frames (it did not move when the unasked frames stopped). The limit stays the P6 tolerance (1085 = 986 + 10 %) until Justin's A18 run gives a phone number (PLAN-P8)",
+      "why": "raw 'settled' 986 MB on main against 700 (the live heap after GC is 172 MB and gated separately). [P6 H] new PLAN-P6 gate row; limit about 10 % past main's CI value (run 43139873309, integ10 bc45fbe) so it binds while the owners land the fix; delete when the notice says it passes [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 970 and 994 MB on p8/H-native, 997 on main run 43218616766; the raw mark is the build's garbage, not frames (it did not move when the unasked frames stopped). The limit stays the P6 tolerance (1085 = 986 + 10 %) until Justin's A18 run gives a phone number (PLAN-P8)",
       "limit": {
         "re": "settled ([0-9.]+) MB",
         "max": 1085
@@ -109,7 +109,7 @@
       "suite": "tests/browser.mjs",
       "match": "budget walk0: main pass",
       "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
-      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 % [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 1.32 M -> max 1.45 (PLAN-P8 / panel7 perf #5: 2.2 gated nothing; about 10 % past the CI value, tighter than the plan's 1.9). The all-pass triangle entries are gone: every CI pose is under the 2.6 M gate itself (walk0 2.45 M), tighter than the plan's 2.8",
+      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 % [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 1.32 M -> max 1.45 (PLAN-P8 / panel7 perf #5: 2.2 gated nothing; about 10 % past the CI value, tighter than the plan's 1.9). The all-pass triangle entries are gone: every CI pose is under the 2.6 M gate itself (walk0 2.45 M), tighter than the plan's 2.8",
       "limit": {
         "re": "main pass ([0-9.]+) M",
         "max": 1.45
@@ -120,7 +120,7 @@
       "match": "[exposure] spawn: spawn p50",
       "replaces": "[exposure] spawn: frame p50",
       "owner": "F with A (PLAN-P6: the spawn, yaw +6, pitch -8, gate spawn p50 >= 40)",
-      "why": "[P6 H] new still: main's spawn frames mostly night sky from height (p50 21, local SwiftShader run of 41f6ff0 = main's spawn); F's pitch -8 and A's open-shot exposure. Limit ~10 % under main's value. [P7 H] the match is A's camgate message ('<shot>: spawn p50 X < 40'); the P6 H text ('frame p50') matched nothing, and CI's --hero list left the spawn shot ungated [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 30.5-30.7 -> min 29 (was 19)",
+      "why": "[P6 H] new still: main's spawn frames mostly night sky from height (p50 21, local SwiftShader run of 41f6ff0 = main's spawn); F's pitch -8 and A's open-shot exposure. Limit ~10 % under main's value. [P7 H] the match is A's camgate message ('<shot>: spawn p50 X < 40'); the P6 H text ('frame p50') matched nothing, and CI's --hero list left the spawn shot ungated [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 30.5-30.7 -> min 29 (was 19)",
       "limit": {
         "re": "spawn p50 ([0-9.]+)",
         "min": 29
@@ -130,17 +130,17 @@
       "suite": "tools/camgate.py",
       "match": "[art] walk0: bright elements",
       "owner": "C (PLAN-P7 art #1: signs into the frame, stacks on the faces that fill walk0 / walk180 / w21)",
-      "why": "[P7 H] new row: the art panel's element count (>= 300 at 960 wide; CI's 320-wide still gates at 93). CI walk0 48 (A's P6 run 43163186613), panel6 seoulsnap 155. Limit ~10 % under the CI value: it may rise, never fall [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 55; the min 43 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 49 -> min 49. NOT a look change: the old 50 (main's 55-57) was counted on the drifted frames; 49 is the first reproducible count, set with no slack (C's signs >= 300 raise it)",
+      "why": "[P7 H] new row: the art panel's element count (>= 300 at 960 wide; CI's 320-wide still gates at 93). CI walk0 48 (A's P6 run 43163186613), panel6 seoulsnap 155. Limit ~10 % under the CI value: it may rise, never fall [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 55; the min 43 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 48-49 -> min 47 (the runs' spread). NOT a look change: the old 50 (main's 55-57) was counted on the drifted frames; 49 is the first reproducible count, set just under the spread (C's signs >= 300 raise it)",
       "limit": {
         "re": "bright elements ([0-9]+)",
-        "min": 49
+        "min": 47
       }
     },
     {
       "suite": "tools/camgate.py",
       "match": "[art] walk180: bright elements",
       "owner": "C (PLAN-P8 signs to >= 300 bright elements without occluding the walk180 view)",
-      "why": "[P8 H] new row: walk180 joins CI's stills (PLAN-P8 gates). [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 56-57 against 93 (300 x 0.31 at 320 wide; panel7 at 960: 222). Limit just under the CI value: it may rise, never fall",
+      "why": "[P8 H] new row: walk180 joins CI's stills (PLAN-P8 gates). [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 56-57 against 93 (300 x 0.31 at 320 wide; panel7 at 960: 222). Limit just under the CI value: it may rise, never fall",
       "limit": {
         "re": "bright elements ([0-9]+)",
         "min": 55
@@ -150,7 +150,7 @@
       "suite": "tools/camgate.py",
       "match": "[exposure] walk180: ground/wall",
       "owner": "D (PLAN-P8 lighting #1: the walking street's first 15 m, festoons from s = 0 and lit patches before each lit window, ground/wall >= 0.5)",
-      "why": "[P8 H] new row (PLAN-P8: walk180 fell to 0.33 with no gate looking at it; camgate GW_SHOTS binds it wherever the still exists). [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 0.36 against 0.45. Limit just under the CI value",
+      "why": "[P8 H] new row (PLAN-P8: walk180 fell to 0.33 with no gate looking at it; camgate GW_SHOTS binds it wherever the still exists). [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 0.36 against 0.45. Limit just under the CI value",
       "limit": {
         "re": "ground/wall ([0-9.]+)",
         "min": 0.35
@@ -160,7 +160,7 @@
       "suite": "tools/camgate.py",
       "match": "[exposure] walk0: frame p50",
       "owner": "A with C, D (PLAN-P7 canyon sky grade + light, wall cladding)",
-      "why": "[P7 H] canyon p50 band 35-50 (A's P5 row, binding): main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 34; it had no entry, so it would have turned main red. Limit ~10 % under main's value [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): 33.9 -> min 33 (was 31)",
+      "why": "[P7 H] canyon p50 band 35-50 (A's P5 row, binding): main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 34; it had no entry, so it would have turned main red. Limit ~10 % under main's value [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 33.9 -> min 33 (was 31)",
       "limit": {
         "re": "frame p50 ([0-9.]+)",
         "min": 33,
@@ -171,10 +171,20 @@
       "suite": "tools/camgate.py",
       "match": "[exposure] walk0: EV ",
       "owner": "A (PLAN-P7 exposure re-fit last, on the C + D scratch merge)",
-      "why": "[P7 H] AE EV band (-4.0, 1.5): walk0 -4.24 on main bc45fbe (run 43139873309), -4.09 on A's P6 branch (run 43163186613); never listed, so every finished main run was red on it. Limit ~10 % past main's value [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, give identical walk0 / club90 / walk180 rows and station / spawn within 1 code): -4.37 -> min -4.45 (was -4.6)",
+      "why": "[P7 H] AE EV band (-4.0, 1.5): walk0 -4.24 on main bc45fbe (run 43139873309), -4.09 on A's P6 branch (run 43163186613); never listed, so every finished main run was red on it. Limit ~10 % past main's value [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): -4.37 -> min -4.45 (was -4.6)",
       "limit": {
         "re": "EV (-?[0-9.]+)",
         "min": -4.45
+      }
+    },
+    {
+      "suite": "tools/parity-de.py",
+      "match": "[parity] walk0: mean dE00",
+      "owner": "H (PLAN-P8 native parity, PARITY.md 4: the records' direct lobes and emitters, sky, signs, KTX2 maps, people, then the grade's halo lobes)",
+      "why": "[P8 H] new gate: the Metal frame against the browser's walk0 still of the same camera, mean Delta E 2000 over the Metal-drawn pixels <= 3. First run 43295850263 (native-macos): 17.05 (median 11.9; Metal darker, L* -14.9: no emitters, signs or halation yet; ground / wall / volume pixels each match the CPU lookups within 0.6 %). Limit ~10 % past it: it may fall, never rise",
+      "limit": {
+        "re": "mean dE00 ([0-9.]+)",
+        "max": 18.8
       }
     }
   ]
