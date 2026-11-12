@@ -395,7 +395,7 @@ const FRAME_HUES = [['red', 0.28], ['orange', 0.22], ['pink', 0.1], ['magenta', 
 // [P8-A] colour #1 (walk0 read 82 % warm, 77 % orange, against the refs' 42 % orange / 24 % red): the push table's per-street
 // hue re-weighting. On a walking street named here, every saturated face (not white / warm-white boxes, not a chain's
 // convenience-store colours, not a frame stack, which already has its hue) re-draws its hue from the street's weights, from
-// its own stream (seed ^ lot#p8) drawn after every other draw, so geometry, count, lit and the rc colour stream never move.
+// its own stream (seed ^ lot#p8a) drawn after every other draw, so geometry, count, lit and the rc colour stream never move.
 // Only when the street carries a push (> 0): the census mix (push 0) is untouched.
 export const STREET_HUES = { 'Eoulmadang-ro': [['red', 0.28], ['orange', 0.22], ['pink', 0.1], ['magenta', 0.1], ['cyan', 0.08], ['blue', 0.07], ['green', 0.15]] };
 // [P8-A] colour #1: name overrides (the shop's own colour, whatever the draw): 몽글술집 on walk0's left is pink; 해녀감성주점's
@@ -450,7 +450,7 @@ export function generateSigns(layout, opts = {}) {
     if (lot.use === 'hotel' || lot.use === 'motel') for (const t of tenants) { t.use = lot.use; t.name = tenants[0].name; t.lit = tenants[0].lit; t.home = false; }
     const biz = (f) => { for (let k = Math.min(f, nFloors - 1); k >= 0; k--) if (!tenants[k].home) return tenants[k]; return tenants[0]; };
     let k = 0;
-    const sHues = st.kind === 'walking' && push > 0 ? STREET_HUES[st.name] : null, rH = sHues ? new Rng((seed ^ hashStr(lot.id + '#p8')) >>> 0) : null;   // [P8-A]
+    const sHues = st.kind === 'walking' && push > 0 ? STREET_HUES[st.name] : null, rH = sHues ? new Rng((seed ^ hashStr(lot.id + '#p8a')) >>> 0) : null;   // [P8-A] (C's renames use '#p8')
     const add = (type, t, geo, extra = {}) => {
       // fixed colour draws per sign, whatever the push, so geometry/count/lit never move with push
       const uCat = rc.next(), uHue = rc.next(), uNeon = rc.next(), uNit = rc.next(), uFlk = rc.next(), uAcc = rc.next();
