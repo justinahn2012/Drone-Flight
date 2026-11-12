@@ -568,7 +568,11 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
       const f = i / (n + 1), x = A[0] + (B[0] - A[0]) * f, z = A[2] + (B[2] - A[2]) * f; let dk = Infinity;
       for (const o of [-2, -1, 0, 1, 2]) { ray.origin.set(x - dir[2] * o, 60, z + dir[0] * o); ray.direction.set(0, -1, 0); const h = bvh.raycastFirst(ray, THREE.DoubleSide, 0, 60); dk = Math.min(dk, h ? 60 - h.distance : 0); }
       if (dk < 8) continue;
-      const G = g([x, dk + 1.6, z], dir, 3.0, 2.0, [-dir[2], 0, dir[0]]); if (!clearOf(G).ok) continue;
+      // [integ13] E's P8 roof tanks (bigger, floodlit) can sit in the gate at 1.6 m: lift it in 1 m steps (up to 4.6 m) or slide it along the hop, until it clears
+      let G = null; for (const df of [0, -0.08, 0.08, -0.16, 0.16]) { for (const lift of [1.6, 2.6, 3.6, 4.6]) { const xx = A[0] + (B[0] - A[0]) * (f + df), zz = A[2] + (B[2] - A[2]) * (f + df); let d2 = Infinity;
+        let dHi = 0; for (const o of [-2, -1, 0, 1, 2]) { ray.origin.set(xx - dir[2] * o, 60, zz + dir[0] * o); ray.direction.set(0, -1, 0); const h = bvh.raycastFirst(ray, THREE.DoubleSide, 0, 60); const y = h ? 60 - h.distance : 0; d2 = Math.min(d2, y); dHi = Math.max(dHi, y); }
+        if (d2 < 8) continue; const c = g([xx, Math.max(d2, dHi - 1.2) + lift, zz], dir, 3.0, 2.0, [-dir[2], 0, dir[0]]); /* over a roof step, from the higher deck */ if (clearOf(c).ok) { G = c; break; } } if (G) break; }   // ... or slide it up to 16 % along the hop
+      if (!G) continue;
       k++; add(`${label} ${k}`, label.replace(/ (\S+)$/, ' *$1*'), 500, G, { two: true, micro: true, connector: true });
     }
     report.push(`  (${label}: ${L.toFixed(0)} m over the roofs, ${k} connector micros)`);
