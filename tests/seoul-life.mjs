@@ -187,10 +187,10 @@ if (existsSync('seoul/people/people.json')) {
   const meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), b = readFileSync('seoul/people/people.bin'), bin = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
   let bad = 0; const tris = [[], [], []];
   for (const av of meta.avatars) av.lods.forEach((L, k) => { tris[k].push(L.tris); const bd = new Uint8Array(bin, L.bone, L.verts * 4), ix = new Uint16Array(bin, L.index, L.tris * 3), p = new Float32Array(bin, L.pos, L.verts * 3);
-    for (let i = 0; i < L.verts; i++) { const b1 = bd[i * 4], b2 = bd[i * 4 + 1], r = bd[i * 4 + 3]; if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b1) || ![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b2) || r > 6 || !isFinite(p[i * 3 + 1])) bad++; }
+    for (let i = 0; i < L.verts; i++) { const b1 = bd[i * 4], b2 = bd[i * 4 + 1], r = bd[i * 4 + 3]; if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b1) || ![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b2) || r > 11 || r === 7 || r === 9 || !isFinite(p[i * 3 + 1])) bad++; }   // (P8: + 8 cap, 10 backpack, 11 beanie)
     for (const q of ix) if (q >= L.verts) bad++; });
-  ok(meta.avatars.length >= 14 && meta.avatars.filter((a) => a.ea).length >= 6 && bad === 0 && Math.max(...tris[0]) <= 3600 && Math.max(...tris[1]) <= 1800 && Math.max(...tris[2]) <= 900 && meta.avatars.every((a) => a.mean && a.joints.top > 1.6 && a.joints.top < 1.95),
-    `avatars: ${meta.avatars.length} (${meta.avatars.filter((a) => a.sex === 'm').length} men, ${meta.avatars.filter((a) => a.ea).length} East Asian; P5: 8, 0), near ${Math.max(...tris[0])} / lod1 ${Math.max(...tris[1])} / mid ${Math.max(...tris[2])} tris, ${bad} bad vertices, ${(b.byteLength / 1024).toFixed(0)} KB (MIT, Microsoft Rocketbox)`);
+  ok(meta.avatars.length >= 22 && meta.avatars.filter((a) => a.ea).length >= 14 && bad === 0 && Math.max(...tris[0]) <= 3600 && Math.max(...tris[1]) <= 1800 && Math.max(...tris[2]) <= 900 && meta.avatars.every((a) => a.mean && a.joints.top > 1.6 && a.joints.top < 1.95),
+    `avatars: ${meta.avatars.length} (${meta.avatars.filter((a) => a.sex === 'm').length} men, ${meta.avatars.filter((a) => a.ea).length} East Asian, ${meta.avatars.filter((a) => a.head).length} made from two donors; P5: 8, 0; P7: 14, 6), near ${Math.max(...tris[0])} / lod1 ${Math.max(...tris[1])} / mid ${Math.max(...tris[2])} tris, ${bad} bad vertices, ${(b.byteLength / 1024).toFixed(0)} KB (MIT, Microsoft Rocketbox)`);
   const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
   const L2 = lifeMod.build(layout, { audio: false, scene: new THREE.Scene(), peopleData: { meta, bin } }), cam = new THREE.Vector3(-36, 3, -23), qq = new THREE.Quaternion();
   for (let k = 0; k < 10; k++) L2.update(10 + k / 30, cam, qq);
@@ -215,7 +215,13 @@ if (existsSync('seoul/people/people.json')) {
       C.evaluate(t, null, { avoid: false }); const nr = []; for (let i = 0; i < C.people.length; i++) if (C.VIS[i] && Math.hypot(C.X[i] - cx, C.Z[i] - cz) < 25) nr.push(i);
       for (const i of nr) for (const j of nr) { if (j <= i || Math.hypot(C.X[i] - C.X[j], C.Z[i] - C.Z[j]) > 8) continue; pairs++; const g = C.people[i].unit >= 0 && C.people[i].unit === C.people[j].unit; if (g) grp++;
         if (AV[i] === AV[j]) { sameB++; if (tone(i) === tone(j)) { same++; if (g) grpSame++; } } } }
-    ok(same / pairs <= 0.065 && grpSame === 0, `crowd repeats: ${(100 * same / pairs).toFixed(1)} % of pairs within 8 m share a body and a tone of top (P6 7.6 %; gate 6.5 %), ${grpSame} of ${grp} pairs inside a group (same body alone ${(100 * sameB / pairs).toFixed(1)} %: 4 casual East Asian bodies carry 70 %)`); }
+    // (P8, life #1) and the body alone (tone ignored) <= 8 % (P7 14.0 %: 4 casual East Asian bodies carried 70 %)
+    ok(same / pairs <= 0.065 && grpSame === 0 && sameB / pairs <= 0.08, `crowd repeats: ${(100 * same / pairs).toFixed(1)} % of pairs within 8 m share a body and a tone of top (P6 7.6 %; gate 6.5 %), ${grpSame} of ${grp} pairs inside a group; the same body alone ${(100 * sameB / pairs).toFixed(1)} % (P7 14.0 %; gate 8 %)`);
+    // (P8, life #1) accessories on the avatars: every LOD of every avatar carries a cap, a beanie, a backpack and a tote
+    // (regions 8, 11, 10, 6 on the head / torso bones), shown by the person's style, accessory bits and bag flag
+    const has = meta.avatars.every((av) => av.lods.every((L) => { const bd = new Uint8Array(bin, L.bone, L.verts * 4), seen = new Set(); for (let i = 0; i < L.verts; i++) seen.add(bd[i * 4 + 3] * 16 + bd[i * 4]); return seen.has(8 * 16 + 1) && seen.has(11 * 16 + 1) && seen.has(10 * 16) && seen.has(6 * 16); }));
+    const P = C.people, ns = P.length, cap = P.filter((q) => q.look.style === 5).length / ns, bea = P.filter((q) => q.look.style === 7).length / ns, bp = P.filter((q) => q.look.acc & 2).length / ns, tote = P.filter((q) => q.look.bag).length / ns, puf = P.filter((q) => q.look.coat === 2).length / ns;
+    ok(has, `avatar accessories in every LOD (cap, beanie, backpack, tote; P7 none): caps ${(100 * cap).toFixed(0)} %, beanies ${(100 * bea).toFixed(0)} %, backpacks ${(100 * bp).toFixed(0)} %, totes ${(100 * tote).toFixed(0)} %, puffers ${(100 * puf).toFixed(0)} % of people`); }
 }
 // (P7, perf #1 with D) vehicles are culled for drawing (render only): behind the camera and past VCULL.far nothing is drawn;
 // every vehicle within VCULL.near still is. P6 drew all ~171 at every pose (0.46 M triangles a pass)
@@ -347,7 +353,7 @@ if (existsSync('seoul/people/aux.png')) {
   };
   const A = png(readFileSync('seoul/people/aux.png')), meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), bb = readFileSync('seoul/people/people.bin'), bin = bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength);
   // (P6) R atlas rows of 1024 px (the shader's uRows): 2 for the 8-avatar bake, 4 for the 14-avatar one
-  const NR = Math.max(1, Math.round((meta.atlas?.h || 2048) / 1024));
+  const NR = Math.max(1, Math.round((meta.atlas?.h || 2048) / (2 * (meta.atlas?.cell || 512))));   // (P8: rows of 2 x cell px)
   const aux = (u, v, ch) => { const vt = 1 - v, rw = Math.floor(vt * NR), loc = (vt - (rw + 0.5) / NR) * 2 * NR; if (loc <= 0 || loc >= 1) return -1;
     const x = Math.min(A.w - 1, Math.floor(u * A.w)), y = Math.min(A.h - 1, Math.floor(((rw + loc) / NR) * A.h)); return A.px[(y * A.w + x) * A.bpp + ch] / 255; };
   const rows = []; let good = true;

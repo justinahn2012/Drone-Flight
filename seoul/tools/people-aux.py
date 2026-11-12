@@ -21,8 +21,8 @@ pdir = sys.argv[1] if len(sys.argv) > 1 else 'seoul/people'
 meta = json.load(open(os.path.join(pdir, 'people.json')))
 binb = open(os.path.join(pdir, 'people.bin'), 'rb').read()
 atlas = np.asarray(Image.open(os.path.join(pdir, 'atlas.jpg')).convert('RGB'), dtype=np.float32) / 255
-A = meta['atlas']; CELL = 256; ROWS = A['h'] // 1024   # (P6) 4 rows of 4 since the 14-avatar bake
-aux = np.zeros((ROWS * CELL, 4 * CELL, 3), np.float32)
+A = meta['atlas']; CELL = 256; AC = A.get('cell', 512); COLS = A.get('cols', 4); ROWS = A['h'] // (2 * AC)   # (P6) 4 rows of 4 since the 14-avatar bake; (P8) 6 rows of 384 px cells
+aux = np.zeros((ROWS * CELL, COLS * CELL, 3), np.float32)
 lin = lambda c: np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
 ss = lambda e0, e1, x: (lambda t: t * t * (3 - 2 * t))(np.clip((x - e0) / (e1 - e0), 0, 1))
 
@@ -65,7 +65,7 @@ def blur(a, n=1):
     return a
 
 for ai, av in enumerate(meta['avatars']):
-    L = av['lods'][0]; nv = L['verts']; col, row = ai % 4, ai // 4
+    L = av['lods'][0]; nv = L['verts']; col, row = ai % COLS, ai // COLS
     P = np.frombuffer(binb, np.float32, nv * 3, L['pos']).reshape(-1, 3)
     UV = np.frombuffer(binb, np.float32, nv * 2, L['uv']).reshape(-1, 2)
     B = np.frombuffer(binb, np.uint8, nv * 4, L['bone']).reshape(-1, 4)
@@ -79,13 +79,13 @@ for ai, av in enumerate(meta['avatars']):
     chinY = float(front[:, 1].min())
     # head-map texel space for this avatar: atlas uv -> (u, v from the top of the head map) in [0, 1]
     vt = 1 - UV[:, 1]
-    hu = UV[:, 0] * 4 - col; hvv = (vt - (row + 0.5) / ROWS) * 2 * ROWS
+    hu = UV[:, 0] * COLS - col; hvv = (vt - (row + 0.5) / ROWS) * 2 * ROWS
     inmap = (hvv >= -1e-4) & (hvv <= 1 + 1e-4) & (hu >= -1e-4) & (hu <= 1 + 1e-4)
     tris = [t for t in I if inmap[t].all() and (B[t, 3] == 0).all()]
     uvpx = np.stack([hu * CELL, hvv * CELL], 1)
     pos, cov = raster(uvpx, P, tris, CELL, CELL)
     # eye line: the darkest texels of the face's upper half (pupils, lashes) on |x| 0.02-0.045, above the nose tip
-    tex = atlas[row * 1024 + 512: row * 1024 + 1024, col * 512: col * 512 + 512]
+    tex = atlas[row * 2 * AC + AC: row * 2 * AC + 2 * AC, col * AC: col * AC + AC]
     texc = np.asarray(Image.fromarray((tex * 255).astype(np.uint8)).resize((CELL, CELL), Image.BILINEAR), np.float32) / 255
     lum = texc @ np.array([0.3, 0.59, 0.11], np.float32)
     eyeZone = cov & (np.abs(np.abs(pos[..., 0]) - 0.032) < 0.014) & (pos[..., 1] > nose[1] + 0.015) & (pos[..., 1] < nose[1] + 0.065) & (pos[..., 2] > nose[2] - 0.06)
@@ -154,7 +154,7 @@ for ai, av in enumerate(meta['avatars']):
     av['face'] = { 'noseY': round(float(nose[1]), 4), 'noseZ': round(float(nose[2]), 4), 'chinY': round(chinY, 4), 'eyeY': round(eyeY, 4) }
     av['meanScalp'] = [round(float(v), 5) for v in meanScalp]
     print(f"{av['name']}: nose {nose[1]:.3f}/{nose[2]:.3f} chin {chinY:.3f} eyes {eyeY:.3f}; mask texels {(mk > 0.5).sum()}, hair {(hair > 0.5).sum()} of {cov.sum()}; scalp {np.round(meanScalp, 3)}")
-meta['aux'] = { 'w': 4 * CELL, 'h': ROWS * CELL, 'cell': CELL, 'channels': 'r scalp hair, g face mask' }
+meta['aux'] = { 'w': COLS * CELL, 'h': ROWS * CELL, 'cell': CELL, 'channels': 'r scalp hair, g face mask' }
 Image.fromarray((np.clip(aux, 0, 1) * 255 + 0.5).astype(np.uint8)).save(os.path.join(pdir, 'aux.png'), optimize=True)
 json.dump(meta, open(os.path.join(pdir, 'people.json'), 'w'), indent=1)
 print('aux.png', os.path.getsize(os.path.join(pdir, 'aux.png')) // 1024, 'KB')

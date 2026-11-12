@@ -2065,8 +2065,16 @@ const HUMAN_ANIM = /* glsl */`
   if (grp > 97.5) hide = float(style < 0.5);
   if (grp > 10.5 && grp < 11.5) hide = 1.0 - scarf;
   if (grp > 11.5 && grp < 12.5) hide = 1.0 - backpack;
+  // (P8, life #1) an avatar's own accessories (seoul/tools/people-bake.mjs): region 8 a cap (style 5), 11 a beanie (style 7),
+  // 10 a backpack (bit 2), 6 the tote (bag flag, above); the procedural body's caps and hoods are groups 5-7
+  if (grp < 0.5 && region > 7.5 && region < 8.5) hide = float(style != 5.0);
+  if (region > 10.5 && region < 11.5) hide = float(style != 7.0);
+  if (region > 9.5 && region < 10.5) hide = 1.0 - backpack;
   // ---- bulk: puffers and padded coats are thick (procedural body only; an avatar wears its own clothes)
   float bulk = tex > 0.5 ? 1.0 : coat == 2.0 ? 1.13 : coat == 1.0 ? 1.06 : 1.0;
+  // (P8, life #1) a short puffer on an avatar: its top (region 2: torso and sleeves) stands 2.2 cm off the body along the
+  // normal (1.4 cm on the forearms), quilted in the fragment shader; a quarter of the crowd (coat 2) wears one
+  if (tex > 0.5 && coat == 2.0 && region > 1.5 && region < 2.5 && bone < 9.5) p += nrm * (bone == 7.0 || bone == 9.0 ? 0.014 : 0.022);
   if (bone < 0.5 && position.y > 0.95 && grp < 0.5 && region > 1.5 && region < 2.5) p.xz *= bulk;
   if (bone > 5.5 && bone < 9.5 && region > 1.5) { float ax = bone < 7.5 ? uJB.x : -uJB.x; p.x = ax + (p.x - ax) * bulk; p.z *= bulk; }
   // ---- gait (wa = walk amount): normative joint curves, stance-leg hip height, pelvis rotation, thorax counter-rotation
@@ -2143,7 +2151,8 @@ const HUMAN_ANIM = /* glsl */`
   // albedo by region (region 3 on a coat's thighs stays coat; headwear and hood take the wear colour; scarf a muted accent).
   // On an avatar these are the tint targets for its texture classes (0 skin, 1 hair, 2 top, 3 bottom, 4 shoes).
   vec3 alb = region < 0.5 ? iSkin.rgb : region < 1.5 ? iHair.rgb : region < 2.5 ? iTop.rgb : region < 3.5 ? (tex < 0.5 && bone > 1.5 && bone < 5.5 && coat == 1.0 && position.y > 0.62 ? iTop.rgb : iBot.rgb)
-    : region < 4.5 ? vec3(0.03) : region < 5.5 ? vec3(0.02) : region < 6.5 ? vec3(0.04, 0.035, 0.03) : region < 7.5 ? vec3(0.02, 0.02, 0.025) : region < 8.5 ? iWear.rgb : mix(iBot.rgb, vec3(0.32, 0.08, 0.07), 0.6);
+    : region < 4.5 ? vec3(0.03) : region < 5.5 ? vec3(0.02) : region < 6.5 ? (fract(seed * 7.31) < 0.35 && bone < 0.5 ? vec3(0.5, 0.46, 0.38) : vec3(0.04, 0.035, 0.03)) : region < 7.5 ? vec3(0.02, 0.02, 0.025) : region < 8.5 ? iWear.rgb
+    : region < 9.5 ? mix(iBot.rgb, vec3(0.32, 0.08, 0.07), 0.6) : region < 10.5 ? (fract(seed * 3.7) < 0.6 ? vec3(0.025, 0.025, 0.03) : fract(seed * 3.7) < 0.8 ? vec3(0.07, 0.08, 0.12) : vec3(0.3, 0.27, 0.22)) : iWear.rgb;   // (P8: 6 a third of totes canvas; 10 backpack black / navy / beige; 11 beanie)
   vAlb = alb; vUv = auv; vHairC = iHair.rgb;
   vRest = position; vMisc = vec4(region, bone, coat, acc);
   vScreen = (region > 4.5 && region < 5.5) ? max(phoneP, filmP) : 0.0;
@@ -2174,7 +2183,11 @@ const HUMAN_FS = /* glsl */`
     }
     vec3 mean = reg < 0.5 ? uMean[0] : reg < 1.5 ? uMean[1] : reg < 2.5 ? uMean[2] : reg < 3.5 ? uMean[3] : uMean[4];
     float tint = reg < 0.5 ? 0.45 : reg < 1.5 ? 0.85 : reg < 2.5 ? 0.8 : reg < 3.5 ? 0.7 : 0.3;
+    // (P8) a puffer (coat 2) over an avatar's top: one solid nylon colour, quilted every 10.5 cm (the procedural puffer's bands)
+    float puff = float(reg == 2.0 && ct == 2.0);
+    tint = mix(tint, 0.95, puff);
     albD = mix(tx.rgb, vAlb * clamp(tx.rgb / max(mean, vec3(0.004)), 0.0, 3.0), tint);
+    if (puff > 0.5) { float band = abs(fract(q.y / 0.105) - 0.5) * 2.0; albD *= mix(0.62, 1.06, smoothstep(0.05, 0.6, band)); }
     if (reg == 0.0) {
       // the head map's own masks (P4, life #1 / graphics #3; seoul/people/aux.png from seoul/tools/people-aux.py): r = hair
       // painted on the scalp, re-tinted to the person's hair colour like the cards (P3 tinted it toward the skin, so dark
@@ -2213,6 +2226,8 @@ const HUMAN_FS = /* glsl */`
     float mask = mod(floor(ac / 4.0), 2.0) * smoothstep(0.02, 0.05, h.z) * (1.0 - smoothstep(-0.012, -0.002, h.y)) * smoothstep(-0.105, -0.09, h.y);
     k = mix(k, (mod(floor(ac / 16.0), 2.0) > 0.5 ? 0.62 : 0.016) / max(0.05, dot(vAlb, vec3(0.333))), mask);
   } else if (reg == 0.0 && bn == 1.0) k *= 0.72;   // neck in the shadow of the jaw
+  else if (reg == 11.0) k *= 0.86 + 0.14 * smoothstep(0.3, 0.7, fract(atan(q.z - 0.01, q.x + 1e-5) * 18.0));   // (P8) beanie rib knit
+  else if (reg == 10.0) k *= 0.9 + 0.1 * hn;
   albD = vAlb * k;
   }
 `;
@@ -2665,7 +2680,7 @@ export function build(layout, ctx = {}) {
     const { meta, bin } = data; const nA = meta.avatars.length;
     avatars.mats = meta.avatars.map((av) => {
       const j = av.joints, J = [new THREE.Vector4(j.hipX, j.hipY, j.kneeY, j.ankleY), new THREE.Vector4(j.shX, j.shY, j.elY, j.neckY), new THREE.Vector4(j.kneeZ, j.elZ, 1.712 / j.top, 1)];
-      return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean, data.aux || zero, av.meanScalp, Math.max(1, Math.round((meta.atlas?.h || 2048) / 1024)));
+      return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean, data.aux || zero, av.meanScalp, Math.max(1, Math.round((meta.atlas?.h || 2048) / (2 * (meta.atlas?.cell || 512)))));   // (P8) rows of 2 x cell px
     });
     // tiers: [near, (lod1,) mid]; people.json from before P4 has no lod1 (then 0 near, 1 mid)
     const nL = Math.min(3, meta.avatars[0].lods.length); avatars.nL = nL;
