@@ -67,7 +67,9 @@ export const SND = {
   hornEvery: 25, hornR: 100, guideR: 60,
   // P6 (sound #2): the far traffic bed's shelf above 1.2 kHz (dB); (sound #6 / bug) the lowest level at the camera (dB SPL
   // re 1 m figures, occlusion taken off) at which a vehicle gets one of the positional voices
-  trafShelf: 4, voiceFloor: 48,
+  // P7 integ12 (sound bug, the alley's first frame): voiceFloor 48 -> 52. At 48 a car 111 m off on Yanghwa-ro (49.9) and a
+  // scooter 100 m down the alley (50.5) took voices; past ~60 m a vehicle is the bed's, not a voice of its own
+  trafShelf: 4, voiceFloor: 52,
   // P7 (sound #2, the arterial's floor; P6 63 Hz -9.7 dB re max at Yanghwa-ro): the buses' and trucks' 40-90 Hz diesel
   // layer, dB over the diesel bed, and how far it swells (x, gain) as the arterial pulls away on its green
   dieselSub: 3, subSwell: 1.8,
