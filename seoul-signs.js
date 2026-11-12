@@ -396,8 +396,10 @@ const FRAME_HUES = [['red', 0.28], ['orange', 0.22], ['pink', 0.1], ['magenta', 
 // hue re-weighting. On a walking street named here, every saturated face (not white / warm-white boxes, not a chain's
 // convenience-store colours, not a frame stack, which already has its hue) re-draws its hue from the street's weights, from
 // its own stream (seed ^ lot#p8a) drawn after every other draw, so geometry, count, lit and the rc colour stream never move.
-// Only when the street carries a push (> 0): the census mix (push 0) is untouched.
-export const STREET_HUES = { 'Eoulmadang-ro': [['red', 0.28], ['orange', 0.22], ['pink', 0.1], ['magenta', 0.1], ['cyan', 0.08], ['blue', 0.07], ['green', 0.15]] };
+// Only when the street carries a push (> 0): the census mix (push 0) is untouched. Weights: the colourist's red / orange 50,
+// pink 20, cyan / blue 15, green 15 drew walk0 to 42 % warm on the p8 merge (GL; magenta 27 % with C's stacks and 몽글술집's
+// pink), under camgate's 45 floor: red / orange 60, pink / magenta 12, cyan / blue 16, green 12.
+export const STREET_HUES = { 'Eoulmadang-ro': [['red', 0.32], ['orange', 0.28], ['pink', 0.08], ['magenta', 0.04], ['cyan', 0.08], ['blue', 0.08], ['green', 0.12]] };
 // [P8-A] colour #1: name overrides (the shop's own colour, whatever the draw): 몽글술집 on walk0's left is pink; 해녀감성주점's
 // channel letters (walk0's left 2F, about half the frame's bright saturated pixels on their own, amber -> orange on camera)
 // are white LED modules, Hongdae's commonest channel letter: no single hue draw can move walk0's warm share past one sign
