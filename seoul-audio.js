@@ -36,20 +36,20 @@ export const SND = {
   // the hover's events carry more; the place contrast comes from the parts, not the trim
   world: 3.85,     // trim on the world path, set so the city sits ~10 LU under a hover on the walking street (sound #1)
   // P4: beds.traffic is now the city floor under the energy-summed traffic bed (sound #2); P3 61 dB at the street centre
-  beds: { traffic: 50, crowd: 63, alley: 58, air: 54, rain: 66 },   // P4: crowd 65 -> 63 (plain-RMS babble; the events carry the peaks)
+  beds: { traffic: 50, crowd: 61, alley: 58, air: 54, rain: 66 },   // P4: crowd 65 -> 63 (plain-RMS babble; the events carry the peaks)
   // P5 (sound #2): artFlow 0.9 -> 1.3, now counted per lane against the sim's own moving (> 3 m/s) vehicles on that lane
-  wet: 0.7, artFlow: 1.3,   // P4 (sound #2): the look's wetness (seoul-light uCityWet default); arterial moving vehicles in 80 m per m of width (19.5 m: ~25)
-  crowdFull: 90,   // P5 (sound #2): crowdN at which the crowd bed reaches its full level (P4 60: every crowded spot sat level)
+  wet: 0.7, artFlow: 1.5,   // P4 (sound #2): the look's wetness (seoul-light uCityWet default); arterial moving vehicles in 80 m per m of width (19.5 m: ~25)
+  crowdFull: 90, crowdWave: 4,   // integ10: the crowd bed's slow waves, +- dB where dense   // P5 (sound #2): crowdN at which the crowd bed reaches its full level (P4 60: every crowded spot sat level)
   car: 90, taxi: 88, truck: 94, bus: 97, scooter: 92, tyre: 90,
   // one-shots and loops, RMS at 1 m (calibrated buffers): shop doorway speaker, club door, busking PA, horn, ...
-  music: 75, club: 91,   // P5: music 81 -> 75 (a doorway speaker ~70 dB at 2 m; P4 75: a steady wall that held a hover CV at 0.44)
-  busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 82, shout: 88, talk: 74, yelp: 92, heel: 72, step: 60,
+  music: 72, club: 91,   // P5: music 81 -> 75 (a doorway speaker ~70 dB at 2 m; P4 75: a steady wall that held a hover CV at 0.44)
+  busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 82, shout: 88, talk: 74, yelp: 92, heel: 72, step: 58,
   applause: 92, cheer: 88, guide: 84, tick: 72, queue: 80, staff: 86, exit: 80, draught: 72,
   glaugh: 85, name: 97, phone: 74, beep: 84,   // P5: beep 88 -> 84
     // P4 (sound #3): a group's laughter, a name called, a phone's K-pop, a scooter's horn
   // P5: a pass-by at its closest (sound #3), the diesel idle of the arterial's buses (bed, 1 m), a shop caller's headset PA
   // and her clapping (sound #4), glasses and soju bottles in w21, a group talking past (sound #5), the train under exit 9
-  passby: 92, diesel: 84, caller: 84, clap1: 80, clink: 76, group: 77, train: 82,
+  passby: 92, diesel: 86, caller: 84, clap1: 80, clink: 76, group: 78, train: 82,
   pools: { engine: 6, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1, queue: 2, exit: 1 },
   poolsLow: { engine: 3, bus: 1, scooter: 1, music: 2, club: 1, busk: 1, neon: 0, sizzle: 1, queue: 1, exit: 1 },
   // event pacing (sound #6): horns from the nearest 100 m of road, ~1 per 25 s where traffic is; guide within 60 m
@@ -804,7 +804,11 @@ export function createSeoulAudio(layout, life, opts = {}) {
       // bed follows crowdN over ~3 s (2-6 s to settle) and reaches 0 dB at 60, not 30, so mid-density stretches sit lower
       const kC = g.crowdT == null ? 1 : Math.min(1, Math.abs(t - g.crowdT) / 3); g.crowdS = g.crowdS == null ? crowdN : g.crowdS + (crowdN - g.crowdS) * kC; g.crowdT = t;
       // P5 (sound #2): full at crowdN 90 (P4 60), so a mid-density street sits under a packed one
-      T(g.bCrowd.gain, nrm('crowd') * dbA(SND.beds.crowd) * Math.min(1.0, Math.pow(g.crowdS / SND.crowdFull, 0.7)) * lift, 0.3);
+      // integ10 (sound #5): the crowd comes in waves (groups pass, a table goes quiet): a slow +-4 dB swell, a pure function
+      // of t (live = clip), in full where the crowd is dense. G1's denser P5 crowd (crowdN 139 -> 160 at the hover) held the
+      // bed steady enough to sit the hover's envelope CV at 0.56
+      const wv = (Math.sin(t * 0.43 + 1.3) + 0.8 * Math.sin(t * 0.83 + 4.1) + 0.6 * Math.sin(t * 1.37 + 2.2)) / 2.4, wave = Math.pow(10, SND.crowdWave * wv * Math.min(1, g.crowdS / 60) / 20);
+      T(g.bCrowd.gain, nrm('crowd') * dbA(SND.beds.crowd) * Math.min(1.0, Math.pow(g.crowdS / SND.crowdFull, 0.7)) * wave * lift, 0.3);
       T(g.bAlley.gain, nrm('alley') * dbA(SND.beds.alley) * ac.canyon * lift, 0.4);
       T(g.bAir.gain, nrm('air') * dbA(SND.beds.air) * (1 + Math.min(1, alt / 60)), 0.5);
       T(g.bRain.gain, g.rain ? nrm('rain') * dbA(SND.beds.rain) : 0, 0.5);
@@ -1046,7 +1050,11 @@ export function createSeoulAudio(layout, life, opts = {}) {
       let best = null, bd = SND.guideR; for (const c of crossings) { const d = Math.hypot(c.x - cam.x, c.z - cam.z); if (d < bd) { bd = d; best = c; } }
       if (best) {
         const ph = life.crossPhase(best, t);
-        if (ph.walk && g.guideC === best && !g.guideWalk) { shot(g.buf.guide, best.x, 2.6, best.z, dbA(SND.guide)); g.nextTick = t + 2.4; S.guides++; }
+        // integ10 (sound #6): the guide also speaks when the drone arrives during a walk phase (a pole repeats its message
+        // while people cross: G1's P5 signal timing put the walk start outside a 45 s Yanghwa-ro hover), and once more
+        // halfway through a walk of 20 s or more
+        const into = ph.tc - ph.w0, arrive = ph.walk && g.guideC !== best && into > 1.5 && into < ph.wlen - 8, half = ph.walk && g.guideC === best && ph.wlen >= 20 && g.guideHalf !== best.id + ':' + Math.round(t - into) && into >= ph.wlen / 2;
+        if (ph.walk && ((g.guideC === best && !g.guideWalk) || arrive || half)) { shot(g.buf.guide, best.x, 2.6, best.z, dbA(SND.guide)); g.nextTick = t + 2.4; S.guides++; g.guideHalf = best.id + ':' + Math.round(t - into) + (half ? '' : '-'); }
         if (ph.walk && g.guideC === best && t >= g.nextTick) { const left = ph.wlen - (ph.tc - ph.w0); shot(g.buf.tick, best.x, 2.6, best.z, dbA(SND.tick)); g.nextTick = t + (left < 8 ? 0.5 : 1.0); }
         g.guideC = best; g.guideWalk = ph.walk;
       }
