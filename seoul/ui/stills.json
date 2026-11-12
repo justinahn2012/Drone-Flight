@@ -1,24 +1,24 @@
 {
  "backdrop": {
-  "sha256": "9789342347b0c864c903a01a271c296b49fe1273189e26692fd035d14b5a3634",
-  "satBright": 0.0325,
+  "sha256": "8d2531bd637ebd10aea0667267997ba48fe3f3e853158c79eb177ca848c0a338",
+  "satBright": 0.0327,
   "source": "bdC.jpg",
   "crop": "0,0,1,1",
   "pose": "o.tp(183.6,9,-312.9,136.2,(-12)-o.drone.c.camTilt)",
-  "commit": "2c9d3fb",
-  "lowerTop": 0.88,
-  "lifeCommit": "55768ac",
-  "nearest": 99
+  "commit": "6fff57a",
+  "lowerTop": 0.9,
+  "lifeCommit": "dff1b15",
+  "nearest": 10.42
  },
  "thumb": {
-  "sha256": "57c8a8cd12623627b6d45e128a5d4b8884fed65db734ac0caf64413246ae2cb5",
-  "satBright": 0.0464,
+  "sha256": "15bfff548588493bc7582d336e231f2999877826b90183b2106a215b547df701",
+  "satBright": 0.046,
   "source": "bdA.jpg",
   "crop": "0.30,0.0,0.80,0.5",
   "pose": "o.tp(27.3,9,-144.8,-36.9,(-12)-o.drone.c.camTilt)",
-  "commit": "2c9d3fb",
-  "lifeCommit": "55768ac",
-  "lowerTop": 3.55,
-  "nearest": 8.94
+  "commit": "6fff57a",
+  "lifeCommit": "dff1b15",
+  "lowerTop": 3.24,
+  "nearest": 7.55
  }
 }
