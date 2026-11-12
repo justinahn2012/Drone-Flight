@@ -104,6 +104,8 @@ export const MIRROR_STREAK = { clamp: 0.02, fade: [6, 12], farCut: 0.75, blur: 1
 export const SKY_AIR = { gain: 1.0, top: 50, maxT: 160, cap: 20, steps: 8 };
 // P7: how much of fpvcam's SSAO the lightmap term takes: walls 45 % (P3), up-faces x0.5 of that (fpv #4)
 export const AO_LM = { wall: 0.45, ground: 0.5 };
+// P7 perf #1: detail batches hidden past this distance (m, camera to the cell's sphere): see farDetail()
+export const FAR_DETAIL = { 'seoul:ao': 90, 'seoul:dr_glow': 90, 'seoul:dr_ac': 90 };
 export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
 // P4 lighting #4 (near air): sources from nearM = 2 m (was 4: close signs floated with no air round them), fading in over
 // fadeM, at nearGain (0.25) of their energy until fullM (4 m), so the halo never veils the lens.
@@ -1356,11 +1358,14 @@ export function attach(world, emitters = [], ctx = {}) {
   const hidden = [];
   // [P7-D] fpv #1: the crowd and the traffic are black in the mirror (as the buildings are): a car's or a walker's body
   // now hides the shop glass and signs behind it in the puddle, instead of the reflection running through them as a
-  // translucent column. Proxies, not the real meshes: a 12-triangle box per body sharing the life part's own instance
-  // buffers (vehicles: instanceMatrix; people: iPos = x, y, z, yaw), so nothing is uploaded twice and the mirror pass adds
-  // ~12 x N triangles, not the 0.4-1 M of the bodies. Built lazily (the avatar tiers arrive after the build).
+  // translucent column. Proxies, not the real meshes: a 12-triangle box per vehicle, 2 crossed quads per person, sharing
+  // the life part's own instance buffers (vehicles: instanceMatrix; people: iPos = x, y, z, yaw; near and mid tiers), so
+  // nothing is uploaded twice and the mirror pass adds ~6-8k triangles, not the 0.4-1 M of the bodies. Built lazily (the avatar tiers arrive after the build).
   const moverOcc = new Map(), lifeGroup = () => world.parts?.life?.group || null;
-  const personGeo = (() => { const [w, h, d] = MIRROR_STREAK.person; return new THREE.BoxGeometry(w, h, d).translate(0, h / 2, 0); })();
+  const personGeo = (() => { const [w, h, d] = MIRROR_STREAK.person;   // two crossed quads (4 tris, double-sided): a body's silhouette from any side
+    const a = new THREE.PlaneGeometry(w, h).translate(0, h / 2, 0), b = new THREE.PlaneGeometry(d, h).rotateY(Math.PI / 2).translate(0, h / 2, 0), g = new THREE.BufferGeometry();
+    const P = new Float32Array([...a.attributes.position.array, ...b.attributes.position.array]); g.setAttribute('position', new THREE.BufferAttribute(P, 3));
+    g.setIndex([...a.index.array, ...Array.from(b.index.array, (i) => i + 4)]); a.dispose(); b.dispose(); return g; })();
   const personMat = new THREE.ShaderMaterial({
     vertexShader: `attribute vec4 iPos; void main(){ float c = cos(iPos.w), s = sin(iPos.w);
       vec3 p = vec3(position.x * c + position.z * s, position.y, -position.x * s + position.z * c) + iPos.xyz;
@@ -1376,7 +1381,8 @@ export function attach(world, emitters = [], ctx = {}) {
       p.frustumCulled = false; p.matrixAutoUpdate = false; p.name = 'mirror-occ-' + src.name; return p;
     }
     const ip = src.geometry?.attributes?.iPos;
-    if (ip && /^crowd-/.test(src.name || '') && src.geometry.isInstancedBufferGeometry) {
+    // (not crowd-far: those people are 40 m+ out, under a pixel's worth of occlusion in a 1/4-res mirror, and ~2k bodies)
+    if (ip && /^crowd-/.test(src.name || '') && !/^crowd-(far|contact)/.test(src.name) && src.geometry.isInstancedBufferGeometry) {
       const g = new THREE.InstancedBufferGeometry(); g.index = personGeo.index; g.setAttribute('position', personGeo.attributes.position); g.setAttribute('iPos', ip);
       g.instanceCount = 0; g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
       const p = new THREE.Mesh(g, personMat); p.frustumCulled = false; p.matrixAutoUpdate = false; p.name = 'mirror-occ-' + src.name; return p;
@@ -1629,12 +1635,20 @@ export function attach(world, emitters = [], ctx = {}) {
     for (const r of byId.values()) if (r.head && r.tail) cars.push(r); }
   const carD = new Float32Array(Math.max(1, cars.length)), carI = new Int32Array(Math.max(1, cars.length));
   let lastCam = null;
+  // [P7-D] perf #1 (triangles): sub-pixel detail batches drop their far cells (FAR_DETAIL m from the camera to the cell's
+  // sphere): the AO strips, the festoon / lamp glow beads and the AC kits are < 1 px past ~90 m on a 960-1280 frame
+  const farDet = cull.batches.filter((bm) => FAR_DETAIL[bm.name] && bm.userData.cellSpheres).map((bm) => ({ bm, r: FAR_DETAIL[bm.name], on: bm.userData.instanceIds.map(() => true) }));
+  function farDetail(cp) {
+    for (const F of farDet) { const S = F.bm.userData.cellSpheres, I = F.bm.userData.instanceIds;
+      for (let i = 0; i < S.length; i++) { const c = S[i].center, v = Math.hypot(c.x - cp.x, c.y - cp.y, c.z - cp.z) - S[i].radius <= F.r; if (v !== F.on[i]) { F.bm.setVisibleAt(I[i], v); F.on[i] = v; } } }
+  }
   function update(t, camPos, cam) {
     const t0 = now();
     U.uCityTime.value = (t ?? 0) % 3600;
     if (steam && renderer) steam.material.uniforms.uScale.value = 0.5 * (renderer.getDrawingBufferSize(_sz).y || 600);
     if (camPos) lastCam = camPos;
     const cp = camPos || lastCam || { x: (x0 + x1) / 2, y: 2, z: (z0 + z1) / 2 };
+    if (farDet.length && camPos) farDetail(cp);
     // (1) in-place animated (screens): colour row + their mirror cards, nothing rebinned
     if (nAnim) {
       const C = tLC.image.data;
