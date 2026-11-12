@@ -1014,13 +1014,11 @@ export class CrowdSim {
     // (P5) E's ground openings (stairwells, [[x, z], ...] polygons): nobody stands in one (P4 put 4-5 of exit 9's waiting
     // ring inside the stair dive)
     this.holes = (holes || []).filter((h) => Array.isArray(h) && h.length >= 3);
+    // [P8] E's wet decals at post bases ([cx, cz, tx, tz, a, b]: centre, unit long axis, half-length, half-width; p8/E-to-G1.md):
+    // nobody is placed standing in one (inDress, the placement test); walkers still cross their edges. Missing: none.
+    this.puddles = (puddles || []).filter((q) => Array.isArray(q) && q.length >= 6);
     // E's dressing discs [[x, z, r]] (life #6: carts, tents, stalls, parked scooters): walkers sidestep them, nobody stands in one
     this.dress = (obstacles || []).filter((o) => o && o[2] > 0 && o[2] < 1.7);
-    // (P8, life: keep people off E's puddles) E's standing water at the post bases ([x, z, tx, tz, a, b]: centre, long axis,
-    // half-axes; seoul-dressing `puddles`): walkers step round them (render side, like the dressing discs: a chain of discs
-    // along the long axis in each walkway's avoidance). Nobody is placed standing in one already (0 of all statics), and
-    // re-placing the statics round them dropped 21 % of the standing clusters near the cameras: left as placed
-    this.pud = (puddles || []).filter((q) => Array.isArray(q) && q.length >= 6 && q[4] > 0 && q[5] > 0);
     // walkways
     this.ways = [];
     for (const st of net.streets) {
@@ -1379,12 +1377,14 @@ export class CrowdSim {
     for (const q of this.queues) for (let j = 0; j < q.Q; j += 2) { const r = j / 2; addObst(q.door[0] + q.t[0] * (0.9 + 0.75 * r) + q.n[0] * 0.72, q.door[1] + q.t[1] * (0.9 + 0.75 * r) + q.n[1] * 0.72, 0.6); }
     for (const l of this.lots) for (const t of l._tables || []) if (!t.stool) addObst(t[0], t[1], 1.0);
     for (const o of this.dress) addObst(o[0], o[1], o[2]);
-    // the puddles near each standing person's spot and each queue's line (evalStatic keeps them out)
-    if (this.pud.length) { this.pudNear = new Array(this.people.length).fill(null);
+    // (P8, life: keep people off E's puddles) walkers step round them (render side, like the dressing discs: a chain of
+    // discs along each puddle's long axis in the walkway avoidance); the puddles near each standing person's spot and each
+    // queue's line, which evalStatic keeps them out of (F's inDress keeps them out of the placement)
+    if (this.puddles.length) { this.pudNear = new Array(this.people.length).fill(null);
       for (const i of this.statics) { const p = this.people[i]; let ax, az, R;
         if (p.kind === K_STAND) { ax = p.x; az = p.z; R = 1.5; } else if (p.kind === K_QUEUE) { const q = this.queues[p.q]; ax = q.door[0]; az = q.door[1]; R = 6 + 0.4 * q.Q; } else continue;
-        const L = this.pud.filter((u) => Math.hypot(u[0] - ax, u[1] - az) < R + u[4] + 0.5); if (L.length) this.pudNear[i] = L; } }
-    for (const [x, z, tx, tz, a, b] of this.pud) { const n = Math.max(1, Math.ceil((a - b) / (0.6 * b)) + 1); for (let k = 0; k < n; k++) { const u = n > 1 ? -(a - b) + (2 * (a - b) * k) / (n - 1) : 0; addObst(x + tx * u, z + tz * u, b * 1.05); } }
+        const L = this.puddles.filter((u) => Math.hypot(u[0] - ax, u[1] - az) < R + u[4] + 0.5); if (L.length) this.pudNear[i] = L; } }
+    for (const [x, z, tx, tz, a, b] of this.puddles) { const n = Math.max(1, Math.ceil((a - b) / (0.6 * b)) + 1); for (let k = 0; k < n; k++) { const u = n > 1 ? -(a - b) + (2 * (a - b) * k) / (n - 1) : 0; addObst(x + tx * u, z + tz * u, b * 1.05); } }
     for (const w of this.ways) w.obst.sort((p, q) => p[0] - q[0]);
   }
   inHole(x, z, pad = 0.45) {
@@ -1392,8 +1392,9 @@ export class CrowdSim {
     for (const H of this.holes) for (const [ox, oz] of [[0, 0], [pad, 0], [-pad, 0], [0, pad], [0, -pad]]) if (pip(x + ox, z + oz, H)) return true;
     return false;
   }
-  inDress(x, z, pad = 0) { for (const o of this.dress) { const dx = x - o[0], dz = z - o[1], r = o[2] + pad; if (dx * dx + dz * dz < r * r) return true; } return false; }
-  inPuddle(x, z, pad = 0) { for (const [px, pz, tx, tz, a, b] of this.pud) { const dx = x - px, dz = z - pz, u = (dx * tx + dz * tz) / (a + pad), v = (dz * tx - dx * tz) / (b + pad); if (u * u + v * v < 1) return true; } return false; }
+  inDress(x, z, pad = 0) { for (const o of this.dress) { const dx = x - o[0], dz = z - o[1], r = o[2] + pad; if (dx * dx + dz * dz < r * r) return true; } return this.inPuddle(x, z, pad); }
+  inPuddle(x, z, m = 0.3) { for (const q of this.puddles) { const dx = x - q[0], dz = z - q[1], u = dx * q[2] + dz * q[3], v = -dx * q[3] + dz * q[2];
+    if ((u / (q[4] + m)) ** 2 + (v / (q[5] + m)) ** 2 < 1) return true; } return false; }
   defaultBuskSites(layout) {
     const out = [], o = {};
     const walk = this.ways.filter((w) => w.kind === 'walking').sort((a, b) => b.area - a.area)[0];
@@ -2639,7 +2640,7 @@ export function build(layout, ctx = {}) {
   // E's set pieces and dressing discs (contract P3-G1/C: world-seoul passes ctx.setPieces = geo.setPieces and ctx.obstacles =
   // geo.dressingOut.obstacles; ctx.dressing (E's geometry output) is read too). Absent: the default rings, no discs.
   const setPieces = ctx.setPieces ?? ctx.dressing?.setPieces ?? null, obstacles = ctx.obstacles ?? ctx.dressing?.obstacles ?? null, holes = ctx.holes ?? ctx.dressing?.holes ?? null;
-  const puddles = ctx.puddles ?? ctx.dressing?.puddles ?? null;   // (P8) E's standing water: nobody stands in it, walkers go round
+  const puddles = ctx.puddles ?? ctx.dressing?.puddles ?? null;   // [P8] E's puddles (world-seoul ctx; absent: none)
   const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles, holes, puddles });
   const crowd = sim.crowd, traffic = sim.traffic;
   const group = new THREE.Group(); group.name = 'seoul-life';
@@ -2861,24 +2862,31 @@ export function build(layout, ctx = {}) {
   // [P8 G1, perf #3] LW.ready resolves (to the state) once the worker is on with its first frame in hand, or failed / off:
   // world-seoul waits for it (bounded) before its first update, so the level opens on the worker's crowd
   let lwDone; LW.ready = new Promise((r) => { lwDone = r; });
+  // once the worker is on, it is asked for the frame the first update draws (the warm clock, from the spawn, in the first
+  // update's stagger phase); a poll resolves LW.ready when that frame is in hand, or the worker is off / failed (8 s at most)
+  { const sp = layout.spawn?.pos, cam0 = Array.isArray(sp) ? [sp[0], sp[1], sp[2], -Math.sin(layout.spawn.yaw || 0), -Math.cos(layout.spawn.yaw || 0)] : null;
+    let asked = false; const t0 = Date.now();
+    const poll = () => {
+      const w = LW.w;
+      if (LW.state === 'on' && w && !asked) { asked = true; w.request(W, cam0, 1); }
+      if (LW.state === 'starting' || (LW.state === 'on' && w && !w.ready && !w.error && !LW.f)) { if (Date.now() - t0 < 8000 && !LW.disposed) return void setTimeout(poll, 10); }
+      lwDone(LW.state);
+    };
+    setTimeout(poll, 0); }
   const lwPlain = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
   const lwAttach = (w) => {
     if (!w) { LW.state = 'unavailable'; return; }
     if (w.info && (w.info.agents !== crowd.X.length || w.info.vehicles !== traffic.vehicles.length || w.info.hash !== LW.hash0)) { LW.state = 'mismatch'; w.dispose(); return; }
-    if (LW.disposed) { w.dispose(); LW.state = 'disposed'; return; }
+    if (LW.disposed) { w.dispose(); return; }
     LW.w = w; LW.state = 'on';
   };
-  const lwEnd = () => lwDone(LW.state);
-  if (ctx.lifeWorker && typeof ctx.lifeWorker === 'object') { lwAttach(ctx.lifeWorker); lwEnd(); }
+  if (ctx.lifeWorker && typeof ctx.lifeWorker === 'object') lwAttach(ctx.lifeWorker);
   else if (ctx.lifeWorker !== false && lwq !== '0' && (ctx.lifeWorker === true || typeof window !== 'undefined') && LifeWorker.supported()) {
     LW.state = 'starting';
     // [P5 H, perf #2] warmTo: the worker reaches the warm clock before 'ready' (it used to pay that 75 s of traffic on its
     // first frame: 2.65-22 s with no frame back); until then, and after a seek until a post-seek frame lands, inline
-    // [P8] cam / fr: the first frame (at warmTo, from the spawn, in the first update's stagger phase) comes with 'ready'
-    const sp = layout.spawn?.pos, cam0 = Array.isArray(sp) ? [sp[0], sp[1], sp[2], Math.sin(layout.spawn.yaw || 0) * -1, -Math.cos(layout.spawn.yaw || 0)] : null;
-    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), puddles: lwPlain(puddles), warmTo: W, cam: cam0, fr: 1 })
-      .then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); }).finally(lwEnd);
-  } else lwEnd();
+    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), puddles: lwPlain(puddles), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
+  }
   function lwFrame(tNow, cam) {   // -> the worker frame to draw at tNow, or null (inline)
     const w = LW.w; if (!w) return null;
     if (w.error) { LW.state = 'failed: ' + w.error; LW.w = null; return null; }

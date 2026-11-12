@@ -7,8 +7,7 @@
 //
 // Messages (main -> worker):
 //   {type: 'init', layout, opts: {seed, density, maxAgents, sites, warmTo?}, lifeURL?, threeURL?}
-//        -> {type: 'ready', seq, agents, vehicles, types, hash (as built, t = 0), ms, warmMs, first}   [P5] warmTo: advance first
-//        [P8] opts.cam ([x, y, z, fx?, fz?]) and opts.fr: `first` is the frame at warmTo from cam (as a 'frame' reply's fields)
+//        -> {type: 'ready', seq, agents, vehicles, types, hash (as built, t = 0), ms, warmMs}   [P5] warmTo: advance first
 //   {type: 'frame', ...} while a fast-forward runs: it retargets that one (only the newest request is answered; the frame
 //        carries `dropped`, `slices`, `retargets`)
 //   {type: 'frame', seq, t, cam: [x, y, z] | null, recycle?: buffers}   (recycle = a previous frame's buffers, given back)
@@ -75,23 +74,6 @@ async function advanceSliced(target) {   // target(): the newest wanted t
 }
 const stats = { slices: 0, retargets: 0, warmMs: 0 };
 
-// one frame's arrays, packed into a pooled buffer set (the frame loop, and [P8] the first frame sent with 'ready')
-function pack(t, cam, fr) {
-  const t0 = now(), C = sim.crowd, T = sim.traffic;
-  C.events.length = 0;
-  if (fr != null) C.frame = fr - 1;   // [P5 H] the main thread's stagger phase (evaluate increments it)
-  C.evaluate(t, cam ? { x: cam[0], y: cam[1], z: cam[2], fx: cam[3] ?? null, fz: cam[4] ?? null } : null);
-  const t1 = now();
-  const b = pool.pop() || alloc();
-  b.X.set(C.X); b.Z.set(C.Z); b.YAW.set(C.YAW); b.PH.set(C.PH); b.WALK.set(C.WALK); b.POSE.set(C.POSE); b.VIS.set(C.VIS);
-  const P = {}, aT = sim.aT, V = b.veh;
-  T.vehicles.forEach((v, i) => {
-    const p = T.pose(v, aT, P), o = i * VEH_STRIDE;
-    V[o] = p.x; V[o + 1] = p.z; V[o + 2] = p.hx; V[o + 3] = p.hz; V[o + 4] = p.hidden ? 1 : 0; V[o + 5] = v.brake || 0; V[o + 6] = v.hazard ? 1 : 0; V[o + 7] = types.indexOf(v.type);
-  });
-  return { b, aT, events: C.events.slice(), crowdMs: t1 - t0, packMs: now() - t1 };
-}
-
 async function frameLoop() {
   if (running) return; running = true;
   try {
@@ -101,8 +83,20 @@ async function frameLoop() {
       const m = want; want = null;
       const tt = Math.max(0, +m.t || 0);
       if (tt !== t) { want = m; continue; }   // (retargeted during the last slice)
-      const t1 = now(), F = pack(t, m.cam, m.fr), b = F.b;
-      send({ type: 'frame', seq: m.seq, t, aT: F.aT, buf: b, events: F.events, ms: { sim: t1 - t0, crowd: F.crowdMs, pack: F.packMs }, allocs, slices: stats.slices, retargets: stats.retargets, dropped: m.dropped || 0 }, buffersOf(b));
+      const t1 = now(), C = sim.crowd, T = sim.traffic;
+      C.events.length = 0;
+      if (m.fr != null) C.frame = m.fr - 1;   // [P5 H] the main thread's stagger phase (evaluate increments it)
+      C.evaluate(t, m.cam ? { x: m.cam[0], y: m.cam[1], z: m.cam[2], fx: m.cam[3] ?? null, fz: m.cam[4] ?? null } : null);
+      const t2 = now();
+      const b = pool.pop() || alloc();
+      b.X.set(C.X); b.Z.set(C.Z); b.YAW.set(C.YAW); b.PH.set(C.PH); b.WALK.set(C.WALK); b.POSE.set(C.POSE); b.VIS.set(C.VIS);
+      const P = {}, aT = sim.aT, V = b.veh;
+      T.vehicles.forEach((v, i) => {
+        const p = T.pose(v, aT, P), o = i * VEH_STRIDE;
+        V[o] = p.x; V[o + 1] = p.z; V[o + 2] = p.hx; V[o + 3] = p.hz; V[o + 4] = p.hidden ? 1 : 0; V[o + 5] = v.brake || 0; V[o + 6] = v.hazard ? 1 : 0; V[o + 7] = types.indexOf(v.type);
+      });
+      const t3 = now();
+      send({ type: 'frame', seq: m.seq, t, aT, buf: b, events: C.events.slice(), ms: { sim: t1 - t0, crowd: t2 - t1, pack: t3 - t2 }, allocs, slices: stats.slices, retargets: stats.retargets, dropped: m.dropped || 0 }, buffersOf(b));
     }
   } finally { running = false; }
 }
@@ -124,12 +118,7 @@ listen(async (m) => {
       const hash = sim.hash(), tw = now();   // (the hash as built, t = 0: what the main thread compares)
       if (m.opts?.warmTo > 0) { want = null; await advanceSliced(() => +m.opts.warmTo); }   // [P5 H] warm before 'ready': the first frame is cheap
       stats.warmMs = now() - tw;
-      // [P8 G1, perf #3: the panel's first worker frame came back 657 s after its request] the first frame rides on 'ready':
-      // the crowd and traffic at warmTo seen from opts.cam (the spawn), in the main thread's first stagger phase (opts.fr),
-      // so the main thread draws the worker's frame from its first update instead of waiting a request's round trip
-      const F = m.opts?.cam ? pack(+m.opts.warmTo || 0, m.opts.cam, m.opts.fr ?? 1) : null;
-      const first = F ? { t: +m.opts.warmTo || 0, aT: F.aT, buf: F.b, events: F.events, ms: { sim: 0, crowd: F.crowdMs, pack: F.packMs } } : null;
-      send({ type: 'ready', seq: m.seq, agents: sim.crowd.X.length, vehicles: sim.traffic.vehicles.length, types, hash, ms: now() - t0, warmMs: stats.warmMs, warmTo: m.opts?.warmTo ?? 0, first }, first ? buffersOf(first.buf) : []);
+      send({ type: 'ready', seq: m.seq, agents: sim.crowd.X.length, vehicles: sim.traffic.vehicles.length, types, hash, ms: now() - t0, warmMs: stats.warmMs, warmTo: m.opts?.warmTo ?? 0 });
     } else if (!sim) throw new Error(`'${m.type}' before 'init'`);
     else if (m.type === 'frame') await frame(m);
     else if (m.type === 'hash') { sim.advanceTo(m.t); send({ type: 'hash', seq: m.seq, t: m.t, hash: sim.hash(), n: sim.traffic.n }); }

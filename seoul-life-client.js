@@ -26,8 +26,6 @@ export class LifeWorker {
     const lw = new LifeWorker(w);
     try { lw.info = await lw._ask({ type: 'init', layout, opts, lifeURL, threeURL: /^https?:/.test(threeURL || '') ? threeURL : undefined }, 'ready', timeoutMs); }
     catch (e) { lw.dispose(); if (opts.throwOnError) throw e; console.warn('[life worker] off:', e.message); return null; }
-    // [P8 G1] the first frame came with 'ready' (opts.cam): it is the newest finished frame
-    const F = lw.info.first; if (F) { lw.ready = { seq: 0, t: F.t, aT: F.aT, events: F.events, ms: F.ms, ...F.buf, _buf: F.buf }; lw.stats.frames++; lw.stats.first = true; lw.info.first = null; }
     return lw;
   }
 
