@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history: tests/seoul-ui.mjs dates the stills against the look by git log per file
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -125,6 +127,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history: tests/seoul-ui.mjs dates the stills against the look by git log per file
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -143,6 +147,8 @@ jobs:
     timeout-minutes: 45   # [P4 H] run 43040900806 passed every row but was cut at 30 (7 min lost to apt)
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history: tests/seoul-ui.mjs dates the stills against the look by git log per file
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -178,6 +184,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history: tests/seoul-ui.mjs dates the stills against the look by git log per file
       - uses: actions/setup-node@v4
         with:
           node-version: 22
