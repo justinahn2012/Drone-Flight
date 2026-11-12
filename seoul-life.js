@@ -37,6 +37,10 @@ export const LIFE = {
   streetK: { '와우산로19길': 1.7 },
   // exit 9 (life #4): trains every ~140 s (Line 2 / Gyeongui / AREX alternate); each one sends 20-40 up the stairs in ~45 s
   train: { headway: 140, spread: 45, perTrain: 30 },
+  // (P6, design #1) exit 9's stair mouth: walkers keep stairPad m off E's opening, eased in over stairRamp m of walkway
+  // (stairHeadPad / stairHeadRamp: the stair head's side, where the line comes in above heads and a building corner
+  // stands 1.8 m on)
+  stairPad: 1.2, stairRamp: 5, stairHeadPad: 0.3, stairHeadRamp: 1.5,
   // road vehicles at reset: bumper gaps of roadGap[0] + U * roadGap[1] m per lane (P4: 20 + U 40; P3 10 + U 30 packed the
   // widened carriageways past what the junctions pass)
   roadGap: [20, 40],
@@ -1041,6 +1045,7 @@ export class CrowdSim {
     this.lots = (layout.lots || []).filter((l) => l.frontage && l.frontage.length === 2);
     this.sites = sites;
     this.buildDoors(layout);
+    this.buildKeepOut();
     this.buildPeople(layout);
     const N = this.people.length;
     // dynamic state (what evaluate(t) writes): position, heading, gait phase, walk amount, pose, visible
@@ -1088,7 +1093,9 @@ export class CrowdSim {
     const ex = (layout.hero || []).find((h) => /exit/i.test(h.id || ''));
     if (ex) {
       let best = null;
-      for (const w of this.ways) { const pr = w.base.project(ex.pos[0], ex.pos[2]); if (pr.s < w.s0 || pr.s > w.s1) continue; const d = Math.abs(pr.d - w.c); if (!best || d < best.d) best = { w, pr, d }; }
+      // (P6) the true distance to the walkway band (project()'s signed d is the perpendicular part only: past a polyline's
+      // end it put the portal on an alley 90 m away, and exit 9's people walked a diagonal through the block)
+      for (const w of this.ways) { const pr = w.base.project(ex.pos[0], ex.pos[2]); if (pr.s < w.s0 || pr.s > w.s1) continue; const P = this.wayPoint(w, pr.s, Math.max(w.dmin, Math.min(w.dmax, pr.d - w.c)), {}), d = Math.hypot(P.x - ex.pos[0], P.z - ex.pos[2]); if (!best || d < best.d) best = { w, pr, d }; }
       if (best && best.d < 10) best.w.doors.push({ s: best.pr.s, d: Math.max(best.w.dmin, Math.min(best.w.dmax, best.pr.d - best.w.c)), x: ex.pos[0], z: ex.pos[2], wt: 40, use: 'exit', portal: 'exit' });
       this.exitPortal = best ? { x: ex.pos[0], z: ex.pos[2], way: best.w.idx } : null;
     }
@@ -1098,6 +1105,110 @@ export class CrowdSim {
     }
     for (const w of this.ways) { w.doors.sort((p, q) => p.s - q.s); w.doorW = w.doors.reduce((a, d) => a + d.wt, 0); w.shopW = w.doors.reduce((a, d) => a + (d.edge ? 0 : d.wt), 0); }
   }
+  // (P6, design #1) exit 9's stair mouth (E's hole nearest the exit portal, + LIFE.stairPad) is a keep-out for walkers: on
+  // every walkway its padded box crosses, the walkers' lateral offset d is remapped into the free strip beside it (the
+  // band squeezed, not cut), eased in over LIFE.stairRamp m of walkway on either side, so it is a pure function of (s, d)
+  // and smooth in t. Where the band leaves less than 1.2 m (Yanghwa-ro's north footway, the kerb on the other side), the
+  // strip runs on into the station forecourt, outward of the band. Connector legs (door / junction hops) that would cut
+  // through it are routed round its corners (trip()). -> w.keep [{sa, sb, lo, hi, ramp}], this.keepPoly [[x, z]...]
+  buildKeepOut() {
+    this.keepPoly = null; for (const w of this.ways) w.keep = null;
+    const ep = this.exitPortal; if (!ep || !this.holes.length) return;
+    const cen = (H) => H.reduce((a, q) => [a[0] + q[0] / H.length, a[1] + q[1] / H.length], [0, 0]);
+    let H = null, bd = 14;
+    for (const h of this.holes) { const c = cen(h), d = Math.hypot(c[0] - ep.x, c[1] - ep.z); if (d < bd) { bd = d; H = h; } }
+    if (!H) return;
+    const pad = LIFE.stairPad, c = cen(H), xw = this.ways[ep.way];
+    // the padded polygon: every edge moved out by pad, except the stair head's (the edge furthest along the exit's
+    // walkway, where STATION STAIRS comes in over heads at 2.35 m): stairHeadPad, so the stair head and the building
+    // corner 1.8 m past it on Yanghwa-ro keep a walkable gap between them
+    const n = H.length, E = [], heads = H.map((b, i) => { const e = H[(i + 1) % n]; return xw.base.project((b[0] + e[0]) / 2, (b[1] + e[1]) / 2).s; });
+    const head = heads.indexOf(Math.max(...heads));
+    for (let i = 0; i < n; i++) {
+      const b = H[i], e = H[(i + 1) % n], l = Math.hypot(e[0] - b[0], e[1] - b[1]) || 1; let nx = (e[1] - b[1]) / l, nz = (b[0] - e[0]) / l;
+      if (((b[0] + e[0]) / 2 - c[0]) * nx + ((b[1] + e[1]) / 2 - c[1]) * nz < 0) { nx = -nx; nz = -nz; }
+      const pd = i === head ? LIFE.stairHeadPad : pad; E.push({ px: b[0] + nx * pd, pz: b[1] + nz * pd, dx: e[0] - b[0], dz: e[1] - b[1] });
+    }
+    const poly = [];
+    for (let i = 0; i < n; i++) {   // corner i = edge i-1's offset line meets edge i's
+      const A = E[(i + n - 1) % n], B = E[i], den = A.dx * B.dz - A.dz * B.dx;
+      if (Math.abs(den) < 1e-9) { poly.push([B.px, B.pz]); continue; }
+      const t = ((B.px - A.px) * B.dz - (B.pz - A.pz) * B.dx) / den; poly.push([A.px + A.dx * t, A.pz + A.dz * t]);
+    }
+    this.keepPoly = poly; this.keepC = c;
+    const ramp = LIFE.stairRamp;
+    for (const w of this.ways) {
+      const pr = poly.map(([x, z]) => w.base.project(x, z));
+      if (pr.some((q) => q.dist > Math.abs(w.c) + Math.max(-w.dmin, w.dmax) + 12)) continue;
+      const sa = Math.min(...pr.map((q) => q.s)), sb = Math.max(...pr.map((q) => q.s)), da = Math.min(...pr.map((q) => q.d - w.c)), db = Math.max(...pr.map((q) => q.d - w.c));
+      if (sb < w.s0 - ramp || sa > w.s1 + ramp || db < w.dmin || da > w.dmax) continue;
+      let lo, hi;
+      const below = da - w.dmin, above = w.dmax - db, out = w.kind === 'main' ? Math.sign(w.c) || 1 : 0;
+      if (Math.max(below, above) >= 1.2) { if (above >= below) { lo = db; hi = w.dmax; } else { lo = w.dmin; hi = da; } }
+      else if (out > 0) { lo = db; hi = Math.max(w.dmax, db + 1.5); }      // into the forecourt, outward of the band
+      else if (out < 0) { lo = Math.min(w.dmin, da - 1.5); hi = da; }
+      else if (above >= below) { lo = db; hi = Math.max(db + 0.6, w.dmax); } else { lo = Math.min(da - 0.6, w.dmin); hi = da; }
+      (w.keep || (w.keep = [])).push({ sa, sb, lo, hi, ramp, rampB: w === xw ? LIFE.stairHeadRamp : ramp });
+      // the exit's people come up the stairs and step out at the stair head (the opening's high-s end on its walkway), on
+      // the forecourt side of the line that comes in over it (a sagging pilot met their heads under the pre-gate), not at
+      // the hero point beside the opening (P5: the portal sat on the kerb between the opening and the road, and every trip
+      // from it cut across the stair mouth)
+      if (w.idx === ep.way) for (const dr of w.doors) if (dr.portal === 'exit') {
+        const ss = Math.min(w.s1 - 0.5, sb + 0.4), dd = Math.max(w.dmin + 0.3, Math.min(w.dmax - 0.3, lo - 0.4)), q = this.wayPoint(w, ss, dd, {});
+        dr.s = ss; dr.d = dd; dr.x = q.x; dr.z = q.z; w.doors.sort((p, q) => p.s - q.s);
+      }
+    }
+  }
+  // a walker's lateral offset d at s on walkway w, after the keep-out (identity elsewhere)
+  keepD(w, s, d) {
+    for (const k of w.keep) {
+      const g = s < k.sa ? smooth(1 - (k.sa - s) / k.ramp) : s > k.sb ? smooth(1 - (s - k.sb) / k.rampB) : 1;
+      if (g <= 0) continue;
+      const f = (d - w.dmin) / Math.max(1e-6, w.dmax - w.dmin), m = k.lo + 0.22 + (k.hi - k.lo - 0.44) * Math.max(0, Math.min(1, f));
+      d += (m - d) * g;
+    }
+    return d;
+  }
+  // a way point with the keep-out applied (the connector legs meet the way legs where evalUnit draws them)
+  wpK(w, s, d, out = {}) { return this.wayPoint(w, s, w.keep ? this.keepD(w, s, d) : d, out); }
+  // does segment a-b pass through the keep-out polygon's interior (Cyrus-Beck on the convex quad)?
+  keepCuts(ax, az, bx, bz) {
+    const H = this.keepPoly; if (!H) return false;
+    const c = this.keepC; let t0 = 0, t1 = 1; const dx = bx - ax, dz = bz - az;
+    for (let i = 0; i < H.length; i++) {
+      const p = H[i], q = H[(i + 1) % H.length]; let nx = q[1] - p[1], nz = p[0] - q[0];
+      if ((p[0] - c[0]) * nx + (p[1] - c[1]) * nz < 0) { nx = -nx; nz = -nz; }   // outward
+      const num = (ax - p[0]) * nx + (az - p[1]) * nz, den = dx * nx + dz * nz;
+      if (Math.abs(den) < 1e-12) { if (num > -1e-6) return false; continue; }
+      const t = -num / den; if (den < 0) t0 = Math.max(t0, t); else t1 = Math.min(t1, t);
+      if (t0 > t1 - 1e-4) return false;
+    }
+    return (t1 - t0) * Math.hypot(dx, dz) > 0.02;
+  }
+  // a -> b round the keep-out: [] if the straight line is clear, else the corner points to pass (shortest walk, corners
+  // on a carriageway barred)
+  keepDetour(a, b) {
+    if (!this.keepCuts(a.x, a.z, b.x, b.z)) return [];
+    const H = this.keepPoly, c = this.keepC, n = H.length;
+    const V = H.map(([x, z]) => { const ex = x - c[0], ez = z - c[1], l = Math.hypot(ex, ez) || 1; return { x: x + ex / l * 0.08, z: z + ez / l * 0.08 }; });
+    const bad = V.map((v) => offRoad(this.net.mains, v.x, v.z, 0.2).moved > 0);
+    const vis = (p, v) => !this.keepCuts(p.x, p.z, v.x, v.z);
+    let best = null, bl = Infinity;
+    for (let i = 0; i < n; i++) {
+      if (bad[i] || !vis(a, V[i])) continue;
+      for (const step of [1, -1]) {
+        let j = i, len = Math.hypot(V[i].x - a.x, V[i].z - a.z), path = [V[i]], ok = true;
+        for (let k = 0; k < n; k++) {
+          if (vis(V[j], b)) { const L = len + Math.hypot(b.x - V[j].x, b.z - V[j].z); if (L < bl) { bl = L; best = path.slice(); } break; }
+          const jn = (j + step + n) % n; if (bad[jn]) { ok = false; break; }
+          len += Math.hypot(V[jn].x - V[j].x, V[jn].z - V[j].z); path.push(V[jn]); j = jn;
+        }
+        void ok;
+      }
+    }
+    return best || [];
+  }
+  inKeep(x, z) { const H = this.keepPoly; if (!H) return false; let c = false; for (let i = 0, j = H.length - 1; i < H.length; j = i++) { const [xi, zi] = H[i], [xj, zj] = H[j]; if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) c = !c; } return c; }
   prefD(w, dir, r) { const mid = (w.dmin + w.dmax) / 2, half = (w.dmax - w.dmin) / 2; return mid + dir * half * (0.15 + 0.7 * r); }   // keep right
   wayPoint(w, s, d, out = {}) { const P = w.base.at(s, this._wp || (this._wp = {})); out.x = P.x + P.nx * (w.c + d); out.z = P.z + P.nz * (w.c + d); return out; }
   newPerson(R, kind, male = R.next() < 0.5) {
@@ -1151,10 +1262,11 @@ export class CrowdSim {
         for (let g = 0; g < gs; g++) { const p = this.newPerson(R, K_WALK); p.unit = u.id; p.slot = gs === 1 ? 0 : (g - 0.5) * 0.62; p.sOff = g ? (R.next() - 0.5) * 0.4 : 0; p.pose = R.next() < 0.22 ? P_PHONE : P_WALK; u.members.push(p.id); }
         this.units.push(u); n -= gs;
       }
+      const ep = this.exitPortal;   // (P6) the waiting ring stays round the hero point (the door moved to the stair head)
       for (let q = 0; q < 24; q++) {
         let a = R.next() * 6.283, r = 2.5 + R.next() * 6.5; const p = this.newPerson(R, K_STAND);
-        [p.x, p.z] = this.offRoad(ex.x + pcos(a) * r, ex.z + psin(a) * r);
-        for (let tr = 1; tr < 12 && this.holes.length && (this.inHole(p.x, p.z) || this.inDress(p.x, p.z, 0.3)); tr++) { a += 2.4; r = 2.5 + ((r - 2.5 + 1.7) % 6.5); [p.x, p.z] = this.offRoad(ex.x + pcos(a) * r, ex.z + psin(a) * r); } p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ex.x, ex.z];
+        [p.x, p.z] = this.offRoad(ep.x + pcos(a) * r, ep.z + psin(a) * r);
+        for (let tr = 1; tr < 12 && this.holes.length && (this.inHole(p.x, p.z) || this.inKeep(p.x, p.z) || this.inDress(p.x, p.z, 0.3)); tr++) { a += 2.4; r = 2.5 + ((r - 2.5 + 1.7) % 6.5); [p.x, p.z] = this.offRoad(ep.x + pcos(a) * r, ep.z + psin(a) * r); } p.yaw = R.next() * 6.283; p.T = 20 + R.next() * 40; p.smoker = false; p.wait = true; p.cl = [ep.x, ep.z];
         this.statics.push(p.id);
       }
     }
@@ -1268,26 +1380,28 @@ export class CrowdSim {
     const R = new Rng(h32(this.seed, u.id + 1, k + 7)), legs = [], cap = u.v * u.P * 0.97;
     let budget = u.v * u.P * u.fvis, used = 0;
     const pick = (doors) => { let r = R.next() * doors.reduce((a, d) => a + d.wt, 0); for (const d of doors) if ((r -= d.wt) < 0) return d; return doors[doors.length - 1]; };
-    const conn = (a, b) => { const len = Math.hypot(b.x - a.x, b.z - a.z); if (len > 1e-3) { legs.push({ x0: a.x, z0: a.z, x1: b.x, z1: b.z, len }); used += len; } };
+    const conn1 = (a, b) => { const len = Math.hypot(b.x - a.x, b.z - a.z); if (len > 1e-3) { legs.push({ x0: a.x, z0: a.z, x1: b.x, z1: b.z, len }); used += len; } };
+    // (P6) round exit 9's stair mouth, never across it
+    const conn = (a, b) => { if (!this.keepPoly) return conn1(a, b); let p = { x: a.x, z: a.z }; for (const v of this.keepDetour(a, b)) { conn1(p, v); p = v; } conn1(p, b); };
     const way = (w, s0, dir, len, d) => { if (len > 1e-3) { legs.push({ w, s0, dir, len, d }); used += len; } };
     let w = u.home; const door = u.exit && R.next() < 0.85 ? u.exit : pick(w.doors), start = door;
     let s = door.s, dir = door.edge ? -door.edge : s - w.s0 < 4 ? 1 : w.s1 - s < 4 ? -1 : R.next() < 0.5 ? 1 : -1;
     let dP = this.prefD(w, dir, R.next()), prev = null, end = null;
     const s1 = Math.max(w.s0, Math.min(w.s1, s + dir * 1.2));
-    conn({ x: door.x, z: door.z }, this.wayPoint(w, s1, dP, {})); s = s1;
+    conn({ x: door.x, z: door.z }, this.wpK(w, s1, dP, {})); s = s1;
     for (let hop = 0; hop < 10 && !end; hop++) {
       const sEnd = dir > 0 ? w.s1 : w.s0, room = Math.max(0, (sEnd - s) * dir), left = budget - used;
       if (left < room + 2) {   // finish at a door ahead, nearest the budget point, never past the cap
         const target = s + dir * Math.max(3, left); let best = null, bd = Infinity;
         for (const dd of w.doors) { const a = (dd.s - s) * dir; if (a < 3 || dd === start) continue; if (used + a > cap - 3) continue; const e = Math.abs(dd.s - target) - (dd.portal === 'exit' ? 40 : 0); if (e < bd) { bd = e; best = dd; } }
-        if (best) { const sd = best.s - dir * 1.0; way(w, s, dir, Math.max(0, (sd - s) * dir), dP); conn(this.wayPoint(w, sd, dP, {}), { x: best.x, z: best.z }); end = best; break; }
+        if (best) { const sd = best.s - dir * 1.0; way(w, s, dir, Math.max(0, (sd - s) * dir), dP); conn(this.wpK(w, sd, dP, {}), { x: best.x, z: best.z }); end = best; break; }
       }
       if (left < room + 2 || used + room > cap) {   // no door ahead in reach: turn back to the nearest door behind (a shop they just passed)
         let best = null, bd = Infinity;
         for (const dd of w.doors) { if (dd === start || dd.edge) continue; const back = (s - dd.s) * dir; if (back < 1 || used + 1 + back > cap) continue; if (back < bd) { bd = back; best = dd; } }
         if (best) {
-          const nd = -dir, ndP = this.prefD(w, nd, R.next()); conn(this.wayPoint(w, s, dP, {}), this.wayPoint(w, s + nd * 0.6, ndP, {})); s += nd * 0.6;
-          const sd = best.s - nd * 1.0; way(w, s, nd, Math.max(0, (sd - s) * nd), ndP); conn(this.wayPoint(w, sd, ndP, {}), { x: best.x, z: best.z }); end = best; break;
+          const nd = -dir, ndP = this.prefD(w, nd, R.next()); conn(this.wpK(w, s, dP, {}), this.wpK(w, s + nd * 0.6, ndP, {})); s += nd * 0.6;
+          const sd = best.s - nd * 1.0; way(w, s, nd, Math.max(0, (sd - s) * nd), ndP); conn(this.wpK(w, sd, ndP, {}), { x: best.x, z: best.z }); end = best; break;
         }
         if (used + room > cap) { way(w, s, dir, (cap - used) - 1, dP); break; }
       }
@@ -1296,14 +1410,14 @@ export class CrowdSim {
       if (!e.length) {
         if (this.boundaryEnds.some((b) => b.way === w && b.k === (dir > 0 ? 1 : 0))) { end = { edge: true }; break; }   // leaves the map
         const nd = -dir, ndP = this.prefD(w, nd, R.next());                                                                // dead end: turn back
-        conn(this.wayPoint(w, s, dP, {}), this.wayPoint(w, s + nd * 0.8, ndP, {})); s += nd * 0.8; dir = nd; dP = ndP; continue;
+        conn(this.wpK(w, s, dP, {}), this.wpK(w, s + nd * 0.8, ndP, {})); s += nd * 0.8; dir = nd; dP = ndP; continue;
       }
       const late = budget - used < 80;   // near the end of the budget: prefer streets with doors to end at
       let tot = 0; const wts = e.map((j) => { const x = Math.pow((LIFE.density[j.way.kind] ?? 0.06) / 0.1, 0.5) * j.way.sk * (j.way === prev ? 0.15 : 1) * (late && !j.way.shopW ? 0.05 : 1); tot += x; return x; });
       let r = R.next() * tot, j = e[e.length - 1]; for (let q = 0; q < e.length; q++) if ((r -= wts[q]) < 0) { j = e[q]; break; }
       const nw = j.way, nd = j.s - nw.s0 < 3 ? 1 : nw.s1 - j.s < 3 ? -1 : R.next() < 0.5 ? 1 : -1, ndP = this.prefD(nw, nd, R.next());
       const ns = Math.max(nw.s0, Math.min(nw.s1, j.s + nd * 0.5));
-      conn(this.wayPoint(w, s, dP, {}), this.wayPoint(nw, ns, ndP, {}));
+      conn(this.wpK(w, s, dP, {}), this.wpK(nw, ns, ndP, {}));
       prev = w; w = nw; s = ns; dir = nd; dP = ndP;
     }
     if (!end) {   // still no door: cut the trip back to the last door it walked past (they went in there)
@@ -1311,7 +1425,7 @@ export class CrowdSim {
         const L = legs[i]; if (!L.w) continue;
         let best = null;
         for (const dd of L.w.doors) { if (dd === start || dd.edge) continue; const a = (dd.s - L.s0) * L.dir; if (a > 1.5 && a < L.len && (!best || a > (best.s - L.s0) * L.dir)) best = dd; }
-        if (best) { legs.length = i; const a = (best.s - L.s0) * L.dir - 1; legs.push({ w: L.w, s0: L.s0, dir: L.dir, len: a, d: L.d }); const p0 = this.wayPoint(L.w, L.s0 + L.dir * a, L.d, {}); legs.push({ x0: p0.x, z0: p0.z, x1: best.x, z1: best.z, len: Math.max(1e-3, Math.hypot(best.x - p0.x, best.z - p0.z)) }); end = best; }
+        if (best) { legs.length = i; const a = (best.s - L.s0) * L.dir - 1; legs.push({ w: L.w, s0: L.s0, dir: L.dir, len: a, d: L.d }); const p0 = this.wpK(L.w, L.s0 + L.dir * a, L.d, {}); const n0 = legs.length; conn(p0, { x: best.x, z: best.z }); if (legs.length === n0) legs.push({ x0: p0.x, z0: p0.z, x1: best.x, z1: best.z, len: 1e-3 }); end = best; }
       }
     }
     const cum = new Float64Array(legs.length + 1); for (let i = 0; i < legs.length; i++) cum[i + 1] = cum[i] + legs[i].len;
@@ -1373,7 +1487,11 @@ export class CrowdSim {
     for (const i of u.members) {
       const p = this.people[i], lat = L.w ? p.slot * L.dir : p.slot;
       let px = x + nx * lat + tx * p.sOff, pz = z + nz * lat + tz * p.sOff;
-      if (L.w) { let d = L.d + lat; const half = 0.25; d = Math.max(L.w.dmin + half, Math.min(L.w.dmax - half, d)); A.WD[i] = d; px = x + nx * (d - L.d) + tx * p.sOff; pz = z + nz * (d - L.d) + tz * p.sOff; }
+      if (L.w) {
+        let d = L.d + lat; const half = 0.25; d = Math.max(L.w.dmin + half, Math.min(L.w.dmax - half, d));
+        if (L.w.keep) { const ms = A.WS[i], d0 = d; d = this.keepD(L.w, ms, d); if (d !== d0) { const q = L.w.base.at(ms, o); px = q.x + q.nx * (L.w.c + d); pz = q.z + q.nz * (L.w.c + d); A.WD[i] = d; A.X[i] = px; A.Z[i] = pz; } else { A.WD[i] = d; px = x + nx * (d - L.d) + tx * p.sOff; pz = z + nz * (d - L.d) + tz * p.sOff; } }
+        else { A.WD[i] = d; px = x + nx * (d - L.d) + tx * p.sOff; pz = z + nz * (d - L.d) + tz * p.sOff; }
+      }
       A.X[i] = px; A.Z[i] = pz; A.YAW[i] = yaw; A.VIS[i] = 1; A.WALK[i] = stopped ? 0 : 1;
       A.PH[i] = ((dist + p.sOff) / (stride * p.scale) + p.ph0) % 1; A.POSE[i] = stopped && p.pose === P_WALK ? (hu(p.id, tr.k, 3) < 0.5 ? P_IDLE : P_PHONE) : p.pose;
     }
