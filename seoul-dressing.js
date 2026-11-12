@@ -265,11 +265,12 @@ export function geometry(layout, opts = {}) {
   const facts = { tris: 0, colTris: 0, items: 0, rejectedByGates: 0, scooters: 0, tents: 0, trees: 0, awnings: 0, cablesExtra: 0, drops: 0, signals: 0, crossings: 0, plates: 0, doors: 0, b1: 0, stairs2f: 0 };
 
   // ---------------- kit state: material key, colour (vcol keys), emission (emissive keys), collidable
-  const S = { key: 'concrete', c: [0.5, 0.5, 0.5], em: null, col: true, n: null };
-  const set = (key, o = {}) => { S.key = key; S.c = o.c || S.c; S.em = o.em ?? null; S.col = o.col ?? !specOf(key).noCol; S.n = o.n || null; return S; };
+  // [P6-E perf] S.draw false: collider only (the cables: build() draws them as screen-space lines, which cover close-ups too)
+  const S = { key: 'concrete', c: [0.5, 0.5, 0.5], em: null, col: true, n: null, draw: true };
+  const set = (key, o = {}) => { S.key = key; S.c = o.c || S.c; S.em = o.em ?? null; S.col = o.col ?? !specOf(key).noCol; S.n = o.n || null; S.draw = true; return S; };
   const uvDef = [[0, 0], [1, 0], [1, 1], [0, 1]];
   function tri(a, b, c, ua = [0, 0], ub = [1, 0], uc = [1, 1], e) {
-    A(S.key).tri(a, b, c, ua, ub, uc, e ? e[0] : S.em, e ? e[1] : S.em, e ? e[2] : S.em, S.c, S.n);
+    if (S.draw) A(S.key).tri(a, b, c, ua, ub, uc, e ? e[0] : S.em, e ? e[1] : S.em, e ? e[2] : S.em, S.c, S.n);
     if (S.col) { col.need(9); col.p3(a[0], a[1], a[2]); col.p3(b[0], b[1], b[2]); col.p3(c[0], c[1], c[2]); }
   }
   // quad p0..p3 facing nrm (winding fixed), uv per corner, optional per-corner emission
@@ -317,6 +318,9 @@ export function geometry(layout, opts = {}) {
       quad(a.p, b.p, c.p, d.p, v3.mul(v3.add(a.n, b.n), 0.5), [[k / sides, i], [(k + 1) / sides, i], [(k + 1) / sides, i + 1], [k / sides, i + 1]]);
     }
   }
+  // [P6-E perf] a cable: collided (if S.col) but not rendered; the caller pushes it to `cables` (screen-space lines in build())
+  // phase 5 drew every cable twice: the 3-4 sided tube (~50k tris) under the line that covered it
+  function cable(pts, r, sides = 3, rLine = r) { const d = S.draw; S.draw = false; tube(pts, r, sides); S.draw = d; cables.push({ pts: pts.map(r3), r: rLine }); facts.cableColOnly = (facts.cableColOnly || 0) + 1; }
   // icosahedron blob (detail 0 or 1), radii rx/ry/rz, jittered
   const ICO = (() => { const t = (1 + Math.sqrt(5)) / 2; const v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map(v3.norm);
     const f = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
@@ -671,8 +675,8 @@ export function geometry(layout, opts = {}) {
       for (const d of drops) {
         const pts = cat(d, 10);
         if (!polyGateOK(pts, 0.35)) { facts.rejectedByGates++; continue; }
-        tube(pts, d.r, 4); cables.push({ pts: pts.map(r3), r: d.r });
-        if (d.pair) { const p2 = pts.map((p) => [p[0], p[1] - 0.07, p[2]]); tube(p2, d.r * 0.8, 3); cables.push({ pts: p2.map(r3), r: d.r * 0.8 }); }
+        cable(pts, d.r, 4);
+        if (d.pair) { const p2 = pts.map((p) => [p[0], p[1] - 0.07, p[2]]); cable(p2, d.r * 0.8, 3); }
         for (const e of [d.a, d.b]) boxMM(FW, e[0] - 0.05, e[1] - 0.06, e[2] - 0.05, e[0] + 0.05, e[1] + 0.06, e[2] + 0.05);   // wall brackets
         facts.drops++;
       }
@@ -1517,7 +1521,7 @@ export function geometry(layout, opts = {}) {
         set('dr_steel'); for (const [a, b] of [[-2, -2], [2, -2], [2, 2], [-2, 2]]) cyl(F, [a, 1.25, b], 'y', 0.035, 2.5, 5);
         const cnr = [[-2, -2], [2, -2], [2, 2], [-2, 2]].map(([a, b]) => W(F, a, 2.45, b));
         for (let i = 0; i < 4; i++) { const a = cnr[i], b = cnr[(i + 1) % 4], pts = []; for (let k = 0; k <= 10; k++) { const t = k / 10; pts.push([lerp(a[0], b[0], t), a[1] - 0.25 * 4 * t * (1 - t), lerp(a[2], b[2], t)]); }
-          set('dark', { col: false }); tube(pts, 0.006, 3); cables.push({ pts: pts.map(r3), r: 0.006 });
+          set('dark', { col: false }); cable(pts, 0.006, 3);
           set('dr_glow', { em: NI(srgb(0xffb46b), 1400), col: false }); for (let k = 1; k < 10; k++) { const p = pts[k]; octa([p[0], p[1] - 0.05, p[2]], 0.024, 0.04); } }
         for (const [a, b] of [[-0.9, -0.6], [0.9, 0.7]]) { set('dr_prop', { c: [0.5, 0.5, 0.52] }); cyl(F, [a, 0.72, b], 'y', 0.4, 0.04, 10); set('dr_steel', { col: false }); cyl(F, [a, 0.36, b], 'y', 0.03, 0.7, 5);
           for (const d of [[0.6, 0], [-0.6, 0], [0, 0.6]]) { set('dr_prop', { c: [srgb(0x2f6fd6), srgb(0xd23a2a), srgb(0x1f7a3a)][Math.floor(Rl() * 3)] }); boxMM(F, a + d[0] - 0.15, 0, b + d[1] - 0.15, a + d[0] + 0.15, 0.43, b + d[1] + 0.15, ['ny']); } }
@@ -1604,8 +1608,8 @@ export function geometry(layout, opts = {}) {
           const ox = (R() - 0.5) * 0.35, oz = (R() - 0.5) * 0.35;
           const pts = cat([p.x + ox, ya, p.z + oz], [q.x + ox, yb, q.z + oz], sag * L, n);
           if (!polyGateOK(pts, 0.35)) { facts.rejectedByGates++; continue; }
-          tube(pts, r, 3); cables.push({ pts: pts.map(r3), r }); facts.cablesExtra++;
-          if (tel && R() < 0.35) { const p2 = pts.map((v, j) => [v[0], v[1] - 0.05 - 0.02 * Math.sin(j), v[2] + 0.03]); tube(p2, r * 0.7, 3); cables.push({ pts: p2.map(r3), r: r * 0.7 }); }
+          cable(pts, r, 3); facts.cablesExtra++;
+          if (tel && R() < 0.35) { const p2 = pts.map((v, j) => [v[0], v[1] - 0.05 - 0.02 * Math.sin(j), v[2] + 0.03]); cable(p2, r * 0.7, 3); }
         }
       }
     }
@@ -1621,7 +1625,7 @@ export function geometry(layout, opts = {}) {
         const a = [best.p.x, best.p.h - 1.2 - R() * 2.2, best.p.z], b = [wx, wy, wz], L = Math.hypot(b[0] - a[0], b[2] - a[2]); if (L < 1.5) continue;
         const pts = cat(a, b, (0.03 + R() * 0.04) * L, Math.max(3, Math.ceil(L / 3)));
         if (!polyGateOK(pts, 0.35)) { facts.rejectedByGates++; continue; }
-        tube(pts, 0.009 + R() * 0.006, 3); cables.push({ pts: pts.map(r3), r: 0.012 }); facts.drops++;
+        cable(pts, 0.009 + R() * 0.006, 3, 0.012); facts.drops++;
         set('dr_prop', { c: [0.3, 0.3, 0.3] }); boxMM(FW, wx - 0.08, wy - 0.12, wz - 0.08, wx + 0.08, wy + 0.08, wz + 0.08); set('dark');
       }
     }
