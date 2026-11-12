@@ -295,7 +295,7 @@ export function geometry(layout, opts = {}) {
   const dens = clamp(opts.density ?? 1, 0, 3);   // clutter density (scooters, stools, bags): a perf knob, 1 = the reference look
   const acc = {}; const A = (k) => (acc[k] ||= new Acc(specOf(k)));
   const col = new FBuf(1 << 16);       // collider positions (non-indexed)
-  const emitters = [], setPieces = [], holes = [], cables = [], labels = [], lamps = [], anchors = {};   // [P4-E] anchors: real objects a line hangs off (lines.mjs)
+  const emitters = [], setPieces = [], holes = [], cables = [], labels = [], lamps = [], anchors = {}, out_puddles = [];   // [P4-E] anchors: real objects a line hangs off (lines.mjs)
   const spPush = setPieces.push.bind(setPieces);
   setPieces.push = (...sps) => { for (const sp of sps) gates.push(...spGates(sp)); return spPush(...sps); };
   const msParts = {}, triParts = {}; let tLap = Date.now(), nLap = 0; const lap = (k) => { const t = Date.now(); msParts[k] = t - tLap; tLap = t; let n = 0; for (const a of Object.values(acc)) n += a.p.length / 9; triParts[k] = Math.round(n - nLap); nLap = n; if (opts.ranges) opts.ranges.push([k, Object.fromEntries(Object.entries(acc).map(([q, a]) => [q, a.p.length / 9]))]); };   // [P7-E] opts.ranges (debug): each lap's per-key triangle counts
@@ -1575,6 +1575,7 @@ export function geometry(layout, opts = {}) {
   // Props keep 0.5 m inside the parapet, off C's items, 1.5 m off every flight corridor. Own stream per lot.
   const roofAC = [];
   {
+    const eoul = M.streets.filter((st) => st.name === 'Eoulmadang-ro' && st.kind === 'walking'), eoulD = (x, z) => { let d = Infinity; for (const st of eoul) for (const g of st.segs) d = Math.min(d, segD(x, z, g.ax, g.az, g.bx, g.bz)); return d; };
     const W8 = [['shed', 0.17], ['planters', 0.17], ['dish', 0.12], ['vent', 0.12], ['solar', 0.09], ['laundry', 0.09], ['tank', 0.08], ['ac', 0.1], ['pipe', 0.06]];
     let nR = 0, nDeck = 0, lowH = Infinity, nShedLamp = 0;
     for (const l of M.lots) {
@@ -1597,7 +1598,7 @@ export function geometry(layout, opts = {}) {
         const cnr = [[-2, -2], [2, -2], [2, 2], [-2, 2]].map(([a, b]) => W(F, a, 2.45, b));
         for (let i = 0; i < 4; i++) { const a = cnr[i], b = cnr[(i + 1) % 4], pts = []; for (let k = 0; k <= 10; k++) { const t = k / 10; pts.push([lerp(a[0], b[0], t), a[1] - 0.25 * 4 * t * (1 - t), lerp(a[2], b[2], t)]); }
           set('dark', { col: false }); cable(pts, 0.006, 3);
-          set('dr_glow', { em: NI(srgb(0xffb46b), 1400), col: false }); for (let k = 1; k < 10; k++) { const p = pts[k]; octa([p[0], p[1] - 0.05, p[2]], 0.024, 0.04); } }
+          set('dr_glow', { em: NI(srgb(0xffb46b), 1400), col: false }); for (let k = 1; k < 10; k++) { const p = pts[k]; bulb([p[0], p[1] - 0.05, p[2]], 0.028, 0.04); } }
         for (const [a, b] of [[-0.9, -0.6], [0.9, 0.7]]) { set('dr_prop', { c: [0.5, 0.5, 0.52] }); cyl(F, [a, 0.72, b], 'y', 0.4, 0.04, 10); set('dr_steel', { col: false }); cyl(F, [a, 0.36, b], 'y', 0.03, 0.7, 5);
           for (const d of [[0.6, 0], [-0.6, 0], [0, 0.6]]) { set('dr_prop', { c: [srgb(0x2f6fd6), srgb(0xd23a2a), srgb(0x1f7a3a)][Math.floor(Rl() * 3)] }); boxMM(F, a + d[0] - 0.15, 0, b + d[1] - 0.15, a + d[0] + 0.15, 0.43, b + d[1] + 0.15, ['ny']); } }
         set('dr_prop', { c: srgb(0x1d4d2b), col: false }); { const c0 = W(F, 0, 2.2, 0); for (let k = 0; k < 8; k++) { const a0 = k / 8 * TAU, a1 = (k + 1) / 8 * TAU; tri(c0, W(F, Math.cos(a1) * 1.3, 1.85, Math.sin(a1) * 1.3), W(F, Math.cos(a0) * 1.3, 1.85, Math.sin(a0) * 1.3)); tri(c0, W(F, Math.cos(a0) * 1.3, 1.85, Math.sin(a0) * 1.3), W(F, Math.cos(a1) * 1.3, 1.85, Math.sin(a1) * 1.3)); } }
@@ -1643,6 +1644,25 @@ export function geometry(layout, opts = {}) {
           for (let i = 0; i < nu; i++) { const x = s[0] + tx * (i - (nu - 1) / 2) * 1.0, z = s[1] + tz * (i - (nu - 1) / 2) * 1.0; if (!fits(x, z, 0.55) || corrHit([x - 0.6, H, z - 0.6, x + 0.6, H + 1.2, z + 0.6], 1.5)) continue;
             roofAC.push({ c: [x, H + 0.4, z], n: [Math.sin(ya), 0, -Math.cos(ya)].map((v) => (Rl() < 0.5 ? v : -v)), size: [0.84, 0.64, 0.32], roof: true, tint: [1, 1, 0.97] }); taken.push([x, z, 0.55]); } }
         else if (kind === 'pipe') placeIn(0.5, (F) => { lowH = Math.min(lowH, H); const L = 2 + Rl() * 3; set('dr_roof', { c: DRESS_MATS.dr_galv.color, col: false }); tube([W(F, -L / 2, 0.25, 0), W(F, L / 2, 0.25, 0), W(F, L / 2, 0.25, 0.01)], 0.05, 5); set('dr_roof', { c: [0.3, 0.29, 0.27], col: false }); for (let x = -L / 2 + 0.3; x < L / 2; x += 1.2) boxMM(F, x - 0.1, 0, -0.12, x + 0.1, 0.2, 0.12, ['ny']); });
+      }
+      // [P7-E art #5 / graphics #6] the roofs round Eoulmadang-ro (lot centre within 80 m of the walking street) carry what
+      // the reference roofs do: a water tank (물탱크: an FRP panel tank, pale blue or cream, or a stainless drum) on a steel
+      // stand, and a condenser pair. Albedo >= 0.35 (graphics #6's floor), so the near roofs read from the air. They collide.
+      // The lot's own stream, after its props: nothing placed before moves.
+      if (eoulD((x0 + x1) / 2, (z0 + z1) / 2) < 80 && area >= 45) {
+        if (Rl() < 0.8) { const frp = Rl() < 0.65, w = frp ? 1.6 + Rl() * 0.8 : 1.3, dd = frp ? 1.2 + Rl() * 0.6 : 1.3, hh = frp ? 1.2 + Rl() * 0.5 : 1.7, col = frp ? (Rl() < 0.6 ? [0.42, 0.6, 0.7] : [0.7, 0.68, 0.6]) : [0.62, 0.63, 0.64];
+          placeIn(Math.hypot(w, dd) / 2 + 0.1, (F) => {
+            set('dr_steel'); boxMM(F, -w / 2 - 0.05, 0, -dd / 2 - 0.05, w / 2 + 0.05, 0.12, dd / 2 + 0.05, ['ny']);                       // the stand's frame
+            near(() => { for (const sx of [-1, 1]) for (const sz of [-1, 1]) boxMM(F, sx * (w / 2 - 0.05) - 0.04, 0.12, sz * (dd / 2 - 0.05) - 0.04, sx * (w / 2 - 0.05) + 0.04, 0.5, sz * (dd / 2 - 0.05) + 0.04, ['ny', 'py']); });
+            if (frp) { set('dr_prop', { c: col }); boxMM(F, -w / 2, 0.5, -dd / 2, w / 2, 0.5 + hh, dd / 2, ['ny']);
+              near(() => { set('dr_prop', { c: col.map((v) => v * 0.78), col: false }); for (let x = -w / 2 + 0.5; x < w / 2 - 0.1; x += 0.5) for (const sz of [-1, 1]) quad(W(F, x - 0.02, 0.52, sz * (dd / 2 + 0.006)), W(F, x + 0.02, 0.52, sz * (dd / 2 + 0.006)), W(F, x + 0.02, 0.48 + hh, sz * (dd / 2 + 0.006)), W(F, x - 0.02, 0.48 + hh, sz * (dd / 2 + 0.006)), D(F, 0, 0, sz));
+                set('dr_prop', { c: [0.36, 0.36, 0.37], col: false }); boxMM(F, -0.25, 0.5 + hh, -0.25, 0.25, 0.56 + hh, 0.25, ['ny']); });   // panel seams, the hatch
+            } else { set('dr_prop', { c: col }); cyl(F, [0, 0.5 + hh / 2, 0], 'y', 0.62, hh, 10); near(() => { set('dr_prop', { c: col.map((v) => v * 0.8), col: false }); for (const y of [0.5 + hh * 0.33, 0.5 + hh * 0.66]) cyl(F, [0, y, 0], 'y', 0.632, 0.04, 10, 0.632, false); }); }
+            facts.roofTanks = (facts.roofTanks || 0) + 1;
+          }); }
+        const s2 = spot(1.3); if (s2 && Rl() < 0.7) { const ya = Math.atan2(tz, tx), out = [Math.sin(ya), 0, -Math.cos(ya)].map((v) => (Rl() < 0.5 ? v : -v));
+          for (let i = 0; i < 2; i++) { const x = s2[0] + tx * (i - 0.5) * 1.0, z = s2[1] + tz * (i - 0.5) * 1.0; if (!fits(x, z, 0.55) || corrHit([x - 0.6, H, z - 0.6, x + 0.6, H + 1.2, z + 0.6], 1.5)) continue;
+            roofAC.push({ c: [x, H + 0.4, z], n: out, size: [0.84, 0.64, 0.32], roof: true, tint: [1, 1, 0.97] }); taken.push([x, z, 0.55]); facts.roofCondensers = (facts.roofCondensers || 0) + 1; } }
       }
     }
     facts.roofProps = nR + roofAC.length; facts.roofDecks = nDeck; facts.roofHideY = Number.isFinite(lowH) ? +lowH.toFixed(2) : 0; facts.shedLamps = nShedLamp;
@@ -1723,6 +1743,9 @@ export function geometry(layout, opts = {}) {
   const colTube = (pts, r) => { for (let i = 0; i + 1 < pts.length; i++) { const a = pts[i], b = pts[i + 1], t = v3.norm(v3.sub(b, a)), u = v3.norm(v3.cross(t, Math.abs(t[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0])), v = v3.cross(u, t);
     const ring = (p) => [0, 1, 2].map((k) => { const th = k / 3 * TAU; return v3.add(p, v3.add(v3.mul(u, Math.cos(th) * r), v3.mul(v, Math.sin(th) * r))); }), A2 = ring(a), B2 = ring(b);
     for (let k = 0; k < 3; k++) { const k1 = (k + 1) % 3; col.need(18); col.p3(...A2[k]); col.p3(...A2[k1]); col.p3(...B2[k1]); col.p3(...A2[k]); col.p3(...B2[k1]); col.p3(...B2[k]); } } };
+  // [P7-E] a festoon bulb: a triangular bipyramid (6 tris; the octahedron's 8 for a 5 cm lamp: ~1700 of them now)
+  function bulb(p, rx, ry) { const q = [0, 1, 2].map((k) => v3.add(p, [Math.cos(k * TAU / 3) * rx, 0, Math.sin(k * TAU / 3) * rx])), top = v3.add(p, [0, ry, 0]), bot = v3.add(p, [0, -ry, 0]);
+    for (let k = 0; k < 3; k++) { const a = q[k], b = q[(k + 1) % 3]; tri(top, b, a); tri(bot, a, b); } }
   function octa(p, rx, ry) { const q = [[rx, 0, 0], [0, 0, rx], [-rx, 0, 0], [0, 0, -rx]].map((d) => v3.add(p, d)), top = v3.add(p, [0, ry, 0]), bot = v3.add(p, [0, -ry, 0]);
     for (let k = 0; k < 4; k++) { const a = q[k], b = q[(k + 1) % 4]; tri(top, b, a); tri(bot, a, b); } }
   {
@@ -1753,7 +1776,7 @@ export function geometry(layout, opts = {}) {
             const L = Math.hypot(bx - ax, bz - az), nb = Math.floor(L / 0.4);
             for (let i = 1; i < nb; i++) { const t = i / nb, j = t * (pts.length - 1), j0 = Math.floor(j), f2 = j - j0, a = pts[j0], b = pts[Math.min(pts.length - 1, j0 + 1)], p = [lerp(a[0], b[0], f2), lerp(a[1], b[1], f2), lerp(a[2], b[2], f2)];
               set('dark', { col: false }); near(() => box(FW, p[0], p[1] - 0.035, p[2], 0.012, 0.025, 0.012));   // the socket: near only (the bulb stays)
-              set('dr_glow', { em: NI(srgb(0xffb46b), 1500), col: false }); octa([p[0], p[1] - 0.1, p[2]], 0.026, 0.045); }
+              set('dr_glow', { em: NI(srgb(0xffb46b), 1500), col: false }); bulb([p[0], p[1] - 0.1, p[2]], 0.03, 0.045); }
             const m = pts[Math.floor(pts.length / 2)];
             emit({ id: 'dress:festoon:' + st.id + ':' + s.toFixed(1), kind: 'neon', pos: [m[0], m[1] - 0.1, m[2]], normal: [0, -1, 0], w: +L.toFixed(2), h: 0.12, rgb: [1.0, 0.62, 0.32], nits: 400, omni: 0.8, range: 12 });
             nFest++;
@@ -1770,7 +1793,37 @@ export function geometry(layout, opts = {}) {
       }
       if (placed) nSt++;
     }
-    facts.overhead = { stations: nSt, lines: nLines, festoons: nFest, bunting: nBunt };
+    // [P7-E, for D's festoon light] more festoon strings over the walking and club streets: phase 5's pass hung 18, so D's
+    // string light (each bulb a source along the line) lifted the ground only 4-9 %. A second pass on its own stream (every
+    // line above stays put): a station every 6-10 m between phase 5's, a string at ~3 of 4, skewed along the street, with
+    // the same tests (both ends on a wall, 5.8 m up to 0.6 m under the lower roof, 0.5 m off every gate, 1.2 m off every
+    // flight corridor). Bulbs at 0.4 m; the sockets are near-tier. Same emitter record as above (D parses dress:festoon:<street>:<s>).
+    let nFest2 = 0;
+    { const R2 = rng('festoon2' + seed);
+      for (const st of M.streets.filter((x) => x.kind === 'walking' || x.kind === 'club')) for (let s = 2 + R2() * 6; s < st.len - 3; s += 6 + R2() * 4) {
+        if (R2() > 0.75) continue;
+        const q = M.at(st, s); if (!inCore(q.x, q.z)) continue;
+        const nx = -q.tz, nz = q.tx, dl = M.freeRay(q.x, q.z, -nx, -nz, 22, 0.1), dr = M.freeRay(q.x, q.z, nx, nz, 22, 0.1);
+        if (!isFinite(dl) || !isFinite(dr) || dl + dr < 4) continue;
+        const sa = (R2() - 0.5) * 4, sb = (R2() - 0.5) * 4;
+        const ax = q.x - nx * (dl - 0.03) + q.tx * sa, az = q.z - nz * (dl - 0.03) + q.tz * sa, bx = q.x + nx * (dr - 0.03) + q.tx * sb, bz = q.z + nz * (dr - 0.03) + q.tz * sb;
+        const Ha = hAt(ax - nx * 0.15, az - nz * 0.15), Hb = hAt(bx + nx * 0.15, bz + nz * 0.15), top = Math.min(Ha, Hb) - 0.6;
+        if (top < 6.3 || !M.lotAt(ax - nx * 0.15, az - nz * 0.15) || !M.lotAt(bx + nx * 0.15, bz + nz * 0.15) || M.lotAt(ax + nx * 0.25, az + nz * 0.25) || M.lotAt(bx - nx * 0.25, bz - nz * 0.25)) continue;
+        const ya = 5.8 + R2() * Math.min(3.5, top - 5.8), yb = clamp(ya + (R2() - 0.5) * 1.2, 5.8, top), pts = sagLine([ax, ya, az], [bx, yb, bz], 0.05 + R2() * 0.03);
+        if (!polyGateOK(pts, 0.5) || !polyCorrOK(pts, 1.2)) { facts.rejectedByGates++; continue; }
+        item(() => {
+          cables.push({ pts: pts.map(r3), r: 0.005 }); colTube(pts, 0.012);
+          set('dr_steel', { col: false }); near(() => { for (const p of [pts[0], pts[pts.length - 1]]) box(FW, p[0], p[1], p[2], 0.04, 0.04, 0.04); });
+          const L = Math.hypot(bx - ax, bz - az), nb = Math.floor(L / 0.4);
+          for (let i = 1; i < nb; i++) { const j = i / nb * (pts.length - 1), j0 = Math.floor(j), f2 = j - j0, a = pts[j0], b = pts[Math.min(pts.length - 1, j0 + 1)], p = [lerp(a[0], b[0], f2), lerp(a[1], b[1], f2), lerp(a[2], b[2], f2)];
+            set('dark', { col: false }); near(() => box(FW, p[0], p[1] - 0.035, p[2], 0.012, 0.025, 0.012));
+            set('dr_glow', { em: NI(srgb(0xffb46b), 1500), col: false }); bulb([p[0], p[1] - 0.1, p[2]], 0.03, 0.045); }
+          const m = pts[Math.floor(pts.length / 2)];
+          emit({ id: 'dress:festoon:' + st.id + ':' + s.toFixed(2), kind: 'neon', pos: [m[0], m[1] - 0.1, m[2]], normal: [0, -1, 0], w: +L.toFixed(2), h: 0.12, rgb: [1.0, 0.62, 0.32], nits: 400, omni: 0.8, range: 12 });
+          nFest2++;
+        }, { margin: 0.5 });
+      } }
+    facts.overhead = { stations: nSt, lines: nLines, festoons: nFest + nFest2, festoons2: nFest2, bunting: nBunt };
   }
   lap('overhead');
   // ---- [P5-E art #4, fpv #6] the posts: C's lamp posts (walking and club streets: 4.5 m, main roads 8.5 m) and utility poles
@@ -1839,11 +1892,12 @@ export function geometry(layout, opts = {}) {
     // ---- [P7-E lighting #4 / graphics #3] standing water at the post bases: the kerb line round a pole base is the low point,
     // so every utility pole off the main roads and a third of the walking-street lamp posts stand in a puddle (club270's
     // lamp pole: P4's bright wet patch). dr_puddle is a soft-edged decal (uv.x: 1 inside, 0 at the rim) that seoul-light's
-    // wet path draws as full standing water (material(): cityPud = uCityWet inside; gone when dry). Its discs go to
-    // `obstacles`, so G1's walkers step round it instead of standing on the reflection. Own stream: nothing else moves.
-    const Rq = rng('puddle' + seed), streetOf = new Map(M.streets.map((s) => [s.id, s]));
+    // wet path draws as full standing water (material(): cityPud = uCityWet inside; gone when dry). They are listed in
+    // `puddles` ([x, z, tx, tz, a, b]: centre, long axis, half-axes) for G1's walkers, not in `obstacles` (a disc there
+    // moves the crowd, and G2's tuned walking-street level with it). Own stream: nothing else moves.
+    const Rq = rng('puddle' + seed), puddles = out_puddles, streetOf = new Map(M.streets.map((s) => [s.id, s]));
     const inHole = (x, z) => holes.some((h) => pip(x, z, h));
-    const puddle = (cx, cz, tx, tz, a, b, id) => {
+    const puddle = (cx, cz, tx, tz, a, b) => {
       const N = 10, rad = [...Array(N)].map(() => 0.82 + Rq() * 0.3), y = 0.03;
       const P = (k, f) => { const th = (k % N) / N * TAU, r = rad[k % N] * f, u = Math.cos(th) * a * r, v = Math.sin(th) * b * r; return [cx + tx * u - tz * v, y, cz + tz * u + tx * v]; };
       for (let k = 0; k < N; k++) { const q = P(k, 1); if (M.lotAt(q[0], q[2]) || inHole(q[0], q[2]) || M.ribbonD(q[0], q[2], true) < -0.2) return false; }
@@ -1851,20 +1905,20 @@ export function geometry(layout, opts = {}) {
       set('dr_puddle', { c: [0.07, 0.066, 0.062], col: false });
       const C0 = [cx, y, cz], I1 = [1, 0], O0 = [0, 0];
       for (let k = 0; k < N; k++) { const i0 = P(k, 0.7), i1 = P(k + 1, 0.7), o0 = P(k, 1), o1 = P(k + 1, 1); up(C0, i0, i1, I1, I1, I1); up(i0, o0, o1, I1, O0, O0); up(i0, o1, i1, I1, O0, I1); }
-      for (const s of [-0.55, 0, 0.55]) occAdd(cx + tx * a * s, cz + tz * a * s, Math.max(0.25, b * 0.85));
-      facts.puddles = (facts.puddles || 0) + 1; if (id) (facts.puddleAt ||= []).push(id);
+      puddles.push([+cx.toFixed(2), +cz.toFixed(2), +tx.toFixed(3), +tz.toFixed(3), +a.toFixed(2), +b.toFixed(2)]);
+      facts.puddles = (facts.puddles || 0) + 1;
       return true;
     };
     const inward = (x, z, st) => { const p = M.project(st, x, z), dx = p.px - x, dz = p.pz - z, l = Math.hypot(dx, dz) || 1; return [dx / l, dz / l]; };
     for (const p of opts.poles || []) {
       const st = streetOf.get(p.street); if (!st || st.kind === 'main' || !inCore(p.x, p.z)) continue;
       const a = 1.8 + Rq() * 0.6, b = 0.75 + Rq() * 0.25, s = (Rq() - 0.5) * 0.3, [ix, iz] = inward(p.x, p.z, st), tl = Math.hypot(p.tx || 1, p.tz || 0), tx = (p.tx || 1) / tl, tz = (p.tz || 0) / tl;
-      puddle(p.x + ix * b * 0.55 + tx * s, p.z + iz * b * 0.55 + tz * s, tx, tz, a, b, null);
+      puddle(p.x + ix * b * 0.55 + tx * s, p.z + iz * b * 0.55 + tz * s, tx, tz, a, b);
     }
     for (const p of posts) {
       if (!p.walk || Rq() > 0.35) continue;
       const a = 0.7 + Rq() * 0.5, b = 0.45 + Rq() * 0.2, [ix, iz] = [-p.away[0], -p.away[1]], tx = -iz, tz = ix;
-      puddle(p.x + ix * (0.3 + b * 0.5), p.z + iz * (0.3 + b * 0.5), tx, tz, a, b, null);
+      puddle(p.x + ix * (0.3 + b * 0.5), p.z + iz * (0.3 + b * 0.5), tx, tz, a, b);
     }
   }
   lap('posts');
@@ -1930,7 +1984,7 @@ export function geometry(layout, opts = {}) {
   // of build buffers), and world.setPieces outlives the build: back to Array.prototype.push. The cache keeps the data
   // build() and exportData() read, not the render / collider geometry (world-seoul has merged it by then: ~36 MB).
   delete setPieces.push;
-  const out = { merged, colTris, emitters, setPieces, holes, cables, labels, lamps, obstacles, anchors, facts, materials: DRESS_MATS };
+  const out = { merged, colTris, emitters, setPieces, holes, cables, labels, lamps, obstacles, anchors, puddles: out_puddles, facts, materials: DRESS_MATS };
   CACHE.set(layout, slimOut(out));
   return out;
 }

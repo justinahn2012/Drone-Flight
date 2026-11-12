@@ -215,7 +215,7 @@ for (const sp of E.setPieces) for (const [k, g] of Object.entries(sp.gates || {}
   const pud = E.merged.dr_puddle, pp = pud?.getAttribute('position').array || [];
   ok((E.facts.puddles || 0) >= 100 && DRESS_MATS.dr_puddle?.noCol && DRESS_MATS.dr_puddle.wet, `puddles at post bases (${E.facts.puddles})`);
   let atClub = 0; for (let i = 0; i < pp.length; i += 3) if (Math.hypot(pp[i] - 72.39, pp[i + 2] - 130.58) < 1.2) atClub++;
-  ok(atClub > 6 && E.obstacles.some((o) => Math.hypot(o[0] - 71.6, o[1] - 129.8) < 0.8 && o[2] >= 0.6), `club270's pole stands in a puddle the walkers step round (${atClub} verts)`);
+  ok(atClub > 6 && E.puddles.some((q) => Math.hypot(q[0] - 72.4, q[1] - 130.3) < 1.0 && q[4] >= 1.8), `club270's pole stands in a puddle, listed for the crowd (${atClub} verts)`);
 }
 
 // 6. top-down map: C's roofs dark, ribbons grey, dressing coloured by key, emitters as dots, holes outlined
