@@ -79,6 +79,16 @@ ok(clearAt(-9.43, -78.92) >= 4.5, `fork by Hongik-ro half-clearance ${clearAt(-9
 ok(layout.streets.some((s) => s.ko === '어울마당로' && s.kind === 'walking' && s.points.every(([, z]) => z < -118)), 'R1-R2 Walking Street is kind walking');
 { const y = layout.screens.find((s) => s.id === 'Y151'); ok(y && y.normal[0] > 0.5 && y.normal[2] > 0.5, `Y151 faces Yanghwa-ro (normal ${y?.normal})`); }
 
+// [P8-C] art #1 / fpv #3: a shop pane's room is the shop whose sign hangs over it (groundBays), and the panes under one
+// sign are one room (uv: u = index + 0..1, v = pane count + 0..1). walk180's 청춘코인빨래방 bay is a coin laundry (trade 1)
+{ const g = geo.byKey.shop, w = g.getAttribute('aWin'), uv = g.getAttribute('uv'), p = g.getAttribute('position'); let shops = 0, enc = 0, rooms = 0, bad = 0, lau = 0;
+  for (let i = 0; i < w.count; i += 6) { const kd = Math.floor(w.getZ(i) / 4 + 0.001); if (kd < 1 || kd > 2) continue; shops++;
+    const u = Math.min(uv.getX(i), uv.getX(i + 1), uv.getX(i + 2)), v = Math.min(uv.getY(i), uv.getY(i + 1), uv.getY(i + 2));
+    if (v >= 1) { enc++; const k = Math.round(u), nIn = Math.round(v); if (k < 0 || k >= nIn) bad++; if (k === 0) rooms++; }
+    if (Math.floor(w.getW(i) / 1000 + 0.0005) === 1 && Math.hypot(p.getX(i) + 32.8, p.getZ(i) + 22.5) < 4.5) lau++; }
+  ok(shops > 1000 && enc === shops && bad === 0, `shop panes carry their room (${enc}/${shops}, ${rooms} rooms, ${bad} out of range)`);
+  ok(geo.facts.trades > 100 && lau >= 2, `rooms keyed to the bay's sign: ${geo.facts.trades} trade panes; the walk180 laundromat ${lau} panes`); }
+
 // 5. export entry + dressing tolerance
 const ex = await buildGeometry({ seed: 11 });
 ok(ex.merged && ex.colGeo && ex.spawn?.pos && ex.lines?.length && ex.materials?.glass && ex.bounds?.min, 'buildGeometry returns the export contract');
