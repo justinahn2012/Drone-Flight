@@ -1009,11 +1009,14 @@ export function offRoad(mains, x, z, margin = 0.5, skip = null) {
 }
 
 export class CrowdSim {
-  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null, holes = null } = {}) {
+  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null, holes = null, puddles = null } = {}) {
     this.net = net; this.layout = layout; this.seed = seed >>> 0; this.density = density; this.maxAgents = maxAgents;
     // (P5) E's ground openings (stairwells, [[x, z], ...] polygons): nobody stands in one (P4 put 4-5 of exit 9's waiting
     // ring inside the stair dive)
     this.holes = (holes || []).filter((h) => Array.isArray(h) && h.length >= 3);
+    // [P8] E's wet decals at post bases ([cx, cz, tx, tz, a, b]: centre, unit long axis, half-length, half-width; p8/E-to-G1.md):
+    // nobody is placed standing in one (inDress, the placement test); walkers still cross their edges. Missing: none.
+    this.puddles = (puddles || []).filter((q) => Array.isArray(q) && q.length >= 6);
     // E's dressing discs [[x, z, r]] (life #6: carts, tents, stalls, parked scooters): walkers sidestep them, nobody stands in one
     this.dress = (obstacles || []).filter((o) => o && o[2] > 0 && o[2] < 1.7);
     // walkways
@@ -1374,6 +1377,14 @@ export class CrowdSim {
     for (const q of this.queues) for (let j = 0; j < q.Q; j += 2) { const r = j / 2; addObst(q.door[0] + q.t[0] * (0.9 + 0.75 * r) + q.n[0] * 0.72, q.door[1] + q.t[1] * (0.9 + 0.75 * r) + q.n[1] * 0.72, 0.6); }
     for (const l of this.lots) for (const t of l._tables || []) if (!t.stool) addObst(t[0], t[1], 1.0);
     for (const o of this.dress) addObst(o[0], o[1], o[2]);
+    // (P8, life: keep people off E's puddles) walkers step round them (render side, like the dressing discs: a chain of
+    // discs along each puddle's long axis in the walkway avoidance); the puddles near each standing person's spot and each
+    // queue's line, which evalStatic keeps them out of (F's inDress keeps them out of the placement)
+    if (this.puddles.length) { this.pudNear = new Array(this.people.length).fill(null);
+      for (const i of this.statics) { const p = this.people[i]; let ax, az, R;
+        if (p.kind === K_STAND) { ax = p.x; az = p.z; R = 1.5; } else if (p.kind === K_QUEUE) { const q = this.queues[p.q]; ax = q.door[0]; az = q.door[1]; R = 6 + 0.4 * q.Q; } else continue;
+        const L = this.puddles.filter((u) => Math.hypot(u[0] - ax, u[1] - az) < R + u[4] + 0.5); if (L.length) this.pudNear[i] = L; } }
+    for (const [x, z, tx, tz, a, b] of this.puddles) { const n = Math.max(1, Math.ceil((a - b) / (0.6 * b)) + 1); for (let k = 0; k < n; k++) { const u = n > 1 ? -(a - b) + (2 * (a - b) * k) / (n - 1) : 0; addObst(x + tx * u, z + tz * u, b * 1.05); } }
     for (const w of this.ways) w.obst.sort((p, q) => p[0] - q[0]);
   }
   inHole(x, z, pad = 0.45) {
@@ -1381,7 +1392,9 @@ export class CrowdSim {
     for (const H of this.holes) for (const [ox, oz] of [[0, 0], [pad, 0], [-pad, 0], [0, pad], [0, -pad]]) if (pip(x + ox, z + oz, H)) return true;
     return false;
   }
-  inDress(x, z, pad = 0) { for (const o of this.dress) { const dx = x - o[0], dz = z - o[1], r = o[2] + pad; if (dx * dx + dz * dz < r * r) return true; } return false; }
+  inDress(x, z, pad = 0) { for (const o of this.dress) { const dx = x - o[0], dz = z - o[1], r = o[2] + pad; if (dx * dx + dz * dz < r * r) return true; } return this.inPuddle(x, z, pad); }
+  inPuddle(x, z, m = 0.3) { for (const q of this.puddles) { const dx = x - q[0], dz = z - q[1], u = dx * q[2] + dz * q[3], v = -dx * q[3] + dz * q[2];
+    if ((u / (q[4] + m)) ** 2 + (v / (q[5] + m)) ** 2 < 1) return true; } return false; }
   defaultBuskSites(layout) {
     const out = [], o = {};
     const walk = this.ways.filter((w) => w.kind === 'walking').sort((a, b) => b.area - a.area)[0];
@@ -1522,7 +1535,19 @@ export class CrowdSim {
     for (;;) { const nn = n + 1, Tn = nn * q.G + (hu(q.seed, nn, 1) - 0.5) * 0.6 * q.G; if (Tn > t) break; n = nn; TN = Tn; mN = 1 + Math.floor(hu(q.seed, nn, 2) * 2.6); A += mN; }
     o.A = A; o.N = n; o.TN = TN; o.mN = mN; return o;
   }
+  // (P8) a standing or queueing person whose spot falls in one of E's puddles is drawn (and collides) at its rim + 20 cm:
+  // P7 had 13 of 878 there (9 in club queues along a lamp post's puddle). Every caller (render, worker, colliders) goes
+  // through here, so they agree
   evalStatic(i, t, A, qs) {
+    this._evalStatic(i, t, A, qs);
+    const L = this.pudNear && this.pudNear[i]; if (!L || !A.VIS[i]) return;
+    for (const [px, pz, tx, tz, a, b] of L) {
+      const dx = A.X[i] - px, dz = A.Z[i] - pz, u = dx * tx + dz * tz, v = dz * tx - dx * tz, e = (u / (a + 0.2)) ** 2 + (v / (b + 0.2)) ** 2;
+      if (e >= 1) continue; const k = 1 / Math.sqrt(Math.max(e, 1e-4)), uu = e > 1e-4 ? u * k : 0, vv = e > 1e-4 ? v * k : b + 0.2;
+      A.X[i] = px + tx * uu - tz * vv; A.Z[i] = pz + tz * uu + tx * vv;
+    }
+  }
+  _evalStatic(i, t, A, qs) {
     const p = this.people[i];
     A.WAY[i] = -1; A.VIS[i] = 1; A.WALK[i] = 0; A.POSE[i] = p.pose; A.PH[i] = (t * 0.11 + p.ph0) % 1;
     if (p.kind === K_STAND) {
@@ -1764,13 +1789,13 @@ export const avatarWeights = (meta) => meta.avatars.map((av) => (/^Business/i.te
 
 export class LifeSim {
   // setPieces / obstacles: E's (world-seoul ctx); sites: explicit busking sites (override the set pieces')
-  constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles, holes } = {}) {
+  constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles, holes, puddles } = {}) {
     this.net = buildNetwork(layout);
     // E's median BUS SHELTER islands (design #2, P3): the traffic gives them room (see TrafficSim: shelter offsets)
     this.net.shelters = (setPieces || []).filter((p) => p && p.kind === 'shelter' && p.pos && p.dir && p.island);
     this.traffic = new TrafficSim(this.net, { seed });
     const bs = buskSitesFrom(setPieces);
-    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null), holes });
+    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null), holes, puddles });
     this.t = 0; this.snaps = new Map();
   }
   reset() { this.traffic.reset(); this.t = 0; }
@@ -2065,8 +2090,16 @@ const HUMAN_ANIM = /* glsl */`
   if (grp > 97.5) hide = float(style < 0.5);
   if (grp > 10.5 && grp < 11.5) hide = 1.0 - scarf;
   if (grp > 11.5 && grp < 12.5) hide = 1.0 - backpack;
+  // (P8, life #1) an avatar's own accessories (seoul/tools/people-bake.mjs): region 8 a cap (style 5), 11 a beanie (style 7),
+  // 10 a backpack (bit 2), 6 the tote (bag flag, above); the procedural body's caps and hoods are groups 5-7
+  if (grp < 0.5 && region > 7.5 && region < 8.5) hide = float(style != 5.0);
+  if (region > 10.5 && region < 11.5) hide = float(style != 7.0);
+  if (region > 9.5 && region < 10.5) hide = 1.0 - backpack;
   // ---- bulk: puffers and padded coats are thick (procedural body only; an avatar wears its own clothes)
   float bulk = tex > 0.5 ? 1.0 : coat == 2.0 ? 1.13 : coat == 1.0 ? 1.06 : 1.0;
+  // (P8, life #1) a short puffer on an avatar: its top (region 2: torso and sleeves) stands 2.2 cm off the body along the
+  // normal (1.4 cm on the forearms), quilted in the fragment shader; a quarter of the crowd (coat 2) wears one
+  if (tex > 0.5 && coat == 2.0 && region > 1.5 && region < 2.5 && bone < 9.5) p += nrm * (bone == 7.0 || bone == 9.0 ? 0.014 : 0.022);
   if (bone < 0.5 && position.y > 0.95 && grp < 0.5 && region > 1.5 && region < 2.5) p.xz *= bulk;
   if (bone > 5.5 && bone < 9.5 && region > 1.5) { float ax = bone < 7.5 ? uJB.x : -uJB.x; p.x = ax + (p.x - ax) * bulk; p.z *= bulk; }
   // ---- gait (wa = walk amount): normative joint curves, stance-leg hip height, pelvis rotation, thorax counter-rotation
@@ -2143,7 +2176,8 @@ const HUMAN_ANIM = /* glsl */`
   // albedo by region (region 3 on a coat's thighs stays coat; headwear and hood take the wear colour; scarf a muted accent).
   // On an avatar these are the tint targets for its texture classes (0 skin, 1 hair, 2 top, 3 bottom, 4 shoes).
   vec3 alb = region < 0.5 ? iSkin.rgb : region < 1.5 ? iHair.rgb : region < 2.5 ? iTop.rgb : region < 3.5 ? (tex < 0.5 && bone > 1.5 && bone < 5.5 && coat == 1.0 && position.y > 0.62 ? iTop.rgb : iBot.rgb)
-    : region < 4.5 ? vec3(0.03) : region < 5.5 ? vec3(0.02) : region < 6.5 ? vec3(0.04, 0.035, 0.03) : region < 7.5 ? vec3(0.02, 0.02, 0.025) : region < 8.5 ? iWear.rgb : mix(iBot.rgb, vec3(0.32, 0.08, 0.07), 0.6);
+    : region < 4.5 ? vec3(0.03) : region < 5.5 ? vec3(0.02) : region < 6.5 ? (fract(seed * 7.31) < 0.35 && bone < 0.5 ? vec3(0.5, 0.46, 0.38) : vec3(0.04, 0.035, 0.03)) : region < 7.5 ? vec3(0.02, 0.02, 0.025) : region < 8.5 ? iWear.rgb
+    : region < 9.5 ? mix(iBot.rgb, vec3(0.32, 0.08, 0.07), 0.6) : region < 10.5 ? (fract(seed * 3.7) < 0.6 ? vec3(0.025, 0.025, 0.03) : fract(seed * 3.7) < 0.8 ? vec3(0.07, 0.08, 0.12) : vec3(0.3, 0.27, 0.22)) : iWear.rgb;   // (P8: 6 a third of totes canvas; 10 backpack black / navy / beige; 11 beanie)
   vAlb = alb; vUv = auv; vHairC = iHair.rgb;
   vRest = position; vMisc = vec4(region, bone, coat, acc);
   vScreen = (region > 4.5 && region < 5.5) ? max(phoneP, filmP) : 0.0;
@@ -2174,7 +2208,11 @@ const HUMAN_FS = /* glsl */`
     }
     vec3 mean = reg < 0.5 ? uMean[0] : reg < 1.5 ? uMean[1] : reg < 2.5 ? uMean[2] : reg < 3.5 ? uMean[3] : uMean[4];
     float tint = reg < 0.5 ? 0.45 : reg < 1.5 ? 0.85 : reg < 2.5 ? 0.8 : reg < 3.5 ? 0.7 : 0.3;
+    // (P8) a puffer (coat 2) over an avatar's top: one solid nylon colour, quilted every 10.5 cm (the procedural puffer's bands)
+    float puff = float(reg == 2.0 && ct == 2.0);
+    tint = mix(tint, 0.95, puff);
     albD = mix(tx.rgb, vAlb * clamp(tx.rgb / max(mean, vec3(0.004)), 0.0, 3.0), tint);
+    if (puff > 0.5) { float band = abs(fract(q.y / 0.105) - 0.5) * 2.0; albD *= mix(0.62, 1.06, smoothstep(0.05, 0.6, band)); }
     if (reg == 0.0) {
       // the head map's own masks (P4, life #1 / graphics #3; seoul/people/aux.png from seoul/tools/people-aux.py): r = hair
       // painted on the scalp, re-tinted to the person's hair colour like the cards (P3 tinted it toward the skin, so dark
@@ -2213,6 +2251,8 @@ const HUMAN_FS = /* glsl */`
     float mask = mod(floor(ac / 4.0), 2.0) * smoothstep(0.02, 0.05, h.z) * (1.0 - smoothstep(-0.012, -0.002, h.y)) * smoothstep(-0.105, -0.09, h.y);
     k = mix(k, (mod(floor(ac / 16.0), 2.0) > 0.5 ? 0.62 : 0.016) / max(0.05, dot(vAlb, vec3(0.333))), mask);
   } else if (reg == 0.0 && bn == 1.0) k *= 0.72;   // neck in the shadow of the jaw
+  else if (reg == 11.0) k *= 0.86 + 0.14 * smoothstep(0.3, 0.7, fract(atan(q.z - 0.01, q.x + 1e-5) * 18.0));   // (P8) beanie rib knit
+  else if (reg == 10.0) k *= 0.9 + 0.1 * hn;
   albD = vAlb * k;
   }
 `;
@@ -2491,8 +2531,10 @@ else if (pt > 12.5) {
   // sides), two ceiling LED rows, the rear bench's backs to 1.62 m with the backs of heads over them (black hair, ~60 %
   // taken), a smaller row further in, sometimes a standing rider, the centre post
   float x = vLoc.x, y = vLoc.y, sd = floor(vState.w * 97.0);
-  vec3 cabin = vec3(0.95, 0.97, 1.0) * 30.0 * mix(0.55, 1.0, smoothstep(1.6, 2.6, y));
-  cabin *= 1.0 + 1.2 * step(2.6, y) * (1.0 - smoothstep(0.03, 0.07, abs(abs(x) - 0.42)));
+  // (P8, life #4 / fpv #5 with A: P7's window read 164 codes in the station still, as bright as the paint) the cabin is
+  // darker toward the floor and the LED rows are lines, not a band; the glass passes 35 % (below)
+  vec3 cabin = vec3(0.95, 0.97, 1.0) * 30.0 * mix(0.4, 1.0, smoothstep(1.7, 2.7, y));
+  cabin *= 1.0 + 3.5 * step(2.6, y) * (1.0 - smoothstep(0.015, 0.035, abs(abs(x) - 0.42)));
   vec3 pc = y < 1.62 ? vec3(0.14, 0.15, 0.19) * 3.0 : cabin;
   for (int k = 0; k < 4; k++) {   // the far row first: the near bench draws over it
     float xs = -0.36 + 0.24 * float(k), r = vh21(vec2(float(k) + 7.0, sd));
@@ -2506,17 +2548,20 @@ else if (pt > 12.5) {
   if (rs > 0.75) { float xs = rs > 0.87 ? 0.12 : -0.12; vec2 q = vec2((x - xs) / 0.09, (y - 2.27) / 0.11);
     if (dot(q, q) < 1.0) pc = vec3(0.9, 0.85, 0.8) * 1.0; else if (abs(x - xs) < 0.17 && y < 2.16 && y > 1.62) pc = vec3(0.25, 0.25, 0.3) * 3.0; }
   pc *= 1.0 - (1.0 - smoothstep(0.02, 0.04, abs(x))) * 0.95;   // centre post
-  e = pc * 0.8;
+  // (P8) tinted rear glass, transmittance 0.35 (P7 0.8): the 30-nit cabin reads ~10 nits (60-90 codes at the station's
+  // exposure), the LED lines ~40, heads and seat backs dark against it; the rubber surround is a dark frame
+  float frame = 1.0 - smoothstep(0.03, 0.06, min(0.74 - abs(x), min(y - 1.45, 2.75 - y)));
+  e = pc * 0.35 * (1.0 - 0.9 * frame);
 }
 // clearcoat and glass: Fresnel x the street they face
 if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5) || pt > 11.5) {
   vec3 Vw = normalize(cameraPosition - vWP), Nw = normalize(vWN), Rw = reflect(-Vw, Nw);
   float F = (pt < 0.5 ? 0.04 : 0.05) + 0.96 * pow(1.0 - clamp(dot(Nw, Vw), 0.0, 1.0), 5.0);
-  e += cityEnv(Rw) * F * (pt < 0.5 ? 0.9 : 1.0);
+  e += cityEnv(Rw) * F * (pt < 0.5 ? 0.9 : pt > 12.5 ? 0.6 : 1.0);   // (P8: the tinted rear glass a little less)
 }
 totalEmissiveRadiance += e * uNit;`);
   };
-  m.customProgramCacheKey = () => 'seoul-vehicle-6';
+  m.customProgramCacheKey = () => 'seoul-vehicle-7';
   return m;
 }
 
@@ -2595,7 +2640,8 @@ export function build(layout, ctx = {}) {
   // E's set pieces and dressing discs (contract P3-G1/C: world-seoul passes ctx.setPieces = geo.setPieces and ctx.obstacles =
   // geo.dressingOut.obstacles; ctx.dressing (E's geometry output) is read too). Absent: the default rings, no discs.
   const setPieces = ctx.setPieces ?? ctx.dressing?.setPieces ?? null, obstacles = ctx.obstacles ?? ctx.dressing?.obstacles ?? null, holes = ctx.holes ?? ctx.dressing?.holes ?? null;
-  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles, holes });
+  const puddles = ctx.puddles ?? ctx.dressing?.puddles ?? null;   // [P8] E's puddles (world-seoul ctx; absent: none)
+  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles, holes, puddles });
   const crowd = sim.crowd, traffic = sim.traffic;
   const group = new THREE.Group(); group.name = 'seoul-life';
   const nit = { value: ctx.nitScale ?? LIFE.nitScale };
@@ -2665,7 +2711,7 @@ export function build(layout, ctx = {}) {
     const { meta, bin } = data; const nA = meta.avatars.length;
     avatars.mats = meta.avatars.map((av) => {
       const j = av.joints, J = [new THREE.Vector4(j.hipX, j.hipY, j.kneeY, j.ankleY), new THREE.Vector4(j.shX, j.shY, j.elY, j.neckY), new THREE.Vector4(j.kneeZ, j.elZ, 1.712 / j.top, 1)];
-      return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean, data.aux || zero, av.meanScalp, Math.max(1, Math.round((meta.atlas?.h || 2048) / 1024)));
+      return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean, data.aux || zero, av.meanScalp, Math.max(1, Math.round((meta.atlas?.h || 2048) / (2 * (meta.atlas?.cell || 512)))));   // (P8) rows of 2 x cell px
     });
     // tiers: [near, (lod1,) mid]; people.json from before P4 has no lod1 (then 0 near, 1 mid)
     const nL = Math.min(3, meta.avatars[0].lods.length); avatars.nL = nL;
@@ -2812,7 +2858,21 @@ export function build(layout, ctx = {}) {
   // browser = start one (?lifeworker=0 turns it off); a LifeWorker instance = use it (node tests). Until it is ready,
   // after a seek (|t - frame t| > 0.25 s), or if it fails, the inline evaluate runs as before.
   const lwq = typeof location !== 'undefined' ? new URLSearchParams(location.search || '').get('lifeworker') : null;
-  const LW = { w: null, f: null, dt: 1 / 60, last: null, used: 0, inline: 0, state: 'off', hash0: sim.hash(), disposed: false };   // (the sim as built: t = 0)
+  const LW = { w: null, f: null, dt: 1 / 60, last: null, used: 0, inline: 0, state: 'off', hash0: sim.hash(), disposed: false, firstUsed: null };   // (the sim as built: t = 0)
+  // [P8 G1, perf #3] LW.ready resolves (to the state) once the worker is on with its first frame in hand, or failed / off:
+  // world-seoul waits for it (bounded) before its first update, so the level opens on the worker's crowd
+  let lwDone; LW.ready = new Promise((r) => { lwDone = r; });
+  // once the worker is on, it is asked for the frame the first update draws (the warm clock, from the spawn, in the first
+  // update's stagger phase); a poll resolves LW.ready when that frame is in hand, or the worker is off / failed (8 s at most)
+  { const sp = layout.spawn?.pos, cam0 = Array.isArray(sp) ? [sp[0], sp[1], sp[2], -Math.sin(layout.spawn.yaw || 0), -Math.cos(layout.spawn.yaw || 0)] : null;
+    let asked = false; const t0 = Date.now();
+    const poll = () => {
+      const w = LW.w;
+      if (LW.state === 'on' && w && !asked) { asked = true; w.request(W, cam0, 1); }
+      if (LW.state === 'starting' || (LW.state === 'on' && w && !w.ready && !w.error && !LW.f)) { if (Date.now() - t0 < 8000 && !LW.disposed) return void setTimeout(poll, 10); }
+      lwDone(LW.state);
+    };
+    setTimeout(poll, 0); }
   const lwPlain = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
   const lwAttach = (w) => {
     if (!w) { LW.state = 'unavailable'; return; }
@@ -2825,12 +2885,14 @@ export function build(layout, ctx = {}) {
     LW.state = 'starting';
     // [P5 H, perf #2] warmTo: the worker reaches the warm clock before 'ready' (it used to pay that 75 s of traffic on its
     // first frame: 2.65-22 s with no frame back); until then, and after a seek until a post-seek frame lands, inline
-    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
+    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), puddles: lwPlain(puddles), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
   }
   function lwFrame(tNow, cam) {   // -> the worker frame to draw at tNow, or null (inline)
     const w = LW.w; if (!w) return null;
     if (w.error) { LW.state = 'failed: ' + w.error; LW.w = null; return null; }
-    if (LW.last != null) { const d = tNow - LW.last; if (d > 0 && d < 0.1) LW.dt += (d - LW.dt) * 0.2; }
+    // [P8] frames up to 0.5 s apart count (a slow or loaded device: P7 kept 1/60 s, asked for a clock it had already passed,
+    // and drew inline every frame)
+    if (LW.last != null) { const d = tNow - LW.last; if (d > 0 && d < 0.5) LW.dt += (d - LW.dt) * (LW.dt < 0.05 && d > 0.1 ? 0.6 : 0.2); }
     LW.last = tNow;
     // [P5 H] fr: the crowd's frame counter the next update would evaluate with (its far / behind-camera stagger keys on
     // it): the worker evaluates in the inline sim's phase (P4 didn't: a 7.9 % tier-total gap on the frames the stagger flips)
@@ -2838,7 +2900,7 @@ export function build(layout, ctx = {}) {
     w.request(tNow + LW.dt, [cam.x, camP.y, cam.z, cam.fx, cam.fz], c + 2);
     const f = w.latest(); if (f) { if (LW.f) w.release(LW.f); LW.f = f; }
     const use = LW.f && Math.abs(LW.f.t - tNow) <= 0.25 ? LW.f : null;
-    if (use) { LW.used++; crowd.frame = c + 1; } else LW.inline++;   // (inline: evaluate advances it)
+    if (use) { LW.used++; crowd.frame = c + 1; if (LW.firstUsed == null) LW.firstUsed = LW.used + LW.inline; } else LW.inline++;   // (inline: evaluate advances it; firstUsed: the update that first drew the worker's crowd)
     return use;
   }
   function update(t, camPos, camQuat) {
@@ -3054,8 +3116,8 @@ export function build(layout, ctx = {}) {
 // Everything a native port needs to rebuild both sims bit-for-bit from the same layout: constants, vehicle classes,
 // signal timing, the lane graph (stops, successors, entries), walkways with their junction links, doors and portals,
 // the crowd's static set-up (people, units, queues, busk rings), and the seeds. Hashes let CI check parity.
-export function exportData(layout, { seed = 7, density = 1, maxAgents, setPieces, obstacles } = {}) {
-  const sim = new LifeSim(layout, { seed, density, maxAgents, setPieces, obstacles }), T = sim.traffic, C = sim.crowd, r3 = (v) => Math.round(v * 1000) / 1000;
+export function exportData(layout, { seed = 7, density = 1, maxAgents, setPieces, obstacles, puddles } = {}) {
+  const sim = new LifeSim(layout, { seed, density, maxAgents, setPieces, obstacles, puddles }), T = sim.traffic, C = sim.crowd, r3 = (v) => Math.round(v * 1000) / 1000;
   const laneId = (l) => l && l.id;
   sim.advanceTo(90); const h90 = sim.hash();
   return {

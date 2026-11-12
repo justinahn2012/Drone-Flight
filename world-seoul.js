@@ -1628,7 +1628,7 @@ export async function buildSeoul(renderer, a, b) {
   const uniforms = { uTime: { value: 0 } };
   const ctx = { THREE, renderer, scene, layout, NIT, NITS, nitScale: NITS, LUX, rng, hash, seed: opts.seed ?? 11, quality: opts.quality || 'auto', bvh: geo.bvh, lotInfo: geo.lotInfo, poles: geo.poles, cables: geo.cables, uniforms,
     streetById: new Map(layout.streets.map((s) => [s.id, s])), lotById: new Map(layout.lots.map((l) => [l.id, l])), takeClock: opts.takeClock || null,
-    setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null };   // ([P5-G1] + stairwell openings: nobody stands in one)   // [P3-G1] life #5/#6: busk under E's stage, walk round E's dressing
+    setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null, puddles: geo.dressingOut?.puddles || null };   // ([P8-G1] + E's puddles: nobody stands in one, walkers go round) ([P5-G1] + stairwell openings: nobody stands in one)   // [P3-G1] life #5/#6: busk under E's stage, walk round E's dressing
   if (opts.lightmap != null) ctx.lightmap = opts.lightmap;   // [P4 H] node tools (the export) ask for D's night lightmap, baked in line
   // partner modules (each optional)
   prog(0.65, 'Hongdae: signs');
@@ -1678,6 +1678,9 @@ export async function buildSeoul(renderer, a, b) {
   prog(0.9, 'Hongdae: light');
   const lightMod = opts.light === false ? null : await tryModule('./seoul-light.js', 'seoulLight');
   if (lightMod?.attach) { try { parts.light = await lightMod.attach(world, emitters, ctx); } catch (e) { console.warn('seoulLight.attach', e); } }
+  // [P8-G1 perf #3] the life worker started during 'life' and warmed while the light attached: wait (bounded) for its first
+  // frame, so the first update draws the worker's crowd (P7: inline 18-24 ms a frame until a reply got through)
+  if (parts.life?.lifeWorker?.ready) { const t0w = (globalThis.performance || Date).now(); stats.lifeWorker = await Promise.race([parts.life.lifeWorker.ready, new Promise((r) => setTimeout(() => r('timeout'), opts.lifeWorkerWait ?? 6000))]); stats.ms.lifeWorkerWait = Math.round((globalThis.performance || Date).now() - t0w); }
   update(world.spawn, 0);
   stats.ms.total = Math.round((globalThis.performance || Date).now() - T0);
   globalThis.__seoulStats = stats;
