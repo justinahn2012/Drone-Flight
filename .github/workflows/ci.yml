@@ -25,7 +25,9 @@ on:
   workflow_dispatch:
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # [P7 H] main's runs finish: browser-seoul takes ~2.3 h, and every integrator push within that window cancelled the run
+  # before its camera gate (main had no completed browser-seoul since bc45fbe). Branches still cancel the superseded run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -70,6 +72,9 @@ jobs:
       - name: Seoul facades (C)
         if: ${{ !cancelled() }}
         run: node seoul/tools/test-facades.mjs
+      - name: Known failures survive merges (H; a merge keeps every parent's ci/known-failures.json entry, or names it known-drop)
+        if: ${{ !cancelled() }}
+        run: node ci/known-guard.mjs
       - name: Seoul life (traffic determinism, budgets, sanity; known failures in ci/known-failures.json)
         if: ${{ !cancelled() }}
         run: node ci/run.mjs tests/seoul-life.mjs
@@ -153,7 +158,7 @@ jobs:
           ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" swift test 2>&1 | tee swift-test.log
           grep -q "with 0 failures" swift-test.log && ! grep -q "skipped" swift-test.log
 
-  native-macos:   # [P6 H] the Apple side of the same package (CryptoKit, the SDK's zlib); no Metal code yet (PARITY.md section 4)
+  native-macos:   # [P6 H] the Apple side of the same package (CryptoKit, the SDK's zlib). [P7 H] + the first Metal frame (MetalFrameTests)
     needs: test
     if: ${{ !cancelled() && needs.test.result != 'skipped' }}
     runs-on: macos-15
@@ -171,8 +176,17 @@ jobs:
           swift --version
           sh fetch-meshopt.sh
           swift build
-          ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" swift test 2>&1 | tee swift-test.log
+          mkdir -p "$GITHUB_WORKSPACE/metal-out"
+          ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" ONETAKE_METAL_REQUIRED=1 ONETAKE_FRAME_OUT="$GITHUB_WORKSPACE/metal-out/walk0-metal.png" swift test 2>&1 | tee swift-test.log
+          grep -E "Metal device|frame [0-9]+x|ground pixels|no Metal device" swift-test.log || true
           grep -q "with 0 failures" swift-test.log && ! grep -q "skipped" swift-test.log
+      - uses: actions/upload-artifact@v4   # [P7 H] the first Metal frame (walk0, lightmapped ground), next to the browser's stills
+        if: ${{ !cancelled() }}
+        with:
+          name: metal-frame
+          path: metal-out/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: iOS build (the package for the phone's SDK; compile only)
         working-directory: native/OneTakeSeoul
         shell: bash
@@ -241,7 +255,7 @@ jobs:
 
   browser-seoul:   # SwiftShader renders Seoul slowly and runners vary 2x: 45 min on integ8, >90 on p3/H-ci 3450714 (stills
     runs-on: ubuntu-24.04    # 1548-2084 s each; stills.json now logs the seconds per step), so 180 (the limit is 360). [P4 H] pinned like browser
-    timeout-minutes: 180
+    timeout-minutes: 300   # [P7 H] 4 stills since P6 (spawn): main 2dc3578's run 43180707219 was cut at 180 inside the spawn still (perf 4, coverage 13, walk0 49, club90 27, station 26 min)
     steps:
       - uses: actions/checkout@v4
         with:

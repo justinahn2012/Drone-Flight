@@ -92,6 +92,56 @@ final class ParityTests: XCTestCase {
         }
     }
 
+    // [P7 H, panel6 native #6] E's roof-prop height rule reaches the port: every roofOnly mesh has one, it equals
+    // dressing.json facts.roofHideY minus build()'s margin, and every prop sits at or above that roof (so hiding is safe)
+    func testHeightRules() throws {
+        let b = try bundle(), rules = b.heightRules()
+        let mats = b.world["materials"] as! [String: [String: Any]], rows = b.world["meshes"] as! [[String: Any]]
+        let roofOnly = rows.filter { (mats[$0["material"] as! String]?["roofOnly"] as? Bool) == true }.map { $0["name"] as! String }
+        XCTAssertFalse(roofOnly.isEmpty, "world.json has no roofOnly mesh (E's dr_roof)")
+        XCTAssertEqual(Set(rules.keys), Set(roofOnly), "a height rule on exactly the roofOnly meshes")
+        let facts = (try JSONSerialization.jsonObject(with: b.data("dressing.json")) as! [String: Any])["facts"] as! [String: Any]
+        let hideY = facts["roofHideY"] as! Double
+        for n in roofOnly {
+            let r = try XCTUnwrap(rules[n])
+            XCTAssertEqual(r.roofHideY, hideY, accuracy: 1e-9, n)
+            XCTAssertEqual(r.cameraYMin, hideY - r.margin, accuracy: 1e-6, n)
+            XCTAssert(r.margin >= 0 && r.margin < 1, "margin \(r.margin)")
+            let minY = ((rows.first { $0["name"] as? String == n }!["bounds"] as! [String: [Double]])["min"]!)[1]
+            XCTAssertGreaterThanOrEqual(minY, hideY - 0.01, "\(n): a prop below roofHideY would vanish in view")
+            XCTAssertFalse(SeoulBundle.drawn(r, cameraY: 1.6), "street eye height: hidden")
+            XCTAssertTrue(SeoulBundle.drawn(r, cameraY: hideY), "at the lowest roof: drawn")
+        }
+        XCTAssertTrue(SeoulBundle.drawn(nil, cameraY: 0), "meshes without a rule always draw")
+    }
+
+    // [P7 H, panel6 native #6] the bundled traffic snapshots (life/traffic-snapshots.json): one per opening city from
+    // LIFE.warm to LIFE.warmMax, steps = round(t x hz), every vehicle on a lane of life.json's network, the RNG state kept
+    func testTrafficSnapshots() throws {
+        let b = try bundle(), ts = (b.world["data"] as! [String: Any])["trafficSnapshots"] as? [String: Any]
+        let file = try XCTUnwrap(ts?["file"] as? String, "world.json data.trafficSnapshots")
+        XCTAssertEqual(ts?["exact"] as? Bool, true, "the exporter's restore check")
+        let j = try JSONSerialization.jsonObject(with: b.data(file)) as! [String: Any]
+        let hz = j["hz"] as! Double, warm = j["warm"] as! Double, warmMax = j["warmMax"] as! Double, nVeh = j["vehicles"] as! Int
+        let life = try JSONSerialization.jsonObject(with: b.data("life.json")) as! [String: Any]
+        let lanes = ((life["network"] as? [String: Any])?["lanes"] as? [Any])?.count ?? (j["lanes"] as! Int)
+        XCTAssertEqual(j["lanes"] as? Int, lanes, "the snapshot's lane count = life.json's network")
+        let snaps = j["snapshots"] as! [[String: Any]]
+        let ts0 = snaps.map { $0["t"] as! Double }
+        XCTAssertEqual(ts0.first, warm); XCTAssertEqual(ts0.last, warmMax); XCTAssertEqual(ts0, ts0.sorted())
+        for S in snaps {
+            let t = S["t"] as! Double, v = S["v"] as! [[String: Any]]
+            XCTAssertEqual(S["n"] as? Int, Int((t * hz).rounded()), "step of t \(t)")
+            XCTAssertNotNil(S["rs"], "rng state"); XCTAssertEqual((S["na"] as? [Any])?.count, lanes)
+            XCTAssertEqual(v.count, nVeh)
+            for x in v {
+                let ln = x["lane"] as! Int, nx = x["next"] as! Int
+                XCTAssert(ln >= 0 && ln < lanes && nx >= -1 && nx < lanes, "lane indices in range")
+                XCTAssert((x["s"] as! Double).isFinite && (x["v"] as! Double).isFinite)
+            }
+        }
+    }
+
     func testPackedStreamsDecode() throws {
         let b = try bundle()
         let packed = ((b.world["data"] as! [String: Any])["packed"] as! [String: Any])["files"] as! [String: [String: Any]]

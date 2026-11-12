@@ -32,6 +32,7 @@ ci/known-failures.json tolerates the [colour] rows until stream A lands the neut
   roomsat     median saturation of lit warm surfaces (hue 15-60 deg, max > 120; >= 0.2 % of the frame)  <= 0.55 (target 0.4-0.5, colour #2)
   warm        warm share of the bright saturated pixels                                                45 .. 65 % (colour #2)
   white       share with a clipped channel or near-white (max > 200, sat < 0.15), sign frames only    2 .. 5 % (colour #3)
+[P7 H] [art] bright elements >= 300 on walk0, walk180, w21 (ELEMENT_SHOTS, the art panel's count; CI's 320-wide stills: 93).
 Reported (informational): bright-saturated area (>= 5 %), bright near-white
 area (<= 4 %), magenta+cyan+violet share (30-45 %), dark-flat luma noise (3-6 DN).
 Needs numpy, Pillow, scipy. Stills are 8-bit sRGB (seoulsnap JPEGs).
@@ -57,6 +58,26 @@ P50_SHOTS = {'walk0', 'walk180', 'club90', 'club270', 'w21'}   # [P5-A] canyon f
 OPEN_SHOTS = {'station', 'station2', 'high'}                     # [P6-A] open-sky frames: their own p50 band (colour #2)
 SIGN_FRAMES = {'walk0', 'walk180', 'club90', 'club270', 'w21'}   # frames where signs dominate (colour #3's white-core target)
 LUMA = np.array([0.2126, 0.7152, 0.0722])
+
+# [P7 H, PLAN-P7 art #1 "signs into the frame"] bright elements: the art panel's count (panels 4-6), bit for bit: the still
+# resized to 960x540 (bilinear), pixels with max(R, G, B) >= 150, 4-connected blobs of >= 3 px. Gate >= 300 on the frames
+# the stacks must fill (walk0, walk180, w21), wherever they are in the set (refs 8e17 / ccb0: 631 / 338; panel6 155-251).
+# CI renders 320x180 on SwiftShader, where small sources merge or drop out: the same count reads ~0.31 x the 1280-wide
+# seoulsnap still (A's P6 CI run 43163186613 against panel6's stills: walk0 48 / 155, club90 55 / 170, station 96 / 327),
+# and on the same build (main 2dc3578 run 43180707219 vs panel6, eab7226): 55 / 155, 50 / 170, 88 / 327, mean 0.31),
+# so a still narrower than 960 px is gated at round(300 x 0.31) = 93. The threshold is the art target either way.
+ELEMENT_SHOTS = {'walk0', 'walk180', 'w21'}
+GATE_EL = dict(n=300, ci_scale=0.31)
+
+
+def elements(path):
+    im = Image.open(path).convert('RGB')
+    w0 = im.size[0]
+    a = np.asarray(im.resize((960, 540), Image.BILINEAR)).max(-1) >= 150
+    lab, n = ndimage.label(a)
+    if not n: return 0, w0
+    return int((ndimage.sum(a, lab, range(1, n + 1)) >= 3).sum()), w0
+
 
 def stats(path, name):
     im = np.asarray(Image.open(path).convert('RGB')).astype(np.float32)
@@ -127,6 +148,12 @@ def main():
         name = os.path.splitext(os.path.basename(f))[0]
         base, r0 = (name[:-3], True) if name.endswith('.r0') else (name, False)   # <shot>.r0 = the same shot at retro 0
         o = stats(f, base); o['ev'] = evs.get(name); rows[name] = o
+        if base == 'spawn' and not r0 and base not in hero and o['p50'] < GATE['spawn']:   # [P7 H] the spawn row binds wherever the
+            fails.append(f'[exposure] {name}: spawn p50 {o["p50"]:.0f} < {GATE["spawn"]:.0f}')    # spawn still exists (CI: --hero has no spawn)
+        if base in ELEMENT_SHOTS and not r0:   # [P7 H] bright elements (art #1), gated wherever the shot is in the set
+            o['elements'], w0 = elements(f)
+            thr = GATE_EL['n'] if w0 >= 960 else round(GATE_EL['n'] * GATE_EL['ci_scale'])
+            if o['elements'] < thr: fails.append(f'[art] {name}: bright elements {o["elements"]} < {thr} ({"960-wide count" if w0 >= 960 else f"{w0}-wide still, 300 x {GATE_EL['ci_scale']}"})')
         if base not in hero: continue
         X = lambda msg: fails.append('[exposure] ' + msg)
         C = lambda msg: fails.append('[colour] ' + msg)
@@ -158,7 +185,7 @@ def main():
         print(f'{n:12s} ' + ' '.join(fmt(o.get(k), f or '{:6.1f}') for _, k, f in cols))
     if a.json: json.dump({'rows': rows, 'fails': fails, 'gate': GATE, 'colour': COLOUR}, open(a.json, 'w'), indent=1)
     for f_ in fails: print('FAIL ' + f_)
-    print('\nGATE ' + ('PASS' if not fails else f'FAIL ({sum(f_.startswith("[exposure]") for f_ in fails)} exposure, {sum(f_.startswith("[colour]") for f_ in fails)} colour)'))
+    print('\nGATE ' + ('PASS' if not fails else f'FAIL ({sum(f_.startswith("[exposure]") for f_ in fails)} exposure, {sum(f_.startswith("[colour]") for f_ in fails)} colour{f', {n_} art' if (n_ := sum(f_.startswith('[art]') for f_ in fails)) else ''})'))
     sys.exit(1 if fails else 0)
 
 if __name__ == '__main__':

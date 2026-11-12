@@ -535,6 +535,21 @@ export async function exportLevel({ root = ROOT, id, out, seed, check = false, l
     try { D = await dataMod.exportSeoulData({ root, geo, L, seed, mods, log, note, warn, meshopt: E }); }
     catch (e) { warn(`level data export threw: ${e.stack || e.message}`); }
   }
+  // [P7 H, panel6 native #6] E's height rule (P6-E perf): a roofOnly material (dr_roof: planters, pipe runs, solar panels
+  // under the 0.9 m parapets) draws only with the camera at or above the lowest roof that carries one. The height is
+  // seoul-dressing.js facts.roofHideY; the margin is read from its build() (`y >= roofY - m`) so the two never drift.
+  // The height comes from the headless runtime build (D.world: what the browser's build() reads), else dressing.json.
+  let roofHideY = D?.world?.parts?.dressing?.stats?.roofHideY ?? null;
+  if (roofHideY == null && D?.files?.['dressing.json']) { try { const t = D.files['dressing.json']; roofHideY = JSON.parse(typeof t === 'string' ? t : Buffer.from(t.bytes ?? t).toString('utf8'))?.facts?.roofHideY ?? null; } catch (e) {} }
+  let roofMargin = null;
+  { const dp = join(dirname(path), 'seoul-dressing.js'); if (existsSync(dp)) { const mm = /y\s*>=\s*roofY\s*-\s*([0-9.]+)/.exec(readFileSync(dp, 'utf8')); if (mm) roofMargin = +mm[1]; } }
+  const visibilityOf = (m) => {
+    if (!m?.roofOnly) return null;
+    if (!(roofHideY > 0) || roofMargin == null) { warn(`roofOnly material without its height rule (roofHideY ${roofHideY}, margin ${roofMargin}): the port would draw it from the street`); return null; }
+    return { cameraYMin: +(roofHideY - roofMargin).toFixed(3), roofHideY, margin: roofMargin, from: 'seoul-dressing.js facts.roofHideY (dressing.json facts) and build()\'s margin',
+      rule: 'draw only while the camera (eye) world Y >= cameraYMin; below it every one of these props sits behind its parapet (seoul-dressing.js updateRoof)' };
+  };
+  for (const row of meshTable) { const v = visibilityOf(MATS[row.material]); if (v) row.visibility = v; }
   const matOut = Object.fromEntries(Object.entries(MATS).map(([k, m]) => {
     const tex = m?.id && m.maps ? Object.fromEntries(m.maps.map((map) => [map, { url: `https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/${m.id}/${m.id}_${map}_1k.jpg`, ktx2: D?.textures?.files?.[`${m.id}_${map}.ktx2`] ? `tex/${m.id}_${map}.ktx2` : null }])) : undefined;
     const mapFile = typeof m?.map === 'string' ? D?.assetMap?.[m.map.replace(/^\.\//, '')] : null;   // [P4 H] a repo-path texture (E's dr_* cards) -> its export path

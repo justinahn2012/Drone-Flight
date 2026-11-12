@@ -49,9 +49,17 @@ Swift BVH, and keep each triangle's vertex order. Ties between equal hit distanc
    dot(D.xz, forward.xz) 0.342; 0 for c <= 0.42, else (0.3 + 0.7 c^2) smoothstep(0.42, 0.58, c); intensity = lumens /
    2.222485 sr x the lobe. Swift reference: Sources/SeoulBundle/Lobes.swift (testWallPackLobe, vectors from the JS).
    The Metal light loop must branch on all four ids, or wall packs go dark on the phone.
+   **Height rules** (P7 H): a mesh with world.json `meshes[].visibility` draws only while the eye's world Y >=
+   `cameraYMin`. Today that is E's `dr_roof` (roof planters, pipes, solar panels behind the 0.9 m parapets):
+   cameraYMin = dressing.json `facts.roofHideY` (6.6 m) minus build()'s 0.25 m margin. Swift: Visibility.swift
+   (`heightRules()`, `drawn(_:cameraY:)`; testHeightRules checks the rule against dressing.json and the mesh bounds).
 3. **Signs:** signs.glb + signs.bin + signs/msdf.png. Draw the 5 batched groups and the sign tiles from an indirect
    command buffer, culled on the GPU.
-4. **Life:** the LifeSim port on its own thread, a pure function of the take clock (section 2's traffic hash).
+4. **Life:** [P7 H] the opening cities are bundled: life/traffic-snapshots.json holds TrafficSim.snapshot() at take
+   clock 0 (sim 75 s, LIFE.warm) and every 10 s to 240 s (LIFE.warmMax), for the game's own net and seed. The port
+   restores one and steps on (restore(80 s) + 600 steps == the 90 s snapshot, checked by the exporter; Swift:
+   testTrafficSnapshots checks steps, lane indices and counts).
+    the LifeSim port on its own thread, a pure function of the take clock (section 2's traffic hash).
    Compute-skin the crowd from people/ (people.bin layouts in world.json `data.content.people`). The thread follows
    the browser worker's protocol (P5, seoul-life-worker.js): warm to take clock + 75 s before the first frame; a far
    target fast-forwards in slices of at most 40 ms and is retargeted by a newer request (only the newest is answered);
