@@ -2411,14 +2411,15 @@ void main(){
     }
     if (!tierM.length) return;
     if (camPos) tierCam.copy(camPos); else if (ctx.camera) ctx.camera.getWorldPosition(tierCam); else return;
-    if (tierCam.distanceToSquared(tierLast) < 0.25) return;
-    tierLast.copy(tierCam);
+    const off = tierOff || group.userData.lodOff === true;   // (debug / A-B: group.userData.lodOff = true draws N everywhere)
+    if (tierCam.distanceToSquared(tierLast) < 0.25 && off === tierStats.offNow) return;
+    tierLast.copy(tierCam); tierStats.offNow = off;
     const cell = ctx.scene.userData?.seoulLight?.stats?.cull?.cell || 64, hy = Math.max(0, tierCam.y - 10); tierStats.cell = cell;
     const nearSq = (ix, iz) => { const x0 = ix * cell, z0 = iz * cell, dx = Math.max(x0 - tierCam.x, 0, tierCam.x - x0 - cell), dz = Math.max(z0 - tierCam.z, 0, tierCam.z - z0 - cell); return dx * dx + dz * dz + hy * hy < LOD_R * LOD_R; };
     let nN = 0, nF = 0;
     for (const t of tierM) {
       const m = t.m;
-      if (tierOff || !(m.isBatchedMesh && m.userData.cellSpheres) && !m.userData.cell) {   // whole: the full model only
+      if (off || !(m.isBatchedMesh && m.userData.cellSpheres) && !m.userData.cell) {   // whole: the full model only
         m.visible = t.isN; if (m.isBatchedMesh) { const I = m.userData.instanceIds || []; for (let i = 0; i < I.length; i++) if (t.vis[i] === false) { m.setVisibleAt(I[i], true); t.vis[i] = true; } } continue; }
       if (m.isBatchedMesh) {
         const S = m.userData.cellSpheres, I = m.userData.instanceIds; m.visible = true;
