@@ -96,6 +96,9 @@ export const NIGHT_SKY = { zenith: [1.0, 0.72, 0.45], horizon: [1.3, 0.75, 0.38]
 // blended over 8 m and stored per probe as a factor of `density`; airlight sprites. P3: an airlight sprite's radius is
 // capped at maxR (3 m: a halo round the lamp, not a cloud over the facade), none within nearM of the camera (fades in
 // over fadeM), and a source's brightest channel is capped at lampCap x the median street lamp's (no violet clouds).
+// P7 (fpv #1, the wet mirror's ghost columns): the 5-tap stretch clamp (uv = fraction of the frame height), the far fade
+// (view distance m: full stretch to fade[0], farCut of it gone by fade[1]) and the mirror's vertical blur step (texels)
+export const MIRROR_STREAK = { clamp: 0.02, fade: [6, 12], farCut: 0.75, blur: 1.0, person: [0.5, 1.7, 0.32], vehicleShrink: 0.86 };
 export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
 // P4 lighting #4 (near air): sources from nearM = 2 m (was 4: close signs floated with no air round them), fading in over
 // fadeM, at nearGain (0.25) of their energy until fullM (4 m), so the halo never veils the lens.
@@ -1089,7 +1092,11 @@ export function attach(world, emitters = [], ctx = {}) {
     // [P5-C] graphics #6 (reflections, not sheets: station's lights mirrored as 1-2 m hard slabs): a wet film is not a mirror.
     // Five taps along the mirror's vertical (the view's Y on the ground) with a log-normal-ish falloff, stretched by how
     // rough the film is (a damp film streaks ~6 % of the frame, a puddle stays nearly sharp) and broken up by the ripple
-    float pud = cityPud / max(uCityWet, 1e-3), st = mix(0.055, 0.006, pud) * (0.7 + 0.6 * cityNoise(wpw.xz * 1.7));
+    // [P7-D] fpv #1 (ghost columns: station2's far footway showed 60-100 px translucent vertical runs): the stretch is
+    // clamped to 2 % of the frame height (was up to 5.5 % each way) and fades to the centre tap over 6 m past 6 m of view
+    // distance (a far film's streak is a few px, not a column); the mirror's own vertical blur is cut to match (renderMirror)
+    float pud = cityPud / max(uCityWet, 1e-3), st = min(mix(0.055, 0.006, pud) * (0.7 + 0.6 * cityNoise(wpw.xz * 1.7)), ${MIRROR_STREAK.clamp.toFixed(3)})
+      * (1.0 - ${MIRROR_STREAK.farCut.toFixed(2)} * smoothstep(${MIRROR_STREAK.fade[0].toFixed(1)}, ${MIRROR_STREAK.fade[1].toFixed(1)}, length(vViewPosition)));
     vec3 mr = texture(tCityMirror, muv).rgb * 0.36 + (texture(tCityMirror, muv + vec2(0.0, st * 0.25)).rgb + texture(tCityMirror, muv - vec2(0.0, st * 0.25)).rgb) * 0.2
       + (texture(tCityMirror, muv + vec2(rip.x * 0.2, st)).rgb + texture(tCityMirror, muv - vec2(rip.y * 0.2, st)).rgb) * 0.12;
     totalEmissiveRadiance += mr * (F * cityWet * inb); }`);
@@ -1287,6 +1294,46 @@ export function attach(world, emitters = [], ctx = {}) {
   const Rm = new THREE.Matrix4().set(1, 0, 0, 0, 0, -1, 0, 2 * mirror.y, 0, 0, 1, 0, 0, 0, 0, 1);
   const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _sz = new THREE.Vector2(), _cp = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
   const hidden = [];
+  // [P7-D] fpv #1: the crowd and the traffic are black in the mirror (as the buildings are): a car's or a walker's body
+  // now hides the shop glass and signs behind it in the puddle, instead of the reflection running through them as a
+  // translucent column. Proxies, not the real meshes: a 12-triangle box per body sharing the life part's own instance
+  // buffers (vehicles: instanceMatrix; people: iPos = x, y, z, yaw), so nothing is uploaded twice and the mirror pass adds
+  // ~12 x N triangles, not the 0.4-1 M of the bodies. Built lazily (the avatar tiers arrive after the build).
+  const moverOcc = new Map(), lifeGroup = () => world.parts?.life?.group || null;
+  const personGeo = (() => { const [w, h, d] = MIRROR_STREAK.person; return new THREE.BoxGeometry(w, h, d).translate(0, h / 2, 0); })();
+  const personMat = new THREE.ShaderMaterial({
+    vertexShader: `attribute vec4 iPos; void main(){ float c = cos(iPos.w), s = sin(iPos.w);
+      vec3 p = vec3(position.x * c + position.z * s, position.y, -position.x * s + position.z * c) + iPos.xyz;
+      gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0); }`,
+    fragmentShader: 'void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }', side: THREE.DoubleSide,
+  });
+  function moverProxy(src) {
+    if (src.isInstancedMesh && /^traffic-/.test(src.name || '')) {
+      const g = src.geometry; if (!g.boundingBox) g.computeBoundingBox();
+      const bb = g.boundingBox, sz = bb.getSize(new THREE.Vector3()), c = bb.getCenter(new THREE.Vector3()), k = MIRROR_STREAK.vehicleShrink;
+      const bg = new THREE.BoxGeometry(sz.x * k, sz.y * 0.92, sz.z * k).translate(c.x, bb.min.y + sz.y * 0.46, c.z);
+      const p = new THREE.InstancedMesh(bg, occMat, 1); p.instanceMatrix = src.instanceMatrix; p.count = 0;
+      p.frustumCulled = false; p.matrixAutoUpdate = false; p.name = 'mirror-occ-' + src.name; return p;
+    }
+    const ip = src.geometry?.attributes?.iPos;
+    if (ip && /^crowd-/.test(src.name || '') && src.geometry.isInstancedBufferGeometry) {
+      const g = new THREE.InstancedBufferGeometry(); g.index = personGeo.index; g.setAttribute('position', personGeo.attributes.position); g.setAttribute('iPos', ip);
+      g.instanceCount = 0; g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
+      const p = new THREE.Mesh(g, personMat); p.frustumCulled = false; p.matrixAutoUpdate = false; p.name = 'mirror-occ-' + src.name; return p;
+    }
+    return null;
+  }
+  function syncMovers() {
+    const G = lifeGroup(); if (!G) return;
+    for (const src of G.children) {
+      if (!moverOcc.has(src)) { const p = moverProxy(src); moverOcc.set(src, p); if (p) mirror.scene.add(p); }
+      const p = moverOcc.get(src); if (!p) continue;
+      let vis = true; for (let o = src; o; o = o.parent) if (!o.visible) { vis = false; break; }
+      if (p.isInstancedMesh) { p.instanceMatrix = src.instanceMatrix; p.count = src.count; p.matrix.copy(src.matrixWorld); p.matrixWorldNeedsUpdate = true; p.visible = vis && src.count > 0; }
+      else { const n = src.geometry.instanceCount; p.geometry.instanceCount = Number.isFinite(n) ? n : 0; p.visible = vis && p.geometry.instanceCount > 0; }
+    }
+  }
+  mirror.movers = () => [...moverOcc.values()].filter(Boolean).length;
   function renderMirror(r, cam) {
     const prev = r.getRenderTarget();
     const W = Math.max(64, Math.round((prev ? prev.viewport.z : r.getDrawingBufferSize(_sz).x) * Q.refl)), H = Math.max(36, Math.round((prev ? prev.viewport.w : _sz.y) * Q.refl));
@@ -1315,13 +1362,14 @@ export function attach(world, emitters = [], ctx = {}) {
       r.localClippingEnabled = lc;
       for (const h of hidden) { if (Array.isArray(h)) h[0].setVisibleAt(h[1], true); else h.visible = true; }
     }
+    syncMovers();
     r.render(mirror.scene, mc);
     _v.set(0, 0, -20).applyMatrix4(cam.matrixWorld); _v.y = mirror.y;
     _v2.copy(_v).add(UP).project(mc); _v.project(mc);
     let dx = _v2.x - _v.x, dy = _v2.y - _v.y; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
     blurMat.uniforms.uTexel.value.set(1 / W, 1 / H);
     r.autoClear = true;
-    blurMat.uniforms.tSrc.value = mirror.rt.texture; blurMat.uniforms.uDir.value.set(dx * 2.2, dy * 2.2);
+    blurMat.uniforms.tSrc.value = mirror.rt.texture; blurMat.uniforms.uDir.value.set(dx * MIRROR_STREAK.blur, dy * MIRROR_STREAK.blur);   // P7: 2.2 -> 1.0 texel steps (sigma ~1.7 % of the frame, was 3.7 %)
     r.setRenderTarget(mirror.rt2); r.render(quadScene, quadCam);
     blurMat.uniforms.tSrc.value = mirror.rt2.texture; blurMat.uniforms.uDir.value.set(-dy * 0.6, dx * 0.6);
     r.setRenderTarget(mirror.rt); r.render(quadScene, quadCam);
@@ -1718,6 +1766,8 @@ export function attach(world, emitters = [], ctx = {}) {
       for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex, U.tCityLM.value]) t.dispose();
       lm.disposed = true; lm.worker?.terminate(); lm.settle?.(false);
       U.tCityMirror.value?.dispose?.();
+      for (const p of moverOcc.values()) if (p) { mirror.scene.remove(p); p.geometry.dispose(); }
+      personGeo.dispose(); personMat.dispose();
       mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); quad.geometry.dispose();
       if (steam) { steam.geometry.dispose(); steam.material.dispose(); scene.remove(steam); }
       if (air.mesh) { air.g.dispose(); air.mat.dispose(); scene.remove(air.mesh); }
