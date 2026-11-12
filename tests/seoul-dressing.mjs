@@ -216,6 +216,22 @@ for (const sp of E.setPieces) for (const [k, g] of Object.entries(sp.gates || {}
   ok((E.facts.puddles || 0) >= 100 && DRESS_MATS.dr_puddle?.noCol && DRESS_MATS.dr_puddle.wet, `puddles at post bases (${E.facts.puddles})`);
   let atClub = 0; for (let i = 0; i < pp.length; i += 3) if (Math.hypot(pp[i] - 72.39, pp[i + 2] - 130.58) < 1.2) atClub++;
   ok(atClub > 6 && E.puddles.some((q) => Math.hypot(q[0] - 72.4, q[1] - 130.3) < 1.0 && q[4] >= 1.8), `club270's pole stands in a puddle, listed for the crowd (${atClub} verts)`);
+  // [P8-E lighting #1] Eoulmadang-ro's festoon string every 6 m from s = 0, the mid-span at 4.5 m (to 5.4 m where RED ROAD's
+  // line, its gates or a lamp head is under it); walk0, walk180 and w21 each have two over their first 15 m of floor
+  const eoul = new Set(layout.streets.filter((s) => s.name === 'Eoulmadang-ro' && s.kind === 'walking').map((s) => s.id));
+  const low = E.emitters.filter((e) => e.id.startsWith('dress:festoon:') && eoul.has(e.id.split(':')[2]) && /\.\d\d$/.test(e.id));   // (phase 5's ids carry one decimal; P7's pass skips these streets)
+  ok(low.length >= 120 && E.facts.overhead.festoons3 === low.length, `Eoulmadang-ro's 6 m festoon pass (${low.length} strings)`);
+  ok(low.every((e) => e.pos[1] >= 4.3 && e.pos[1] <= 5.4), `its mid-spans at 4.4-5.3 m (${Math.min(...low.map((e) => e.pos[1])).toFixed(2)}-${Math.max(...low.map((e) => e.pos[1])).toFixed(2)})`);
+  const s065 = low.filter((e) => e.id.split(':')[2] === 's065').map((e) => +e.id.split(':')[3]).sort((a, b) => a - b);
+  ok(s065[0] <= 2 && s065.length >= 30, `s065 strung from s = 0 (first at ${s065[0]}, ${s065.length} strings)`);
+  for (const [n, [x, , z, yaw]] of Object.entries({ walk0: SH.walk0, walk180: SH.walk180, w21: SH.w21 })) {
+    const yr = yaw * Math.PI / 180, f = [-Math.sin(yr), -Math.cos(yr)];
+    const ahead = low.filter((e) => { const dx = e.pos[0] - x, dz = e.pos[2] - z, a = dx * f[0] + dz * f[1], l = Math.abs(dx * f[1] - dz * f[0]); return a > 0 && a < 15 && l < a * 1.9 + 3; });
+    ok(ahead.length >= 2, `${n}: ${ahead.length} low strings over the first 15 m`);
+  }
+  // [P8-E art #5] the roof kit reads from the high pose: tanks at the villa size and pale, 70 % with a lit flood (role roof)
+  const floods = E.emitters.filter((e) => e.id.startsWith('dress:roofflood:'));
+  ok((E.facts.roofTanks || 0) >= 140 && floods.length >= 0.6 * E.facts.roofTanks && floods.every((e) => e.kind === 'street' && e.role === 'roof' && e.lumens === 900 && e.normal[1] < -0.7), `roof tanks ${E.facts.roofTanks}, floods ${floods.length}`);
 }
 
 // 6. top-down map: C's roofs dark, ribbons grey, dressing coloured by key, emitters as dots, holes outlined
