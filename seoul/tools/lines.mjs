@@ -16,8 +16,8 @@
 // [P4-F1] phase 4 (panel 3): tuned at the game's crowd (LIFE.maxAgents, design #2); the stair dive's pre-gate over the heads
 // under the canopy lip (design #1); timed street lines carry `par` for the speed bonus (design #3); the take opens UNDER
 // THE STAGE, whose exit lines up with the walking street's start gate (design #4).
-// [P6-F] phase 6 (panel 5): `blocked` lines (the guide, the brackets and the grid skip them: STATION STAIRS until G1's walkers
-// keep out of the stair mouth, design #5 / ux #1); the opening re-cut (UNDER THE STAGE's first entry 1.95-3.3 m, plus an outer
+// [P6-F] phase 6 (panel 5): `blocked` lines (the guide, the brackets and the grid skip them, design #5 / ux #1; STATION STAIRS
+// is open again: 23/24 in take-sim once its pilot dives like a pilot); the opening re-cut (UNDER THE STAGE's first entry 1.95-3.3 m, plus an outer
 // pre-gate at 3.2 m 8 m out, design #2); TO THE RED ROAD (design #6); the spawn turned +6 deg and looking 8 deg down (ui #1);
 // stars [20k, 100k, 290k] re-fitted on 8 runs (design #3).
 import fs from 'node:fs';
@@ -168,7 +168,7 @@ const HEAD_Y = [1.95, 2.6];
 const HEADS = { y0: HEAD_Y[0], y1: HEAD_Y[1], heads: true };
 // [P4-F1 design #2] the game's crowd (gateprobe.mjs lifeAgents: LIFE.maxAgents, 15,500 at quality auto, half at low;
 // phase 3 tuned at 2,400, a fifth of the people)
-const lifeSim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('auto'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] the game's traffic: G1's bus lane round the shelter island
+const lifeSim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('auto'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null });   // [integ8] the game's traffic: G1's bus lane round the shelter island
 const queues = lifeSim.crowd?.queues || [];
 const usedQ = new Set();
 // the queue whose door projects onto `path` within r m of arc length s and within the street (+4 m)
@@ -611,10 +611,12 @@ const SET_LINES = {
   // [P4-F1 design #1] the dive's pre-gate at 2.0-2.7 m under the canopy lip (2.76 m), not E's 0.55-2.35 m in the mouth:
   // someone stands or walks on that approach 100 % of the time (the steps themselves <= 1 %), and forced dives took 20
   // HEADS! in 18. From there to E's landing gate is the ~27 deg dive, over the heads and under the roof.
-  // [P6-F design #5 / ux #1] blocked: walkers crossing the stair mouth occupy the dive 28-41 % (movers.mjs PEND) and it flies
-  // 0/12 in take-sim, so the guide must not send anyone there. Lift it (delete `blocked`) when take-sim's stairs route flies
-  // >= 10/12 on G1's stair-mouth routing (tests/take.mjs and seoul-ui check a guided line isn't 0/12).
-  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true, preY: [2.0, 2.7], blocked: true },
+  // [P6-F design #5 / ux #1] `blocked: true` takes a line out of the guide, the brackets and the grid's NEXT (take.js, main.js).
+  // The stair dive was 0/12 in phase 5 and blocked at first here; its 0/12 was mostly the sim pilot (a 3 m vertical look-ahead
+  // dropped under the 2.0 m pre-gate, and a P-only climb lagged the 28 deg dive onto the mouth's lip: 0/12 with no walkers at
+  // all). With take-sim's pilot fixed it flies 23/24 on a scratch merge with G1's stair-mouth keep-out (and 23/24 without it,
+  // with more HEADS), so it is open. tests/take.mjs: a blocked line must be < 10/12 in the record, an open one >= 10/12.
+  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true, preY: [2.0, 2.7] },
   // [P6-F design #2 / ux #3] recut: E's 2.2 x 0.93 m openings (1.95-2.88 m) sit 0.1 m outside the 3.3-3.4 m canopy at each end;
   // the sharp sims left the exit 0.03-0.09 m over its top in 3 of 8 runs and flew the street at FLOW x1. Both openings grow
   // to the highest top that keeps CLEAR under the canopy's underside between them (a ray up every 0.5 m across the move; a top
@@ -720,7 +722,7 @@ const R_PROBE = 0.35, NU = 9;
 // and length from the crowd's shared random stream after the walkers, whose number follows maxAgents. The queue moves here
 // are placed on the game's (auto) crowd; this reports how far each one's queue moves at low (contract for G1: draw the
 // queues from their own seed, q.seed, so every preset stands them in the same place).
-{ const low = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('low'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });
+{ const low = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('low'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null });
   const byLot = new Map((low.crowd?.queues || []).map((q) => [q.lot, q]));
   const mine = (lifeSim.crowd?.queues || []).filter((q) => usedQ.has(q.id));
   report.push(`  (queues at the low preset (${lifeAgents('low')} people): ${mine.map((q) => { const o = byLot.get(q.lot); return o ? `${q.lot} door ${Math.hypot(o.door[0] - q.door[0], o.door[1] - q.door[1]).toFixed(1)} m off, ${o.Q} not ${q.Q} people` : `${q.lot} gone`; }).join('; ') || 'none used'})`); }

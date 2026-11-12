@@ -6,7 +6,7 @@
 // [P4-F1] the game's crowd (LIFE.maxAgents; env LIFE_Q=low: the low preset's half, design #2); the A* reaches 4 m below the
 // street (down the stair dive) over a heightfield floor: the street at 0, E's stairwell openings (dressing holes) open
 // (design #1); routes open UNDER THE STAGE into the walking street (design #4); prints FAST lines and the first x2.
-// [P6-F] design #2 / #4: 8 runs (the record), the opening's outer pre-gate flown first, an A* that keeps over the heads (LOWY);
+// [P6-F] LifeSim gets E's stairwell `holes` (as world-seoul builds it: G1 keeps walkers out of exit 9's mouth); design #2 / #4: 8 runs (the record), the opening's outer pre-gate flown first, an A* that keeps over the heads (LOWY);
 // the record keeps `by` (what crashed a run) and `heads`.
 // [P5-F] design #1: the take opens at the junction (lines.json takeStart), UNDER THE STAGE (its `first` entry, out of the
 // junction) then the walking street out to its SE end; longer routes fly it back (entry 1) to the junction. design #6:
@@ -39,7 +39,7 @@ let movers = null;
 if (MOVERS) {
   try {
     const { LifeSim } = await import('../../seoul-life.js'), { lifeMovers } = await import('../../seoul-movers.js');
-    const sim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents(), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null });   // [integ8] as world-seoul builds it; [P4-F1] at the game's crowd
+    const sim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents(), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null });   // [integ8] as world-seoul builds it; [P4-F1] at the game's crowd
     // [P3-F1] walkers too (the panel: "take-sim has no walkers"): seoul-life's soft people colliders, at the take clock
     // + the drawn city's 75 s warm start, as world-seoul's build() serves them to the game (colliders.people)
     movers = lifeMovers({ sim, colliders: process.env.NOWALKERS ? {} : { people: (p, r, t) => sim.hitPeople(p, r, t + 75) } });
@@ -56,7 +56,7 @@ const RC = 0.9, Y0 = -4, NY = 39;
 // [P6-F design #4] a pilot keeps over the heads: an A* step at street level below LOWY m (the crowd, the cars) costs LOWC x
 // (phase 5's careful hongik takes dipped to 1.0 m under a sign before DOOR QUEUE and met a car: 3 crashes in 8). Below the
 // street (the stair dive) is unaffected.
-const LOWY = 1.9, LOWC = +(process.env.LOWC || 4); const occ = new Map(), _rd = new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(0, -1, 0));
+const LOWY = 1.9, LOWC = +(process.env.LOWC || 4), VLOOK = +(process.env.VLOOK || 0.3), DIVE_LOOK = 6, DIVE_VZ = +(process.env.DIVE_VZ || 0.9); const occ = new Map(), _rd = new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(0, -1, 0));
 const underground = (x, y, z) => { if (y >= 0) return false; _rd.origin.set(x, y, z); return !bvh.raycastFirst(_rd, THREE.DoubleSide, 0, 6); };
 const key = (i, j, k) => (i + 400) * 2e6 + (j + 700) * 1000 + k;
 const blocked = (i, j, k) => { if (k < 0 || k >= NY) return true; const K = key(i, j, k); let o = occ.get(K); if (o === undefined) { o = underground(i, Y0 + k, j) || clr(new THREE.Vector3(i, Y0 + k, j), RC + 0.01) < RC; occ.set(K, o); } return o; };
@@ -171,9 +171,9 @@ function buildPath(route, rng, spread) {
       let a = along(G, -2.5).add(off), b = along(G, 2.5).add(off);
       // [P4-F1] a pre-gate -> gate move (a 'line' of two gates) whose straight line is open is flown straight (the stair
       // dive: 27 deg from under the canopy lip to the landing gate), not level out of the pre-gate
-      carry = null;
+      carry = null; let down = false;
       if (kind === 'line' && gi === 0 && gates.length === 2) { const P = V(G.c).add(off), Q = V(gates[1].c).add(off), d = Q.clone().sub(P), L = d.length(); d.normalize();
-        _rs.origin.copy(P); _rs.direction.copy(d); if (!bvh.raycastFirst(_rs, THREE.DoubleSide, 0, L) && Math.abs(Q.y - P.y) > 1) { b = P.clone().addScaledVector(d, Math.min(1.5, L / 3)); carry = off; } }
+        _rs.origin.copy(P); _rs.direction.copy(d); if (!bvh.raycastFirst(_rs, THREE.DoubleSide, 0, L) && Math.abs(Q.y - P.y) > 1) { down = Q.y < P.y - 1; b = P.clone().addScaledVector(d, Math.min(1.5, L / 3)); carry = off; } }
       const straight = gi === 1 && path.straight;   // the second gate of a straight move: on along the same line (ray-checked above)
       if (straight) a = V(G.c).add(off).addScaledVector(V(G.c).add(off).sub(path[path.length - 1]).normalize(), -1.0);
       path.straight = carry !== null;
@@ -181,7 +181,14 @@ function buildPath(route, rng, spread) {
       let leg = straight || losClear(last, a) ? [last, a] : astar3(last, a), bb = b;
       if (!leg) { const a0 = along(G, -2.5); bb = along(G, 2.5); leg = losClear(last, a0) ? [last, a0] : astar3(last, a0); }   // the gate centre instead
       if (!leg) { console.log('NO LEG to', name, gi, a.toArray().map((x) => x.toFixed(1)), '(gate skipped: the 1 m A* found no 0.9 m-clear path)'); continue; }
-      path.push(...simplify(leg).slice(1), bb);
+      // [P6-F] a straight move's first gate: through its centre (+ the line offset) before turning down the move (the level
+      // approach to bb cut the corner: the stair dive's pre-gate was crossed 0.1-0.4 m under its 2.0 m floor)
+      const k0 = path.length - 1;
+      path.push(...simplify(leg).slice(1), ...(carry && down && bb === b ? [V(G.c).add(off)] : []), bb);
+      // [P6-F] the segments of a straight dive (down: the stair dive), its approach included: flown with the dive model in fly()
+      // (a climb, SIGN STACK, keeps phase 5's pilot)
+      if (gi === 0) path.down = down;
+      if ((carry && down) || (straight && path.down)) for (let k2 = k0; k2 < path.length - 1; k2++) (path.dive ||= new Set()).add(k2);
     }
   }
   return path;
@@ -190,7 +197,7 @@ function buildPath(route, rng, spread) {
 function fly(path, P, rng) {
   const dr = new Drone('freestyle5'); let crashed = false; dr.onCrash = () => { crashed = true; };
   { const d0 = path[1].clone().sub(path[0]); dr.reset(path[0].clone(), Math.atan2(-d0.x, -d0.z)); }
-  const tk = new Take(), evs = [], DT = 1 / 240; let seg = 0, t = 0, stuck = 0, lastP = dr.pos.clone();
+  const tk = new Take(), evs = [], DT = 1 / 240; let seg = 0, vseg = 0, t = 0, stuck = 0, lastP = dr.pos.clone();
   const ou = { p: 0, r: 0, c: 0 }, vC = P.v * (0.9 + 0.2 * rng.next());
   while (t < 600) {
     const p = dr.pos; let tgt = null, k = seg;
@@ -203,11 +210,35 @@ function fly(path, P, rng) {
     const hDes = Math.atan2(-dx, -dz), e = dh < 0.6 ? 0 : Math.atan2(Math.sin(hDes - dr.heading), Math.cos(hDes - dr.heading));
     let turn = 0; if (seg < path.length - 2) { const a = path[seg + 1].clone().sub(path[seg]).setY(0), b = path[seg + 2].clone().sub(path[seg + 1]).setY(0); if (a.length() > 0.1 && b.length() > 0.1) turn = a.angleTo(b); if (p.distanceTo(path[seg + 1]) > 12) turn = 0; }
     const steep = dh < 1.5 ? 1 : 0;
-    const vWant = steep ? 0 : vC * Math.max(0.3, Math.cos(Math.min(Math.PI / 2, Math.abs(e) * 1.5))) * (1 - 0.6 * Math.min(1, turn / 1.6));
+    // [P6-F] a pilot slows for a dive: Cine's floor guard lets the quad sink ~2 x (height over the floor - 0.6) m/s while the
+    // right stick is on (flight.js _diveGuard, skim), ~1 m/s over the stair mouth's steps, so a 28 deg dive at street speed
+    // runs into the lip. Over the next DIVE_LOOK m of path, a segment steeper than 0.3 down caps the speed at DIVE_VZ / slope.
+    // (only on a straight move's segments, path.dive: elsewhere phase 5's pilot, a P term on the steering look-ahead's height)
+    let vCap = Infinity;
+    { let acc = 0; for (let k2 = vseg; k2 < path.length - 1 && acc < DIVE_LOOK; k2++) { const a = path[k2], b = path[k2 + 1], dhh = Math.hypot(b.x - a.x, b.z - a.z), sl = dhh > 0.3 ? (a.y - b.y) / dhh : 0;
+        if (sl > 0.3 && path.dive?.has(k2)) vCap = Math.min(vCap, DIVE_VZ / sl); acc += k2 === vseg ? Math.max(0, a.distanceTo(b) - p.distanceTo(a)) : a.distanceTo(b); } }
+    const vWant = steep ? 0 : Math.min(vCap, vC * Math.max(0.3, Math.cos(Math.min(Math.PI / 2, Math.abs(e) * 1.5))) * (1 - 0.6 * Math.min(1, turn / 1.6)));
     const pitch = Math.max(-1, Math.min(1, vWant / 18 + ou.p * 0.3));
     const roll = Math.max(-1, Math.min(1, -e * 2.2 + ou.r));
-    const climb = Math.max(-1, Math.min(1, (tgt.y - p.y) * 0.7 - dr.vel.y * 0.12 + ou.c * 0.5));
-    dr.step(DT, { thr: 0.4, pitch, roll, yaw: 0, climb }, 'cine', world); t += DT;
+    // [P6-F] vertical: the path's height VLOOK (0.3) m ahead (the 3-4.5 m steering look-ahead started the stair dive before its
+    // pre-gate: under it, into the heads) plus a feed-forward of that segment's slope x the horizontal speed (a P term alone
+    // lagged a 28 deg dive by 0.8 m, onto the stair mouth's lip: 0 of 12 even with no walkers)
+    let yRef = tgt.y, vyDes = 0, plumb = false;
+    // (vseg: the segment the quad is actually over, advanced only past a segment's end; `seg` runs ahead by the steering look)
+    // (the nearest segment from vseg to seg, never backwards: a path that doubles back kept a plain "past its end" rule
+    // on an old segment's height, into the stage canopy)
+    { let bd = Infinity, bk = vseg; for (let k2 = vseg; k2 <= Math.min(seg, path.length - 2); k2++) { const a = path[k2], b = path[k2 + 1], ab = b.clone().sub(a), Lg = ab.length() || 1e-6;
+        const u = Math.max(0, Math.min(Lg, p.clone().sub(a).dot(ab) / Lg)), d = p.distanceTo(a.clone().addScaledVector(ab, u / Lg)); if (d < bd - 1e-6) { bd = d; bk = k2; } } vseg = bk; }
+    { let kk = vseg, ss = 0; { const a = path[kk], b = path[kk + 1], ab = b.clone().sub(a), Lg = ab.length() || 1e-6; ss = Math.max(0, Math.min(Lg, p.clone().sub(a).dot(ab) / Lg)) + VLOOK; }
+      while (kk < path.length - 2) { const Lg = path[kk + 1].distanceTo(path[kk]); if (ss <= Lg) break; ss -= Lg; kk++; }
+      const a = path[kk], b = path[kk + 1], Lg = a.distanceTo(b) || 1e-6, f = Math.min(1, ss / Lg), dhh = Math.hypot(b.x - a.x, b.z - a.z);
+      plumb = dhh < 0.5 * Math.abs(b.y - a.y);   // a climb / drop straight up or down (SIGN STACK): phase 5's look-ahead
+      yRef = a.y + (b.y - a.y) * f; const slope = dhh > 0.3 ? (b.y - a.y) / dhh : 0; if (Math.abs(slope) > 0.15) vyDes = slope * Math.hypot(dr.vel.x, dr.vel.z); }
+    const ff = vyDes > 0 ? (-3.6 + Math.sqrt(12.96 + 9.6 * vyDes * 6 / dr.c.cineClimb)) / 4.8 : vyDes < 0 ? -(-1.8 + Math.sqrt(3.24 + 40.8 * -vyDes * 12 / dr.c.cineDive)) / 20.4 : 0;
+    const dv = !!path.dive && !plumb && (path.dive.has(vseg) || path.dive.has(seg));
+    const climb = dv ? Math.max(-1, Math.min(1, ff + (yRef - p.y) * 0.7 - (dr.vel.y - vyDes) * 0.12 + ou.c * 0.5))
+      : Math.max(-1, Math.min(1, (tgt.y - p.y) * 0.7 - dr.vel.y * 0.12 + ou.c * 0.5));
+    dr.step(DT, { thr: 0.4, pitch, roll, yaw: 0, climb }, 'cine', world); t += DT; if (process.env.TRACE && Math.round(t * 240) % 30 === 0) console.log('TR', t.toFixed(2), dr.pos.toArray().map((v) => v.toFixed(2)).join(','), 'yRef', yRef.toFixed(2), 'vy', dr.vel.y.toFixed(2), 'vh', Math.hypot(dr.vel.x, dr.vel.z).toFixed(2), 'seg', seg);
     for (const e2 of tk.update(DT, dr, world, { hands: true, moved: true, steer: true })) evs.push({ ...e2, at: t, ...(process.env.TLPOS ? { p: dr.pos.toArray().map((v) => +v.toFixed(2)) } : {}) });
     if (crashed) break;
     if ((Math.round(t * 240) % 480) === 0) { if (dr.pos.distanceTo(lastP) < 0.5) stuck++; else stuck = 0; lastP = dr.pos.clone(); if (stuck > 3) break; }
@@ -233,7 +264,7 @@ const routes = ROUTE === 'all' ? Object.keys(ROUTES) : ROUTE.split(',');
 const T0 = performance.now();
 for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS).filter(([k]) => !process.env.PILOT || process.env.PILOT.split(',').includes(k))) {
   const R = []; const rng = new Rng(1000 + rn.length * 31 + pn.length * 7);
-  for (let i = 0; i < RUNS; i++) { const path = buildPath(ROUTES[rn], rng, P.spread); if (!path) break; R.push(fly(path, P, rng)); }
+  for (let i = 0; i < RUNS; i++) { const path = buildPath(ROUTES[rn], rng, P.spread); if (!path) break; if (process.env.TRACE) console.log('PATH', path.map((v) => v.toArray().map((x) => x.toFixed(2)).join(',')).join(' | ')); R.push(fly(path, P, rng)); }
   const tot = R.map((r) => r.total);
   results[`${rn}/${pn}`] = { runs: R.length, p25: q(tot, 0.25), p50: q(tot, 0.5), p75: q(tot, 0.75), crash: R.filter((r) => r.crashed).length, by: R.map((r) => r.by).filter(Boolean),
     stars: R.map((r) => r.stars), lines: q(R.map((r) => r.lines), 0.5), micros: q(R.map((r) => r.micros), 0.5), banks: q(R.map((r) => r.banks), 0.5), scrapes: q(R.map((r) => r.scrapes), 0.5),

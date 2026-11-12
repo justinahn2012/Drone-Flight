@@ -4940,7 +4940,6 @@
    ],
    "within": 8,
    "piece": "station-stairs",
-   "blocked": true,
    "hint": "down exit 9's stairs to the landing"
   },
   {
