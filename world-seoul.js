@@ -1318,7 +1318,7 @@ void seoulGlass(inout vec4 dc) {
   // [P5-C] graphics #2 / fpv #2: shop glass F0 0.08 (laminated, film, two faces) rising to 0.25+ at grazing; P4's 0.06
   // [P8-C] graphics #1 (reflective glass): shop glass F0 0.1, and at least 0.25 past ~75 deg, so the street lies on the glass
   float F0 = kind > 0.5 ? 0.1 : 0.05, F = min(0.6, (F0 + (1.0 - F0) * pow(1.0 - ci, 5.0)) * (1.0 + 0.9 * grime));
-  if (kind > 0.5) F = max(F, 0.25 * smoothstep(0.45, 0.2, ci));
+  if (kind > 0.5) F = max(F, 0.25 * (1.0 - smoothstep(0.2, 0.45, ci)));
   col = col * (1.0 - F) * (1.0 - 0.12 * grime) + F * sgEnv(sWPos, rf, n);
   sgEmit = col * (1.0 - gcov); dc.rgb = mix(dc.rgb, vec3(0.055, 0.055, 0.06), gcov); if (gcov > 0.5) sgMask = 1.0;
 }
