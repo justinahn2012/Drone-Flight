@@ -50,6 +50,18 @@ def edge_energy(path):
     lap = np.abs(4 * a[1:-1, 1:-1] - a[:-2, 1:-1] - a[2:, 1:-1] - a[1:-1, :-2] - a[1:-1, 2:])
     return round(float(lap.mean()), 3)
 
+def cg_headroom_gb():
+    """memory-cgroup limit - usage (v1 or v2) for this process, GB; inf when unknown"""
+    try:
+        for ln in open('/proc/self/cgroup'):
+            h, ctl, path = ln.strip().split(':', 2)
+            for base, lim, use in ((f'/sys/fs/cgroup/memory{path}', 'memory.limit_in_bytes', 'memory.usage_in_bytes'), (f'/sys/fs/cgroup{path}', 'memory.max', 'memory.current')):
+                if ('memory' in ctl.split(',') or h == '0') and os.path.exists(os.path.join(base, use)):
+                    L = open(os.path.join(base, lim)).read().strip(); U = int(open(os.path.join(base, use)).read())
+                    if L != 'max' and int(L) < 1 << 50: return (int(L) - U) / 2**30
+    except Exception: pass
+    return float('inf')
+
 async def thumb_shot(p, a, port, errs):
     pose = json.load(open(os.path.join(a.dir, 'seoul', 'ui', 'stills.json'), encoding='utf8'))['thumb']['pose']
     W, H = int(1600 * a.ss), int(900 * a.ss)
@@ -81,6 +93,16 @@ async def main(a):
     srv, port = S.serve(os.path.abspath(a.dir))
     lock = open('/tmp/onetake-browser.lock', 'w'); t_wait = time.time(); fcntl.flock(lock, fcntl.LOCK_EX)
     print(f'browser lock acquired after {time.time() - t_wait:.0f}s', flush=True)
+    # [P8-F] the box's `free -m` overstates room: the shell's memory cgroup is ~6.2 GB of the 8, and both phase-8 retries were
+    # OOM-killed loading with free -m at 3.8 GB but ~1.8 GB of cgroup headroom. Checked after the lock (a 12 min lock wait moved
+    # it): wait up to a.wait_mem s for >= a.need_gb, else release the lock and exit without launching
+    t_m = time.time()
+    while cg_headroom_gb() < a.need_gb:
+        if time.time() - t_m > a.wait_mem:
+            print(f'cgroup headroom {cg_headroom_gb():.2f} GB < {a.need_gb} GB after {a.wait_mem}s: not launching', flush=True)
+            fcntl.flock(lock, fcntl.LOCK_UN); srv.shutdown(); sys.exit(2)
+        time.sleep(15)
+    print(f'cgroup headroom {cg_headroom_gb():.2f} GB', flush=True)
     rep = {}
     try:
         async with async_playwright() as p:
@@ -157,5 +179,5 @@ async def main(a):
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--dir', required=True); ap.add_argument('--size', default='844x390'); ap.add_argument('--quality', default='low'); ap.add_argument('--out', required=True)
-    ap.add_argument('--only', default=''); ap.add_argument('--thumb', default=''); ap.add_argument('--ss', type=float, default=2.0)
+    ap.add_argument('--only', default=''); ap.add_argument('--thumb', default=''); ap.add_argument('--ss', type=float, default=2.0); ap.add_argument('--need-gb', type=float, default=3.0); ap.add_argument('--wait-mem', type=float, default=1800)
     asyncio.run(main(ap.parse_args()))
