@@ -1121,7 +1121,13 @@ export const GRADES = {
   //   [0.09, 24, 0.03, 1.0]: the edge lobe at 9 % plus a ring of 4 taps 8 px out at 3 % (sigma ~8-10 px): the letter edge
   //   reaches 120 at ~8 px, not 4.5. air[4] = 0.028: the slot cap (exposed luma, ~24 codes, R ~28): on sky-depth pixels AIR_FS
   //   weighs as a lit canyon, D's in-scatter + the lift is held there (w21's slot read (34,25,22) against the refs' 28 top).
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.98, 1.0, 0.96], wbShade: null, evBias: -1.9, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
+  //   evBias -1.9 -> -2.05: exposure re-fit last on a scratch merge of p8 A + C (shop rooms, glass, one tenant per blade) + D
+  //   (mirror, sign wash, rim, shop spill, NIGHT_LM v5), re-baked. GL at -1.9 (960 wide): p50 club90 52.9 (band top 50),
+  //   station 47.3 (open band top 45), walk0 42.4, w21 44.9, walk180 38.8, station2 37.3. Modelled at -2.05: 49.7 / 43.8 /
+  //   39.7 / 41.7 / 36.3 / 34.8. GL: w21 slot (34,25,22) -> (30,23,20); station screen (100,76,111) -> (110,126,147), its
+  //   violet / magenta 44 -> 2 % of the bright hue; walk0 warm 82 -> 45 %, red 10 -> 21 %. The ground rows (walk0 19,
+  //   walk180 21, g/w 0.35) are a light gap: they cannot be bought with exposure while club90 sits over its band.
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.98, 1.0, 0.96], wbShade: null, evBias: -2.05, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3], haloE: [0.09, 24, 0.03, 1.0],
