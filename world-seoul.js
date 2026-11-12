@@ -30,15 +30,21 @@ const IS_NODE = typeof window === 'undefined';
 // CC0 Poly Haven scans (1k). color: tint on the texture (linear multiplier); albedo: the material's mean (for bakes/tests).
 export const SEOUL_MATS = {
   road: { id: 'asphalt_02', tile: 6.0, maps: ['diff', 'nor_gl'], color: [0.9, 0.9, 0.92], rough: 0.55, albedo: [0.10, 0.10, 0.10] },     // wet-ish: S3 owns the reflection
-  walk: { id: 'concrete_pavers_02', tile: 2.4, maps: ['diff', 'nor_gl'], color: [0.95, 0.95, 0.95], rough: 0.7, albedo: [0.25, 0.24, 0.23] },
-  plaza: { id: 'brick_pavement_02', tile: 2.0, maps: ['diff', 'nor_gl'], color: [0.85, 0.8, 0.8], rough: 0.7, albedo: [0.22, 0.17, 0.15] },
+  // [P6-C] the dark-ground fix (lighting #1, graphics #1, colour #1; PLAN-P6 #1): the frame read lit walls over a black floor
+  // (walk0 ground / wall 0.23) because the pavers were 0.24 under 0.47 render. Pale grey concrete pavers 0.24 -> 0.31 with a
+  // gloss of 0.35 (rough 0.7 -> 0.65; D's damp film takes it to ~0.39) so they catch the shop pools; the brick plaza 0.17 -> 0.24
+  walk: { id: 'concrete_pavers_02', tile: 2.4, maps: ['diff', 'nor_gl'], color: [1.23, 1.23, 1.22], rough: 0.65, albedo: [0.324, 0.311, 0.294] },
+  plaza: { id: 'brick_pavement_02', tile: 2.0, maps: ['diff', 'nor_gl'], color: [1.15, 1.1, 1.08], rough: 0.65, albedo: [0.298, 0.234, 0.202] },
   // [P4-C] art #2 (walls you can see): `color` is the gain that takes each scan's measured mean (tools/texmean.py) to the
   // albedo in `albedo` (texture mean x color); per-lot tint x grime x detail take ~16 % off that on the wall. Phase 3's
   // 'tile' was concrete_tile_facade, a charcoal tile with a 0.04 mean: 37 % of the low lots and 60 % of the towers (every
   // hero wall in walk0, walk180, w21, club90 and station) were black whatever the light did.
-  tile: { grime: 1, id: 'rounded_square_tiled_wall', tile: 2.0, maps: ['diff', 'nor_gl'], color: [2.3, 2.7, 3.3], rough: 0.45, albedo: [0.541, 0.495, 0.431] },   // beige mosaic tile (2 m scan, 7 cm tiles)
+  // [P6-C] the dark-ground fix: the pale walls (beige tile, cream render) were 0.47 on the wall after tint and grime, the
+  // brightest diffuse surface in a canyon lit from the street; x 0.70 -> ~0.33 (Mapo-gu's weathered render / tile, not
+  // fresh paint). Brick, concrete and granite already sit at 0.24-0.32 on the wall and hold
+  tile: { grime: 1, id: 'rounded_square_tiled_wall', tile: 2.0, maps: ['diff', 'nor_gl'], color: [1.61, 1.89, 2.31], rough: 0.45, albedo: [0.379, 0.347, 0.302] },   // beige mosaic tile (2 m scan, 7 cm tiles)
   brick: { grime: 1, id: 'brown_brick_02', tile: 1.0, maps: ['diff', 'nor_gl'], color: [1.0, 0.85, 0.95], rough: 0.85, albedo: [0.476, 0.244, 0.137] },     // Hongdae's red-brown brick (1 m scan: 9 cm courses; P3's 2.2 m tile drew 20 cm bricks)
-  plaster: { grime: 1, id: 'beige_wall_001', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.64, 2.02, 2.55], rough: 0.9, albedo: [0.559, 0.530, 0.479] },    // cream-white painted render
+  plaster: { grime: 1, id: 'beige_wall_001', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.15, 1.41, 1.79], rough: 0.9, albedo: [0.391, 0.371, 0.335] },    // cream-white painted render
   concrete: { grime: 1, id: 'concrete_wall_008', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.35, 1.48, 2.0], rough: 0.9, albedo: [0.359, 0.350, 0.323] },
   stone: { grime: 1, id: 'granite_tile_03', tile: 1.8, maps: ['diff', 'nor_gl'], color: [3.2, 3.7, 4.3], rough: 0.5, albedo: [0.403, 0.379, 0.359] },        // [P4-C] grey granite cladding (towers, podiums): 60 cm panels
   roof: { grime: 1, id: 'concrete_floor_02', tile: 4.0, maps: ['diff', 'nor_gl'], color: [0.55, 0.75, 0.6], rough: 0.8, albedo: [0.17, 0.22, 0.18] },   // green roof paint (T5)
