@@ -99,6 +99,9 @@ export const NIGHT_SKY = { zenith: [1.0, 0.72, 0.45], horizon: [1.3, 0.75, 0.38]
 // P7 (fpv #1, the wet mirror's ghost columns): the 5-tap stretch clamp (uv = fraction of the frame height), the far fade
 // (view distance m: full stretch to fade[0], farCut of it gone by fade[1]) and the mirror's vertical blur step (texels)
 export const MIRROR_STREAK = { clamp: 0.02, fade: [6, 12], farCut: 0.75, blur: 1.0, person: [0.5, 1.7, 0.32], vehicleShrink: 0.86 };
+// P7 (colour #1 / fpv #2): the sky's in-scatter through the canyon band (see skyMat): gain (A grades), band top (m, the
+// volume's top layer), max ray length (m), fluence cap per sample (cityHaze caps its two-point mean at 10), march steps
+export const SKY_AIR = { gain: 1.0, top: 50, maxT: 160, cap: 20, steps: 8 };
 export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
 // P4 lighting #4 (near air): sources from nearM = 2 m (was 4: close signs floated with no air round them), fading in over
 // fadeM, at nearGain (0.25) of their energy until fullM (4 m), so the halo never veils the lens.
@@ -1035,6 +1038,7 @@ export function attach(world, emitters = [], ctx = {}) {
     uCityAO: aoU?.uAO || { value: blackTex }, uCityAOOn: aoU?.uAOOn || { value: 0 }, uCityAOScale: aoU?.uAOScale || { value: new THREE.Vector2(1, 1) },
     uCityCar: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) }, uCityCarS: { value: Array.from({ length: 12 }, () => new THREE.Vector4()) },
     uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, uCityLMR: uLMR, tCityLM: { value: tLM },
+    uCitySkyAir: { value: new THREE.Vector4(ctx.skyAir ?? SKY_AIR.gain, SKY_AIR.top, SKY_AIR.maxT, SKY_AIR.cap) },   // P7: the canyon sky's light term
     tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityDamp: { value: ctx.damp ?? 0.45 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
@@ -1222,16 +1226,44 @@ export function attach(world, emitters = [], ctx = {}) {
   if (base?.isLight && ctx.keepBaseLight !== true) { base.intensity *= ctx.baseLightScale ?? 0; if (base.intensity <= 0) base.visible = false; }
 
   // ------------------------------------------------------------------------------------- sky
+  // [P7-D] colour #1 / fpv #2 (the canyon sky slot read 8-9 codes over walk0 / walk180, 15-28 in the refs): the light term.
+  // Every surface already gets cityHaze's in-scatter of the volume's haze fluence, but the sky did not, so the slot over a
+  // sign street was the one thing in the frame with no air in front of it. The sky now marches its view ray from the
+  // camera up through the volume (SKY_AIR.steps samples to SKY_AIR.top m, at most SKY_AIR.maxT m) with the same height
+  // haze, street-kind extinction (B.w), fluence (A.w, capped per sample) and isotropic phase as cityHaze: the sign light,
+  // baked into the 4 m volume (a spatial blur of it), glows between the roof line and the street and dies above the roofs
+  // (the fluence at 30 m is ~1/40 of 3 m's). Node model at walk0 / walk180: x2.0-2.7 the dome's luminance in the slot,
+  // R > G > B. uCitySkyAir.x is the gain A grades (ctl.setSkyAir); 0 = the P6 sky. The mirror's sky shares the term.
   const skyMat = () => new THREE.ShaderMaterial({
     uniforms: { uZen: { value: new THREE.Vector3(...NIGHT_SKY.zenith.map((v) => v * NS)) }, uHor: { value: new THREE.Vector3(...NIGHT_SKY.horizon.map((v) => v * NS)) },
-      uGlowH: { value: NIGHT_SKY.glowH } },
-    vertexShader: 'varying vec3 vD; void main(){ vD = position; vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_Position = p.xyww; }',
-    fragmentShader: `uniform vec3 uZen; uniform vec3 uHor; uniform float uGlowH; varying vec3 vD;
+      uGlowH: { value: NIGHT_SKY.glowH }, uCitySkyAir: U.uCitySkyAir, tCityIrrA: U.tCityIrrA, tCityIrrB: U.tCityIrrB, uCityGrid: U.uCityGrid, uCityDim: U.uCityDim, uCityHaze: U.uCityHaze },
+    vertexShader: 'varying vec3 vD; varying vec3 vW; void main(){ vD = position; vW = (modelMatrix * vec4(position, 1.0)).xyz; vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_Position = p.xyww; }',
+    fragmentShader: `uniform vec3 uZen; uniform vec3 uHor; uniform float uGlowH; varying vec3 vD; varying vec3 vW;
+      uniform highp sampler3D tCityIrrA; uniform highp sampler3D tCityIrrB; uniform vec4 uCityGrid; uniform vec4 uCityDim; uniform vec4 uCityHaze;
+      uniform vec4 uCitySkyAir;   // gain, band top (m), max ray length (m), fluence cap per sample
+      ${LAYER_GLSL(VOLUME.heights)}
+      vec3 cityVolUVW(vec3 wp){ float ly = max(cityLayer(wp.y), 0.0); vec2 g = (wp.xz - uCityGrid.xy) * uCityGrid.z / uCityDim.xy;
+        return vec3(g, (ly + 0.5) / ${VOLUME.heights.length.toFixed(1)}); }
+      // single scattering along the ray through the canyon band: returns the in-scatter, T = the band's transmittance
+      vec3 citySkyAir(vec3 o, vec3 d, out float T){
+        T = 1.0; if (uCitySkyAir.x <= 0.0 || d.y <= 0.02) return vec3(0.0);
+        float t0 = o.y < 0.0 ? -o.y / d.y : 0.0, t1 = min((uCitySkyAir.y - o.y) / d.y, uCitySkyAir.z);
+        if (t1 <= t0) return vec3(0.0);
+        float ds = (t1 - t0) / ${SKY_AIR.steps.toFixed(1)}, od = 0.0; vec3 L = vec3(0.0);
+        for (int i = 0; i < ${SKY_AIR.steps}; i++) {
+          vec3 p = o + d * (t0 + (float(i) + 0.5) * ds); vec3 uvw = cityVolUVW(p);
+          vec4 A = texture(tCityIrrA, uvw); float bw = texture(tCityIrrB, uvw).w;
+          float sg = uCityHaze.x * exp(-max(p.y, 0.0) / uCityHaze.y) * bw, tr = exp(-od - sg * ds * 0.5);
+          vec3 tint = A.rgb / max(dot(A.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-6);
+          L += tint * (min(A.w, uCitySkyAir.w) * uCityHaze.z * 0.0796 * sg * ds * tr); od += sg * ds; }
+        T = exp(-od); return L * uCitySkyAir.x; }
       float h2(vec2 p){ p = fract(p * vec2(0.1031, 0.103)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
       void main(){ vec3 d = normalize(vD); float e = max(d.y, 0.0);
         vec3 c = mix(uHor, uZen, smoothstep(0.0, uGlowH * 3.0, e));
         float cl = h2(floor(d.xz / max(d.y, 0.05) * 0.35)) * 0.15 + 0.92;                 // faint lit cloud deck texture
         c *= mix(1.0, cl, smoothstep(0.05, 0.4, e));
+        float T; vec3 air = citySkyAir(cameraPosition, normalize(vW - cameraPosition), T);
+        c = c * mix(1.0, T, step(1e-6, uCitySkyAir.x)) + air;
         gl_FragColor = vec4(d.y < 0.0 ? uHor * 0.6 : c, 1.0); }`,
     side: THREE.BackSide, depthWrite: false, depthTest: true,
   });
@@ -1761,7 +1793,7 @@ export function attach(world, emitters = [], ctx = {}) {
     update, patchMaterial, qualityCap, lightmapAt, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
     lightmapReady: lm.whenReady,   // P4: resolves true when the night lightmap is on the GPU, false if it never will be
     get lightmapData() { return lm.ready ? { key: lm.key, w: lm.size[0], h: lm.size[1], data: lm.data, valid: lm.valid, texels: lm.texels } : null; },
-    setWet(v, damp) { U.uCityWet.value = v; if (damp != null) U.uCityDamp.value = damp; }, setHaze(d) { U.uCityHaze.value.x = d; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
+    setWet(v, damp) { U.uCityWet.value = v; if (damp != null) U.uCityDamp.value = damp; }, setHaze(d) { U.uCityHaze.value.x = d; }, setSkyAir(g) { U.uCitySkyAir.value.x = g; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
     dispose() {
       for (const t of [tL, tLD, tG, tGD, tLC, tIrrA, tIrrB, blackTex, U.tCityLM.value]) t.dispose();
       lm.disposed = true; lm.worker?.terminate(); lm.settle?.(false);
@@ -1790,7 +1822,7 @@ export function attach(world, emitters = [], ctx = {}) {
 export function exportParams() {
   const OM = omega();
   return {
-    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
+    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, SKY_AIR, MIRROR_STREAK, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
     lobes: {
       lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni) + spill max(0.857 (-D.y) + 0.515 ce, 0); ce = dot(lamp->point D, normal); spill = SPILL[record bits 14-15] = 0, 0.15, 0.3, 0.5 (P5; P4: a fascia box\'s soffit light, a Lambert lobe 31 deg out from straight down)' },
       pack: { id: 3, omega: OM.pack, f: 'P6 wall pack: c = -D.y 0.9397 + dot(D.xz, forward.xz) 0.342 (the axis 20 deg out from down); c <= 0.42: 0; else (0.3 + 0.7 c^2) smoothstep(0.42, 0.58, c)', flux: 'lumens (WALLPACK.lumens)' },
@@ -1806,5 +1838,5 @@ export function exportParams() {
   };
 }
 
-export const seoulLight = { attach, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, VOLUME, HEADLIGHT, AIRLIGHT, emitterRadiance, heightField, splitCells, exportParams };
+export const seoulLight = { attach, NITS, SOURCE_TYPES, NIGHT_SKY, SKY_AIR, MIRROR_STREAK, HAZE, VOLUME, HEADLIGHT, AIRLIGHT, emitterRadiance, heightField, splitCells, exportParams };
 export default seoulLight;

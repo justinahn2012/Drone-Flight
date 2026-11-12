@@ -5,7 +5,7 @@
 // non-negative and fills interior probes; 7 splitCells keeps every triangle; 8 the real block: attach + update budget.
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY, VOLUME, wallPacks } from '../seoul-light.js';
+import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY, VOLUME, wallPacks, SKY_AIR, MIRROR_STREAK } from '../seoul-light.js';
 
 let pass = 0, fail = 0;
 const ok = (c, msg) => { if (c) pass++; else { fail++; console.log('FAIL', msg); } };
@@ -37,6 +37,11 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   // under the lamp vs 15 m along the road: type-II spreads the light (not a Lambertian hot spot)
   const a = C.probe(20.5, 0, -5.5).direct, b = C.probe(35.5, 0, -5.5).direct;
   ok(b > 0.3 * a, `type-II spread: ${a.toFixed(1)} lux under, ${b.toFixed(1)} at 15 m`);
+  // [P7 D] the canyon sky's light term and the mirror's streak clamp are in the shaders, and the gain is live
+  const fs0 = C.sky.material.fragmentShader, u = C.uniforms.uCitySkyAir.value;
+  ok(/citySkyAir\(cameraPosition/.test(fs0) && u.x === SKY_AIR.gain && u.y === SKY_AIR.top && C.sky.material.uniforms.uCitySkyAir === C.uniforms.uCitySkyAir, `sky air term wired (gain ${u.x}, top ${u.y} m)`);
+  C.setSkyAir(0.5); ok(C.sky.material.uniforms.uCitySkyAir.value.x === 0.5, 'setSkyAir reaches the sky'); C.setSkyAir(SKY_AIR.gain);
+  ok(MIRROR_STREAK.clamp <= 0.02 && MIRROR_STREAK.fade[1] - MIRROR_STREAK.fade[0] === 6 && MIRROR_STREAK.blur <= 1.2, 'mirror streak: clamp <= 2 % of the frame, 6 m fade, blur step <= 1.2');
   C.dispose();
 }
 {
