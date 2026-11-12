@@ -494,6 +494,9 @@ uniform float uHaloM;     // [P4-A] its energy share of the bright pass (0 = off
 uniform vec3 uHaloMTint;  // [P4-A] its tint, luma 1 (neutral: the glow takes the source's colour)
 uniform sampler2D tHaloW; // [P5-A] the PSF's second wide lobe, 1/16 res, source-tinted: the glow's skirt 80-150 px out (colour #5)
 uniform float uHaloW;     // [P5-A] its energy share of the bright pass (0 = off)
+uniform vec2 uRetroShG;   // [P6-A] split-tone gate: absolute Oklab L where it fades in (x..y): the ground and the deep darks stay untinted
+uniform sampler2D tDepthN;// [P6-A] the collider depth (half res, packed as depthMat; cleared to 1 = sky / beyond 100 m)
+uniform vec3 uDepthN;     // [P6-A] xy: source uv -> depth texture uv, z: 1 = no split-tone on the sky
 vec3 nightTone(vec3 e){
   vec3 x = max(e, 0.0);
   vec3 pc = pow(x, vec3(uTone.x)) / (pow(x, vec3(uTone.x * uTone.y)) * uTone.z + uTone.w);
@@ -546,7 +549,11 @@ const NIGHT_FINAL_BODY = /* glsl */`
     float Lt = uNightK.z;
     // 1) split-tone: shadows toward cyan-teal (uRetroSh.x, 205 deg), uRetroSh.y chroma at uRetro 1. [P3-A] FPV #1: the deepest
     //    shadows no longer swing to blue-violet (255 deg): that was half of the purple veil's tint on the dark walls
+    //    [P6-A] colour #4 / fpv #2 (the ground under the crowd read cyan, a dim warm sky went green-grey): the tint fades in over
+    //    absolute Oklab L uRetroShG (off on the ground and in the deep darks) and is off where the collider depth is the sky
     float ws = 1.0 - smoothstep(0.35 * Lt, 0.8 * Lt, lab.x);
+    ws *= smoothstep(uRetroShG.x, uRetroShG.y, lab.x);
+    if (uDepthN.z > 0.0) ws *= 1.0 - smoothstep(0.985, 0.998, texture(tDepthN, clamp(sG, 0.0, 1.0) * uDepthN.xy).r);
     lab.yz += vec2(cos(uRetroSh.x), sin(uRetroSh.x)) * (uRetroSh.y * uRetro * ws * (0.2 + 0.8 * smoothstep(0.0, 0.3 * Lt, lab.x)));
     lab.x -= 0.25 * uRetroSh.y * uRetro * ws * smoothstep(0.0, 0.3 * Lt, lab.x);   // hold the shadows' luma: the tint, not a lift
     // 2) magenta roll-off: +1..+3 EV over the target shoulders into white through pink-magenta (330 deg); clipped cores stay white.
@@ -999,17 +1006,27 @@ export const GRADES = {
   //   76 -> 49, club90 58 -> 36, club270 56 -> 39, w21 64 -> 45 (refs' median 44); clip walk0 2.2 -> 0.3 %.
   //   coreEvSrc [-4.5, -1] -> [-5.2, -1.6]: the true-source ramp follows the stop down (~0.6 EV), so letters still white-core
   //   (walk0 white area 1.4 -> 1.7 %) without bleaching the coloured faces (bright-saturated 5.4 %).
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.05, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.035,
+  //   [P6-A] PLAN-P6 #1 (the frame went dark; the fix is C's albedo and D's light, then this re-fit, last): retroShadow chroma
+  //   0.06 -> 0.03 with retroShGate [L0, L1] (absolute Oklab L: no tint on the ground or the deep darks, full by ~35 codes) and
+  //   retroShSky (none where the collider depth is the sky: a dim warm sky no longer goes green-grey) (colour #4, fpv #2);
+  //   toe 0.035 -> 0.025 (fpv #1); aeArea[1] 0.75 -> 0.55 (colour #2, the open shots); haloM spacing 1.6 -> 2.2 and haloW
+  //   0.01 -> 0.02 (colour #6: the letter edge falls over more pixels). Exposure re-fit last, on a scratch merge of p6/A + C
+  //   (walls x0.7, pavers 0.31) + D (sky dome in the bake, paver mirror, pools), re-baked: evBias -2.05 -> -1.85. GL at -2.05
+  //   (960 wide): p50 walk0 42.8, club270 43.8, station 30.4, spawn 37.9 -> modelled at -1.85 47.4 / 48.6 / 34.2 / 42.1; walk0
+  //   ground 19 -> 22 (P5 14), below 16 20.0 -> 16.8 % (P5 24.8), ground/wall 0.40 -> 0.42; walk0 ground (22,19,16), not cyan.
+  //   GL check at -1.85 on the next merge (C's grime and roofs, lightmap from file): p50 walk0 45.5, club90 48.4, w21 46.7,
+  //   station2 30.6 (P5 20); below 16 18.3 / 14.7 / 16.0 / 14.4 %; ground/wall walk0 0.42, w21 0.46, club90 0.73.
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -1.85, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
-    haloM: [0.04, 1.6, 2], haloMTint: [1, 1, 1], haloW: [0.01, 2.2, 3],
+    haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3],
     ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
-    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-5.2, -1.6], retroShadow: [230, 0.06], retroVibGate: [40, 100],
+    core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-5.2, -1.6], retroShadow: [230, 0.03], retroShGate: [0.17, 0.26], retroShSky: 1, retroVibGate: [40, 100],
     mag: 0.07, magC: 0.04, magEv: [0.7, 1.6, 3.2, 4.2], grain: 0, grainEv: [0, 0], grainPx: 2,
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
     codec: [0.4, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
     recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,
-    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.01, aeArea: [0.5, 0.75, 0.45, 0.2], aeMatrix: [0.45, 0.5],
+    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.01, aeArea: [0.5, 0.55, 0.45, 0.2], aeMatrix: [0.45, 0.5],
     shutter: 1 / 60, readout: 0.011 },
 };
 // Lottes 2016 shoulder constants: x^a / (x^(a d) b + c) passes (0.24, mid) and reaches 1 at the white point hdrMax
@@ -1244,7 +1261,9 @@ export class FPVCamera {
       // [P4-A]
       tHaloM: { value: null }, uHaloM: { value: 0 }, uHaloMTint: { value: new V3(1, 1, 1) }, uMagEv: { value: new V4(0.7, 1.6, 2.6, 3.4) },
       // [P5-A]
-      tHaloW: { value: null }, uHaloW: { value: 0 } };
+      tHaloW: { value: null }, uHaloW: { value: 0 },
+      // [P6-A]
+      uRetroShG: { value: new V2(0, 0) }, tDepthN: { value: null }, uDepthN: { value: new V3(1, 1, 0) } };
     const bl = () => pass(BLOOM_FS, { tSrc: { value: null }, uDir: { value: new V2() } });
     this._nightP = {
       down: pass(DOWN_FS, this.down.u, D), final: pass(FINAL_FS, nfU, D),
@@ -1900,6 +1919,9 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       if (cs) nf.uCoreSrc.value.set(cs[0], cs[1]); else nf.uCoreSrc.value.set(1e9, 2e9);
       nf.uCoreSrcK.value.set(lk.coreXtalkSrc ?? lk.coreXtalk ?? 0, ces[0], ces[1]); nf.uCoreW.value.fromArray(lk.coreW || [0.05, 0.35]);
       const rsh = lk.retroShadow || [205, 0.06]; nf.uRetroSh.value.set(rsh[0] * Math.PI / 180, rsh[1]);
+      // [P6-A] split-tone gate: Oklab L fade-in (none: [0, 0] = always on) and the sky cut from this frame's collider depth
+      const rg = lk.retroShGate || [0, 0]; nf.uRetroShG.value.set(rg[0], rg[1]);
+      nf.tDepthN.value = this.depthRT.texture; nf.uDepthN.value.set(dw / this.depthRT.width, dh / this.depthRT.height, lk.retroShSky && world.colliderScene ? 1 : 0);
       const vg = lk.retroVibGate; if (vg) nf.uVibGate.value.set(vg[0] * Math.PI / 180, vg[1] * Math.PI / 180); else nf.uVibGate.value.set(7, 7);
       nf.uMag.value.set(lk.mag ?? 0.05, lk.magC ?? 0); nf.uMagEv.value.fromArray(lk.magEv || [0.7, 1.6, 2.6, 3.4]);
       nf.tSmall.value = this.smallRT.texture;
@@ -1971,7 +1993,7 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
           source: { radiance: lk.coreSrc, flagRamp: lk.coreW, xtalk: lk.coreXtalkSrc, ev: lk.coreEvSrc } },
         ghosts: { list: lk.ghosts, sourceEv: lk.ghostEv, chroma: lk.ghostChroma, fringe: lk.ghostFringe, blades: lk.ghostBlades, resolution: 1 / 8, taps: 37,
           model: 'G(p) = w / s^2 * mean over the aperture (radius R, per channel R * (1 +- fringe)) of S(0.5 + (p - o - 0.5) / s); S = desat(bright pass) * smoothstep(sourceEv, log2(block luma / 0.24))' },
-        retro: { shadow: lk.retroShadow, vibGate: lk.retroVibGate, magenta: { amount: lk.mag, chromaGate: lk.magC, ev: lk.magEv, amberGate: lk.retroVibGate } },
+        retro: { shadow: lk.retroShadow, shadowGate: lk.retroShGate, shadowSkyCut: !!lk.retroShSky, vibGate: lk.retroVibGate, magenta: { amount: lk.mag, chromaGate: lk.magC, ev: lk.magEv, amberGate: lk.retroVibGate } },
         meter: { grid: [16, 12], reject: lk.aeReject, areaSource: lk.aeArea, areaRule: '[thr, weight, weight when > share of taps are area, share] (soft +-0.05)', matrix: lk.aeMatrix, veilCapEv: lk.veilCapEv, resetSolvesCap: true },
         psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, mid: { energy: lk.haloM?.[0] ?? 0, spacing: lk.haloM?.[1], passes: lk.haloM?.[2], tint: lk.haloMTint || [1, 1, 1] }, mid2: { energy: lk.haloW?.[0] ?? 0, spacing16: lk.haloW?.[1], passes: lk.haloW?.[2], tint: lk.haloMTint || [1, 1, 1], from: 'mid at 1/16' }, ghosts: lk.ghosts, cap: lk.bloomCap },
         noise: { shot: (lk.noise || [])[0], read: (lk.noise || [])[1], chroma: (lk.noise || [])[2], floor: lk.noiseFloor, cellPx: lk.noiseCell, chromaDark: lk.chromaDark, temporal: 'mean of this and last frame lattice (corr 0.5)', texture: '256^2 gaussian, seed 0x9e3779b9 mulberry32' },

@@ -18,6 +18,11 @@ Gate (hero streets; exit 1 if any fails):
               image in phase 4 and nobody re-fit: walk0 68, club90 57). A hard [exposure] row on the canyon shots
               (P50_SHOTS); station / station2 / high are open-sky frames whose p50 tracks the sky radiance (D's NIGHT_SKY,
               p5/A-to-D-sky.md): reported, not gated, until the sky lands.
+              [P6-A, colour #2] the open shots (OPEN_SHOTS: station, station2, high) are gated too, on their own band 28 .. 45.
+  [P6-A, PLAN-P6 "#1 for everyone": the frame went dark and hid the new detail; panel 5 colour/fpv/lighting/graphics bugs]
+  gw          ground-to-wall: ground p50 over the median luma of the shot's lit wall box (WALL)    >= 0.45 (P5 walk0 0.25)
+  lt16        share of the frame below code 16                                                       <= 18 % (refs' median 12 %)
+  spawn       frame p50 of the 'spawn' shot (the take's first frame, F's pose)                       >= 40
 Colour rows [P3 H, panel-2 colour #6], gated on hero shots; every FAIL line is tagged [exposure] or [colour] (CI's
 ci/known-failures.json tolerates the [colour] rows until stream A lands the neutral base):
   neutral     mean R-G and B-G (8-bit codes) of the fill: luma 12..140, bright saturated sources excluded
@@ -25,7 +30,7 @@ ci/known-failures.json tolerates the [colour] rows until stream A lands the neut
   roomsat     median saturation of lit warm surfaces (hue 15-60 deg, max > 120; >= 0.2 % of the frame)  <= 0.55 (target 0.4-0.5, colour #2)
   warm        warm share of the bright saturated pixels                                                45 .. 65 % (colour #2)
   white       share with a clipped channel or near-white (max > 200, sat < 0.15), sign frames only    2 .. 5 % (colour #3)
-Reported (informational): share below 16 (<= 25 %), bright-saturated area (>= 5 %), bright near-white
+Reported (informational): bright-saturated area (>= 5 %), bright near-white
 area (<= 4 %), magenta+cyan+violet share (30-45 %), dark-flat luma noise (3-6 DN).
 Needs numpy, Pillow, scipy. Stills are 8-bit sRGB (seoulsnap JPEGs).
 """
@@ -37,9 +42,14 @@ from scipy import ndimage
 # ground boxes [x0, x1, y0, y1] as fractions of the frame (top-down), per seoulsnap shot name
 GROUND = {'walk0': [0.40, 0.70, 0.88, 1.0], 'walk180': [0.35, 0.65, 0.88, 1.0], 'club90': [0.02, 0.30, 0.86, 1.0], 'club270': [0.10, 0.60, 0.84, 1.0],
           'station': [0.00, 0.45, 0.86, 1.0], 'station2': [0.30, 0.70, 0.88, 1.0], 'w21': [0.35, 0.65, 0.86, 1.0]}
-GATE = dict(clip=3.0, blob=5.0, ev=(-4.0, 1.5), ground=40.0, sky=30.0, p50=(35.0, 50.0))
+# [P6-A] lit-wall boxes [x0, x1, y0, y1] for the ground-to-wall row: walk0 the 2F plaster above the yellow letters, walk180 the 2F
+# wall top left, club90 the fascia wall between MONO BAR and the board-game sign, club270 the near right wall, w21 the brick base
+WALL = {'walk0': [0.30, 0.52, 0.04, 0.27], 'walk180': [0.02, 0.20, 0.0, 0.10], 'club90': [0.12, 0.34, 0.20, 0.36], 'club270': [0.70, 0.92, 0.15, 0.80],
+        'w21': [0.0, 0.14, 0.78, 0.98]}
+GATE = dict(clip=3.0, blob=5.0, ev=(-4.0, 1.5), ground=40.0, sky=30.0, p50=(35.0, 50.0), p50open=(28.0, 45.0), gw=0.45, lt16=18.0, spawn=40.0)
 COLOUR = dict(rg=10.0, bg=8.0, roomsat=0.55, warm=(45.0, 65.0), white=(2.0, 5.0))
 P50_SHOTS = {'walk0', 'walk180', 'club90', 'club270', 'w21'}   # [P5-A] canyon frames: the p50 band is binding here
+OPEN_SHOTS = {'station', 'station2', 'high'}                     # [P6-A] open-sky frames: their own p50 band (colour #2)
 SIGN_FRAMES = {'walk0', 'walk180', 'club90', 'club270', 'w21'}   # frames where signs dominate (colour #3's white-core target)
 LUMA = np.array([0.2126, 0.7152, 0.0722])
 
@@ -74,6 +84,11 @@ def stats(path, name):
     if gb:
         x0, x1, y0, y1 = gb
         o['ground'] = float(np.median(Y[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]))
+    wb = WALL.get(name)
+    if wb and gb:
+        x0, x1, y0, y1 = wb
+        o['wall'] = float(np.median(Y[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]))
+        o['gw'] = o['ground'] / max(o['wall'], 1.0)
     top = Y[: H // 4]
     o['sky'] = float(np.median(top[top <= np.median(top)]))
     # dark-flat luma noise (5 px high-pass in flat regions with local mean 12..80)
@@ -112,6 +127,10 @@ def main():
             if o.get('ground') is not None and o['ground'] < GATE['ground']: X(f'{name}: ground p50 {o["ground"]:.0f} < {GATE["ground"]:.0f}')
             if o['sky'] > GATE['sky']: X(f'{name}: sky {o["sky"]:.0f} > {GATE["sky"]:.0f}')
             if base in P50_SHOTS and not (GATE['p50'][0] <= o['p50'] <= GATE['p50'][1]): X(f'{name}: frame p50 {o["p50"]:.0f} outside {GATE["p50"][0]:.0f}-{GATE["p50"][1]:.0f}')
+            if base in OPEN_SHOTS and not (GATE['p50open'][0] <= o['p50'] <= GATE['p50open'][1]): X(f'{name}: open p50 {o["p50"]:.0f} outside {GATE["p50open"][0]:.0f}-{GATE["p50open"][1]:.0f}')
+            if base == 'spawn' and o['p50'] < GATE['spawn']: X(f'{name}: spawn p50 {o["p50"]:.0f} < {GATE["spawn"]:.0f}')
+            if o.get('gw') is not None and o['gw'] < GATE['gw']: X(f'{name}: ground/wall {o["gw"]:.2f} < {GATE["gw"]}')
+            if o['lt16'] > GATE['lt16']: X(f'{name}: below 16 {o["lt16"]:.1f} % > {GATE["lt16"]:.0f}')
             if o.get('roomsat') is not None and o['roomsat'] > COLOUR['roomsat']: C(f'{name}: room saturation {o["roomsat"]:.2f} > {COLOUR["roomsat"]}')
             if o.get('warm') is not None and not (COLOUR['warm'][0] <= o['warm'] <= COLOUR['warm'][1]): C(f'{name}: warm share {o["warm"]:.0f} % outside {COLOUR["warm"]}')
             if base in SIGN_FRAMES and not (COLOUR['white'][0] <= o['white'] <= COLOUR['white'][1]): C(f'{name}: white area {o["white"]:.1f} % outside {COLOUR["white"]}')
@@ -119,7 +138,7 @@ def main():
             if o.get('rg') is not None and o['rg'] > COLOUR['rg']: C(f'{name}: neutral R-G {o["rg"]:+.1f} > +{COLOUR["rg"]:.0f}')
             if o.get('bg') is not None and abs(o['bg']) > COLOUR['bg']: C(f'{name}: neutral B-G {o["bg"]:+.1f}, |B-G| > {COLOUR["bg"]:.0f}')
     fmt = lambda v, s='{:6.1f}': (s.format(v) if v is not None else '     -')
-    cols = [('EV', 'ev', '{:+6.2f}'), ('clip%', 'clip', None), ('blob%', 'blob', None), ('ground', 'ground', None), ('sky', 'sky', None), ('p50', 'p50', None), ('<16%', 'lt16', None),
+    cols = [('EV', 'ev', '{:+6.2f}'), ('clip%', 'clip', None), ('blob%', 'blob', None), ('ground', 'ground', None), ('wall', 'wall', None), ('g/w', 'gw', '{:6.2f}'), ('sky', 'sky', None), ('p50', 'p50', None), ('<16%', 'lt16', None),
             ('bsat%', 'bsat', None), ('bwht%', 'bwhite', None), ('warm%', 'warm', None), ('mcv%', 'mcv', None), ('noise', 'noise', None), ('R-G', 'rg', '{:+6.1f}'), ('B-G', 'bg', '{:+6.1f}'), ('roomS', 'roomsat', '{:6.2f}'), ('white%', 'white', None)]
     print(f'{"shot":12s} ' + ' '.join(f'{h:>6s}' for h, _, _ in cols))
     for n, o in rows.items():

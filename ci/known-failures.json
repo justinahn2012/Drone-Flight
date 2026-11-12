@@ -5,10 +5,10 @@
       "suite": "tools/camgate.py",
       "match": "[exposure] walk0: ground p50",
       "owner": "A with D (PLAN-P4 lighting #1 light the ground, graphics #1)",
-      "why": "hero-street floor p50 21-23 against 40 [P5-A] min 18 -> 10: the exposure re-fit to the refs' frame p50 (walk0 76 -> 49) takes the ground with it (22 -> 13-14 in the A + D port); the ground-to-wall ratio is C and D's (paver albedo, room nits)",
+      "why": "hero-street floor p50 21-23 against 40 [P5-A] min 18 -> 10 [P6-A] 10 -> 16 (PLAN-P6 gates; panel 5 colour/fpv/lighting/graphics: 10 locked in a regression, P5 walk0 ground 14): the floor comes back in C's paver albedo and D's spill, not more exposure, and the new ground/wall >= 0.45 row (tools/camgate.py) holds the ratio",
       "limit": {
         "re": "ground p50 ([0-9.]+)",
-        "min": 10
+        "min": 16
       }
     },
     {
@@ -124,6 +124,36 @@
       "limit": {
         "re": "R-G \\+?(-?[0-9.]+)",
         "max": 12.5
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] walk0: ground/wall",
+      "owner": "C with D (PLAN-P6 #1: paver albedo / gloss, the paver mirror and shop pools; then A's re-fit)",
+      "why": "[P6-A] new row, gate 0.45 unchanged: the A + C + D scratch merge (re-baked, evBias -1.85) measures 0.42 at 960 wide (P5 0.25); the ratio is materials and light, not exposure",
+      "limit": {
+        "re": "ground/wall ([0-9.]+)",
+        "min": 0.38
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] walk0: below 16",
+      "owner": "C with D (PLAN-P6 #1) and A",
+      "why": "[P6-A] new row, gate 18 % unchanged: the A + C + D merge measures 18.3 % (P5 24.8 %); the rest is the crowd's ground and the canyon sky",
+      "limit": {
+        "re": "below 16 ([0-9.]+) %",
+        "max": 20
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] station: below 16",
+      "owner": "D (PLAN-P6 open-shot exposure support, lighting #6 the open-street key) with A",
+      "why": "[P6-A] new row, gate 18 % unchanged: the A + C + D merge measures ~24.5 % at evBias -1.85 (29.4 % at -2.05; P5 33.5 %); the plaza and the tower base are the dark share",
+      "limit": {
+        "re": "below 16 ([0-9.]+) %",
+        "max": 27
       }
     },
     {
