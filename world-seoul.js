@@ -42,9 +42,13 @@ export const SEOUL_MATS = {
   // [P6-C] the dark-ground fix: the pale walls (beige tile, cream render) were 0.47 on the wall after tint and grime, the
   // brightest diffuse surface in a canyon lit from the street; x 0.70 -> ~0.33 (Mapo-gu's weathered render / tile, not
   // fresh paint). Brick, concrete and granite already sit at 0.24-0.32 on the wall and hold
-  tile: { grime: 1, id: 'rounded_square_tiled_wall', tile: 2.0, maps: ['diff', 'nor_gl'], color: [1.61, 1.89, 2.31], rough: 0.45, albedo: [0.379, 0.347, 0.302] },   // beige mosaic tile (2 m scan, 7 cm tiles)
-  brick: { grime: 1, id: 'brown_brick_02', tile: 1.0, maps: ['diff', 'nor_gl'], color: [1.0, 0.85, 0.95], rough: 0.85, albedo: [0.476, 0.244, 0.137] },     // Hongdae's red-brown brick (1 m scan: 9 cm courses; P3's 2.2 m tile drew 20 cm bricks)
-  plaster: { grime: 1, id: 'beige_wall_001', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.15, 1.41, 1.79], rough: 0.9, albedo: [0.391, 0.371, 0.335] },    // cream-white painted render
+  // [P7-C] graphics #1 (real cladding: club270's mosaic read as per-pixel speckle, walk0's render as smooth grey; wall
+  // Laplacian 5.9-7.1 against the refs' 24): four CC0 Poly Haven sets at their scanned size, chosen per lot by facadeOf, each
+  // with its scan normal + the two-scale detail normal and the grout / mortar AO the scan carries; C's grime on top. The
+  // tint is albedo / the scan's mean (tools/texmean.py), so every material keeps its P6 albedo (A's exposure fit holds).
+  tile: { grime: 1, id: 'rectangular_facade_tiles_02', tile: 2.1, maps: ['diff', 'nor_gl'], color: [2.68, 3.29, 3.46], rough: 0.45, albedo: [0.379, 0.347, 0.302] },   // small facade tile in banded courses (2.1 m scan, ~5 cm tiles): the 1980s-90s Mapo low-rise
+  brick: { grime: 1, id: 'exterior_wall_cladding_02', tile: 2.0, maps: ['diff', 'nor_gl'], color: [4.11, 5.74, 6.06], rough: 0.85, albedo: [0.476, 0.244, 0.137] },     // Hongdae's red-brown brick slip cladding (2 m scan, mixed-fire slips in stretcher bond, recessed joints)
+  plaster: { grime: 1, id: 'white_stucco_02', tile: 1.8, maps: ['diff', 'nor_gl'], color: [0.922, 0.885, 0.837], rough: 0.9, albedo: [0.391, 0.371, 0.335] },    // cream-white sand-finish render (1.8 m scan: trowel marks, patches; P6's beige_wall_001 was a flat 22 KB slice)
   concrete: { grime: 1, id: 'concrete_wall_008', tile: 3.0, maps: ['diff', 'nor_gl'], color: [1.35, 1.48, 2.0], rough: 0.9, albedo: [0.359, 0.350, 0.323] },
   stone: { grime: 1, id: 'granite_tile_03', tile: 1.8, maps: ['diff', 'nor_gl'], color: [3.2, 3.7, 4.3], rough: 0.5, albedo: [0.403, 0.379, 0.359] },        // [P4-C] grey granite cladding (towers, podiums): 60 cm panels
   // [P6-C] art #5 (high's roofs read (14,16,17), black slabs that hid E's 919 props): Seoul's urethane waterproofing is a
