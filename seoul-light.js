@@ -1420,7 +1420,7 @@ export function attach(world, emitters = [], ctx = {}) {
   const quadScene = new THREE.Scene(); quadScene.add(quad);
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const Rm = new THREE.Matrix4().set(1, 0, 0, 0, 0, -1, 0, 2 * mirror.y, 0, 0, 1, 0, 0, 0, 0, 1);
-  const _wc = new THREE.Color(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _sz = new THREE.Vector2(), _cp = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  const _wc = new THREE.Color(), _gv = new THREE.Vector3(), _gc = new THREE.Vector3(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _sz = new THREE.Vector2(), _cp = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
   const hidden = [];
   // [P7-D] fpv #1: the crowd and the traffic are black in the mirror (as the buildings are): a car's or a walker's body
   // now hides the shop glass and signs behind it in the puddle, instead of the reflection running through them as a
@@ -1540,6 +1540,11 @@ export function attach(world, emitters = [], ctx = {}) {
     scene.onBeforeRender = function (r, sc, cam, target) {
       prevOBR?.call(this, r, sc, cam, target);
       if (!mirror.on || !cam?.isPerspectiveCamera) return;
+      // [P8-D] perf #6: no ground in view (both bottom corners of the frustum point above the horizon): skip the pass and
+      // its occluders (the ground shader reads a stale texture only where no ground is drawn)
+      _gv.set(-1, -1, 1).unproject(cam).sub(_gc.setFromMatrixPosition(cam.matrixWorld)); const y0 = _gv.y / _gv.length();
+      _gv.set(1, -1, 1).unproject(cam).sub(_gc); const y1 = _gv.y / _gv.length();
+      if (Math.max(y0, y1) > 0.01 && Math.min(y0, y1) > 0.01 && _gc.y > mirror.y) { mirror.skipped = (mirror.skipped || 0) + 1; return; }
       try { renderMirror(r, cam); } catch (e) { mirror.on = false; console.warn('[D] wet mirror off', e); }
     };
   }
