@@ -145,6 +145,17 @@ ok(mv > 5 && st > 0, `traffic flows and queues (moving ${mv}, stopped ${st})`);
   ok(T.entries.road.every((l) => l.start && l.start.boundary), `road traffic re-enters only at map-edge lanes (${T.entries.road.length})`);
   void E;
 }
+// (P7, life #1) station2 (31.8, -309, the game's seed 11): its near carriageway was empty at take clock 0 (one car on eight
+// lanes: the still opened in the lull between Yanghwa-ro's eastbound platoons). >= 6 vehicles heading +x within 60 m, at
+// take clock 0 and through the first 15 s of a take
+{
+  const L = new LifeSim(layout, { seed: 11 }), T = L.traffic, o = {}; let at0 = -1, mn = 1e9, mv0 = 0;
+  for (let t = LIFE.warm + 0.5; t <= LIFE.warm + 15; t += 0.5) { L.advanceTo(t); let n = 0, mv = 0;
+    for (const v of T.vehicles) { if (v.hidden || v.lane.shared) continue; const ln = v.lane; ln.base.at(T.toBase(ln, v.s), o);
+      const x = o.x + o.nx * ln.lat, z = o.z + o.nz * ln.lat; if (Math.hypot(x - 31.8, z + 309) < 60 && o.tx * ln.dir > 0.3) { n++; if (v.v > 1) mv++; } }
+    if (at0 < 0) { at0 = n; mv0 = mv; } mn = Math.min(mn, n); }
+  ok(at0 >= 6 && mn >= 6, `station2: ${at0} vehicles heading +x within 60 m at take clock 0 (${mv0} moving), >= ${mn} through 15 s (P6: 3, min 1)`);
+}
 // junction conflicts (life #3, P3): vehicle boxes that interpenetrate > 0.1 m, sampled every second from 30 s to 600 s.
 // P2 had ~3.7 pairs per sample, 85 % on crossing paths in junction boxes.
 {
@@ -283,6 +294,15 @@ if (existsSync('seoul/people/people.json')) {
     for (const [k, v] of Object.entries(by)) { const o = v[1] / v[0], n = v[2] / v[0]; worst.push([`${ty}:${k}`, o, n]); if (o < 0.95 || n < 0.95) allOk = false; }
   }
   worst.sort((p, q) => Math.min(p[1], p[2]) - Math.min(q[1], q[2]));
+  // (P7, life #4) a part id never interpolates through others across a visible triangle (P6's bus rear: paint 0 to glass 5
+  // drew a headlamp-white and a tail-red band across the rear). The bus loft's 6 mm ledges at the window band (part 0 to
+  // 5 at one height) are the only blends left: <= 0.2 m2 in all, none on an end face
+  { let ends = 0, area = 0, rear = 0; for (const ty of ['car', 'taxi', 'truck', 'bus', 'scooter']) { const g = vehicleGeo(ty), P = g.attributes.position.array, I = g.index.array, part = g.attributes.part.array;
+      for (let t = 0; t < I.length; t += 3) { const [a, b, c] = [I[t], I[t + 1], I[t + 2]]; if (ty === 'bus' && part[a] === 13) rear++;
+        if (Math.max(part[a], part[b], part[c]) - Math.min(part[a], part[b], part[c]) <= 1) continue;
+        const u = [0, 1, 2].map((k) => P[b * 3 + k] - P[a * 3 + k]), v = [0, 1, 2].map((k) => P[c * 3 + k] - P[a * 3 + k]), n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]], l = Math.hypot(...n);
+        area += l / 2; if (l > 0 && Math.abs(n[2]) / l > 0.5) ends++; } }
+    ok(ends === 0 && area <= 0.2 && rear >= 12, `vehicle parts never blend across an end face (${ends}; P6: 4, 3.24 m2 in all), ${area.toFixed(2)} m2 of ledges; the bus has a rear window panel (${rear} triangles)`); }
   ok(allOk, `vehicles right side out: every part of car/taxi/truck/bus/scooter >= 95 % outward and normal-true (worst ${worst[0][0]} ${(100 * worst[0][1]).toFixed(0)} % / ${(100 * worst[0][2]).toFixed(0)} %; P3: car body 2 %, glass 0 %)`);
 }
 // life #1 (P4): masks where masks go, and no dark hair cards on a brown or blond scalp. seoul/people/aux.png (people-aux.py):

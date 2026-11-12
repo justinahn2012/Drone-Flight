@@ -66,7 +66,8 @@ export const LIFE = {
   // s; walk = after green+amber+allRed. (P5, life #1) a 120 s cycle (Seoul arterials run 120-160 s; P4's 70 s spent 10 s of
   // every 70 in inter-greens and held the arterial to 36 s of green). Junctions: 2 x (3 s amber + 2 s all-red), the major
   // axis 55-60 % of the cycle
-  signal: { period: 120, green: 84, amber: 3, allRed: 1, walk: 30 },
+  // shift (P7, life #1): the whole plan runs 98 s later, so station2 (take clock 0 = sim 75 s) opens on an eastbound platoon
+  signal: { period: 120, green: 84, amber: 3, allRed: 1, walk: 30, shift: 98 },
   nitScale: 1e-3,
 };
 
@@ -296,6 +297,9 @@ export function buildNetwork(layout) {
       addCross({ kind: 'T', main: m, sc, toward: 0, axis: 0, offset: nearX ? (nearX.offset - (nearX.axis ? nearX.g0 + 5 : 0) + P) % P : near ? near.offset : (ci * 13) % P });
     }
   }
+  // (P7, life #1) the city's signal plan as a whole runs LIFE.signal.shift s later (green wave kept): station2 opened in the
+  // lull between Yanghwa-ro's eastbound platoons (one car on the near carriageway at take clock 0)
+  { const P = LIFE.signal.period, sh = LIFE.signal.shift || 0; if (sh) for (const c of [...crossings, ...signals]) c.offset = (((c.offset + sh) % P) + P) % P; }
   return { streets, mains, nodes, crossings, signals, bounds: boundsOf(layout, streets) };
 }
 function boundsOf(layout, streets) {
@@ -2305,8 +2309,11 @@ export function vehicleGeo(type) {
       const c0 = I.length / 3, cb = P.length / 3, z = zs[zi], sz = front ? 1 : -1;
       for (const sx of [1, -1]) for (let j = 0; j < nr; j++) {
         const q = base + (sx > 0 ? 0 : side) + zi * nr + j, y = P[q * 3 + 1];
-        const glass = front ? y > 0.84 && y < H - 0.13 : y > 1.45 && y < top + 0.01;
-        P.push(P[q * 3], y, z); N.push(0, 0, sz); C.push(glass ? (front ? 1 : 5) : 0);
+        // (P7, life #4 / fpv #6) the rear cap is body colour only: P6 tagged its top rows glass (part 5) and the rows under
+        // them paint, so the part id interpolated 0 -> 5 across one triangle and the rear read as a white (part 3, headlamp)
+        // slab over a red (part 4, tail lamp) band. The rear window is its own panel now (part 13, below)
+        const glass = front && y > 0.84 && y < H - 0.13;
+        P.push(P[q * 3], y, z); N.push(0, 0, sz); C.push(glass ? 1 : 0);
       }
       for (let j = 0; j < nr - 1; j++) { const a = cb + j, b2 = cb + nr + j; triO(a, a + 1, b2); triO(a + 1, b2 + 1, b2); }
       prims.push({ kind: 'loft', c: [0, 0.45, 0], start: c0, count: I.length / 3 - c0 });
@@ -2317,6 +2324,12 @@ export function vehicleGeo(type) {
     box(-0.55, top + 0.04, -hl - 0.005, 0.55, H - 0.16, -hl + 0.06, 6);        // rear route LED
     box(-hw + 0.2, 0.52, hl - 0.03, -hw + 0.42, 0.62, hl + 0.012, 3); box(hw - 0.42, 0.52, hl - 0.03, hw - 0.2, 0.62, hl + 0.012, 3);
     box(-hw + 0.08, 0.75, -hl - 0.012, -hw + 0.2, 1.05, -hl + 0.03, 4); box(hw - 0.2, 0.75, -hl - 0.012, hw - 0.08, 1.05, -hl + 0.03, 4);
+    // (P7, life #4 / fpv #6) the rear: a window onto the lit cabin (part 13: the aisle seen end-on in the shader), a dark
+    // engine grille, a second row of lamps over it and a high-mounted stop lamp under the roof
+    box(-0.74, 1.45, -hl - 0.01, 0.74, top - 0.04, -hl + 0.02, 13);
+    box(-0.7, 0.62, -hl - 0.014, 0.7, 1.02, -hl + 0.03, 2);
+    for (const sx of [1, -1]) box(Math.min(sx * 0.5, sx * 0.76), 1.12, -hl - 0.012, Math.max(sx * 0.5, sx * 0.76), 1.24, -hl + 0.03, 4);
+    box(-0.3, H - 0.13, -hl - 0.006, 0.3, H - 0.085, -hl + 0.03, 4);
     box(-hw * 0.75, 0.33, hl - 0.04, hw * 0.75, 0.48, hl + 0.03, 2); box(-hw * 0.8, 0.33, -hl - 0.03, hw * 0.8, 0.5, -hl + 0.04, 2);   // bumpers
     box(-hw - 0.012, 0.44, -hl + 0.5, hw + 0.012, 0.6, hl - 0.5, 12);     // livery skirt band under the colour
     box(-0.26, 0.6, hl + 0.025, 0.26, 0.71, hl + 0.04, 11);                // plate
@@ -2379,12 +2392,12 @@ vec3 cityEnv(vec3 R) {
 float pt = floor(vPart + 0.5);
 // B/C pillars and the window frames read through the glass band as black trim
 if (pt > 0.5 && pt < 1.5 && abs(vWN.y) < 0.75 && vLoc.y > 0.5 && vLoc.y < 2.0 && abs(vLoc.z) < 3.0 && abs(vLoc.z - 0.02) < 0.07) pt = 2.0;
-vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.012, 0.014, 0.016) : pt < 2.5 ? vec3(0.022) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.012, 0.014, 0.016) : pt < 6.5 ? vec3(0.02) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : pt < 9.5 ? vec3(0.55, 0.12, 0.08) : pt < 10.5 ? vec3(0.42, 0.43, 0.45) : pt < 11.5 ? vec3(0.75, 0.75, 0.72) : vec3(0.62, 0.64, 0.66);
+vec3 alb = pt < 0.5 ? vPaint : pt < 1.5 ? vec3(0.012, 0.014, 0.016) : pt < 2.5 ? vec3(0.022) : pt < 4.5 ? vec3(0.3) : pt < 5.5 ? vec3(0.012, 0.014, 0.016) : pt < 6.5 ? vec3(0.02) : pt < 7.5 ? vec3(0.35, 0.2, 0.05) : pt < 8.5 ? vec3(0.03, 0.03, 0.035) : pt < 9.5 ? vec3(0.55, 0.12, 0.08) : pt < 10.5 ? vec3(0.42, 0.43, 0.45) : pt < 11.5 ? vec3(0.75, 0.75, 0.72) : pt < 12.5 ? vec3(0.62, 0.64, 0.66) : vec3(0.012, 0.014, 0.016);
 if (pt > 9.5 && pt < 10.5) { float a = atan(vLoc.y - 0.33, vLoc.z), r = length(vec2(vLoc.y, vLoc.z)); float sp = smoothstep(0.55, 0.75, abs(sin(a * 2.5))); alb *= mix(0.25, 1.0, sp); }   // five spokes
 if (pt > 10.5 && pt < 11.5) { float ch = step(0.45, fract(vLoc.x * 14.0)) * step(0.3, fract(vLoc.y * 18.0 + 0.2)); alb = mix(alb, vec3(0.03), ch * 0.8); }   // plate characters
 diffuseColor.rgb = alb;`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-roughnessFactor = pt < 0.5 || pt > 11.5 ? 0.24 : (pt < 1.5 || (pt > 4.5 && pt < 5.5)) ? 0.05 : pt > 9.5 && pt < 10.5 ? 0.3 : 0.6;`)
+roughnessFactor = pt < 0.5 || (pt > 11.5 && pt < 12.5) ? 0.24 : (pt < 1.5 || (pt > 4.5 && pt < 5.5) || pt > 12.5) ? 0.05 : pt > 9.5 && pt < 10.5 ? 0.3 : 0.6;`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 // nits (binding table, PLAN-P2): lamps are point sources (low-beam core ~3k off-axis, tail 250, brake 1500, hazard 600);
 // bodies are not emissive; the bus interior is 20-40 nits seen through dark glass, broken by window posts, seat backs
@@ -2433,6 +2446,28 @@ else if (pt > 5.5 && pt < 6.5) {
   e = (vState.w > -1.0 && abs(vLoc.z) > 1.0) ? vec3(1.0, 0.55, 0.12) * 250.0 * lit : vec3(1.0, 0.86, 0.6) * 180.0 * (1.0 - 0.85 * stroke * step(0.1, abs(vLoc.z + 0.17)));
 }
 else if (pt > 6.5 && pt < 7.5) e = vec3(1.0, 0.45, 0.03) * 600.0 * vState.y * blink;
+else if (pt > 12.5) {
+  // (P7, life #4 / fpv #6) the bus's rear window: the cabin seen down the aisle through tinted glass (~24 nits, as the
+  // sides), two ceiling LED rows, the rear bench's backs to 1.62 m with the backs of heads over them (black hair, ~60 %
+  // taken), a smaller row further in, sometimes a standing rider, the centre post
+  float x = vLoc.x, y = vLoc.y, sd = floor(vState.w * 97.0);
+  vec3 cabin = vec3(0.95, 0.97, 1.0) * 30.0 * mix(0.55, 1.0, smoothstep(1.6, 2.6, y));
+  cabin *= 1.0 + 1.2 * step(2.6, y) * (1.0 - smoothstep(0.03, 0.07, abs(abs(x) - 0.42)));
+  vec3 pc = y < 1.62 ? vec3(0.14, 0.15, 0.19) * 3.0 : cabin;
+  for (int k = 0; k < 4; k++) {   // the far row first: the near bench draws over it
+    float xs = -0.36 + 0.24 * float(k), r = vh21(vec2(float(k) + 7.0, sd));
+    if (r < 0.5) { vec2 q = vec2((x - xs) / 0.065, (y - 1.9) / 0.075); if (dot(q, q) < 1.0) pc = vec3(0.9, 0.85, 0.8) * 0.6; else if (abs(x - xs) < 0.11 && y < 1.83 && y > 1.62) pc = vec3(0.3, 0.3, 0.34) * 2.0; }
+  }
+  for (int k = 0; k < 4; k++) {
+    float xs = -0.54 + 0.36 * float(k), r = vh21(vec2(float(k), sd));
+    if (r < 0.6) { vec2 q = vec2((x - xs) / 0.1, (y - 1.76) / 0.12); if (dot(q, q) < 1.0) pc = vec3(0.9, 0.85, 0.8) * (0.7 + 0.8 * smoothstep(0.2, 0.9, q.y)); else if (abs(x - xs) < 0.19 && y < 1.66) pc = vec3(0.2, 0.2, 0.24) * (1.5 + 2.0 * r); }
+  }
+  float rs = vh21(vec2(11.0, sd));
+  if (rs > 0.75) { float xs = rs > 0.87 ? 0.12 : -0.12; vec2 q = vec2((x - xs) / 0.09, (y - 2.27) / 0.11);
+    if (dot(q, q) < 1.0) pc = vec3(0.9, 0.85, 0.8) * 1.0; else if (abs(x - xs) < 0.17 && y < 2.16 && y > 1.62) pc = vec3(0.25, 0.25, 0.3) * 3.0; }
+  pc *= 1.0 - (1.0 - smoothstep(0.02, 0.04, abs(x))) * 0.95;   // centre post
+  e = pc * 0.8;
+}
 // clearcoat and glass: Fresnel x the street they face
 if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5) || pt > 11.5) {
   vec3 Vw = normalize(cameraPosition - vWP), Nw = normalize(vWN), Rw = reflect(-Vw, Nw);
@@ -2441,7 +2476,7 @@ if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5) || pt > 11.5) 
 }
 totalEmissiveRadiance += e * uNit;`);
   };
-  m.customProgramCacheKey = () => 'seoul-vehicle-5';
+  m.customProgramCacheKey = () => 'seoul-vehicle-6';
   return m;
 }
 
