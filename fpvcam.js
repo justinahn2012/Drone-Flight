@@ -1014,6 +1014,8 @@ export const GRADES = {
   //   (walls x0.7, pavers 0.31) + D (sky dome in the bake, paver mirror, pools), re-baked: evBias -2.05 -> -1.85. GL at -2.05
   //   (960 wide): p50 walk0 42.8, club270 43.8, station 30.4, spawn 37.9 -> modelled at -1.85 47.4 / 48.6 / 34.2 / 42.1; walk0
   //   ground 19 -> 22 (P5 14), below 16 20.0 -> 16.8 % (P5 24.8), ground/wall 0.40 -> 0.42; walk0 ground (22,19,16), not cyan.
+  //   GL check at -1.85 on the next merge (C's grime and roofs, lightmap from file): p50 walk0 45.5, club90 48.4, w21 46.7,
+  //   station2 30.6 (P5 20); below 16 18.3 / 14.7 / 16.0 / 14.4 %; ground/wall walk0 0.42, w21 0.46, club90 0.73.
   night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -1.85, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],

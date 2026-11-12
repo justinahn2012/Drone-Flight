@@ -127,6 +127,36 @@
       }
     },
     {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] walk0: ground/wall",
+      "owner": "C with D (PLAN-P6 #1: paver albedo / gloss, the paver mirror and shop pools; then A's re-fit)",
+      "why": "[P6-A] new row, gate 0.45 unchanged: the A + C + D scratch merge (re-baked, evBias -1.85) measures 0.42 at 960 wide (P5 0.25); the ratio is materials and light, not exposure",
+      "limit": {
+        "re": "ground/wall ([0-9.]+)",
+        "min": 0.38
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] walk0: below 16",
+      "owner": "C with D (PLAN-P6 #1) and A",
+      "why": "[P6-A] new row, gate 18 % unchanged: the A + C + D merge measures 18.3 % (P5 24.8 %); the rest is the crowd's ground and the canyon sky",
+      "limit": {
+        "re": "below 16 ([0-9.]+) %",
+        "max": 20
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] station: below 16",
+      "owner": "D (PLAN-P6 open-shot exposure support, lighting #6 the open-street key) with A",
+      "why": "[P6-A] new row, gate 18 % unchanged: the A + C + D merge measures ~24.5 % at evBias -1.85 (29.4 % at -2.05; P5 33.5 %); the plaza and the tower base are the dark share",
+      "limit": {
+        "re": "below 16 ([0-9.]+) %",
+        "max": 27
+      }
+    },
+    {
       "suite": "tests/browser.mjs",
       "match": "still walk0: ",
       "owner": "A, B, C, D, G1 (PLAN-P4; integrator re-baselines)",
