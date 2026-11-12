@@ -1,24 +1,32 @@
 {
  "backdrop": {
-  "sha256": "8d2531bd637ebd10aea0667267997ba48fe3f3e853158c79eb177ca848c0a338",
-  "satBright": 0.0327,
+  "sha256": "03681520898885bc03777fc89f5083c8c64af326ede5860d1cd945b01fae30dc",
+  "satBright": 0.0316,
   "source": "bdC.jpg",
   "crop": "0,0,1,1",
   "pose": "o.tp(183.6,9,-312.9,136.2,(-12)-o.drone.c.camTilt)",
-  "commit": "6fff57a",
-  "lowerTop": 0.9,
-  "lifeCommit": "dff1b15",
-  "nearest": 10.42
+  "commit": "4df379c",
+  "lowerTop": 0.84,
+  "lifeCommit": "b08b181",
+  "nearest": 10.42,
+  "lifeHash": "1084a483df9b6759",
+  "wall8": 0,
+  "dark": 0.074,
+  "pass": true
  },
  "thumb": {
-  "sha256": "15bfff548588493bc7582d336e231f2999877826b90183b2106a215b547df701",
-  "satBright": 0.046,
+  "sha256": "64068878b61d96dd7f104a13480ed4dbd17c40db39e25e984f8c2acade0e4682",
+  "satBright": 0.0454,
   "source": "bdA.jpg",
   "crop": "0.30,0.0,0.80,0.5",
   "pose": "o.tp(27.3,9,-144.8,-36.9,(-12)-o.drone.c.camTilt)",
-  "commit": "6fff57a",
-  "lifeCommit": "dff1b15",
-  "lowerTop": 3.24,
-  "nearest": 7.55
+  "commit": "4df379c",
+  "lifeCommit": "b08b181",
+  "lowerTop": 2.8,
+  "nearest": 7.55,
+  "lifeHash": "1084a483df9b6759",
+  "wall8": 0.021,
+  "dark": 0.095,
+  "pass": true
  }
 }
