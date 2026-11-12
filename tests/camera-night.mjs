@@ -118,5 +118,23 @@ ok(N.retroShadow[1] === 0.03 && N.retroShGate[0] >= 0.15 && N.retroShGate[1] > N
 ok(N.haloM[1] >= 2.2 && N.haloW[0] === 0.02, 'P6 colour #6: middle lobe spacing 2.2 (sigma 1.6 -> 2.2 taps), wide lobe 2 %');
 { const pn6 = cam.profile({ w: 1920, h: 1080 }); ok(JSON.stringify(pn6.night.retro.shadowGate) === JSON.stringify(N.retroShGate) && pn6.night.retro.shadowSkyCut === true, 'P6: profile carries the split-tone gate'); }
 
+// --- 8. [P7-A] phase-7 night camera: the canyon airlight (colour #1, fpv #2), the edge lobe (colour #3), a neutral fill (colour #5)
+ok(Array.isArray(N.air) && N.air[0] > 0 && N.air[2] > 0 && N.air[3] > 0 && N.airTint[0] > N.airTint[1] && N.airTint[1] > N.airTint[2], 'P7 colour #1: canyon airlight on, warm tint R > G > B');
+ok(N.airEncl[1] > N.airEncl[0] && N.airLit[1] > N.airLit[0], 'P7: airlight enclosure and lit-canyon ramps are ordered');
+{
+  // the target is an exposed luma: through the night curve (contrast, shoulder, toe, S-curve, lift) it must land 16-22 codes
+  const [ta, td, tm] = N.tone, twp = 0.24 * 2 ** N.clipEv, [tb, tc] = M.nightToneBC(ta, td, tm, twp);
+  let x = N.air[0] * (N.air[0] / 0.24) ** (N.con - 1); x = x ** ta / (x ** (ta * td) * tb + tc); x = x * x / (x + N.toe) * (1 + N.toe);
+  let o = x <= 0.0031308 ? 12.92 * x : 1.055 * x ** (1 / 2.4) - 0.055; o = 0.78 * o + 0.22 * o * o * (3 - 2 * o); o = o * (1 - N.lift) + N.lift;
+  ok(o * 255 >= 16 && o * 255 <= 22, `P7 colour #1: the airlight target lands ${(o * 255).toFixed(1)} codes (16-22)`); }
+{ const nf = pp(C.FINAL_FS, { NIGHT: 1 });
+  ok(/uAirF\.x > 0\.0/.test(nf) && /texture\(tAir/.test(nf) && /max\(uAirF\.y - dot\(e, LUMA\), 0\.0\)/.test(nf), 'P7: night FINAL lifts a dark sky toward the target, none past it');
+  ok(/uHaloE\.x > 0\.0/.test(nf) && /min\(sb\.a \* exp2\(ev\), uHaloE\.y\)/.test(nf), 'P7: night FINAL adds the edge lobe from the 1/8 block radiance (no threshold, capped)');
+  ok(!/tAir|uHaloE/.test(pp(C.FINAL_FS, {})), 'P7: bando FINAL has no airlight or edge lobe');
+  ok(typeof C.AIR_FS === 'string' && /lensD/.test(C.AIR_FS) && /tDepthN/.test(C.AIR_FS), 'P7: AIR_FS gathers the canyon through the lens and the collider depth'); }
+ok(N.haloE[0] >= 0.03 && N.haloE[0] <= 0.06 && N.haloE[1] > 1, 'P7 colour #3: edge lobe 3-6 % of all the light, capped');
+ok(N.wb[0] === 0.98 && N.wb[1] === 1.0, 'P7 colour #5: wb red -2 % (the fill went amber under the warmer dome)');
+{ const pn7 = cam.profile({ w: 1920, h: 1080 }); ok(pn7.night.air && pn7.night.air.target === N.air[0] && pn7.night.psf.edge.energy === N.haloE[0], 'P7: profile carries the airlight and the edge lobe'); }
+
 console.log(`camera-night tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
