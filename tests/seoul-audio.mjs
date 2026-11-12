@@ -104,7 +104,8 @@ function octaves(L, R) {
   const N = 8192, P = new Float64Array(N / 2); for (let o = SR; o + N <= L.length; o += N / 2) { const re = new Float64Array(N), im = new Float64Array(N); for (let i = 0; i < N; i++) re[i] = (L[o + i] + R[o + i]) * 0.5 * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)); fft(re, im); for (let k = 1; k < N / 2; k++) P[k] += re[k] * re[k] + im[k] * im[k]; }
   const band = (lo, hi) => { let s = 0; for (let k = 1; k < N / 2; k++) { const f = k * SR / N; if (f >= lo && f < hi) s += P[k]; } return s; };
   const v = [125, 250, 500, 1000, 2000, 4000, 8000].map((c) => 10 * Math.log10(band(c / Math.SQRT2, c * Math.SQRT2) + 1e-30)), tot = band(0, SR / 2);
-  return { oct: v.map((x) => x - v[1]), low: band(0, 120) / tot };
+  const v63 = 10 * Math.log10(band(63 / Math.SQRT2, 63 * Math.SQRT2) + 1e-30);   // P7: the 63 Hz octave, dB re the loudest of 63 Hz-8 kHz
+  return { oct: v.map((x) => x - v[1]), low: band(0, 120) / tot, o63: v63 - Math.max(v63, ...v) };
 }
 // a 2nd-order 350 Hz high-pass (a phone speaker): what is left of the loudness
 function phoneLU(L, R) { const hp = (x) => { const w = 2 * Math.PI * 350 / SR, c = Math.cos(w), al = Math.sin(w) / (2 * 0.7071), a0 = 1 + al, b0 = (1 + c) / 2 / a0, b1 = -(1 + c) / a0, a1 = -2 * c / a0, a2 = (1 - al) / a0; const y = new Float32Array(x.length); let x1 = 0, x2 = 0, y1 = 0, y2 = 0; for (let i = 0; i < x.length; i++) { const o = b0 * x[i] + b1 * x1 + b0 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = x[i]; y2 = y1; y1 = o; y[i] = o; } return y; }; return lufs(hp(L), hp(R)); }
@@ -131,22 +132,29 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
 {
   const spots = { walking: { x: -36, y: 3, z: -23 }, junction: { x: -40, y: 3, z: -150 }, club: { x: 63.7, y: 3, z: 129.6 }, station: { x: 31.8, y: 8, z: -309 }, alley: { x: -37.2, y: 3, z: -87.3 } }, res = {};
   const L0wet = (await import('../seoul-audio.js')).SND.wet;
-  for (const [k, cam] of Object.entries(spots)) { const c = await cityAt(cam); const o = octaves(c.L, c.R); res[k] = { lu: lufs(c.L, c.R) - HOVER_LUFS, ph: phoneLU(c.L, c.R) - HOVER_LUFS, cen: centroid(c.L, c.R), low: o.low, oct: o.oct, sp: spread(c.L, c.R), cv: k === 'walking' ? rhythm(c.L, c.R, 300, 3000)[1] : 0, st: c.stats }; }
+  for (const [k, cam] of Object.entries(spots)) { const c = await cityAt(cam); const o = octaves(c.L, c.R); res[k] = { lu: lufs(c.L, c.R) - HOVER_LUFS, ph: phoneLU(c.L, c.R) - HOVER_LUFS, cen: centroid(c.L, c.R), low: o.low, oct: o.oct, o63: o.o63, sp: spread(c.L, c.R), cv: k === 'walking' ? rhythm(c.L, c.R, 300, 3000)[1] : 0, st: c.stats }; }
   console.log('city vs a hover (LU / through a phone LU / centroid / < 120 Hz / p95-p50): ' + Object.entries(res).map(([k, v]) => `${k} ${v.lu.toFixed(1)} / ${v.ph.toFixed(1)} / ${v.cen.toFixed(0)} Hz / ${(100 * v.low).toFixed(0)} % / ${v.sp.toFixed(1)} dB`).join(', '));
-  ok(res.walking.lu > -11 && res.walking.lu < -9, `the city is audible under a hover on the walking street: ${res.walking.lu.toFixed(1)} LU (-10 +- 1; P1 -14, P4 main -7.6, P5 on the game's city -9.1)`);
+  ok(res.walking.lu > -11 && res.walking.lu < -9, `the city is audible under a hover on the walking street: ${res.walking.lu.toFixed(1)} LU (-10 +- 1; P1 -14, P4 main -7.6, P5 on the game's city -9.1, P6 -9.6: a 0.4 margin)`);
   const four = Object.entries(res).filter(([k]) => k !== 'alley');
   ok(four.every(([, v]) => v.lu > -14 && v.lu < -2), `every spot within reach and under the props (-14 to -2 LU: ${four.map(([k, v]) => k + ' ' + v.lu.toFixed(1)).join(', ')}; P2 Yanghwa-ro -17.5, club street -14.7; P3 junction -14.4)`);
   // P5 sound #2: the place contrast (P4 main: a 2.2 LU spread over the panel's 7 paths; Hongdae runs ~10 dB alley to arterial)
-  ok(res.alley.lu <= res.walking.lu - 2 && res.alley.lu > -18, `the place contrast: a side alley (Hongik-ro 5an-gil) is ${res.alley.lu.toFixed(1)} LU, ${(res.alley.lu - res.walking.lu).toFixed(1)} under the walking street (<= -2; > -18), the station ${(res.station.lu - res.walking.lu).toFixed(1)} over it (>= +4): ${(res.station.lu - res.alley.lu).toFixed(1)} LU alley to arterial`);
+  ok(res.alley.lu <= res.walking.lu - 2 && res.alley.lu > -18, `the place contrast: a side alley (Hongik-ro 5an-gil) is ${res.alley.lu.toFixed(1)} LU, ${(res.alley.lu - res.walking.lu).toFixed(1)} under the walking street (<= -2; > -18), the station ${(res.station.lu - res.walking.lu).toFixed(1)} over it (>= +4.5): ${(res.station.lu - res.alley.lu).toFixed(1)} LU alley to arterial`);
   // P6 (sound #6): the alley hears the roads through its buildings: the occluded share of the traffic bed goes through the
   // 800 Hz path, and the cars behind the walls get no voices (P5: 6 engine voices at the alley, trafficNear 0.7)
+  // P7 (sound bug: at t = 0 the alley voiced 3 engines and 2 scooters before the first occlusion scan): the first feed
+  { const L0 = build(layout, LIFE), c0 = new WA.OfflineAudioContext(2, SR, SR), cam = { ...spots.alley, copy() {} }; L0.audio.attach(c0, worldBus(c0), { offline: true }); L0.update(30, cam); L0.audio.feed(cam, { x: 0, y: 0, z: -1 }, 30 + L0.colliders.warm, 0);
+    const s0 = L0.audio.stats; ok(s0.engine + s0.bus + s0.scooter <= 1, `the alley's first frame: ${s0.engine} engine, ${s0.bus} bus, ${s0.scooter} scooter voices (<= 1; P6 3 + 2 before the first occlusion scan)`); }
   { const a = res.alley.st; ok(a.trafOcc >= 0.3 && a.engine + a.bus <= 2, `occlusion colour: ${(100 * a.trafOcc).toFixed(0)} % of the alley's traffic bed reaches it through buildings (>= 30 %: 800 Hz, -6 dB + 6 per building), engine voices ${a.engine + a.bus} (<= 2; P5 6), its centroid ${res.alley.cen.toFixed(0)} Hz`); }
   // P4 sound #2: an 8-lane arterial out-shouts the crowd street (P3: station -13.2 vs walking -10.4); #5: the club doors
   // no longer run hot (P3 club spot -3.4 LU, level with the props) but the club street is still heard
-  ok(res.station.lu >= res.walking.lu + 4, `Yanghwa-ro roars: the station is ${res.station.lu.toFixed(1)} LU, ${(res.station.lu - res.walking.lu).toFixed(1)} over the walking street (>= +4; P3 -2.8, P4 main -0.8, P5 on the game's city +2.7), wet tyres ${L0wet}, engine voices ${res.station.st.engine}, traffic near ${(+res.station.st.trafficNear).toFixed(1)}`);
+  // P7 (sound #4, margins): >= +4 -> +4.5 (P6 +4.7 on the merge: a 0.7 margin)
+  ok(res.station.lu >= res.walking.lu + 4.5, `Yanghwa-ro roars: the station is ${res.station.lu.toFixed(1)} LU, ${(res.station.lu - res.walking.lu).toFixed(1)} over the walking street (>= +4.5; P3 -2.8, P4 main -0.8, P5 on the game's city +2.7, P6 +4.7), wet tyres ${L0wet}, engine voices ${res.station.st.engine}, traffic near ${(+res.station.st.trafficNear).toFixed(1)}`);
   // P5 sound #3: a roar, not a hiss (P4: flat to 4 kHz, 8 kHz -5.6 dB, centroid 1.5 kHz; traffic at 30 m: 0.5-1 kHz peak, <= -10 dB by 8 kHz)
   // P6 (sound #2): the weight in the low mids (P5: 2 kHz level with 1 kHz, the full-chain centroid 1.47-1.53 kHz)
   { const so = res.station.oct, mx = Math.max(...so), lm = Math.max(so[1], so[2], so[3]), st = res.station.st;
+    // P7 (sound #2): the arterial has a floor: the buses' and trucks' diesel sub layer puts the 63 Hz octave within 6 dB of
+    // the loudest (P6 -9.7 on the full chain, -8.6 here; trucks and buses at 20-30 m: within 3-4 dB of the peak)
+    ok(res.station.o63 >= -6 && res.station.low < 0.3, `Yanghwa-ro has a sub floor: the 63 Hz octave ${res.station.o63.toFixed(1)} dB re the loudest (>= -6; P6 -8.6), ${(100 * res.station.low).toFixed(0)} % under 120 Hz (< 30, a phone)`);
     ok(so[6] - mx <= -10 && res.station.cen < 1200 && so[4] <= lm - 3 && st.passbys >= 1, `Yanghwa-ro roars, not hisses: 8 kHz ${(so[6] - mx).toFixed(1)} dB re the loudest octave (<= -10; P4 -5.6), centroid ${res.station.cen.toFixed(0)} Hz (< 1200; P4 1.5 k, P5 on the game's city 1.33 k), 2 kHz ${(so[4] - lm).toFixed(1)} dB re the loudest of 250 Hz-1 kHz (<= -3; P5 +1.8), pass-bys ${st.passbys} in 12 s (3-6 s apart), p95 - p50 ${res.station.sp.toFixed(1)} dB (P4 0.6)`); }
   // P5 sound #4: Hongdae's own voices: shop callers on the walking street, glasses and bottles at the tables
   ok(res.walking.st.callers >= 1 && res.club.st.clinks >= 1, `Hongdae's own voices: shop callers ${res.walking.st.callers} at the walking-street hover, clinks ${res.club.st.clinks} on the club street (12 s each)`);
@@ -161,7 +169,9 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
   const clubC = octaves(club.L, club.R); ok(clubC.low < 0.4, `club street: ${(100 * clubC.low).toFixed(0)} % of the energy under 120 Hz (P2 53 %), staff calls ${club.stats.calls}, queue chatter on`);
   // P6 (sound #5): the club path has dynamics: the doors pop open between their cycles (+9 dB for 0.5-2 s), the staff call
   // the line every 6-10 s (P5: the path's envelope CV 0.56 next to the walking street's 0.81)
-  { const cvC = rhythm(club.L, club.R, 300, 3000)[1]; ok(cvC >= 0.58 && club.stats.doorPops >= 2 && club.stats.calls >= 2 && sc >= 5, `the club path breathes: the 300-3000 Hz envelope's CV ${cvC.toFixed(2)} (>= 0.58; P5 0.56), p95 - p50 ${sc.toFixed(1)} dB (>= 5), door pops ${club.stats.doorPops}, staff calls ${club.stats.calls} in 20 s`); }
+  // P7 (sound #3, the club street's own character): the doors carry the bass (shut -22 dB, pops every 2.6-4.6 s with 1-3 s
+  // gaps), the queues and the club streets' cars -3 dB: the path's CV >= 0.7 (P6 0.65 here, 0.61 on the full chain)
+  { const cvC = rhythm(club.L, club.R, 300, 3000)[1]; ok(cvC >= 0.7 && club.stats.doorPops >= 3 && club.stats.calls >= 2 && sc >= 5, `the club path breathes: the 300-3000 Hz envelope's CV ${cvC.toFixed(2)} (>= 0.7; P5 0.56, P6 0.65), p95 - p50 ${sc.toFixed(1)} dB (>= 5), door pops ${club.stats.doorPops} (>= 3), staff calls ${club.stats.calls} in 20 s`); }
   // sound #3: the babble re-voiced. Octave spectrum of the crowd bed alone within 3 dB of a recorded crowd per octave,
   // reference: seoul/audio's P2 public-domain restaurant crowd (-3.9, 0, -1.6, -7.9, -14.3, -15.1, -18.6 dB re 250 Hz)
   const REF = [-3.9, 0, -1.6, -7.9, -14.3, -15.1, -18.6], cr = await cityAt(spots.walking, 16, { solo: 'crowd' }), co = octaves(cr.L, cr.R).oct, dev = co.map((v, i) => v - REF[i]);

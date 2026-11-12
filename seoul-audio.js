@@ -34,12 +34,14 @@ export const SND = {
   level: 1,
   // P5 (sound #2): 5.13 -> 3.85 (-2.5 dB): the walking-street hover back at -10 LU now the arterials, the shop callers and
   // the hover's events carry more; the place contrast comes from the parts, not the trim
-  world: 3.85,     // trim on the world path, set so the city sits ~10 LU under a hover on the walking street (sound #1)
+  // P7 (sound #4, margins): 3.85 -> 3.62 (-0.5 dB): the walking-street hover at -10.1 LU (P6 -9.6 on the merge, 0.4 from the gate)
+  world: 3.62,     // trim on the world path, set so the city sits ~10 LU under a hover on the walking street (sound #1)
   // P4: beds.traffic is now the city floor under the energy-summed traffic bed (sound #2); P3 61 dB at the street centre
   beds: { traffic: 50, crowd: 56, alley: 58, air: 54, rain: 66 },   // P4: crowd 65 -> 63 (plain-RMS babble; the events carry the peaks)
+  // P7 (sound #4): artFlow 2.8 -> 3.4, passby 95 -> 96, diesel 90 -> 91: Yanghwa-ro +5.7 LU over the walking street (P6 +4.7)
   // P6 (sound #2): artFlow 1.5 -> 2.8 on the arterials (>= 13 m; the 9-13 m roads keep P5's flow)
   // P5 (sound #2): artFlow 0.9 -> 1.3, now counted per lane against the sim's own moving (> 3 m/s) vehicles on that lane
-  wet: 0.7, artFlow: 2.8,   // P4 (sound #2): the look's wetness (seoul-light uCityWet default); arterial moving vehicles in 80 m per m of width (19.5 m: ~25)
+  wet: 0.7, artFlow: 3.4,   // P4 (sound #2): the look's wetness (seoul-light uCityWet default); arterial moving vehicles in 80 m per m of width (19.5 m: ~25)
   crowdFull: 90, crowdWave: 5.5,   // integ10: the crowd bed's slow waves, +- dB where dense   // P5 (sound #2): crowdN at which the crowd bed reaches its full level (P4 60: every crowded spot sat level)
   // P6 (sound #2): trucks +2, buses +1 (the roar re-voiced into the low mids reads ~2 LU quieter; the engines
   // stay: a car idling at a club-street door is mostly 30-100 Hz, which a phone can't play)
@@ -56,7 +58,7 @@ export const SND = {
   // and her clapping (sound #4), glasses and soju bottles in w21, a group talking past (sound #5), the train under exit 9
   // integ11 (sound #3, G1's P6 crowd: 14 avatars, mixed lanes held the hover at p95 - p50 4.2, CV 0.67): the crowd bed
   // -4 dB and its waves +-4 -> 5.5 dB; the names called +2 dB
-  passby: 95, diesel: 90, caller: 83, clap1: 79, clink: 76, group: 77, train: 82,
+  passby: 96, diesel: 91, caller: 83, clap1: 79, clink: 76, group: 77, train: 82,
   // P6 (sound #6): exit 9's T-money beeps (at the stair mouth, 1 m) and its escalator's hum (within the exit voice, re SND.exit)
   tmoney: 74, escalator: -16,
   pools: { engine: 6, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1, queue: 2, exit: 1 },
@@ -66,6 +68,12 @@ export const SND = {
   // P6 (sound #2): the far traffic bed's shelf above 1.2 kHz (dB); (sound #6 / bug) the lowest level at the camera (dB SPL
   // re 1 m figures, occlusion taken off) at which a vehicle gets one of the positional voices
   trafShelf: 4, voiceFloor: 48,
+  // P7 (sound #2, the arterial's floor; P6 63 Hz -9.7 dB re max at Yanghwa-ro): the buses' and trucks' 40-90 Hz diesel
+  // layer, dB over the diesel bed, and how far it swells (x, gain) as the arterial pulls away on its green
+  dieselSub: 2, subSwell: 1.8,
+  // P7 (sound #3, the club street's own character): the 19-gil / 21-gil club streets' cars and the door queues (dB), and
+  // a shut club door's gain (P6 0.32, -10 dB: a steady bass carpet; now the bass comes with the door: -22 dB shut)
+  clubCars: -3, queueTrim: -3, doorShut: 0.08,
 };
 // active RMS of a multichannel Float32 set (see above); unitRms scales it to 1 in place
 function activeRms(chs, sr) {
@@ -556,6 +564,12 @@ export function createSeoulAudio(layout, life, opts = {}) {
       const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 31; const fj = loop(lfoBuf(ctx, 23, 0.4, 37), 1), fjd = G(2.5); fj.connect(fjd); fjd.connect(o.frequency);
       const bp = F('bandpass', 95, 0.8), lp = F('lowpass', 260, 0.7), am = G(0.7), al = loop(lfoBuf(ctx, 9, 7, 38), 1), ad = G(0.3); al.connect(ad); ad.connect(am.gain);
       g.dieselG = G(0); o.connect(bp); bp.connect(lp); lp.connect(am); am.connect(g.dieselG); g.dieselG.connect(mix); o.start();
+      // P7 (sound #2): the sub layer under it: a 6-cylinder diesel's ~37 Hz firing, its 2nd harmonic (~75 Hz) carrying the
+      // 63 Hz octave past the mic's 90 Hz wind-cut; rough (a slow pitch wander, an 11 Hz judder). It rises to ~50 Hz and
+      // swells as the arterial pulls away on its green (feed: g.subG, g.subO)
+      const so = ctx.createOscillator(); so.type = 'sawtooth'; so.frequency.value = 37; const sj = G(1.5); fj.connect(sj); sj.connect(so.frequency);
+      const slp = F('lowpass', 105, 3), slp2 = F('lowpass', 140, 0), sam = G(0.75), sl = loop(lfoBuf(ctx, 13, 11, 39), 1), sd = G(0.25); sl.connect(sd); sd.connect(sam.gain);
+      g.subG = G(0); g.subO = so; so.connect(slp); slp.connect(slp2); slp2.connect(sam); sam.connect(g.subG); g.subG.connect(mix); so.start();
     }
     {
       const r = loop(noise(ctx, 23.3, 'brown', 13, 16000), 1, 0.3, 0.02, 31), lp = F('lowpass', 300), rg = G(0.8);   // P6 (sound #2): 180 Hz, 0.55 -> 300 Hz, 0.8 (the body of the roar)
@@ -811,16 +825,21 @@ export function createSeoulAudio(layout, life, opts = {}) {
       // occG's loss. (sound bug: the side alley gave 6 engine voices to cars behind its buildings) a vehicle is voiced only
       // while its level at the camera, the occlusion taken off, is over SND.voiceFloor
       let E = 0, Ed = 0, Ec = 0, heavy = 0, rays = 0; const laneMv = g.laneMv || (g.laneMv = new Map()), vOcc = g.vOcc || (g.vOcc = new Map()); laneMv.clear();
-      const occOf = (id, x, z, d) => { let o = vOcc.get(id); if ((!o || Math.abs(t - o[1]) > (d < 120 ? 0.5 : 1.5)) && rays < 24) { rays++; o = [d > 3 ? occl(cam.x, cam.y, cam.z, x, 1.0, z, true) : 0, t]; vOcc.set(id, o); } return o ? o[0] : 0; };
+      // P7 (sound bug: at t = 0 the alley voiced 3 engines and 2 scooters before their rays were cast): the first scan casts
+      // up to 96 rays, and a vehicle whose path hasn't been checked yet (unk) is bed, not voice
+      const rayMax = g.occInit ? 24 : 96; g.occInit = true; let unk = false;
+      const occOf = (id, x, z, d) => { let o = vOcc.get(id); if ((!o || Math.abs(t - o[1]) > (d < 120 ? 0.5 : 1.5)) && rays < rayMax) { rays++; o = [d > 3 ? occl(cam.x, cam.y, cam.z, x, 1.0, z, true) : 0, t]; vOcc.set(id, o); } unk = !o; return o ? o[0] : 0; };
       if (sim) for (const v of sim.traffic.vehicles) {
         if (v.hidden) continue; const p = sim.traffic.pose(v, 1, PO), d = Math.hypot(p.x - cam.x, p.z - cam.z, cam.y - 0.6);
         if (d < 150) trafN += (0.3 + v.v / 12) / (1 + (d / 15) * (d / 15));
         if (d > 250) continue;
-        const n = occOf(v.id, p.x, p.z, d), e0 = Math.pow(10, (SND[v.type] - 105) / 10) * (0.1 + Math.min(3, (v.v / 12) ** 2)) * (1 + 0.6 * g.wet * Math.min(1, v.v / 8)) / Math.max(9, d * d) * Math.pow(10, -0.006 * Math.max(0, d - 20)), e = e0 * occG(n) ** 2;
+        // P7 (sound #3): the club streets' cars SND.clubCars dB (they crawl past the queues; the street is the doors')
+        const ck = v.lane?.street?.kind === 'club' ? SND.clubCars : 0;
+        const n = occOf(v.id, p.x, p.z, d), e0 = Math.pow(10, (SND[v.type] + ck - 105) / 10) * (0.1 + Math.min(3, (v.v / 12) ** 2)) * (1 + 0.6 * g.wet * Math.min(1, v.v / 8)) / Math.max(9, d * d) * Math.pow(10, -0.006 * Math.max(0, d - 20)), e = e0 * occG(n) ** 2;
         if (n) Ec += e; else { E += e; Ed += e * d; } if (d < 80 && v.v > 3 && v.lane?.street?.kind === 'main') laneMv.set(v.lane, (laneMv.get(v.lane) || 0) + 1);
         if ((v.type === 'bus' || v.type === 'truck') && d < 120) heavy += occG(n) ** 2 / Math.max(1, (d / 20) ** 2);
-        if (d > 120) continue; const pool = v.type === 'bus' ? 'bus' : v.type === 'scooter' ? 'scooter' : 'engine', score = (SND[v.type] + 10 * Math.log10(0.2 + v.v / 10)) - 20 * Math.log10(d + 1) + 20 * Math.log10(occG(n));
-        if (score >= SND.voiceFloor) cand[pool].push({ v, d, e, n, score });
+        if (d > 120) continue; const pool = v.type === 'bus' ? 'bus' : v.type === 'scooter' ? 'scooter' : 'engine', score = (SND[v.type] + ck + 10 * Math.log10(0.2 + v.v / 10)) - 20 * Math.log10(d + 1) + 20 * Math.log10(occG(n));
+        if (score >= SND.voiceFloor && !unk) cand[pool].push({ v, d, e, n, score });
       }
       // the voiced vehicles (each pool's top scores, as the pools below pick them) leave the bed
       for (const pool of ['engine', 'bus', 'scooter']) { const C = cand[pool].sort((a, b) => b.score - a.score); for (let i = 0; i < Math.min(C.length, g.pv[pool].length); i++) { if (C[i].n) Ec -= C[i].e; else { E -= C[i].e; Ed -= C[i].e * C[i].d; } } }
@@ -861,7 +880,13 @@ export function createSeoulAudio(layout, life, opts = {}) {
       T(g.trafLp.frequency, g.trafD > 20 ? 2000 + 9000 * Math.exp(-(g.trafD - 20) / 8) : 11000, 0.4);
       T(g.trafSh.gain, -SND.trafShelf * Math.min(1, Math.max(0, (g.trafD - 20) / 10)), 0.4);
       // diesel idle: the arterial's buses and trucks in reach, and the through flow's share of them (1 in 12)
-      T(g.dieselG.gain, nrm('diesel') * dbA(SND.diesel) * Math.sqrt(heavy / 400 + art / Math.pow(10, (SND.car - 105) / 10) / 12) / (1 + alt / 25), 0.5);
+      const dz = nrm('diesel') * dbA(SND.diesel) * Math.sqrt(heavy / 400 + art / Math.pow(10, (SND.car - 105) / 10) / 12) / (1 + alt / 25);
+      T(g.dieselG.gain, dz, 0.5);
+      // P7 (sound #2): the sub layer, and its swell: 2-9 s after the nearest crossing's walk ends the arterial's buses and
+      // trucks pull away (a pure function of the clock: live = clip; 120 s: LIFE.signal.period)
+      let sw = 0; if (art > 0 && life?.crossPhase && crossings.length) { let cb = null, cd = 200; for (const c of crossings) { const d = Math.hypot(c.x - cam.x, c.z - cam.z); if (d < cd) { cd = d; cb = c; } }
+        const ph = cb && phaseOf(cb, t); if (ph && !ph.walk) { let u = ph.tc - ph.w0 - ph.wlen; if (u < 0) u += 120; sw = u < 2 ? 0 : u < 4 ? (u - 2) / 2 : Math.max(0, 1 - (u - 4) / 5); } }
+      g.subSw = sw; T(g.subG.gain, dz * Math.pow(10, SND.dieselSub / 20) * (1 + (SND.subSwell - 1) * sw), 0.5); T(g.subO.frequency, 37 + 13 * sw, 0.8);
       const ac = life?.acoustics ? life.acoustics(cam) : { canyon: 0, streetW: 30 };
       g.ctxv = { crowdN, trafN, canyon: ac.canyon, cand, art, artSt, artPr };
       S.crowdNear = crowdN; S.trafficNear = trafN; S.canyon = ac.canyon;
@@ -904,7 +929,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
           const v = c.v, p = c.p, vx = p.hx * v.v, vz = p.hz * v.v, dop = doppler(p.x, p.z, vx, vz), load = Math.max(0, v.acc) / 2;
           // P3: 1 m figures, so no x2 (P2 used x2 on 7.5 m figures). P5 (sound #3): past 20 m the top rolls off from 2 kHz
           const air = c.d > 20 ? Math.min(1, (2000 + 9000 * Math.exp(-(c.d - 20) / 8)) / (22000 / (1 + c.d / 35))) : 1;
-          place(vo, p.x, 0.6, p.z, nrm(pool) * dbA(SND[v.type]), air);
+          place(vo, p.x, 0.6, p.z, nrm(pool) * dbA(SND[v.type] + (v.lane?.street?.kind === 'club' ? SND.clubCars : 0)), air);
           const k = vo.ctl;
           if (pool === 'engine') {
             const rpmHz = (v.type === 'truck' ? 22 : 26) + v.v * 2.2 + load * 10;
@@ -1002,15 +1027,18 @@ export function createSeoulAudio(layout, life, opts = {}) {
     // P6 (sound #5, club path dynamics; P5 CV 0.56): between the cycle's openings people come and go: every 4-7 s (80 %)
     // the street door swings open for 0.5-2 s and the lobby door most of the way (+9 dB, the kick and the vocal let out), a pure
     // function of the clock
-    const pop = (s) => { const per = 4 + 3 * ((s.phase * 0.29) % 1), u = t + s.phase * 2.3, w = Math.floor(u / per), t0 = w * per + 0.6 * per * hh(w, 70 + s.seed), len = 0.5 + 1.5 * hh(w, 71 + s.seed);
-      if (hh(w, 72 + s.seed) > 0.8 || u < t0 || u > t0 + len + 0.4) return 0; if (dtF > 0 && t0 > u - dtF && t0 <= u) S.doorPops++; return Math.min(1, (u - t0) / 0.15, (t0 + len + 0.4 - u) / 0.4); };
+    // P7 (sound #3): every 2.6-4.6 s (85 %) for 0.6-1.6 s, so the gaps between pops are 1-3 s of near-silence from the door
+    // (shut, SND.doorShut: -22 dB; P6 -10 dB held a bass carpet under the whole street)
+    const pop = (s) => { const per = 2.6 + 2 * ((s.phase * 0.29) % 1), u = t + s.phase * 2.3, w = Math.floor(u / per), len = 0.6 + 1.0 * hh(w, 71 + s.seed), t0 = w * per + Math.max(0, per - len - 1.4) * hh(w, 70 + s.seed);
+      if (hh(w, 72 + s.seed) > 0.85 || u < t0 || u > t0 + len + 0.4) return 0; if (dtF > 0 && t0 > u - dtF && t0 <= u) S.doorPops++; return Math.min(1, (u - t0) / 0.15, (t0 + len + 0.4 - u) / 0.4); };
     for (const vo of g.pv.club) if (vo.who) {
       const s = sites.club.find((q) => q.id === vo.who), pp = pop(s), oS = Math.max(pp, door(t + s.phase, s.cyc, 0.3)), oI = Math.max(0.8 * pp, door(t + s.phase * 1.37, s.cyc * 0.61, 0.45)), oB = oS * oI;
-      T(vo.ctl.glass.frequency, 550 * Math.pow(1600 / 550, oS) * Math.pow(9000 / 1600, oB), 0.03); T(vo.ctl.door.gain, 0.32 * Math.pow(0.56 / 0.32, oS) * Math.pow(1 / 0.56, oB), 0.03);
+      T(vo.ctl.glass.frequency, 550 * Math.pow(1600 / 550, oS) * Math.pow(9000 / 1600, oB), 0.03); T(vo.ctl.door.gain, SND.doorShut * Math.pow(0.56 / SND.doorShut, oS) * Math.pow(1 / 0.56, oB), 0.03);
     }
     // queue chatter outside each club door, and the door staff calling the line (P6, sound #5: every 6-10 s, 85 %; P5 9-16 s,
     // 75 %; within 45 m)
-    S.queue = assignSites(g.pv.queue, sites.queue, 45, () => dbA(SND.queue));
+    // P7 (sound #3): the queues SND.queueTrim dB (P6: their steady chatter held the club path's envelope CV at 0.61-0.65)
+    S.queue = assignSites(g.pv.queue, sites.queue, 45, () => dbA(SND.queue + SND.queueTrim));
     for (const s of sites.club) {
       if (Math.abs(s.x - cam.x) > 45 || Math.abs(s.z - cam.z) > 45) continue;
       const per = 6 + 4 * ((s.phase * 0.13) % 1), sl = Math.floor((t + s.phase * 1.7) / per), prev = g.staffSlot.get(s.id); g.staffSlot.set(s.id, sl);
