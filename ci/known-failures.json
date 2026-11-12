@@ -296,6 +296,16 @@
         "re": "spawn p50 ([0-9.]+)",
         "min": 19
       }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[art] walk0: bright elements",
+      "owner": "C (PLAN-P7 art #1: signs into the frame, stacks on the faces that fill walk0 / walk180 / w21)",
+      "why": "[P7 H] new row: the art panel's element count (>= 300 at 960 wide; CI's 320-wide still gates at 93). CI walk0 48 (A's P6 run 43163186613), panel6 seoulsnap 155. Limit ~10 % under the CI value: it may rise, never fall",
+      "limit": {
+        "re": "bright elements ([0-9]+)",
+        "min": 43
+      }
     }
   ]
 }
