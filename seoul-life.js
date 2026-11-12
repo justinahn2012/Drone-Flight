@@ -2530,8 +2530,10 @@ else if (pt > 12.5) {
   // sides), two ceiling LED rows, the rear bench's backs to 1.62 m with the backs of heads over them (black hair, ~60 %
   // taken), a smaller row further in, sometimes a standing rider, the centre post
   float x = vLoc.x, y = vLoc.y, sd = floor(vState.w * 97.0);
-  vec3 cabin = vec3(0.95, 0.97, 1.0) * 30.0 * mix(0.55, 1.0, smoothstep(1.6, 2.6, y));
-  cabin *= 1.0 + 1.2 * step(2.6, y) * (1.0 - smoothstep(0.03, 0.07, abs(abs(x) - 0.42)));
+  // (P8, life #4 / fpv #5 with A: P7's window read 164 codes in the station still, as bright as the paint) the cabin is
+  // darker toward the floor and the LED rows are lines, not a band; the glass passes 35 % (below)
+  vec3 cabin = vec3(0.95, 0.97, 1.0) * 30.0 * mix(0.4, 1.0, smoothstep(1.7, 2.7, y));
+  cabin *= 1.0 + 3.5 * step(2.6, y) * (1.0 - smoothstep(0.015, 0.035, abs(abs(x) - 0.42)));
   vec3 pc = y < 1.62 ? vec3(0.14, 0.15, 0.19) * 3.0 : cabin;
   for (int k = 0; k < 4; k++) {   // the far row first: the near bench draws over it
     float xs = -0.36 + 0.24 * float(k), r = vh21(vec2(float(k) + 7.0, sd));
@@ -2545,17 +2547,20 @@ else if (pt > 12.5) {
   if (rs > 0.75) { float xs = rs > 0.87 ? 0.12 : -0.12; vec2 q = vec2((x - xs) / 0.09, (y - 2.27) / 0.11);
     if (dot(q, q) < 1.0) pc = vec3(0.9, 0.85, 0.8) * 1.0; else if (abs(x - xs) < 0.17 && y < 2.16 && y > 1.62) pc = vec3(0.25, 0.25, 0.3) * 3.0; }
   pc *= 1.0 - (1.0 - smoothstep(0.02, 0.04, abs(x))) * 0.95;   // centre post
-  e = pc * 0.8;
+  // (P8) tinted rear glass, transmittance 0.35 (P7 0.8): the 30-nit cabin reads ~10 nits (60-90 codes at the station's
+  // exposure), the LED lines ~40, heads and seat backs dark against it; the rubber surround is a dark frame
+  float frame = 1.0 - smoothstep(0.03, 0.06, min(0.74 - abs(x), min(y - 1.45, 2.75 - y)));
+  e = pc * 0.35 * (1.0 - 0.9 * frame);
 }
 // clearcoat and glass: Fresnel x the street they face
 if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5) || pt > 11.5) {
   vec3 Vw = normalize(cameraPosition - vWP), Nw = normalize(vWN), Rw = reflect(-Vw, Nw);
   float F = (pt < 0.5 ? 0.04 : 0.05) + 0.96 * pow(1.0 - clamp(dot(Nw, Vw), 0.0, 1.0), 5.0);
-  e += cityEnv(Rw) * F * (pt < 0.5 ? 0.9 : 1.0);
+  e += cityEnv(Rw) * F * (pt < 0.5 ? 0.9 : pt > 12.5 ? 0.6 : 1.0);   // (P8: the tinted rear glass a little less)
 }
 totalEmissiveRadiance += e * uNit;`);
   };
-  m.customProgramCacheKey = () => 'seoul-vehicle-6';
+  m.customProgramCacheKey = () => 'seoul-vehicle-7';
   return m;
 }
 
