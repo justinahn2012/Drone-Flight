@@ -158,7 +158,7 @@ jobs:
           ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" swift test 2>&1 | tee swift-test.log
           grep -q "with 0 failures" swift-test.log && ! grep -q "skipped" swift-test.log
 
-  native-macos:   # [P6 H] the Apple side of the same package (CryptoKit, the SDK's zlib); no Metal code yet (PARITY.md section 4)
+  native-macos:   # [P6 H] the Apple side of the same package (CryptoKit, the SDK's zlib). [P7 H] + the first Metal frame (MetalFrameTests)
     needs: test
     if: ${{ !cancelled() && needs.test.result != 'skipped' }}
     runs-on: macos-15
@@ -176,8 +176,17 @@ jobs:
           swift --version
           sh fetch-meshopt.sh
           swift build
-          ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" swift test 2>&1 | tee swift-test.log
+          mkdir -p "$GITHUB_WORKSPACE/metal-out"
+          ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" ONETAKE_FRAME_OUT="$GITHUB_WORKSPACE/metal-out/walk0-metal.png" swift test 2>&1 | tee swift-test.log
+          grep -E "Metal device|frame [0-9]+x|ground pixels|no Metal device" swift-test.log || true
           grep -q "with 0 failures" swift-test.log && ! grep -q "skipped" swift-test.log
+      - uses: actions/upload-artifact@v4   # [P7 H] the first Metal frame (walk0, lightmapped ground), next to the browser's stills
+        if: ${{ !cancelled() }}
+        with:
+          name: metal-frame
+          path: metal-out/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: iOS build (the package for the phone's SDK; compile only)
         working-directory: native/OneTakeSeoul
         shell: bash
