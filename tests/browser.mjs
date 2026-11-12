@@ -48,6 +48,8 @@ const LEVEL_SHOTS = {
     walk0: ['o.tp(-36,3,-23,0,(4)-o.drone.c.camTilt)', [0, 0, -3]],
     club90: ['o.tp(63.7,3,129.6,90,(4)-o.drone.c.camTilt)', [-3, 0, 0]],
     station: ['o.tp(31.8,8,-309,0,(0)-o.drone.c.camTilt)', [0, 0, -3]],
+    // [P8 H, PLAN-P8 gates] seoulsnap's walk180 (walk0 turned round): camgate's ground/wall row binds on it (GW_SHOTS)
+    walk180: ['o.tp(-36,3,-23,180,(4)-o.drone.c.camTilt)', [0, 0, 3]],
     // [P6 H, PLAN-P6 gates] the player's first frame: the game's own spawn (respawn to the start, F's pose and pitch), held
     // still. Last, so the three goldens above are shot exactly as before (respawn moves the take clock to a new city).
     spawn: ['o.respawn(true)', [0, 0, 0]],
