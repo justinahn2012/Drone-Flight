@@ -255,7 +255,7 @@ jobs:
 
   browser-seoul:   # SwiftShader renders Seoul slowly and runners vary 2x: 45 min on integ8, >90 on p3/H-ci 3450714 (stills
     runs-on: ubuntu-24.04    # 1548-2084 s each; stills.json now logs the seconds per step), so 180 (the limit is 360). [P4 H] pinned like browser
-    timeout-minutes: 180
+    timeout-minutes: 300   # [P7 H] 4 stills since P6 (spawn): main 2dc3578's run 43180707219 was cut at 180 inside the spawn still (perf 4, coverage 13, walk0 49, club90 27, station 26 min)
     steps:
       - uses: actions/checkout@v4
         with:
