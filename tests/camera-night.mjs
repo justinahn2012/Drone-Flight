@@ -53,6 +53,7 @@ if (process.argv.includes('--print')) console.log(JSON.stringify(gotT));
 for (const k in TABLES) ok(gotT[k] === TABLES[k], `bando table ${k} changed (${gotT[k]} != ${TABLES[k]})`);
 
 // --- 2. night tone curve
+const EV_P6 = -2.05;   // [P6-A] the fitted night evBias (re-fit last, on A + C + D)
 const N = M.GRADES.night, [a, d, mid] = N.tone, wp = 0.24 * 2 ** N.clipEv, [b, c] = M.nightToneBC(a, d, mid, wp);
 const f = (x) => x ** a / (x ** (a * d) * b + c);
 ok(Math.abs(f(0.24) - mid) < 1e-9, 'tone passes grey');
@@ -63,7 +64,7 @@ let prev = -1, mono = true; for (let ev = -8; ev <= 8; ev += 0.25) { const c0 = 
 ok(mono, 'tone monotonic');
 const want = { '-2': [45, 65], '0': [112, 135], '2': [180, 200], '4': [220, 235], '6': [240, 250], '7.5': [254, 255.1] };
 for (const [ev, [lo, hi]] of Object.entries(want)) { const c0 = code(+ev); ok(c0 >= lo && c0 <= hi, `code at ${ev} EV = ${c0.toFixed(1)} not in [${lo}, ${hi}]`); }
-ok(N.aeReject <= 0.01 && N.aeArea[1] === 0.75 && N.aeArea[0] === 0.5, 'AE: 1 % reject, area sources (>= 5 nits) at 75 % (P5 re-fit)');
+ok(N.aeReject <= 0.01 && N.aeArea[1] === 0.55 && N.aeArea[0] === 0.5, 'AE: 1 % reject, area sources (>= 5 nits) at 55 % (P6 colour #2: open shots)');
 
 // --- 3. profile
 const cam = new M.FPVCamera(null); cam.hdr = true; cam._applyGrade(M.GRADES.hdr);
@@ -92,7 +93,7 @@ ok(/const GHOST_FS/.test(src) && !/uGhostT/.test(C.FINAL_FS), 'ghosts come from 
 }
 
 // --- 5. [P4-A] phase-4 night camera: stop recovered, source-tinted middle lobe, magenta window + amber gate, NaN guard, mover dilation
-ok(N.evBias === -2.05 && N.toe === 0.035, 'P5 colour #1 / exposure re-fit: evBias -2.05, toe 0.035');
+ok(N.evBias === EV_P6 && N.toe === 0.025, `P6 exposure re-fit on A + C + D: evBias ${EV_P6}, toe 0.025 (fpv #1)`);
 ok(N.coreEvSrc[0] === -5.2 && N.coreEvSrc[1] === -1.6, 'P4 colour #4 / P5 re-fit: true-source ramp [-5.2, -1.6]');
 ok(Array.isArray(N.haloM) && N.haloM[0] >= 0.035 && N.haloM[0] <= 0.045 && N.haloM[1] > 0 && N.haloMTint.every((v) => v === 1), 'P4 colour #4 / P5 colour #5: middle lobe 3.5-4.5 %, source-tinted');
 ok(/uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(C.NIGHT_FINAL_BODY ?? '') || /uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(pp(C.FINAL_FS, { NIGHT: 1 })), 'P4: FINAL adds the middle lobe after eCore');
@@ -103,9 +104,19 @@ ok(/for \(int dy = -1; dy <= 1; dy\+\+\)/.test(pp(C.BLUR_FS, { NIGHT: 1 })) && /
 { const pn4 = cam.profile({ w: 1920, h: 1080 }); ok(pn4.night && pn4.night.psf.mid.energy === N.haloM[0] && JSON.stringify(pn4.night.retro.magenta.ev) === JSON.stringify(N.magEv), 'P4: profile carries the middle lobe and the magenta window'); }
 
 // --- 6. [P5-A] phase-5 night camera: the second wide lobe
-ok(Array.isArray(N.haloW) && N.haloW[0] >= 0.005 && N.haloW[0] <= 0.015 && N.haloW[1] >= 1.5 && N.haloW[2] >= 2, 'P5 colour #5: a ~1 % wide lobe, sigma ~100 px');
+ok(Array.isArray(N.haloW) && N.haloW[0] >= 0.015 && N.haloW[0] <= 0.025 && N.haloW[1] >= 1.5 && N.haloW[2] >= 2, 'P5 colour #5 / P6 colour #6: a ~2 % wide lobe, sigma ~100 px');
 ok(/uHaloW > 0\.0\) e \+= texture\(tHaloW/.test(pp(C.FINAL_FS, { NIGHT: 1 })) && /uniform sampler2D tHaloW/.test(C.NIGHT_FINAL_HEAD) && !/tHaloW/.test(pp(C.FINAL_FS, {})), 'P5: night FINAL adds the wide lobe; bando FINAL does not');
 { const pn5 = cam.profile({ w: 1920, h: 1080 }); ok(pn5.night.psf.mid2 && pn5.night.psf.mid2.energy === N.haloW[0], 'P5: profile carries the wide lobe'); }
+
+// --- 7. [P6-A] phase-6 night camera: the split-tone leaves the ground and the sky alone; the halation edge is longer
+ok(N.retroShadow[1] === 0.03 && N.retroShGate[0] >= 0.15 && N.retroShGate[1] > N.retroShGate[0] && N.retroShSky === 1, 'P6 colour #4: split-tone chroma 0.03, gated off the ground (Oklab L) and the sky');
+{ const nf = pp(C.FINAL_FS, { NIGHT: 1 });
+  ok(/ws \*= smoothstep\(uRetroShG\.x, uRetroShG\.y, lab\.x\)/.test(nf) && /texture\(tDepthN/.test(nf), 'P6: night FINAL gates the split-tone by L and by the collider depth (sky)');
+  ok(!/tDepthN|uRetroShG/.test(pp(C.FINAL_FS, {})), 'P6: bando FINAL has no split-tone gate'); }
+{ const L = (code) => { const v = code / 255; return Math.cbrt(v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4); };
+  ok(N.retroShGate[0] >= L(14), 'P6: no split-tone at the P5 ground level (walk0 14 codes)'); }
+ok(N.haloM[1] >= 2.2 && N.haloW[0] === 0.02, 'P6 colour #6: middle lobe spacing 2.2 (sigma 1.6 -> 2.2 taps), wide lobe 2 %');
+{ const pn6 = cam.profile({ w: 1920, h: 1080 }); ok(JSON.stringify(pn6.night.retro.shadowGate) === JSON.stringify(N.retroShGate) && pn6.night.retro.shadowSkyCut === true, 'P6: profile carries the split-tone gate'); }
 
 console.log(`camera-night tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
