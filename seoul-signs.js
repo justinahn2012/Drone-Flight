@@ -326,6 +326,73 @@ export function spawnCorridor(layout, streets, m = 40) {
   return (lot) => { if (memo.has(lot.id)) return memo.get(lot.id); const P = lot.footprint || []; let x = 0, z = 0; for (const p of P) { x += p[0]; z += p[1]; }
     const v = P.length > 0 && dline(x / P.length, z / P.length, best) <= m; memo.set(lot.id, v); return v; };
 }
+// [P7-C] art #1 (the stacks missed the frame: P6 put them by lot.street, and walk0's element count stayed at 155 because
+// the faces that fill the stills are a 2F front whose blades sit at its far ends and a 4F corner lot's side wall). The
+// spawn line's first frames: the stills poses (seoulsnap / camgate: walk0 and walk180 at the spawn, w21 at the north
+// end of Eoulmadang-ro), 3 m up, 4 deg over the horizon, through fpvcam's reference lens (LENSES.ref: thetaS 50 deg,
+// k 0.28) at 16:9. frameFaces ray-casts them against the lot prisms (footprint x floors) and returns, per lot, the
+// faces that fill >= `min` of any one frame and the stretch of each that the camera sees.
+export const HERO_VIEWS = [
+  { id: 'walk0', pos: [-36, 3, -23], yaw: 0, pitch: 4 },
+  { id: 'walk180', pos: [-36, 3, -23], yaw: 180, pitch: 4 },
+  { id: 'w21', pos: [-66.7, 3, 88], yaw: 0, pitch: 4 },
+];
+const LENS_REF = { thetaS: 50 * Math.PI / 180, k: 0.28 };
+export function frameFaces(layout, { views = HERO_VIEWS, min = 0.05, nx = 80, ny = 45 } = {}) {
+  const out = new Map(), lots = layout.lots || [];
+  if (!lots.length || !views.length) return out;
+  const { k, thetaS } = LENS_REF, hw = 16 / 9, hh = 1, rc = Math.hypot(hw, hh);
+  const Fl = Math.max(k / Math.tan(k * thetaS), rc * k / Math.tan(k * 1.16));
+  for (const v of views) {
+    const [x, y, z] = v.pos, yr = v.yaw * Math.PI / 180, pr = (v.pitch || 0) * Math.PI / 180;
+    const fw = [-Math.sin(yr) * Math.cos(pr), Math.sin(pr), -Math.cos(yr) * Math.cos(pr)], rt = [Math.cos(yr), 0, -Math.sin(yr)];
+    const up = [rt[1] * fw[2] - rt[2] * fw[1], rt[2] * fw[0] - rt[0] * fw[2], rt[0] * fw[1] - rt[1] * fw[0]];
+    // walls binned by azimuth from the eye (1 deg bins), so a ray tests only the walls across its bearing
+    const NB = 360, bins = Array.from({ length: NB }, () => []), azOf = (dx, dz) => Math.floor(((Math.atan2(dx, dz) / (2 * Math.PI)) + 1) * NB) % NB;
+    for (const l of lots) { const P = l.footprint || [], top = (l.floors | 0 || 1) * (l.floorH || 3.2) + 0.9;
+      for (let i = 0; i < P.length; i++) { const a = P[i], b = P[(i + 1) % P.length];
+        if (Math.min(Math.hypot(a[0] - x, a[1] - z), Math.hypot(b[0] - x, b[1] - z)) > 160) continue;
+        const w = { l, i, a, b, top }; let b0 = azOf(a[0] - x, a[1] - z), b1 = azOf(b[0] - x, b[1] - z); if ((b1 - b0 + NB) % NB > NB / 2) [b0, b1] = [b1, b0];
+        for (let q = b0; ; q = (q + 1) % NB) { bins[q].push(w); if (q === b1) break; } } }
+    const hits = new Map(); const N = nx * ny;
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const sx = ((i + 0.5) / nx * 2 - 1) * hw, sy = (1 - (j + 0.5) / ny * 2) * hh, r = Math.hypot(sx, sy);
+      const s = r > 1e-6 ? Math.tan(Math.atan(r * k / Fl) / k) / r : 1 / Fl;
+      const d = [fw[0] + (rt[0] * sx + up[0] * sy) * s, fw[1] + (rt[1] * sx + up[1] * sy) * s, fw[2] + (rt[2] * sx + up[2] * sy) * s];
+      let best = d[1] < 0 ? -y / d[1] : Infinity, bw = null, bu = 0, by = 0;
+      for (const w of bins[azOf(d[0], d[2])]) { const ex = w.b[0] - w.a[0], ez = w.b[1] - w.a[1], den = d[0] * ez - d[2] * ex; if (Math.abs(den) < 1e-9) continue;
+        const t = ((w.a[0] - x) * ez - (w.a[1] - z) * ex) / den; if (t <= 0.05 || t >= best) continue;
+        const u = ((w.a[0] - x) * d[2] - (w.a[1] - z) * d[0]) / den; if (u < 0 || u > 1) continue;
+        const hy = y + d[1] * t; if (hy < 0 || hy > w.top) continue; best = t; bw = w; bu = u; by = hy; }
+      if (!bw) continue;
+      const key = bw.l.id + ':' + bw.i, L = Math.hypot(bw.b[0] - bw.a[0], bw.b[1] - bw.a[1]);
+      const h = hits.get(key) || hits.set(key, { w: bw, n: 0, s0: Infinity, s1: -Infinity, y0: Infinity, y1: -Infinity }).get(key);
+      h.n++; h.s0 = Math.min(h.s0, bu * L); h.s1 = Math.max(h.s1, bu * L); h.y0 = Math.min(h.y0, by); h.y1 = Math.max(h.y1, by);
+    }
+    for (const h of hits.values()) {
+      if (h.n / N < min) continue;
+      const list = out.get(h.w.l.id) || out.set(h.w.l.id, []).get(h.w.l.id);
+      const prev = list.find((f) => f.edge === h.w.i);
+      if (prev) { prev.share = Math.max(prev.share, h.n / N); prev.s0 = Math.min(prev.s0, h.s0); prev.s1 = Math.max(prev.s1, h.s1); prev.y1 = Math.max(prev.y1, h.y1); prev.views.push(v.id); prev.eyes.push([x, z]); }
+      else list.push({ edge: h.w.i, a: h.w.a, b: h.w.b, share: h.n / N, s0: h.s0, s1: h.s1, y0: h.y0, y1: h.y1, views: [v.id], eyes: [[x, z]] });
+    }
+  }
+  return out;
+}
+// a sign frame (facadeFrame / sideFaces) on a frameFaces face: the frame's ends are the edge's ends -> the seen stretch in u
+function frameSpan(Fr, faces) {
+  if (!faces) return null;
+  const e = [Fr.o[0] + Fr.r[0] * Fr.L, Fr.o[1] + Fr.r[1] * Fr.L], same = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.1;
+  for (const f of faces) {
+    if (same(Fr.o, f.a) && same(e, f.b)) return { ...f, u0: f.s0, u1: f.s1 };
+    if (same(Fr.o, f.b) && same(e, f.a)) return { ...f, u0: Fr.L - f.s1, u1: Fr.L - f.s0 };
+  }
+  return null;
+}
+// [P7-C] art #4 / colour #2 (walk0's sign wall was 87 % orange): the frame stacks' hues, per the colourist's walking-street
+// weights: red / orange 50 %, magenta / pink 20 %, cyan / blue 15 %, green 15 %; the first box of each stack is cyan or violet
+const FRAME_HUES = [['red', 0.28], ['orange', 0.22], ['pink', 0.1], ['magenta', 0.1], ['cyan', 0.08], ['blue', 0.07], ['green', 0.15]];
+const CAT_OF_HUE = { red: 'red', orange: 'ygo', amber: 'ygo', yellow: 'ygo', green: 'ygo', pink: 'pink', magenta: 'pink', cyan: 'cyan', teal: 'cyan', blue: 'blue', violet: 'violet', white: 'white', warm: 'white' };
 const CUSE = { home: null, study: 'office' };       // C's floor use -> the sign tenant (null: flats carry no business sign)
 const SINGLE = new Set(['hotel', 'motel', 'office']);
 const CH_P = { cafe: 0.55, club: 0.5, shop: 0.4, hotel: 0.7, restaurant: 0.45, bar: 0.45, pocha: 0.45 };
@@ -341,6 +408,7 @@ export function generateSigns(layout, opts = {}) {
   const specs = [], screens = [], SIDES = sideFaces(layout);
   const shut = new Set();   // lots whose front bed is shuttered (no door screen)
   const nearSpawn = spawnCorridor(layout, streets);
+  const FF = opts.frameFaces === false ? new Map() : frameFaces(layout, opts.frameViews ? { views: opts.frameViews } : {});   // [P7-C] art #1
   for (const lot of layout.lots || []) {
     const st = streets.get(lot.street) || { kind: 'alley' };
     // [P6-C] art #1 (put the stacks where the camera is: walk0, walk180 and w21's near walls showed 0-1 boxes above the
@@ -377,9 +445,10 @@ export function generateSigns(layout, opts = {}) {
       const uCat = rc.next(), uHue = rc.next(), uNeon = rc.next(), uNit = rc.next(), uFlk = rc.next(), uAcc = rc.next();
       const uDes = rc.next(), uBulb = rc.next(), uGr = rc.next(), uLet = rc.next(), uDes2 = rc.next(), uFilm = rc.next();
       let c = signColour(uCat, uHue, push, t.use);
+      if (geo.hue) c = { cat: CAT_OF_HUE[geo.hue] || 'white', hue: geo.hue, rgb: srgb(HEX[geo.hue]) };   // [P7-C] a frame stack's chosen hue
       // [P5-C] the box stacks are warm (red / amber / yellow / green faces, as in refs ccb0 and 8e17): the sign light budget's B/G
       // sits at its 1.05 limit already
-      if (geo.stackBox && (c.cat === 'blue' || c.cat === 'violet' || c.cat === 'cyan' || c.cat === 'white')) { const cat = uHue < 0.45 ? 'red' : 'ygo', hue = pickW(uHue, CAT_HUES[cat]); c = { cat, hue, rgb: srgb(HEX[hue]) }; }
+      else if (geo.stackBox && (c.cat === 'blue' || c.cat === 'violet' || c.cat === 'cyan' || c.cat === 'white')) { const cat = uHue < 0.45 ? 'red' : 'ygo', hue = pickW(uHue, CAT_HUES[cat]); c = { cat, hue, rgb: srgb(HEX[hue]) }; }
       const nightlife = NIGHT_USES.has(t.use) || t.use === 'restaurant' && lot.use === 'pocha';
       const pn = Math.min(1, push * (USE_PUSH[t.use] ?? 0.8));
       let style = type;
@@ -577,6 +646,51 @@ export function generateSigns(layout, opts = {}) {
       if (r5.next() < (st.kind === 'main' ? 0.2 : 0.4) || near) {
         const u = range(r5, 1.4, L - 1.4), out = range(r5, 0.35, 0.6), n = Math.min(3 + Math.floor(r5.next() * 3), Math.floor((Math.min(signTop * fh, F.top) - fh - 0.3) / 1.35));
         for (let k2 = 0; k2 < n; k2++) { const y = fh + 0.3 + k2 * 1.35, f = Math.min(nFloors - 1, Math.floor(y / fh)); add('blade', near ? { ...biz(f), lit: true } : biz(f), { u, y, w: 0.6, h: 1.1, d: 0.26, out, stackBox: true }); }
+      }
+    }
+    // --- [P7-C] art #1: the faces that fill the spawn line's frames (frameFaces) carry a box stack every ~3 m across the
+    //     stretch the camera sees (one cyan or violet box in each, art #4), and every spandrel / parapet row there is
+    //     boxed edge to edge in the gaps the per-wall floor box left. Own geometry stream (r7) and colour draws after
+    //     every other sign of the lot, so nothing above moves; nothing within 3 m of a view's eye (it would fill the lens) ---
+    const ffs = FF.get(lot.id);
+    if (ffs && nFloors >= 2 && !SINGLE.has(lot.use) && lot.use !== 'motel') {
+      const r7 = new Rng((seed ^ hashStr(lot.id + '#p7')) >>> 0), eyes = ffs.flatMap((f) => f.eyes);
+      const own = specs.filter((s) => s.lot === lot.id);
+      for (const Fr of [F, ...sides]) {
+        const sp = frameSpan(Fr, ffs); if (!sp) continue;
+        const u0 = Math.max(0.7, sp.u0), u1 = Math.min(Fr.L - 0.7, sp.u1); if (u1 - u0 < 1.2) continue;
+        const at = (u, out) => [Fr.o[0] + Fr.r[0] * u + Fr.n[0] * out, Fr.o[1] + Fr.r[1] * u + Fr.n[1] * out];
+        const clearEye = (u, out) => { const p = at(u, out); return eyes.every((e) => Math.hypot(p[0] - e[0], p[1] - e[1]) >= 3); };
+        // this wall's signs in Fr's u (a floor box's frame is a slot frame on the same plane)
+        const onWall = own.filter((s) => { const f = s.frame || F; return Math.abs(f.n[0] * Fr.n[0] + f.n[1] * Fr.n[1]) > 0.995 && Math.abs((f.o[0] - Fr.o[0]) * Fr.n[0] + (f.o[1] - Fr.o[1]) * Fr.n[1]) < 0.3; })
+          .map((s) => { const f = s.frame || F, p = [f.o[0] + f.r[0] * s.geo.u, f.o[1] + f.r[1] * s.geo.u], ua = (p[0] - Fr.o[0]) * Fr.r[0] + (p[1] - Fr.o[1]) * Fr.r[1], ub = ua + s.geo.w * (f.r[0] * Fr.r[0] + f.r[1] * Fr.r[1]);
+            return { type: s.type, a: Math.min(ua, ub), b: Math.max(ua, ub), y0: s.geo.y, y1: s.geo.y + s.geo.h, out: !!s.geo.out }; });
+        const stacks = onWall.filter((s) => s.out && (s.type === 'blade' || s.type === 'round')).map((s) => (s.a + s.b) / 2);
+        const yTop = Math.min(signTop * fh, F.top) - 0.1;
+        for (let u = u0 + range(r7, 0.3, 1.2); u <= u1; u += range(r7, 2.6, 3.4)) {
+          if (stacks.some((q) => Math.abs(q - u) < 1.4)) continue;
+          const out = range(r7, 0.4, 0.6); if (!clearEye(u, out)) continue;
+          const n = Math.floor((yTop - fh - 0.3 - 1.1) / 1.35) + 1; if (n < 1) continue;
+          stacks.push(u);
+          const acc = Math.floor(r7.next() * n), accHue = r7.next() < 0.5 ? 'cyan' : 'violet';
+          for (let k2 = 0; k2 < n; k2++) { const y = fh + 0.3 + k2 * 1.35, f = Math.min(nFloors - 1, Math.floor(y / fh));
+            add('blade', { ...biz(f), lit: true }, { u: u - 0.3, y, w: 0.6, h: 1.1, d: 0.26, out, stackBox: true, frameStack: true, hue: k2 === acc ? accHue : pickW(r7.next(), FRAME_HUES) }, { frame: Fr }); }
+        }
+        // spandrel and parapet rows: between floor f's window heads and floor f + 1's sills (the parapet above the top floor)
+        const ww = S.windows.length ? wallWins([Fr.n[0], 0, Fr.n[1]], [Fr.o[0], 0, Fr.o[1]]) : [];
+        for (let f = 1; f < Math.min(signTop, nFloors); f++) {
+          const tops = ww.filter((w) => w.f === f).map((w) => w.c[1] + w.h / 2), bots = ww.filter((w) => w.f === f + 1).map((w) => w.c[1] - w.h / 2);
+          const y0 = tops.length ? Math.max(...tops) + 0.06 : f * fh + fh * 0.72, y1 = f === nFloors - 1 ? F.top + 0.75 : bots.length ? Math.min(...bots) - 0.06 : (f + 1) * fh + 0.25;
+          const H = Math.min(1.3, y1 - y0); if (H < 0.45) continue;
+          const t = tenants[f] && !tenants[f].home ? tenants[f] : biz(f);
+          const busy = onWall.filter((s) => !s.out && s.y1 > y0 && s.y0 < y0 + H).map((s) => [s.a - 0.3, s.b + 0.3]).concat(stacks.map((q) => [q - 0.75, q + 0.75])).sort((p, q) => p[0] - q[0]);
+          let x = u0;
+          const fill = (g0, g1) => { let a = g0; while (g1 - a >= 1.8) { const w = Math.min(g1 - a - 0.2, range(r7, 2.2, 4.5)); if (w < 1.4) break;
+            const h = Math.min(H - 0.1, range(r7, 0.75, 1.05)), y = y0 + (H - h) / 2, ch = r7.next() < 0.5;
+            add(ch ? 'channel' : 'fascia', { ...t, lit: true }, { u: a + 0.1, y, w, h, d: ch ? 0.1 : 0.22, frameRow: true }, { frame: Fr }); a += w + range(r7, 0.4, 0.8); } };
+          for (const [b0, b1] of busy) { if (b0 > x) fill(x, Math.min(b0, u1)); x = Math.max(x, b1); if (x >= u1) break; }
+          if (x < u1) fill(x, u1);
+        }
       }
     }
     void fasciaY;

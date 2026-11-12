@@ -170,4 +170,16 @@ const ex = exportData(layout, { seed: 1, ...LI }); const sj = JSON.parse(JSON.st
 ok(sj.faces.length === D.faces.length && sj.designs.length > 1000 && sj.faces.every((f) => f.design < sj.designs.length), `signs.json: ${sj.faces.length} faces, ${sj.designs.length} designs`);
 ok(cj.screens.length === D.screens.length && cj.screens.every((o) => o.playlist.length >= 3 && o.res[0] > 0), `screens.json: ${cj.screens.length} screens with playlists`);
 ok(JSON.stringify(exportData(layout, { seed: 1, world: { lotInfo } }).signs.faces.slice(0, 50)) === JSON.stringify(sj.faces.slice(0, 50)), 'export deterministic');
+// [P7-C] art #1: the faces that fill the spawn line's stills (walk0, walk180, w21) carry stacks across the stretch the camera
+// sees: every such face of a 2F+ lot gets >= 1 frame stack, each stack has a cyan or violet box, and frameFaces stays cheap
+if (M.frameFaces && lp.endsWith('layout.json')) {
+  const t0 = Date.now(), FF = M.frameFaces(layout), ms = Date.now() - t0, views = new Set([...FF.values()].flat().flatMap((f) => f.views));
+  ok(['walk0', 'walk180', 'w21'].every((v) => views.has(v)) && ms < 1500, `frameFaces: ${[...FF.values()].flat().length} faces >= 5 % of a still (${[...views].join(', ')}), ${ms} ms`);
+  const fs_ = a.specs.filter((s) => s.geo.frameStack), byLot = new Map();
+  for (const s of fs_) (byLot.get(s.lot) || byLot.set(s.lot, []).get(s.lot)).push(s);
+  const tall = [...FF.keys()].filter((id) => (lots.find((l) => l.id === id)?.floors || 0) >= 2);
+  ok(tall.every((id) => byLot.has(id)), `every frame lot carries a frame stack (${tall.filter((id) => byLot.has(id)).length}/${tall.length})`);
+  const stacks = new Map(); for (const s of fs_) { const k = `${s.lot}|${s.geo.u.toFixed(2)}|${s.frame?.n?.join()}`; (stacks.get(k) || stacks.set(k, []).get(k)).push(s); }
+  ok(stacks.size >= 10 && [...stacks.values()].every((b) => b.some((s) => s.cat === 'cyan' || s.cat === 'violet') && b.every((s) => s.lit)), `${stacks.size} frame stacks, each lit with a cyan or violet box (art #4)`);
+}
 console.log(`${pass} pass, ${fail} fail`); process.exit(fail ? 1 : 0);
