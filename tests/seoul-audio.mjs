@@ -12,6 +12,10 @@
 //   - P4 sound #2: Yanghwa-ro roars (station >= walking + 2 LU; energy-summed traffic bed, wet tyres, 6 engine voices);
 //     #3: a hover breathes (p95 - p50 >= 4 dB; swells, names, phones, scooter horns); #4: babble rhythm (the 300-1000 Hz
 //     envelope's 2-8 Hz share 0.35-0.5, CV 0.75-0.95); #5: the club doors cooled (spot <= -6 LU); bug: no 12 s loop
+//   P6: the game's own city (P5 tested seed 7 without E's set pieces; the game plays seed 11 with them, 1.2 LU hotter at
+//     the walking-street hover): the gates have margins there. #2 the roar in the low mids (centroid < 1200 Hz, 2 kHz
+//     >= 3 dB under the loudest of 250 Hz-1 kHz); #4 exit 9's crossing guide, T-money beeps and train; #5 the club path's
+//     door pops; #6 occlusion by building count, the traffic bed's occluded share, no voices for cars behind the alley
 //   NODE_WEB_AUDIO=... node tests/seoul-audio.mjs [layout.json] [--wav out.wav]
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
@@ -21,8 +25,8 @@ globalThis.performance ??= { now: () => Date.now() };
 const { build } = await import('../seoul-life.js');
 const { MotorAudio } = await import('../audio.js');
 const { makeOccluder } = await import('../seoul-audio.js');
-if (process.env.G2_CLIP_ONCE) {   // child of the clip determinism check below
-  const L4 = build(JSON.parse(readFileSync('seoul/layout.json', 'utf8')), { seed: 7 }), ctx = new WA.OfflineAudioContext(2, 2 * 48000, 48000), ma = new MotorAudio(); ma.startOffline(ctx, 1234); const clip = L4.audio.clip(ctx, ma);
+if (process.env.G2_CLIP_ONCE) {   // child of the clip determinism check below (the game's seed; no set pieces: a pure-clock check)
+  const L4 = build(JSON.parse(readFileSync('seoul/layout.json', 'utf8')), { seed: 11 }), ctx = new WA.OfflineAudioContext(2, 2 * 48000, 48000), ma = new MotorAudio(); ma.startOffline(ctx, 1234); const clip = L4.audio.clip(ctx, ma);
   for (let f = 0; f < 60; f++) { const at = f / 30; ma.update([0.45, 0.45, 0.45, 0.45], 4, 0.2, false, false, {}, at); if (f === 20) ma.hit(3, at); clip.feed({ x: -36, y: 3, z: -23 + f * 0.15 }, { x: 0, y: 0, z: 1 }, 20 + at, at); }
   const d = (await ctx.startRendering()).getChannelData(0), u = new Uint32Array(d.buffer, d.byteOffset, d.length); let h = 2166136261, e = 0;
   for (let i = 0; i < u.length; i++) { h = Math.imul(h ^ u[i], 16777619) >>> 0; e += d[i] * d[i]; }
@@ -32,6 +36,14 @@ const args = process.argv.slice(2), wavAt = args.indexOf('--wav'), wav = wavAt >
 const file = [args[0], 'seoul/layout.json', 'tests/seoul-life-layout.json'].find((f) => f && existsSync(f));
 const layout = JSON.parse(readFileSync(file, 'utf8'));
 const SR = 48000, FPS = 30;
+// P6 (sound #3): the city as world-seoul builds it for the game: seed 11, E's set pieces, dressing discs and stairwell
+// openings (geometry ~8 s). A test layout (not the Seoul one) falls back to seed 7 with no set pieces
+const LIFE = await (async () => {
+  if (!/seoul[\\/]layout\.json$/.test(file) || !existsSync('seoul/lines.json')) return { seed: 7 };
+  const { buildSeoulGeometry } = await import('../world-seoul.js'), geo = buildSeoulGeometry(layout, { lineData: JSON.parse(readFileSync('seoul/lines.json', 'utf8')) });
+  return { seed: 11, setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null };
+})();
+console.log(`the city: seed ${LIFE.seed}${LIFE.setPieces ? `, ${LIFE.setPieces.length} set pieces, ${LIFE.holes?.length ?? 0} stairwell openings (as the game builds it)` : ''}`);
 let fail = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fail++; };
 const db = (x) => (20 * Math.log10(x + 1e-9)).toFixed(1);
 // ---- analysis helpers: BS.1770 loudness (K-weighting at 48 kHz, 400 ms blocks, gated), FFT centroid, autocorrelation
@@ -64,17 +76,17 @@ const HOVER_LUFS = -7.8;
 const { SND } = await import('../seoul-audio.js');
 const worldBus = (ctx) => { const bus = ctx.createGain(), w = ctx.createGain(); w.gain.value = Math.pow(10, -0.57 / 20); w.connect(ctx.destination); bus.world = w; return bus; };
 // a city render: a static camera or a path [[x, z], ...] at speed v; solo: 'crowd' (the babble bed alone) | 'beds'
-async function cityAt(cam, secs = 12, { solo = null, path = null, v = 5 } = {}) {
+async function cityAt(cam, secs = 12, { solo = null, path = null, v = 5, t0 = 30 } = {}) {
   const ctx = new WA.OfflineAudioContext(2, secs * SR, SR);
-  const L2 = build(layout, { seed: 7 }); L2.audio.attach(ctx, worldBus(ctx), { offline: true }); const g = L2.audio.__g;
+  const L2 = build(layout, LIFE); L2.audio.attach(ctx, worldBus(ctx), { offline: true }); const g = L2.audio.__g;
   if (solo) { for (const V of Object.values(g.pv)) for (const q of V) q.pn.disconnect(); g.mix.disconnect(g.sendA); g.mix.disconnect(g.sendR); }
   if (solo === 'crowd') for (const [k, b] of Object.entries(L2.audio.__beds)) if (k !== 'bCrowd') b.disconnect();
   const seg = []; let tot = 0; if (path) for (let i = 1; i < path.length; i++) { seg.push(Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1])); tot += seg[seg.length - 1]; }
   const at0 = (u) => { let s = Math.min(u, tot); for (let i = 0; i < seg.length; i++) { if (s <= seg[i] || i === seg.length - 1) { const k = Math.min(1, s / seg[i]); return [path[i][0] + (path[i + 1][0] - path[i][0]) * k, path[i][1] + (path[i + 1][1] - path[i][1]) * k, (path[i + 1][0] - path[i][0]) / seg[i], (path[i + 1][1] - path[i][1]) / seg[i]]; } s -= seg[i]; } };
   for (let f = 0; f < secs * FPS; f++) {
     const at = f / FPS, p = path ? at0(v * at) : null, c = path ? { x: p[0], y: cam.y, z: p[1], copy() {} } : { ...cam, copy() {} };
-    L2.update(30 + at, c); if (solo) [...g.shots, ...(g.stepShots || []), ...(g.longShots || [])].forEach((q) => { try { q.disconnect(); } catch (e) {} });
-    L2.audio.feed(c, path ? { x: p[2], y: 0, z: p[3] } : { x: 0, y: 0, z: -1 }, 30 + at + L2.colliders.warm, at);
+    L2.update(t0 + at, c); if (solo) [...g.shots, ...(g.stepShots || []), ...(g.longShots || [])].forEach((q) => { try { q.disconnect(); } catch (e) {} });
+    L2.audio.feed(c, path ? { x: p[2], y: 0, z: p[3] } : { x: 0, y: 0, z: -1 }, t0 + at + L2.colliders.warm, at);
   }
   const b = await ctx.startRendering(); return { L: b.getChannelData(0), R: b.getChannelData(1), stats: { ...L2.audio.stats } };
 }
@@ -121,17 +133,21 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
   const L0wet = (await import('../seoul-audio.js')).SND.wet;
   for (const [k, cam] of Object.entries(spots)) { const c = await cityAt(cam); const o = octaves(c.L, c.R); res[k] = { lu: lufs(c.L, c.R) - HOVER_LUFS, ph: phoneLU(c.L, c.R) - HOVER_LUFS, cen: centroid(c.L, c.R), low: o.low, oct: o.oct, sp: spread(c.L, c.R), cv: k === 'walking' ? rhythm(c.L, c.R, 300, 3000)[1] : 0, st: c.stats }; }
   console.log('city vs a hover (LU / through a phone LU / centroid / < 120 Hz / p95-p50): ' + Object.entries(res).map(([k, v]) => `${k} ${v.lu.toFixed(1)} / ${v.ph.toFixed(1)} / ${v.cen.toFixed(0)} Hz / ${(100 * v.low).toFixed(0)} % / ${v.sp.toFixed(1)} dB`).join(', '));
-  ok(res.walking.lu > -11 && res.walking.lu < -9, `the city is audible under a hover on the walking street: ${res.walking.lu.toFixed(1)} LU (-10 +- 1; P1 -14, P4 main -7.6)`);
+  ok(res.walking.lu > -11 && res.walking.lu < -9, `the city is audible under a hover on the walking street: ${res.walking.lu.toFixed(1)} LU (-10 +- 1; P1 -14, P4 main -7.6, P5 on the game's city -9.1)`);
   const four = Object.entries(res).filter(([k]) => k !== 'alley');
   ok(four.every(([, v]) => v.lu > -14 && v.lu < -2), `every spot within reach and under the props (-14 to -2 LU: ${four.map(([k, v]) => k + ' ' + v.lu.toFixed(1)).join(', ')}; P2 Yanghwa-ro -17.5, club street -14.7; P3 junction -14.4)`);
   // P5 sound #2: the place contrast (P4 main: a 2.2 LU spread over the panel's 7 paths; Hongdae runs ~10 dB alley to arterial)
-  ok(res.alley.lu <= res.walking.lu - 2 && res.alley.lu > -18, `the place contrast: a side alley (Hongik-ro 5an-gil) is ${res.alley.lu.toFixed(1)} LU, ${(res.alley.lu - res.walking.lu).toFixed(1)} under the walking street (<= -2), the station ${(res.station.lu - res.walking.lu).toFixed(1)} over it (>= +3): ${(res.station.lu - res.alley.lu).toFixed(1)} LU alley to arterial`);
+  ok(res.alley.lu <= res.walking.lu - 2 && res.alley.lu > -18, `the place contrast: a side alley (Hongik-ro 5an-gil) is ${res.alley.lu.toFixed(1)} LU, ${(res.alley.lu - res.walking.lu).toFixed(1)} under the walking street (<= -2; > -18), the station ${(res.station.lu - res.walking.lu).toFixed(1)} over it (>= +4): ${(res.station.lu - res.alley.lu).toFixed(1)} LU alley to arterial`);
+  // P6 (sound #6): the alley hears the roads through its buildings: the occluded share of the traffic bed goes through the
+  // 800 Hz path, and the cars behind the walls get no voices (P5: 6 engine voices at the alley, trafficNear 0.7)
+  { const a = res.alley.st; ok(a.trafOcc >= 0.3 && a.engine + a.bus <= 2, `occlusion colour: ${(100 * a.trafOcc).toFixed(0)} % of the alley's traffic bed reaches it through buildings (>= 30 %: 800 Hz, -6 dB + 6 per building), engine voices ${a.engine + a.bus} (<= 2; P5 6), its centroid ${res.alley.cen.toFixed(0)} Hz`); }
   // P4 sound #2: an 8-lane arterial out-shouts the crowd street (P3: station -13.2 vs walking -10.4); #5: the club doors
   // no longer run hot (P3 club spot -3.4 LU, level with the props) but the club street is still heard
-  ok(res.station.lu >= res.walking.lu + 3, `Yanghwa-ro roars: the station is ${res.station.lu.toFixed(1)} LU, ${(res.station.lu - res.walking.lu).toFixed(1)} over the walking street (>= +3; P3 -2.8, P4 main -0.8), wet tyres ${L0wet}, engine voices ${res.station.st.engine}, traffic near ${(+res.station.st.trafficNear).toFixed(1)}`);
+  ok(res.station.lu >= res.walking.lu + 4, `Yanghwa-ro roars: the station is ${res.station.lu.toFixed(1)} LU, ${(res.station.lu - res.walking.lu).toFixed(1)} over the walking street (>= +4; P3 -2.8, P4 main -0.8, P5 on the game's city +2.7), wet tyres ${L0wet}, engine voices ${res.station.st.engine}, traffic near ${(+res.station.st.trafficNear).toFixed(1)}`);
   // P5 sound #3: a roar, not a hiss (P4: flat to 4 kHz, 8 kHz -5.6 dB, centroid 1.5 kHz; traffic at 30 m: 0.5-1 kHz peak, <= -10 dB by 8 kHz)
-  { const so = res.station.oct, mx = Math.max(...so), st = res.station.st;
-    ok(so[6] - mx <= -10 && res.station.cen < 1450 && st.passbys >= 1, `Yanghwa-ro roars, not hisses: 8 kHz ${(so[6] - mx).toFixed(1)} dB re the loudest octave (<= -10; P4 -5.6), centroid ${res.station.cen.toFixed(0)} Hz (< 1450; P4 1.5 k), pass-bys ${st.passbys} in 12 s (3-6 s apart), p95 - p50 ${res.station.sp.toFixed(1)} dB (P4 0.6)`); }
+  // P6 (sound #2): the weight in the low mids (P5: 2 kHz level with 1 kHz, the full-chain centroid 1.47-1.53 kHz)
+  { const so = res.station.oct, mx = Math.max(...so), lm = Math.max(so[1], so[2], so[3]), st = res.station.st;
+    ok(so[6] - mx <= -10 && res.station.cen < 1200 && so[4] <= lm - 3 && st.passbys >= 1, `Yanghwa-ro roars, not hisses: 8 kHz ${(so[6] - mx).toFixed(1)} dB re the loudest octave (<= -10; P4 -5.6), centroid ${res.station.cen.toFixed(0)} Hz (< 1200; P4 1.5 k, P5 on the game's city 1.33 k), 2 kHz ${(so[4] - lm).toFixed(1)} dB re the loudest of 250 Hz-1 kHz (<= -3; P5 +1.8), pass-bys ${st.passbys} in 12 s (3-6 s apart), p95 - p50 ${res.station.sp.toFixed(1)} dB (P4 0.6)`); }
   // P5 sound #4: Hongdae's own voices: shop callers on the walking street, glasses and bottles at the tables
   ok(res.walking.st.callers >= 1 && res.club.st.clinks >= 1, `Hongdae's own voices: shop callers ${res.walking.st.callers} at the walking-street hover, clinks ${res.club.st.clinks} on the club street (12 s each)`);
   ok(res.club.lu <= -6 && res.club.lu > -12, `the club doors are cooled: the club spot is ${res.club.lu.toFixed(1)} LU (-12 to -6; P3 -3.4)`);
@@ -141,8 +157,11 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
   const walk = await cityAt({ y: 3 }, 20, { path: S065 }), club = await cityAt({ y: 3 }, 20, { path: CLUB }), sw = spread(walk.L, walk.R), sc = spread(club.L, club.R);
   ok(sw >= 4 && sc >= 4, `the map has peaks: p95 - p50 ${sw.toFixed(1)} dB along the walking street, ${sc.toFixed(1)} along the club street (>= 4 / 4; P2 0.7-1.3)`);
   // P4 sound #3: a hover breathes (group laughter swells, names called, a phone's K-pop, scooter horns; P3 2.5-2.9 dB)
-  const ws = res.walking.st; ok(res.walking.sp >= 4.5 && res.walking.cv >= 0.6 && ws.swells >= 1, `a hover breathes: p95 - p50 ${res.walking.sp.toFixed(1)} dB at the walking-street hover (>= 4.5; P3 2.9), the 300-3000 Hz envelope's CV ${res.walking.cv.toFixed(2)} (>= 0.6; P4 full chain 0.44, recorded 0.80); in 12 s: laughter swells ${ws.swells}, names ${ws.names}, groups passing ${ws.groups}, phones ${ws.phones}, scooter horns ${ws.beeps}, chimes ${ws.chimes}`);
+  const ws = res.walking.st; ok(res.walking.sp >= 4.5 && res.walking.cv >= 0.7 && ws.swells >= 1, `a hover breathes: p95 - p50 ${res.walking.sp.toFixed(1)} dB at the walking-street hover (>= 4.5; P3 2.9), the 300-3000 Hz envelope's CV ${res.walking.cv.toFixed(2)} (>= 0.7; P4 full chain 0.44, recorded 0.80); in 12 s: laughter swells ${ws.swells}, names ${ws.names}, groups passing ${ws.groups}, phones ${ws.phones}, scooter horns ${ws.beeps}, chimes ${ws.chimes}`);
   const clubC = octaves(club.L, club.R); ok(clubC.low < 0.4, `club street: ${(100 * clubC.low).toFixed(0)} % of the energy under 120 Hz (P2 53 %), staff calls ${club.stats.calls}, queue chatter on`);
+  // P6 (sound #5): the club path has dynamics: the doors pop open between their cycles (+9 dB for 0.5-2 s), the staff call
+  // the line every 6-10 s (P5: the path's envelope CV 0.56 next to the walking street's 0.81)
+  { const cvC = rhythm(club.L, club.R, 300, 3000)[1]; ok(cvC >= 0.58 && club.stats.doorPops >= 2 && club.stats.calls >= 2 && sc >= 5, `the club path breathes: the 300-3000 Hz envelope's CV ${cvC.toFixed(2)} (>= 0.58; P5 0.56), p95 - p50 ${sc.toFixed(1)} dB (>= 5), door pops ${club.stats.doorPops}, staff calls ${club.stats.calls} in 20 s`); }
   // sound #3: the babble re-voiced. Octave spectrum of the crowd bed alone within 3 dB of a recorded crowd per octave,
   // reference: seoul/audio's P2 public-domain restaurant crowd (-3.9, 0, -1.6, -7.9, -14.3, -15.1, -18.6 dB re 250 Hz)
   const REF = [-3.9, 0, -1.6, -7.9, -14.3, -15.1, -18.6], cr = await cityAt(spots.walking, 16, { solo: 'crowd' }), co = octaves(cr.L, cr.R).oct, dev = co.map((v, i) => v - REF[i]);
@@ -156,7 +175,12 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
   const yh = await cityAt({ x: -45, y: 6, z: -236 }, 45);
   ok(yh.stats.horns >= 1 && yh.stats.guides >= 1 && res.station.st.exit >= 1, `Yanghwa-ro and exit 9 (a 45 s hover): horns ${yh.stats.horns}, crossing guides ${yh.stats.guides}; the exit 9 crowd and stair draught play at the station front (P2: 0 horns and 0 guides in 96 s)`);
   // sound #6 (G1/F1 add a crossing at exit 9; the guide then plays within SND.guideR): a note, not a gate
-  { const L6 = build(layout, { seed: 7 }), ex = layout.hero?.find((h) => h.id === 'exit9'); if (ex) { const dc = Math.min(...L6.sim.net.crossings.map((c) => Math.hypot(c.x - ex.pos[0], c.z - ex.pos[2]))); console.log(`note exit 9: the nearest sim crossing is ${dc.toFixed(0)} m off (the guide plays within ${SND.guideR} m${dc <= SND.guideR ? ': in reach' : ': waits on a crossing at exit 9 (G1/F1, sound #6)'})`); } }
+  // P6 (sound #4/#6): exit 9 for real. The sound's own crosswalk at the stair mouth (the sim's nearest is 140 m off) keeps
+  // its road's signal phase; a 45 s hover at the station front hears its guide, a line 2 train and the T-money gates after
+  if (layout.hero?.some((h) => h.id === 'exit9')) {
+    const ex = await cityAt(spots.station, 45, {}), st = ex.stats;
+    ok(st.guides >= 1 && st.trains >= 1 && st.tmoney >= 5, `exit 9 (a 45 s hover at the station front): crossing guides ${st.guides} (>= 1; P5 0: the nearest sim crossing 140 m off), trains ${st.trains}, T-money beeps ${st.tmoney} (>= 5), the escalator under the exit's crowd`);
+  }
   const ctx = new WA.OfflineAudioContext(2, SR, SR), ma = new MotorAudio(); ma.startOffline(ctx); ma.openWorld();
   for (let f = 0; f < 30; f++) ma.update([0.392, 0.392, 0.392, 0.392], 0, 0, false, false, {}, f / 30); const dHover = 20 * Math.log10(ma.duck);
   for (let f = 30; f < 60; f++) ma.update([0.85, 0.85, 0.85, 0.85], 12, 0, false, false, {}, f / 30); const dFull = 20 * Math.log10(ma.duck);
@@ -170,7 +194,7 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
   ok([rms(bab.out), rms([club.L, club.R]), rms([kp.L, kp.R])].every((v) => Math.abs(20 * Math.log10(v)) < 1.5), `loops at unit RMS: babble ${db(rms(bab.out))}, club ${db(rms([club.L, club.R]))}, kpop ${db(rms([kp.L, kp.R]))} dB`);
 }
 // ---- 1. the map: a path over the hero spots, city alone at its out
-const life = build(layout, { seed: 7 });
+const life = build(layout, LIFE);
 const pts = (layout.hero?.length >= 2 ? layout.hero.map((h) => [h.pos[0], h.pos[2]]) : layout.streets.slice(0, 2).flatMap((s) => [s.points[0], s.points[s.points.length - 1]]));
 const DUR = +(process.env.DUR || 24);
 {
@@ -210,6 +234,10 @@ const DUR = +(process.env.DUR || 24);
   const a = lot.footprint[0], d = [a[0] - cx, a[1] - cz], k = 1 + 25 / Math.hypot(d[0], d[1]);
   const through = occ(cx - d[0] * k, 2, cz - d[1] * k, cx + d[0] * k, 2, cz + d[1] * k), over = occ(cx - d[0] * k, 200, cz - d[1] * k, cx + d[0] * k, 200, cz + d[1] * k);
   ok(through && !over, 'occluder: a ray through a building at 2 m is blocked, the same ray at 200 m is not');
+  // P6 (sound #6): with `count` it says how many buildings: two 10 m blocks 10 m apart, a ray through one, then both
+  { const sq = (x0) => ({ footprint: [[x0, 0], [x0 + 10, 0], [x0 + 10, 10], [x0, 10]], floors: 4 }), o2 = makeOccluder({ lots: [sq(0), sq(20)] });
+    const n0 = o2(-5, 2, -5, -5, 2, 15, true), n1 = o2(-5, 2, 5, 15, 2, 5, true), n2 = o2(-5, 2, 5, 35, 2, 5, true), nOver = o2(-5, 20, 5, 35, 20, 5, true);
+    ok(n0 === 0 && n1 === 1 && n2 === 2 && nOver === 0, `occluder counts buildings: ${n0} beside, ${n1} through one, ${n2} through two, ${nOver} over their roofs`); }
   const ctx = new WA.OfflineAudioContext(2, 3 * SR, SR), ma = new MotorAudio(); ma.startOffline(ctx);
   const clip = life.audio.clip(ctx, ma);
   for (let f = 0; f < 3 * FPS; f++) { const at = f / FPS, cam = { x: -36, y: 3, z: -23 + f * 0.1 }; ma.update([0.4, 0.4, 0.4, 0.4], 3, 0, false, false, {}, at); clip.feed(cam, { x: 0, y: 0, z: 1 }, 50 + at, at); }
@@ -219,7 +247,7 @@ const DUR = +(process.env.DUR || 24);
 // ---- P3 sound #5: the clip feed takes the take clock (the warm start is added inside, as life.update does), and a clip
 // renders the same twice (MotorAudio's offline noise is seeded; the city is a pure function of the clock)
 {
-  const L3 = build(layout, { seed: 7 }), T = 41.3, cam = { x: -36, y: 3, z: -23, copy() {} };
+  const L3 = build(layout, LIFE), T = 41.3, cam = { x: -36, y: 3, z: -23, copy() {} };
   L3.update(T, cam); const nLive = L3.sim.traffic.n;
   const ctx0 = new WA.OfflineAudioContext(2, SR, SR), clip0 = L3.audio.clip(ctx0, null); L3.sim.advanceTo(0); clip0.feed(cam, { x: 0, y: 0, z: -1 }, T, 0);
   ok(L3.sim.traffic.n === nLive && clip0.warm === L3.colliders.warm, `clip sync: the clip's city at take clock ${T} s is the live city's (traffic step ${L3.sim.traffic.n} vs ${nLive}; warm ${clip0.warm} s)`);
@@ -240,7 +268,7 @@ const DUR = +(process.env.DUR || 24);
 }
 // ---- P3 ux #1: movers speak. A person the drone bumps yelps (and the clip path hears it too)
 {
-  const L5 = build(layout, { seed: 7 }), ctx = new WA.OfflineAudioContext(2, SR, SR); L5.audio.attach(ctx, worldBus(ctx), { offline: true });
+  const L5 = build(layout, LIFE), ctx = new WA.OfflineAudioContext(2, SR, SR); L5.audio.attach(ctx, worldBus(ctx), { offline: true });
   const cam0 = { x: -36, y: 1.5, z: -23, copy() {} }; L5.update(30, cam0); const C = L5.crowd;
   let best = -1, bd = 1e9; for (let i = 0; i < C.people.length; i++) if (C.VIS[i] && C.WALK[i] < 0.3) { const d = (C.X[i] + 36) ** 2 + (C.Z[i] + 23) ** 2; if (d < bd) { bd = d; best = i; } }
   for (let f = 0; f < 10; f++) { const at = f / FPS; L5.update(30 + at, cam0); const cam = { x: C.X[best] + 0.2, y: 1.5, z: C.Z[best], copy() {} }; L5.audio.feed(cam, { x: 0, y: 0, z: -1 }, 30 + at + L5.colliders.warm, at); }

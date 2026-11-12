@@ -36,24 +36,34 @@ export const SND = {
   // the hover's events carry more; the place contrast comes from the parts, not the trim
   world: 3.85,     // trim on the world path, set so the city sits ~10 LU under a hover on the walking street (sound #1)
   // P4: beds.traffic is now the city floor under the energy-summed traffic bed (sound #2); P3 61 dB at the street centre
-  beds: { traffic: 50, crowd: 61, alley: 58, air: 54, rain: 66 },   // P4: crowd 65 -> 63 (plain-RMS babble; the events carry the peaks)
+  beds: { traffic: 50, crowd: 60, alley: 58, air: 54, rain: 66 },   // P4: crowd 65 -> 63 (plain-RMS babble; the events carry the peaks)
+  // P6 (sound #2): artFlow 1.5 -> 2.8 on the arterials (>= 13 m; the 9-13 m roads keep P5's flow)
   // P5 (sound #2): artFlow 0.9 -> 1.3, now counted per lane against the sim's own moving (> 3 m/s) vehicles on that lane
-  wet: 0.7, artFlow: 1.5,   // P4 (sound #2): the look's wetness (seoul-light uCityWet default); arterial moving vehicles in 80 m per m of width (19.5 m: ~25)
+  wet: 0.7, artFlow: 2.8,   // P4 (sound #2): the look's wetness (seoul-light uCityWet default); arterial moving vehicles in 80 m per m of width (19.5 m: ~25)
   crowdFull: 90, crowdWave: 4,   // integ10: the crowd bed's slow waves, +- dB where dense   // P5 (sound #2): crowdN at which the crowd bed reaches its full level (P4 60: every crowded spot sat level)
-  car: 90, taxi: 88, truck: 94, bus: 97, scooter: 92, tyre: 90,
+  // P6 (sound #2): trucks +2, buses +1 (the roar re-voiced into the low mids reads ~2 LU quieter; the engines
+  // stay: a car idling at a club-street door is mostly 30-100 Hz, which a phone can't play)
+  car: 90, taxi: 88, truck: 96, bus: 98, scooter: 92, tyre: 90,
   // one-shots and loops, RMS at 1 m (calibrated buffers): shop doorway speaker, club door, busking PA, horn, ...
-  music: 72, club: 91,   // P5: music 81 -> 75 (a doorway speaker ~70 dB at 2 m; P4 75: a steady wall that held a hover CV at 0.44)
-  busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 82, shout: 88, talk: 74, yelp: 92, heel: 72, step: 58,
+  music: 72, club: 93,   // P5: music 81 -> 75 (a doorway speaker ~70 dB at 2 m; P4 75: a steady wall that held a hover CV at 0.44)
+  busk: 92, neon: 44, sizzle: 64, hiss: 92, horn: 106, chime: 80, voice: 82, laugh: 81, shout: 87, talk: 73, yelp: 92, heel: 72, step: 58,
   applause: 92, cheer: 88, guide: 84, tick: 72, queue: 80, staff: 86, exit: 80, draught: 72,
-  glaugh: 85, name: 97, phone: 74, beep: 84,   // P5: beep 88 -> 84
+  glaugh: 84, name: 96, phone: 73, beep: 84,   // P5: beep 88 -> 84
     // P4 (sound #3): a group's laughter, a name called, a phone's K-pop, a scooter's horn
+  // P6 (sound #2): diesel 86 -> 90, passby 92 -> 95 (re-voiced to 480-800 Hz). (sound #3) the crowd trimmed 1 dB (bed, laughs, shouts, talk, swells, names, phones,
+  // callers, claps, groups): the game's city (seed 11, E's set pieces) sat the walking-street hover 1.2 LU over seed 7's
   // P5: a pass-by at its closest (sound #3), the diesel idle of the arterial's buses (bed, 1 m), a shop caller's headset PA
   // and her clapping (sound #4), glasses and soju bottles in w21, a group talking past (sound #5), the train under exit 9
-  passby: 92, diesel: 86, caller: 84, clap1: 80, clink: 76, group: 78, train: 82,
+  passby: 95, diesel: 90, caller: 83, clap1: 79, clink: 76, group: 77, train: 82,
+  // P6 (sound #6): exit 9's T-money beeps (at the stair mouth, 1 m) and its escalator's hum (within the exit voice, re SND.exit)
+  tmoney: 74, escalator: -16,
   pools: { engine: 6, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1, queue: 2, exit: 1 },
   poolsLow: { engine: 3, bus: 1, scooter: 1, music: 2, club: 1, busk: 1, neon: 0, sizzle: 1, queue: 1, exit: 1 },
   // event pacing (sound #6): horns from the nearest 100 m of road, ~1 per 25 s where traffic is; guide within 60 m
   hornEvery: 25, hornR: 100, guideR: 60,
+  // P6 (sound #2): the far traffic bed's shelf above 1.2 kHz (dB); (sound #6 / bug) the lowest level at the camera (dB SPL
+  // re 1 m figures, occlusion taken off) at which a vehicle gets one of the positional voices
+  trafShelf: 4, voiceFloor: 48,
 };
 // active RMS of a multichannel Float32 set (see above); unitRms scales it to 1 in place
 function activeRms(chs, sr) {
@@ -248,18 +258,24 @@ function makeOneShots(sr = 22050, seed = 9) {
   bank.pass = [];
   for (let k = 0; k < 6; k++) {
     const far = k >= 3, r0 = far ? 22 : 6, v = 11 + 2 * (k % 3), bus = k % 3 === 2, o = mk(4.6), tc = 2.2, f0 = bus ? 31 : 42 + 6 * (k % 2);
-    const tb = bq('bp', bus ? 650 : 900, 0.6, sr), tb2 = bq('bp', 1300, 0.9, sr), RN = new Rng(1200 + k); let ph = 0, pn = 0, lpS = 0;
+    // P6 (sound #2): the tyre roar centred lower (900 / 650 -> 650 / 480 Hz, the second band 1300 -> 800 Hz: real traffic at
+    // 30 m peaks at 250-800 Hz), and a bus's pass-by swells under 100 Hz for ~1.5 s round its closest approach
+    const tb = bq('bp', bus ? 480 : 650, 0.6, sr), tb2 = bq('bp', 800, 0.9, sr), RN = new Rng(1200 + k); let ph = 0, pn = 0, lpS = 0, sph = 0, tw = 0;
     for (let i = 0; i < o[0].length; i++) {
       const t = i / sr, x = v * (t - tc), r = Math.hypot(x, r0), vr = -v * x / r, D = 1 / (1 - vr / C_SOUND);
       ph += f0 * D * (1 + 0.15 * Math.max(0, -x) / (Math.abs(x) + 30)) / sr; ph -= Math.floor(ph);
-      const w = RN.next() * 2 - 1; pn = 0.97 * pn + 0.03 * w;
+      const w = RN.next() * 2 - 1; pn = 0.97 * pn + 0.03 * w; tw += (w - tw) * 0.25;   // (P6: the tyre bands fed a 1.5 kHz-tilted noise, not white)
       const eng = (2 * ph - 1) * 0.35 + Math.sin(2 * Math.PI * ph * 2) * 0.25 + Math.sin(2 * Math.PI * ph * 4) * 0.12;
-      let y = (tb(w) * 1.0 + tb2(w) * 0.35 * Math.min(1, v / 14) + eng * (bus ? 0.8 : 0.45) + pn * 0.6) / Math.max(1, r);
+      sph += 52 * D / sr; sph -= Math.floor(sph);
+      const sub = bus ? (Math.sin(2 * Math.PI * sph) + 0.5 * Math.sin(4 * Math.PI * sph)) * Math.exp(-(((t - tc) / 0.75) ** 2)) * 1.4 * r0 / 6 : 0;
+      let y = (tb(tw) * 2.0 + tb2(tw) * 0.7 * Math.min(1, v / 14) + eng * (bus ? 0.8 : 0.45) + pn * 0.6 + sub) / Math.max(1, r);
       const fc = r > 20 ? 2000 + 9000 * Math.exp(-(r - 20) / 8) : 11000, a = 1 - Math.exp(-2 * Math.PI * fc / sr); lpS += (y - lpS) * a; y = lpS;
       const pan = Math.max(-0.9, Math.min(0.9, x / r)), gl = Math.cos((pan + 1) * Math.PI / 4), gr = Math.sin((pan + 1) * Math.PI / 4), e = Math.min(1, t / 0.3, (4.6 - t) / 0.3);
       o[0][i] = y * gl * e; o[1][i] = y * gr * e;
     }
-    bank.pass.push(norm(o));
+    // (P6: the closest approach's noise peaks soft-clipped at +11 dB over the active RMS, as a mic's limiter would: a 95 dB
+    // pass-by at the foot of a fast low pass put +4.8 dBFS into the city out)
+    norm(o); for (const c of o) for (let i = 0; i < c.length; i++) c[i] = 3.5 * Math.tanh(c[i] / 3.5); bank.pass.push(norm(o));
   }
   // P5 (sound #4, Hongdae's own voices): shop promoters on a headset PA: "어서오세요~" (four quick syllables, then a long,
   // falling "yo"), "할인~" style two-syllable calls, female and male, through a small belt speaker; and their clapping
@@ -297,6 +313,15 @@ function makeOneShots(sr = 22050, seed = 9) {
       o[0][i] = y * e; o[1][i] = y * e * 0.96;
     }
     bank.train = norm(o); }
+  // P6 (sound #6): the T-money gates at the foot of exit 9's stairs as a train's crowd comes through: the reader's short
+  // square-ish beep (~1.05-1.25 kHz, 90-130 ms; a transfer beeps twice), through the stairwell (1-3 kHz)
+  bank.tmoney = [];
+  for (let k = 0; k < 3; k++) {
+    const o = mk(0.4), f = 1050 + 90 * k, taps = k === 2 ? [[0, 0.08], [0.13, 0.08]] : [[0, 0.09 + 0.04 * k]], bp = bq('bp', 1800, 0.6, sr);
+    for (const [t0, len] of taps) for (let i = 0; i < len * sr; i++) { const t = i / sr, e = Math.min(1, t / 0.003) * Math.min(1, (len - t) / 0.006), v = Math.tanh(2.2 * Math.sin(2 * Math.PI * f * t)) * e, j = Math.floor(t0 * sr) + i; o[0][j] += v; o[1][j] += v; }
+    for (let c = 0; c < 2; c++) for (let i = 0; i < o[c].length; i++) o[c][i] = 0.6 * o[c][i] + bp(o[c][i]);
+    bank.tmoney.push(norm(o));
+  }
   return bank;
 }
 // a passer-by's phone playing K-pop (sound #3): 7 s of an original kpop loop through a phone speaker (700 Hz-7 kHz,
@@ -401,19 +426,21 @@ export function synthLoop(style, seed, sr = 22050) {
 // ---------------------------------------------------------------- 2.5-D occlusion from the lots (sound #5)
 export function makeOccluder(layout) {
   const cell = 8, grid = new Map(), key = (i, j) => i * 65536 + j;
+  let li = 0;
   for (const l of layout.lots || []) {
-    const f = l.footprint; if (!f || f.length < 3) continue; const h = (l.floors || 3) * (l.floorH || 3.3);
+    const f = l.footprint; if (!f || f.length < 3) continue; const h = (l.floors || 3) * (l.floorH || 3.3); li++;
     for (let e = 0; e < f.length; e++) {
-      const a = f[e], b = f[(e + 1) % f.length], seg = [a[0], a[1], b[0], b[1], h];
+      const a = f[e], b = f[(e + 1) % f.length], seg = [a[0], a[1], b[0], b[1], h, li];
       const i0 = Math.floor(Math.min(a[0], b[0]) / cell), i1 = Math.floor(Math.max(a[0], b[0]) / cell), j0 = Math.floor(Math.min(a[1], b[1]) / cell), j1 = Math.floor(Math.max(a[1], b[1]) / cell);
       for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) { const k = key(i, j); let L = grid.get(k); if (!L) grid.set(k, (L = [])); L.push(seg); }
     }
   }
-  let stamp = 0; const seen = new Map();
-  // does the segment a -> b cross a building wall below that building's roof?
-  return (ax, ay, az, bx, by, bz) => {
-    const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz); if (L < 1) return false;
-    stamp++; const steps = Math.ceil(L / (cell * 0.5));
+  let stamp = 0; const seen = new Map(), hit = new Set();
+  // does the segment a -> b cross a building wall below that building's roof? P6 (sound #6): with `count`, how many
+  // buildings it passes through (0-4; each one's walls below its roof), for the per-building loss
+  return (ax, ay, az, bx, by, bz, count = false) => {
+    const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz); if (L < 1) return count ? 0 : false;
+    stamp++; hit.clear(); const steps = Math.ceil(L / (cell * 0.5));
     for (let s = 0; s <= steps; s++) {
       const x = ax + dx * s / steps, z = az + dz * s / steps, L2 = grid.get(key(Math.floor(x / cell), Math.floor(z / cell))); if (!L2) continue;
       for (const g of L2) {
@@ -421,12 +448,17 @@ export function makeOccluder(layout) {
         const sx = g[2] - g[0], sz = g[3] - g[1], den = dx * sz - dz * sx; if (Math.abs(den) < 1e-9) continue;
         const u = ((g[0] - ax) * sz - (g[1] - az) * sx) / den, v = ((g[0] - ax) * dz - (g[1] - az) * dx) / den;
         if (u <= 0.02 || u >= 0.98 || v < 0 || v > 1) continue;
-        if (ay + (by - ay) * u < g[4]) return true;
+        if (ay + (by - ay) * u < g[4]) { if (!count) return true; hit.add(g[5]); if (hit.size >= 4) return 4; }
       }
     }
-    return false;
+    return count ? hit.size : false;
   };
 }
+
+// P6 (sound #6, occlusion colour): a path through buildings loses its top (an 800 Hz low-pass: what diffracts over the
+// roofs and leaks through glass) and 6 dB for the diffraction plus 6 dB per building crossed (P5: -15 dB and 600 Hz for
+// any number of them, and the traffic bed was never occluded at all)
+const OCC_LP = 800, occG = (n) => (n ? Math.pow(10, -(6 + 6 * Math.min(4, n)) / 20) : 1);
 
 // ---------------------------------------------------------------- the soundscape
 export function createSeoulAudio(layout, life, opts = {}) {
@@ -457,8 +489,19 @@ export function createSeoulAudio(layout, life, opts = {}) {
     if (['bar', 'pocha', 'restaurant'].includes(l.use)) sites.clink.push({ ...front(l, 1.4, 1.0), id: 'k' + l.id, seed: i });
     if (['bar', 'club', 'karaoke', 'motel', 'pc'].includes(l.use) && h * 5 % 1 < 0.5) sites.neon.push({ ...front(l, 0.3, 3.2), id: l.id, hz: 0 });
   });
-  const crossings = life?.sim ? life.sim.net.crossings : [];
-  const S = { passbys: 0, callers: 0, clinks: 0, groups: 0, trains: 0, music: 0, club: 0, busk: 0, engine: 0, scooter: 0, bus: 0, hiss: 0, horns: 0, laughs: 0, applause: 0, steps: 0, chimes: 0, guides: 0, occluded: 0, voices: 0, talks: 0, yelps: 0, reacts: 0, calls: 0, queue: 0, exit: 0, swells: 0, names: 0, phones: 0, beeps: 0, crowdNear: 0, trafficNear: 0, canyon: 0 };
+  const crossings = life?.sim ? life.sim.net.crossings.slice() : [];
+  // P6 (sound #6, exit 9 for real; P5: the nearest sim crossing was 140 m off, so the guide never spoke there): the
+  // signalled crosswalk over Yanghwa-ro at the exit 9 stair mouth, heard by the sound only (a pole 4 m along the kerb
+  // from the stairs). It keeps the phase of the nearest sim crosswalk over the same road (that road's signal group), so
+  // the arterial's platoon hold below and its guide agree with the sim's lights up the road.
+  if (ex9 && life?.sim) {
+    const ex = ex9.pos; let st = null, pr = null;
+    for (const q of life.sim.net.streets || []) { if (q.kind !== 'main' || !(q.width >= 13)) continue; const r = q.path.project(ex[0], ex[2]); if (r.dist < 40 && (!pr || r.dist < pr.dist)) { st = q; pr = r; } }
+    let ref = null, rd = Infinity; if (st) for (const c of crossings) { if (c.kind !== 'X' || !(c.main === st || c.main?.name === st.name)) continue; const d = Math.hypot(c.x - ex[0], c.z - ex[2]); if (d < rd) { rd = d; ref = c; } }
+    if (ref) { const P0 = st.path.at(pr.s, {}); crossings.push({ id: 'X9', x: ex[0] + P0.tx * 4, z: ex[2] + P0.tz * 4, ref, audioOnly: true }); }
+  }
+  const phaseOf = (c, t) => life.crossPhase(c.ref || c, t);
+  const S = { trafOcc: 0, doorPops: 0, tmoney: 0, passbys: 0, callers: 0, clinks: 0, groups: 0, trains: 0, music: 0, club: 0, busk: 0, engine: 0, scooter: 0, bus: 0, hiss: 0, horns: 0, laughs: 0, applause: 0, steps: 0, chimes: 0, guides: 0, occluded: 0, voices: 0, talks: 0, yelps: 0, reacts: 0, calls: 0, queue: 0, exit: 0, swells: 0, names: 0, phones: 0, beeps: 0, crowdNear: 0, trafficNear: 0, canyon: 0 };
   const api = { stats: S, sites, attached: false };
   const occl = makeOccluder(layout);
   let A = null;   // the live graph
@@ -495,23 +538,26 @@ export function createSeoulAudio(layout, life, opts = {}) {
     const mix = G(1); mix.connect(out); mix.connect(sendA); mix.connect(sendR); sendA.connect(cvA); sendR.connect(cvR); cvA.connect(out); cvR.connect(out);
     const g = { ctx, out, mix, sendA, sendR, offline, viaWorld, pv: {}, react: new Map(), staffSlot: new Map(), lastT: null, camV: [0, 0, 0], camPrev: null, rain: !!opts.rain, wet: opts.wet ?? SND.wet, shots: [], feetPh: new Map(), guideC: null, guideWalk: false, nextTick: 0, buskState: [], occT: -1 };
     const B = (o) => toBuf(ctx, o[0], o[1], 22050);
-    const setBank = () => { g.buf = { laugh: bank.laugh.map(B), pass: bank.pass.map(B), passR: bank.pass.map((o) => B([o[1], o[0]])), caller: bank.caller.map(B), clap1: bank.clap1.map(B), clink: bank.clink.map(B), train: B(bank.train), shout: bank.shout.map(B), cheer: B(bank.cheer), clap: B(bank.clap), guide: B(bank.guide), bus: B(bank.bus), conv: B(bank.conv), tick: B(bank.tick), horn: bank.horn.map(B), heel: bank.heel.map(B), step: bank.step.map(B), yelp: bank.yelp.map(B), talk: bank.talk.map(B), glaugh: bank.glaugh.map(B), name: bank.name.map(B), beep: bank.beep.map(B), phone: bank.phone ? B(bank.phone) : null }; };
-    g.buf = { laugh: [], pass: [], passR: [], caller: [], clap1: [], clink: [], train: null, shout: [], horn: [], heel: [], step: [], yelp: [], talk: [], glaugh: [], name: [], beep: [], phone: null }; if (bank) setBank();
+    const setBank = () => { g.buf = { laugh: bank.laugh.map(B), pass: bank.pass.map(B), passR: bank.pass.map((o) => B([o[1], o[0]])), caller: bank.caller.map(B), clap1: bank.clap1.map(B), clink: bank.clink.map(B), train: B(bank.train), tmoney: bank.tmoney.map(B), shout: bank.shout.map(B), cheer: B(bank.cheer), clap: B(bank.clap), guide: B(bank.guide), bus: B(bank.bus), conv: B(bank.conv), tick: B(bank.tick), horn: bank.horn.map(B), heel: bank.heel.map(B), step: bank.step.map(B), yelp: bank.yelp.map(B), talk: bank.talk.map(B), glaugh: bank.glaugh.map(B), name: bank.name.map(B), beep: bank.beep.map(B), phone: bank.phone ? B(bank.phone) : null }; };
+    g.buf = { laugh: [], pass: [], passR: [], caller: [], clap1: [], clink: [], train: null, tmoney: [], shout: [], horn: [], heel: [], step: [], yelp: [], talk: [], glaugh: [], name: [], beep: [], phone: null }; if (bank) setBank();
     const white = noise(ctx, 3, 'white', 11), bed = () => { const gg = G(0); gg.connect(mix); return gg; };
     g.white = white;
     // ---- beds (voiced for a phone speaker: sound #4; long seeded noise + rate wander: sound #6)
     // P5 (sound #3): the traffic wash goes through a distance low-pass (the bed's energy-weighted distance: past 20 m the
     // top rolls off from 2 kHz, 12 dB/oct; P4 was flat to 4 kHz at Yanghwa-ro, a hiss), and the arterial's diesel buses
     // idle and pull away under it (a ~31 Hz firing with its 60-120 Hz harmonics, uneven, its own gain: g.dieselG)
-    g.bTraffic = G(0); g.trafLp = F('lowpass', 11000, 0.6); g.bTraffic.connect(g.trafLp); g.trafLp.connect(mix);
+    // P6 (sound #2, weight in the low mids): past 20 m a -4 dB shelf above 1.2 kHz on top of the distance low-pass; (sound
+    // #6) the share of the bed that reaches the camera through buildings (g.trafC) goes through an 800 Hz low-pass instead
+    g.bTraffic = G(0); g.trafLp = F('lowpass', 11000, 0.6); g.trafSh = F('highshelf', 1200, 0.7); g.trafO = G(1); g.trafC = G(0); g.trafOcLp = F('lowpass', OCC_LP, 0.6);
+    g.bTraffic.connect(g.trafO); g.trafO.connect(g.trafLp); g.trafLp.connect(g.trafSh); g.trafSh.connect(mix); g.bTraffic.connect(g.trafC); g.trafC.connect(g.trafOcLp); g.trafOcLp.connect(mix);
     {
       const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 31; const fj = loop(lfoBuf(ctx, 23, 0.4, 37), 1), fjd = G(2.5); fj.connect(fjd); fjd.connect(o.frequency);
       const bp = F('bandpass', 95, 0.8), lp = F('lowpass', 260, 0.7), am = G(0.7), al = loop(lfoBuf(ctx, 9, 7, 38), 1), ad = G(0.3); al.connect(ad); ad.connect(am.gain);
       g.dieselG = G(0); o.connect(bp); bp.connect(lp); lp.connect(am); am.connect(g.dieselG); g.dieselG.connect(mix); o.start();
     }
     {
-      const r = loop(noise(ctx, 23.3, 'brown', 13, 16000), 1, 0.3, 0.02, 31), lp = F('lowpass', 180), rg = G(0.55);
-      const p = loop(noise(ctx, 19.1, 'pink', 14, 22050), 1, 1.1, 0.02, 32), bp = F('bandpass', 1050, 0.55), p2 = loop(noise(ctx, 17.7, 'pink', 15, 22050), 0.97, 2.3, 0.02, 33), bp2 = F('bandpass', 1250, 0.5);
+      const r = loop(noise(ctx, 23.3, 'brown', 13, 16000), 1, 0.3, 0.02, 31), lp = F('lowpass', 300), rg = G(0.8);   // P6 (sound #2): 180 Hz, 0.55 -> 300 Hz, 0.8 (the body of the roar)
+      const p = loop(noise(ctx, 19.1, 'pink', 14, 22050), 1, 1.1, 0.02, 32), bp = F('bandpass', 700, 0.55), p2 = loop(noise(ctx, 17.7, 'pink', 15, 22050), 0.97, 2.3, 0.02, 33), bp2 = F('bandpass', 850, 0.5);   // P6 (sound #2): 1050 / 1250 -> 700 / 850 Hz
       const hs = loop(noise(ctx, 13.1, 'white', 16, 22050), 1, 0.4, 0.02, 34), hp = F('bandpass', 3800, 0.7), hg = G(0.12);
       const pl = ctx.createStereoPanner(), pr = ctx.createStereoPanner(); pl.pan.value = -0.55; pr.pan.value = 0.55;
       r.connect(lp); lp.connect(rg); rg.connect(g.bTraffic); p.connect(bp); bp.connect(pl); p2.connect(bp2); bp2.connect(pr); pl.connect(g.bTraffic); pr.connect(g.bTraffic); hs.connect(hp); hp.connect(hg); hg.connect(g.bTraffic); g.hissG = hg;
@@ -550,7 +596,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     const tyreBuf = noise(ctx, 11.3, 'pink', 21, 22050);
     g.pv.engine = Array.from({ length: P.engine }, (_, k) => pvoice((v, dst) => {
       const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 30; const lp = F('lowpass', 620), og = G(0.5); o.connect(lp); lp.connect(og); og.connect(dst); o.start();
-      const ty = loop(tyreBuf, 1, k * 2.7), bp = F('bandpass', 1000, 0.7), tg = G(0); ty.connect(bp); bp.connect(tg); tg.connect(dst);
+      const ty = loop(tyreBuf, 1, k * 2.7), bp = F('bandpass', 700, 0.7), tg = G(0); ty.connect(bp); bp.connect(tg); tg.connect(dst);
       const wh = F('highpass', 2400, 0.6), wg = G(0); ty.connect(wh); wh.connect(wg); wg.connect(dst);   // P4: wet-tyre swish
       return { o, og, tg, ty, bp, wg };
     }));
@@ -571,7 +617,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     // shop music: a small doorway speaker (no real bass: 180 Hz high-pass) or the same through glass (2.5 kHz low-pass)
     g.pv.music = Array.from({ length: P.music }, () => pvoice((v, dst) => ({ src: null, glass: (() => { const hp = F('highpass', 380, 0.7), sh = F('highshelf', 2000), f = F('lowpass', 2500, 0.4); sh.gain.value = 9; hp.connect(sh); sh.connect(f); f.connect(dst); f.inp = hp; return f; })() })));
     // club doors (sound #4): the loop through the door (a low-pass: 550 Hz shut, 9 kHz open) and a door gain (-10 dB shut)
-    g.pv.club = Array.from({ length: P.club }, () => pvoice((v, dst) => { const hp = F('highpass', 100, 0), f = F('lowpass', 550, 0.5), dg = G(0.32); hp.connect(f); f.connect(dg); dg.connect(dst); f.inp = hp; return { src: null, glass: f, door: dg }; }));
+    g.pv.club = Array.from({ length: P.club }, () => pvoice((v, dst) => { const hp = F('highpass', 130, 0), f = F('lowpass', 550, 0.5), dg = G(0.32); hp.connect(f); f.connect(dg); dg.connect(dst); f.inp = hp; return { src: null, glass: f, door: dg }; }));
     // busking PA: band-limited, a little driven, presence peak (a battery PA on a stand)
     g.pv.busk = Array.from({ length: P.busk }, () => pvoice((v, dst) => {
       const hp = F('highpass', 110, 0.7), pk = F('peaking', 2800, 1.0), sh = ctx.createWaveShaper(), cv = new Float32Array(512); for (let i = 0; i < 512; i++) { const x = i / 255.5 - 1; cv[i] = Math.tanh(1.6 * x) / Math.tanh(1.6); } sh.curve = cv; pk.gain.value = 3;
@@ -598,7 +644,13 @@ export function createSeoulAudio(layout, life, opts = {}) {
       const hp = F('highpass', 150, 0.7), pk = F('peaking', 1800, 0.9); pk.gain.value = 3; hp.connect(pk); pk.connect(dst);
       babbleIn((bb) => loop(bb, 0.97, bb.duration * 0.71, 0.02, 47).connect(hp));
       const dr = loop(pink, 0.7, 3.3, 0.02, 48), lp = F('lowpass', 320, 0.5), dg = G(pinkK * dbA(SND.draught) / dbA(SND.exit) * 0.7), sw = loop(lfoBuf(ctx, 31, 0.06, 49), 1), sd = G(pinkK * dbA(SND.draught) / dbA(SND.exit) * 0.3);
-      dr.connect(lp); lp.connect(dg); sw.connect(sd); sd.connect(dg.gain); dg.connect(dst); return {};
+      dr.connect(lp); lp.connect(dg); sw.connect(sd); sd.connect(dg.gain); dg.connect(dst);
+      // P6 (sound #6): the escalator up from the concourse: its 120 / 240 Hz motor hum and the step plates' rattle (1.6 kHz,
+      // ~2 per second), SND.escalator dB under the exit's crowd
+      const eg = G(Math.pow(10, SND.escalator / 20)), h1 = ctx.createOscillator(), h2 = ctx.createOscillator(), hg = G(0.5), h2g = G(0.3); h1.frequency.value = 120; h2.frequency.value = 240;
+      h1.connect(hg); h2.connect(h2g); hg.connect(eg); h2g.connect(eg); h1.start(); h2.start();
+      const rt = loop(pink, 1.1, 7.7, 0.02, 52), rb = F('bandpass', 1600, 1.4), ram = G(0.6), ro = ctx.createOscillator(); ro.frequency.value = 2.1; const rd = G(0.4); ro.connect(rd); rd.connect(ram.gain); ro.start();
+      rt.connect(rb); rb.connect(ram); ram.connect(eg); eg.connect(dst); return {};
     }));
     g.music = { buf: new Map(), acoustic: acoustic ? toBuf(ctx, acoustic.L, acoustic.R, acoustic.sr) : null };
     if (live) {   // idle slices: ~one task per 30 ms until everything is rendered
@@ -713,9 +765,9 @@ export function createSeoulAudio(layout, life, opts = {}) {
     const doOcc = Math.floor(t * 10) !== g.occT; if (doOcc) { g.occT = Math.floor(t * 10); S.occluded = 0; }
     const place = (v, x, y, z, gain, extraLp = 1, minD = 1) => {
       const dx = x - cam.x, dy = y - cam.y, dz = z - cam.z, d = Math.max(minD, 0.5, Math.hypot(dx, dy, dz));
-      if (doOcc || v.occN === 0) { v.occ = d > 3 && occl(cam.x, cam.y, cam.z, x, y, z) ? 1 : 0; v.occN = 1; if (v.occ) S.occluded++; }
+      if (doOcc || v.occN === 0) { v.occ = d > 3 ? occl(cam.x, cam.y, cam.z, x, y, z, true) : 0; v.occN = 1; if (v.occ) S.occluded++; }
       const pan = Math.max(-0.85, Math.min(0.85, (dx * rx + dz * rz) / d)), behind = (dx * fx + dz * fz) / d < -0.2 ? 0.55 : 1;
-      T(v.g.gain, gain / Math.max(1, d) * (v.occ ? 0.178 : 1)); T(v.pn.pan, pan); T(v.oc.frequency, v.occ ? 600 : 16000, 0.12);
+      T(v.g.gain, gain / Math.max(1, d) * occG(v.occ)); T(v.pn.pan, pan); T(v.oc.frequency, v.occ ? OCC_LP : 16000, 0.12);
       T(v.lp.frequency, Math.min(16000, 22000 / (1 + d / 35)) * behind * extraLp);
       return d;
     };
@@ -730,9 +782,9 @@ export function createSeoulAudio(layout, life, opts = {}) {
       // (P5: 'long' = pass-bys and the train, a pool of their own so the 4-13 s shots aren't cut by the short ones)
       const pool = step === 'long' ? (g.longShots || (g.longShots = [])) : step ? (g.stepShots || (g.stepShots = [])) : g.shots;
       if (pool.length > (step === 'long' ? 2 : step ? 3 : 6)) { const o = pool.shift(); try { o.stop(at); } catch (e) {} }
-      const dx = x - cam.x, dz = z - cam.z, d = Math.max(minD, Math.hypot(dx, y - cam.y, dz)), pan = Math.max(-0.85, Math.min(0.85, (dx * rx + dz * rz) / d)), oc = d > 3 && occl(cam.x, cam.y, cam.z, x, y, z);
+      const dx = x - cam.x, dz = z - cam.z, d = Math.max(minD, Math.hypot(dx, y - cam.y, dz)), pan = Math.max(-0.85, Math.min(0.85, (dx * rx + dz * rz) / d)), oc = d > 3 ? occl(cam.x, cam.y, cam.z, x, y, z, true) : 0;
       const s = ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
-      const gg = ctx.createGain(); gg.gain.value = gain / d * (oc ? 0.178 : 1); const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = oc ? 600 : Math.min(16000, 22000 / (1 + d / 35)); const pn = ctx.createStereoPanner(); pn.pan.value = pan;
+      const gg = ctx.createGain(); gg.gain.value = gain / d * occG(oc); const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = oc ? OCC_LP : Math.min(16000, 22000 / (1 + d / 35)); const pn = ctx.createStereoPanner(); pn.pan.value = pan;
       s.connect(lp); lp.connect(gg); gg.connect(pn); pn.connect(g.mix); s.start(at + delay); s.stop(at + delay + buf.duration / rate + 0.05);
       pool.push(s); s.onended = () => { const i = pool.indexOf(s); if (i >= 0) pool.splice(i, 1); };
       return s;
@@ -752,45 +804,60 @@ export function createSeoulAudio(layout, life, opts = {}) {
       // P5 (sound #2 / bug): the sim's moving main-road vehicles are counted per lane (and only above 3 m/s: a queue at a
       // light isn't through flow), so the arterial fallback below fills each lane's missing flow, not a count within 80 m
       // that any side-street traffic jam could satisfy. Ed: the bed's energy-weighted distance (sound #3's low-pass).
-      let E = 0, Ed = 0, heavy = 0; const laneMv = g.laneMv || (g.laneMv = new Map()); laneMv.clear();
+      // P6 (sound #6): each vehicle's path to the camera is checked against the buildings (a cache, re-cast every 0.5 s within
+      // 120 m and every 1.5 s past it, at most 24 rays a scan); an occluded one adds to Ec (the bed's 800 Hz path) at
+      // occG's loss. (sound bug: the side alley gave 6 engine voices to cars behind its buildings) a vehicle is voiced only
+      // while its level at the camera, the occlusion taken off, is over SND.voiceFloor
+      let E = 0, Ed = 0, Ec = 0, heavy = 0, rays = 0; const laneMv = g.laneMv || (g.laneMv = new Map()), vOcc = g.vOcc || (g.vOcc = new Map()); laneMv.clear();
+      const occOf = (id, x, z, d) => { let o = vOcc.get(id); if ((!o || Math.abs(t - o[1]) > (d < 120 ? 0.5 : 1.5)) && rays < 24) { rays++; o = [d > 3 ? occl(cam.x, cam.y, cam.z, x, 1.0, z, true) : 0, t]; vOcc.set(id, o); } return o ? o[0] : 0; };
       if (sim) for (const v of sim.traffic.vehicles) {
         if (v.hidden) continue; const p = sim.traffic.pose(v, 1, PO), d = Math.hypot(p.x - cam.x, p.z - cam.z, cam.y - 0.6);
         if (d < 150) trafN += (0.3 + v.v / 12) / (1 + (d / 15) * (d / 15));
         if (d > 250) continue;
-        const e = Math.pow(10, (SND[v.type] - 105) / 10) * (0.1 + Math.min(3, (v.v / 12) ** 2)) * (1 + 0.6 * g.wet * Math.min(1, v.v / 8)) / Math.max(9, d * d) * Math.pow(10, -0.006 * Math.max(0, d - 20));
-        E += e; Ed += e * d; if (d < 80 && v.v > 3 && v.lane?.street?.kind === 'main') laneMv.set(v.lane, (laneMv.get(v.lane) || 0) + 1);
-        if ((v.type === 'bus' || v.type === 'truck') && d < 120) heavy += 1 / Math.max(1, (d / 20) ** 2);
-        if (d > 120) continue; const pool = v.type === 'bus' ? 'bus' : v.type === 'scooter' ? 'scooter' : 'engine';
-        cand[pool].push({ v, d, e, score: (SND[v.type] + 10 * Math.log10(0.2 + v.v / 10)) - 20 * Math.log10(d + 1) });
+        const n = occOf(v.id, p.x, p.z, d), e0 = Math.pow(10, (SND[v.type] - 105) / 10) * (0.1 + Math.min(3, (v.v / 12) ** 2)) * (1 + 0.6 * g.wet * Math.min(1, v.v / 8)) / Math.max(9, d * d) * Math.pow(10, -0.006 * Math.max(0, d - 20)), e = e0 * occG(n) ** 2;
+        if (n) Ec += e; else { E += e; Ed += e * d; } if (d < 80 && v.v > 3 && v.lane?.street?.kind === 'main') laneMv.set(v.lane, (laneMv.get(v.lane) || 0) + 1);
+        if ((v.type === 'bus' || v.type === 'truck') && d < 120) heavy += occG(n) ** 2 / Math.max(1, (d / 20) ** 2);
+        if (d > 120) continue; const pool = v.type === 'bus' ? 'bus' : v.type === 'scooter' ? 'scooter' : 'engine', score = (SND[v.type] + 10 * Math.log10(0.2 + v.v / 10)) - 20 * Math.log10(d + 1) + 20 * Math.log10(occG(n));
+        if (score >= SND.voiceFloor) cand[pool].push({ v, d, e, n, score });
       }
       // the voiced vehicles (each pool's top scores, as the pools below pick them) leave the bed
-      for (const pool of ['engine', 'bus', 'scooter']) { const C = cand[pool].sort((a, b) => b.score - a.score); for (let i = 0; i < Math.min(C.length, g.pv[pool].length); i++) { E -= C[i].e; Ed -= C[i].e * C[i].d; } }
+      for (const pool of ['engine', 'bus', 'scooter']) { const C = cand[pool].sort((a, b) => b.score - a.score); for (let i = 0; i < Math.min(C.length, g.pv[pool].length); i++) { if (C[i].n) Ec -= C[i].e; else { E -= C[i].e; Ed -= C[i].e * C[i].d; } } }
+      for (const k of vOcc.keys()) if (Math.abs(t - vOcc.get(k)[1]) > 5) vOcc.delete(k);
       // the arterials' through flow (Yanghwa-ro, World Cup buk-ro: roads >= 13 m): SND.artFlow moving vehicles per metre
       // of road width within 80 m (8 lanes: ~9, a Friday-night 2,000-3,000 veh/h). What the sim's moving main-road
       // vehicles in reach don't carry is added at ~40 m along the road (a bed, no voice); it fades out as the sim's own
       // flow reaches it (life #3: 79 % of main-road cars were stopped in P3, and the station spot heard 4 vehicles).
-      let art = 0, artR = 0, artSt = null, artPr = null;
+      let art = 0, artR = 0, artSt = null, artPr = null, artAt = null, artC = false;
       if (sim?.net?.streets) for (const st of sim.net.streets) {
-        // (P5: the 4-lane Hongik-ro and Wausan-ro, 9-13 m, too, at half the arterials' flow per metre, within 60 m)
+        // (P5: the 4-lane Hongik-ro and Wausan-ro, 9-13 m, too, at half the arterials' flow per metre, within 60 m; P6: 0.27
+        // of it, the P5 flow, now artFlow is 2.8: their steady fill held the club path's envelope CV at 0.56)
         if (st.kind !== 'main' || !(st.width >= 9)) continue; const pr = st.path.project(cam.x, cam.z); if (!(pr.dist < (st.width >= 13 ? 150 : 60))) continue;
         const lanes = g.artLanes?.get(st) || (g.artLanes || (g.artLanes = new Map())).set(st, sim.traffic.lanes.filter((l) => l.street === st && !l.shared)).get(st);
-        const fw = SND.artFlow * st.width * (st.width >= 13 ? 1 : 0.5), per = fw / Math.max(1, lanes.length); let miss = 0; for (const l of lanes) miss += Math.max(0, per - (laneMv.get(l) || 0));
+        const fw = SND.artFlow * st.width * (st.width >= 13 ? 1 : 0.27), per = fw / Math.max(1, lanes.length); let miss = 0; for (const l of lanes) miss += Math.max(0, per - (laneMv.get(l) || 0));
         if (!lanes.length) miss = fw;
         const r = Math.hypot(Math.max(0, pr.dist - st.width / 4), cam.y - 0.6);
         const a = miss * Math.pow(10, (SND.car - 105) / 10) * 1.1 * (1 + 0.6 * g.wet) / (r * r + 1600) * Math.pow(10, -0.006 * Math.max(0, r - 20));
-        if (a > art) { art = a; artR = Math.sqrt(r * r + 1600); } if (!artSt || pr.dist < artPr.dist) { artSt = st; artPr = { dist: pr.dist, s: pr.s }; }
+        if (a > art) { art = a; artR = Math.sqrt(r * r + 1600); artAt = [st, pr.s]; } if (!artSt || pr.dist < artPr.dist) { artSt = st; artPr = { dist: pr.dist, s: pr.s }; }
+      }
+      // P6 (sound #6): the through flow is occluded as the road's nearest point is (a ray every 0.5 s or 4 m)
+      if (art > 0 && artAt) {
+        const P0 = artAt[0].path.at(artAt[1], {}); if (!g.artOcc || Math.abs(t - g.artOcc[1]) > 0.5 || Math.hypot(cam.x - g.artOcc[2], cam.z - g.artOcc[3]) > 4 || g.artOcc[4] !== artAt[0]) g.artOcc = [occl(cam.x, cam.y, cam.z, P0.x, 1.0, P0.z, true), t, cam.x, cam.z, artAt[0]];
+        if (g.artOcc[0]) { art *= occG(g.artOcc[0]) ** 2; artC = true; }
       }
       // platoons: while the nearest crossing in reach shows WALK the arterial holds (x0.45), then it releases (x1.25), ~4 s
       if (art > 0 && life?.crossPhase && crossings.length) {
         let cb = null, cd = 200; for (const c of crossings) { const d = Math.hypot(c.x - cam.x, c.z - cam.z); if (d < cd) { cd = d; cb = c; } }
-        const want = cb && life.crossPhase(cb, t).walk ? 0.45 : 1.25, kp = g.platT == null ? 1 : Math.min(1, Math.abs(t - g.platT) / 4); g.platoon = g.platoon == null ? want : g.platoon + (want - g.platoon) * kp; g.platT = t; art *= g.platoon;
+        const want = cb && phaseOf(cb, t).walk ? 0.45 : 1.25, kp = g.platT == null ? 1 : Math.min(1, Math.abs(t - g.platT) / 4); g.platoon = g.platoon == null ? want : g.platoon + (want - g.platoon) * kp; g.platT = t; art *= g.platoon;
       }
-      const fl = Math.pow(10, (SND.beds.traffic - 105) / 10), Eb = Math.max(0, E) + art + fl, dS = g.trafT == null ? 1 : Math.min(1, Math.abs(t - g.trafT) / 0.8);
+      const fl = Math.pow(10, (SND.beds.traffic - 105) / 10), Eo = Math.max(0, E) + (artC ? 0 : art) + fl, Eoc = Math.max(0, Ec) + (artC ? art : 0), Eb = Eo + Eoc, dS = g.trafT == null ? 1 : Math.min(1, Math.abs(t - g.trafT) / 0.8);
       g.trafE = g.trafE == null ? Eb : g.trafE + (Eb - g.trafE) * dS; g.trafT = t;   // ~0.8 s smoothing (live and clip alike)
-      // the bed's distance (the city floor counts as 120 m off), and the low-pass it gets: flat to 20 m, then 2 kHz
-      const dB = (Math.max(0, Ed) + art * artR + fl * 120) / Math.max(1e-30, Math.max(0, E) + art + fl);
+      g.trafOs = g.trafOs == null ? Eoc / Eb : g.trafOs + (Eoc / Eb - g.trafOs) * dS; S.trafOcc = g.trafOs;
+      T(g.trafO.gain, Math.sqrt(1 - g.trafOs), 0.3); T(g.trafC.gain, Math.sqrt(g.trafOs), 0.3);
+      // the open bed's distance (the city floor counts as 120 m off), and the low-pass it gets: flat to 20 m, then 2 kHz
+      const dB = (Math.max(0, Ed) + (artC ? 0 : art * artR) + fl * 120) / Math.max(1e-30, Eo);
       g.trafD = g.trafD == null ? dB : g.trafD + (dB - g.trafD) * dS;
       T(g.trafLp.frequency, g.trafD > 20 ? 2000 + 9000 * Math.exp(-(g.trafD - 20) / 8) : 11000, 0.4);
+      T(g.trafSh.gain, -SND.trafShelf * Math.min(1, Math.max(0, (g.trafD - 20) / 10)), 0.4);
       // diesel idle: the arterial's buses and trucks in reach, and the through flow's share of them (1 in 12)
       T(g.dieselG.gain, nrm('diesel') * dbA(SND.diesel) * Math.sqrt(heavy / 400 + art / Math.pow(10, (SND.car - 105) / 10) / 12) / (1 + alt / 25), 0.5);
       const ac = life?.acoustics ? life.acoustics(cam) : { canyon: 0, streetW: 30 };
@@ -840,10 +907,11 @@ export function createSeoulAudio(layout, life, opts = {}) {
           if (pool === 'engine') {
             const rpmHz = (v.type === 'truck' ? 22 : 26) + v.v * 2.2 + load * 10;
             T(k.o.frequency, rpmHz * dop); T(k.og.gain, (v.type === 'taxi' ? 0.25 : 0.5) * (0.6 + load));
-            // tyre roar 0.5-2 kHz, linear in speed (P1: (v/12)^2 put cars at -53 to -60 LUFS)
-            T(k.tg.gain, Math.min(1.5, 0.08 + v.v / 12) * dbA(SND.tyre) / dbA(SND[v.type]) * (g.rain ? 2.2 : 1 + 0.3 * g.wet)); T(k.ty.playbackRate, dop); T(k.bp.frequency, 700 + v.v * 45);
-            // P4 (sound #2): the look is wet (D's uCityWet 0.7), so the tyres hiss: a 2.4 kHz+ swish rising with speed
-            T(k.wg.gain, (g.rain ? 1 : g.wet) * 0.9 * Math.pow(Math.min(1, v.v / 10), 1.5) * dbA(SND.tyre) / dbA(SND[v.type]));
+            // tyre roar 0.5-2 kHz, linear in speed (P1: (v/12)^2 put cars at -53 to -60 LUFS). P6 (sound #5): (v/12)^1.4, so a car
+            // crawling a club street at 5 m/s is its engine, not a tyre carpet (4 dB less), and one at 14 m/s 1 dB more
+            T(k.tg.gain, Math.min(1.5, 0.05 + Math.pow(v.v / 12, 1.4)) * dbA(SND.tyre) / dbA(SND[v.type]) * (g.rain ? 2.2 : 1 + 0.3 * g.wet)); T(k.ty.playbackRate, dop); T(k.bp.frequency, 450 + v.v * 18);   // P6 (sound #2): ~700 Hz at 14 m/s (P5 700 + 45 v: 1.3 kHz)
+            // P4 (sound #2): the look is wet (D's uCityWet 0.7), so the tyres hiss: a 2.4 kHz+ swish rising with speed (P6: x0.9 -> 0.6)
+            T(k.wg.gain, (g.rain ? 1 : g.wet) * 0.6 * Math.pow(Math.min(1, v.v / 10), 1.5) * dbA(SND.tyre) / dbA(SND[v.type]));
           } else if (pool === 'bus') {
             T(k.o.frequency, (28 + v.v * 1.4 + load * 6) * dop); T(k.w.frequency, (300 + v.v * 85) * dop); T(k.wg.gain, 0.01 + 0.02 * Math.min(1, v.v / 8));
             T(k.tg.gain, Math.min(1.4, 0.1 + v.v / 11) * 0.5 * (1 + 0.5 * g.wet)); T(k.ty.playbackRate, dop);
@@ -929,23 +997,36 @@ export function createSeoulAudio(layout, life, opts = {}) {
     // 1.6 kHz, -5 dB; both open: full band. Each door swings: ~1 s to open, ~2 s to close on its closer (P3: 50-150 ms
     // steps). A pure function of the clock (live = clip).
     const door = (p, c, f) => { const u = ((p % c) + c) % c, o = f * c; if (u < o) return Math.min(1, u / 1.0) ** 2 * (3 - 2 * Math.min(1, u / 1.0)); const w = Math.min(1, (u - o) / 2.0); return 1 - w * w * (3 - 2 * w); };
+    // P6 (sound #5, club path dynamics; P5 CV 0.56): between the cycle's openings people come and go: every 4-7 s (80 %)
+    // the street door swings open for 0.5-2 s and the lobby door most of the way (+9 dB, the kick and the vocal let out), a pure
+    // function of the clock
+    const pop = (s) => { const per = 4 + 3 * ((s.phase * 0.29) % 1), u = t + s.phase * 2.3, w = Math.floor(u / per), t0 = w * per + 0.6 * per * hh(w, 70 + s.seed), len = 0.5 + 1.5 * hh(w, 71 + s.seed);
+      if (hh(w, 72 + s.seed) > 0.8 || u < t0 || u > t0 + len + 0.4) return 0; if (dtF > 0 && t0 > u - dtF && t0 <= u) S.doorPops++; return Math.min(1, (u - t0) / 0.15, (t0 + len + 0.4 - u) / 0.4); };
     for (const vo of g.pv.club) if (vo.who) {
-      const s = sites.club.find((q) => q.id === vo.who), oS = door(t + s.phase, s.cyc, 0.3), oI = door(t + s.phase * 1.37, s.cyc * 0.61, 0.45), oB = oS * oI;
+      const s = sites.club.find((q) => q.id === vo.who), pp = pop(s), oS = Math.max(pp, door(t + s.phase, s.cyc, 0.3)), oI = Math.max(0.8 * pp, door(t + s.phase * 1.37, s.cyc * 0.61, 0.45)), oB = oS * oI;
       T(vo.ctl.glass.frequency, 550 * Math.pow(1600 / 550, oS) * Math.pow(9000 / 1600, oB), 0.03); T(vo.ctl.door.gain, 0.32 * Math.pow(0.56 / 0.32, oS) * Math.pow(1 / 0.56, oB), 0.03);
     }
-    // queue chatter outside each club door, and the door staff calling the line (every 9-16 s, within 45 m)
+    // queue chatter outside each club door, and the door staff calling the line (P6, sound #5: every 6-10 s, 85 %; P5 9-16 s,
+    // 75 %; within 45 m)
     S.queue = assignSites(g.pv.queue, sites.queue, 45, () => dbA(SND.queue));
     for (const s of sites.club) {
       if (Math.abs(s.x - cam.x) > 45 || Math.abs(s.z - cam.z) > 45) continue;
-      const per = 9 + 7 * ((s.phase * 0.13) % 1), sl = Math.floor((t + s.phase * 1.7) / per), prev = g.staffSlot.get(s.id); g.staffSlot.set(s.id, sl);
+      const per = 6 + 4 * ((s.phase * 0.13) % 1), sl = Math.floor((t + s.phase * 1.7) / per), prev = g.staffSlot.get(s.id); g.staffSlot.set(s.id, sl);
       if (prev == null || prev === sl || Math.hypot(s.x - cam.x, s.z - cam.z) > 45) continue;
       const h = ((Math.imul(sl + s.seed * 977, 2654435761) >>> 0) / 4294967296);
-      if (h < 0.75) { shot(g.buf.shout[(Math.floor(h * 8) * 2) % 6], s.x, 1.7, s.z, dbA(SND.staff), 0.92 + 0.1 * ((h * 13) % 1)); S.calls++; }
+      if (h < 0.85) { shot(g.buf.shout[(Math.floor(h * 8) * 2) % 6], s.x, 1.7, s.z, dbA(SND.staff), 0.92 + 0.1 * ((h * 13) % 1)); S.calls++; }
     }
     // exit 9: the meeting-point crowd and the stair draught, from the stair mouth
     S.exit = assignSites(g.pv.exit, sites.exit, 140, () => dbA(SND.exit));
     // P5 (sound #6): a line 2 train under exit 9's grilles every 2-4 min, within 80 m of the stair mouth
-    for (const e of sites.exit) { let w; if (g.buf.train && (e.x - cam.x) ** 2 + (e.z - cam.z) ** 2 < 6400 && (w = crossed(180, 120, 31, 140)) != null) { shot(g.buf.train, e.x, 0, e.z, dbA(SND.train), 0.95 + 0.1 * hh(w, 32), 0, 'long', 4); S.trains++; } }
+    for (const e of sites.exit) { let w; if (g.buf.train && (e.x - cam.x) ** 2 + (e.z - cam.z) ** 2 < 6400 && (w = crossed(180, 120, 31, 140)) != null) { shot(g.buf.train, e.x, 0, e.z, dbA(SND.train), 0.95 + 0.1 * hh(w, 32), 0, 'long', 4); S.trains++; }
+      // P6 (sound #6): its crowd through the gates 15-45 s after each train (the last train's moment, from the same clock),
+      // the beeps thickest ~25 s after, up to ~3 a second, from the stair mouth within 40 m
+      if (g.buf.tmoney.length && cam.y < 20 && (e.x - cam.x) ** 2 + (e.z - cam.z) ** 2 < 1600) {
+        const u = t + 140; let wt = Math.floor(u / 180), m = wt * 180 + 120 * hh(wt, 31); if (m > u) { wt--; m = wt * 180 + 120 * hh(wt, 31); }
+        const since = u - m, p = since > 15 && since < 45 ? Math.sin(Math.PI * (since - 15) / 30) ** 2 * 0.75 : 0;
+        if (p > 0 && (w = crossed(0.3, 0.25, 90)) != null && hh(w, 91) < p) { shot(g.buf.tmoney[Math.floor(hh(w, 92) * 3)], e.x + (hh(w, 93) - 0.5) * 3, -0.5, e.z, dbA(SND.tmoney), 0.98 + 0.04 * hh(w, 94), 0, true); S.tmoney++; }
+      } }
     // P5 (sound #4): Hongdae's own voices. The shop promoters (the nearest three within 30 m, low): a call on each one's
     // own 5-9 s clock (70 %), often with a few claps; and the tables of w21: glasses and bottles from the nearest two
     // within 25 m every 2-5 s
@@ -1049,7 +1130,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     if (life?.crossPhase && crossings.length) {
       let best = null, bd = SND.guideR; for (const c of crossings) { const d = Math.hypot(c.x - cam.x, c.z - cam.z); if (d < bd) { bd = d; best = c; } }
       if (best) {
-        const ph = life.crossPhase(best, t);
+        const ph = phaseOf(best, t);
         // integ10 (sound #6): the guide also speaks when the drone arrives during a walk phase (a pole repeats its message
         // while people cross: G1's P5 signal timing put the walk start outside a 45 s Yanghwa-ro hover), and once more
         // halfway through a walk of 20 s or more
