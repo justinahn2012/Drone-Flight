@@ -53,7 +53,10 @@ export const LIFE = {
   // (P4 perf #2: people were 0.8-1.34 M main-pass triangles) the 3.4k avatar LOD only within nearR0, a 1.7k LOD to nearR;
   // 1500 drawn on auto, 900 on the phone preset (crowd 'low'); the velocity pass sees only the near tiers
   // warm: the city's head start (s) at take clock 0; (P5, life #6) a retry opens 0..warmMax - warm s later (attemptTicks)
+  // retryPrerollMs (P6): the most a retry spends topping up the pre-roll (attemptTicks)
+  retryPrerollMs: 60,
   warm: 75, warmMax: 240, maxAgents: 15500, nearR0: 6, nearR: 18, midR: 55, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 1500, maxDrawnLow: 900,
+  counterShare: 0.22,          // (P6, life #3) walkers on the 'wrong' side of the walkway (prefD)
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
   phoneShare: 0.32,            // walkers alone looking at a phone (P5, life #3: with groups at 0.2, 25 % of walkers; P4 18 % alone, 8 % in groups)
   // (P5, life #3) a trip's chance of one stop at a shop window or sign, and its length (s): ~4 % of walkers stand at any time
@@ -1209,7 +1212,15 @@ export class CrowdSim {
     return best || [];
   }
   inKeep(x, z) { const H = this.keepPoly; if (!H) return false; let c = false; for (let i = 0, j = H.length - 1; i < H.length; j = i++) { const [xi, zi] = H[i], [xj, zj] = H[j]; if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) c = !c; } return c; }
-  prefD(w, dir, r) { const mid = (w.dmin + w.dmax) / 2, half = (w.dmax - w.dmin) / 2; return mid + dir * half * (0.15 + 0.7 * r); }   // keep right
+  // keep right, loosely. (P6, life #3) P5 put every walker on its own side (0.15-0.85 of the half band), so the lanes
+  // self-sorted: the outer thirds of every walkway were 100 % one direction (walk0 all backs, walk180 all faces). Now a
+  // share LIFE.counterShare walks the other side (one draw, as before; spreading everyone over the middle instead raised
+  // the walker overlaps 4.7 -> 5.4 %)
+  prefD(w, dir, r) {
+    const mid = (w.dmin + w.dmax) / 2, half = (w.dmax - w.dmin) / 2, cs = LIFE.counterShare;
+    const sd = r < cs ? -dir : dir, q = r < cs ? r / cs : (r - cs) / (1 - cs);
+    return mid + sd * half * (0.15 + 0.7 * q);
+  }
   wayPoint(w, s, d, out = {}) { const P = w.base.at(s, this._wp || (this._wp = {})); out.x = P.x + P.nx * (w.c + d); out.z = P.z + P.nz * (w.c + d); return out; }
   newPerson(R, kind, male = R.next() < 0.5) {
     const h = male ? 1.73 + R.gauss() * 0.07 : 1.60 + R.gauss() * 0.07;   // art #6: sigma 7 cm
@@ -1746,7 +1757,14 @@ export class LifeSim {
   // and the movers, so a new attempt can open on a later city (60-240 s in) without simulating up to it. -> pre-rolled s
   preroll(steps, upTo = LIFE.warmMax + 15) {
     const N = Math.floor(upTo * LIFE.trafficHz);
-    if (!this._pre) { if (this.traffic.n >= N) return this.prerolled = upTo; this._pre = new TrafficSim(this.net, { seed: this.traffic.seed }); }
+    if (!this._pre) {
+      if (this.traffic.n >= N) return this.prerolled = upTo;
+      // (P6, perf bug 1) start from the latest snapshot the drawn sim has left (its 75 s warm start), not from 0: P5 spent
+      // the first 75 s of pre-roll re-simulating what was already on screen, so attemptTicks() was 0 for ~1,100 frames
+      this._pre = new TrafficSim(this.net, { seed: this.traffic.seed });
+      let best = -1; for (const k of this.snaps.keys()) if (k <= N && k > best) best = k;
+      if (best > 0) this._pre.restore(this.snaps.get(best));
+    }
     const P = this._pre;
     for (let k = 0; k < steps && P.n < N; k++) { if (P.n % 600 === 0 && !this.snaps.has(P.n)) this.snaps.set(P.n, P.snapshot()); P.step(); }
     this.prerolled = Math.max(this.traffic.n, P.n) / LIFE.trafficHz;
@@ -2118,9 +2136,10 @@ const HUMAN_FS = /* glsl */`
       // painted on the scalp, re-tinted to the person's hair colour like the cards (P3 tinted it toward the skin, so dark
       // cards sat on brown or blond scalps: the black patches); g = the face mask, placed from each head's own nose, chin
       // and eye line (P3's band at neck + 3..12 cm in rest space missed: a dot under the nose on the women)
-      float vt = 1.0 - vUv.y, rw = floor(vt * 2.0), loc = (vt - rw * 0.5 - 0.25) * 4.0;
+      // (P6) uRows atlas rows of 1024 px (2 for the 8-avatar bake, 4 for the 14-avatar one): the head map is each row's lower half
+      float vt = 1.0 - vUv.y, rw = floor(vt * uRows), loc = (vt - (rw + 0.5) / uRows) * 2.0 * uRows;
       if (loc > 0.0 && loc < 1.0) {
-        vec3 ax = texture2D(tAux, vec2(vUv.x, 1.0 - (rw * 0.5 + loc * 0.5))).rgb;
+        vec3 ax = texture2D(tAux, vec2(vUv.x, 1.0 - (rw + loc) / uRows)).rgb;
         vec3 hairD = mix(tx.rgb, vHairC * clamp(tx.rgb / max(uMean[5], vec3(0.004)), 0.0, 3.0), 0.85);
         albD = mix(albD, hairD, ax.r);
         float mk = mod(floor(ac / 4.0), 2.0) * ax.g, white = mod(floor(ac / 16.0), 2.0);
@@ -2378,9 +2397,26 @@ else if (pt > 3.5 && pt < 4.5) e = vec3(1.0, 0.04, 0.02) * (250.0 + 1250.0 * vSt
 else if (pt > 4.5 && pt < 5.5) {
   float zc = vLoc.z / 1.18, post = smoothstep(0.0, 0.06, abs(fract(zc) - 0.5) - 0.42);
   float seat = mix(0.35, 1.0, smoothstep(1.55, 1.75, vLoc.y));
-  float cell = floor(zc), pax = step(0.62, vh21(vec2(cell, floor(vState.w * 97.0))));
-  float body = 1.0 - pax * smoothstep(0.17, 0.12, abs(fract(zc) - 0.5)) * smoothstep(1.2, 1.4, vLoc.y) * (1.0 - smoothstep(2.3, 2.45, vLoc.y));
-  e = vec3(0.95, 0.97, 1.0) * 32.0 * (1.0 - post) * seat * body;
+  vec3 cabin = vec3(0.95, 0.97, 1.0) * 36.0 * seat;
+  // (P6, life #4) passengers lit by the cabin, not cut-out silhouettes: per window bay two seats (a head and shoulders over
+  // the seat back, ~55 % taken) and sometimes a standing rider by the aisle (head at ~2.3 m, coat below); black hair over
+  // the crown, a skin face (6-9 nits under the cabin light), dark coats
+  float cell = floor(zc), fz = fract(zc), sd = floor(vState.w * 97.0);
+  vec3 pc = cabin; float occ = 0.0;
+  for (int k = 0; k < 2; k++) {
+    float slot = k == 0 ? 0.3 : 0.72, r = vh21(vec2(cell * 2.0 + float(k), sd));
+    if (r < 0.55) {   // seated: head centre 1.74 m, shoulders under 1.6 m
+      vec2 q = vec2((fz - slot) * 1.18 / 0.105, (vLoc.y - 1.74) / 0.125); float hd = dot(q, q);
+      float sh = step(abs(fz - slot) * 1.18, 0.21) * step(vLoc.y, 1.6);
+      if (hd < 1.0) { float hair = step(0.05 + 0.4 * r, q.y) + step(0.7, abs(q.x)) * step(-0.2, q.y); pc = hair > 0.5 ? vec3(0.9, 0.85, 0.8) * 1.2 : vec3(1.0, 0.8, 0.66) * (6.0 + 3.0 * r); occ = 1.0; }
+      else if (sh > 0.5 && occ < 0.5) { pc = vec3(0.8, 0.82, 0.9) * (2.0 + 4.0 * fract(r * 7.0)); occ = 1.0; }
+    } else if (r > 0.86 && k == 1) {   // standing by the aisle
+      vec2 q = vec2((fz - 0.5) * 1.18 / 0.1, (vLoc.y - 2.3) / 0.12); float hd = dot(q, q);
+      if (hd < 1.0) { pc = q.y > 0.1 ? vec3(1.2) : vec3(1.0, 0.8, 0.66) * 7.0; occ = 1.0; }
+      else if (abs(fz - 0.5) * 1.18 < 0.2 && vLoc.y < 2.17) { pc = vec3(0.8, 0.82, 0.9) * 3.0; occ = 1.0; }
+    }
+  }
+  e = mix(cabin, pc, occ) * (1.0 - post) * 0.8;   // through the tinted glass (~29 nits of cabin, as P5's 32)
 }
 else if (pt > 5.5 && pt < 6.5) {
   vec2 dot = vec2(vLoc.x * 55.0, vLoc.y * 55.0), cel = floor(dot);
@@ -2405,7 +2441,7 @@ if (pt < 1.5 || (pt > 4.5 && pt < 5.5) || (pt > 9.5 && pt < 10.5) || pt > 11.5) 
 }
 totalEmissiveRadiance += e * uNit;`);
   };
-  m.customProgramCacheKey = () => 'seoul-vehicle-4';
+  m.customProgramCacheKey = () => 'seoul-vehicle-5';
   return m;
 }
 
@@ -2503,11 +2539,11 @@ export function build(layout, ctx = {}) {
   const blank = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1); blank.needsUpdate = true;
   const zero = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1); zero.needsUpdate = true;   // no aux.png: no scalp re-tint, no masks
   const JDEF = [new THREE.Vector4(0.095, 0.9, 0.48, 0.09), new THREE.Vector4(0.205, 1.38, 1.1, 1.46), new THREE.Vector4(0.01, 0.005, 1, 0)];
-  const makeHumanMat = (J = JDEF, atlas = blank, hair = blank, mean = null, aux = zero, scalp = null) => {
+  const makeHumanMat = (J = JDEF, atlas = blank, hair = blank, mean = null, aux = zero, scalp = null, rows = 2) => {
     const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 });
     const M = (mean || [[0.2, 0.1, 0.07], [0.02, 0.015, 0.01], [0.06, 0.05, 0.05], [0.03, 0.03, 0.03], [0.02, 0.02, 0.02]]).slice(0, 5);
     M.push(scalp || M[1]);   // uMean[5]: the painted scalp hair's mean (people-aux.py), else the cards'
-    const U = { uJA: { value: J[0] }, uJB: { value: J[1] }, uJC: { value: J[2] }, tAtlas: { value: atlas }, tHair: { value: hair }, tAux: { value: aux },
+    const U = { uJA: { value: J[0] }, uJB: { value: J[1] }, uJC: { value: J[2] }, tAtlas: { value: atlas }, tHair: { value: hair }, tAux: { value: aux }, uRows: { value: rows },
       uMean: { value: M.map((c) => new THREE.Vector3(...c)) } };
     m.userData.humanU = U;
     m.onBeforeCompile = (sh) => {
@@ -2515,7 +2551,7 @@ export function build(layout, ctx = {}) {
       sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\n' + HUMAN_VS)
         .replace('#include <beginnormal_vertex>', HUMAN_ANIM + '\nvec3 objectNormal = nrm;\n#ifdef USE_TANGENT\nvec3 objectTangent = vec3(1.0, 0.0, 0.0);\n#endif')
         .replace('#include <begin_vertex>', 'vec3 transformed = p;');
-      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vAlb; varying vec3 vHairC; varying vec3 vFillE; varying float vScreen; varying vec3 vRest; varying vec4 vMisc; varying vec2 vUv; uniform float uNit; uniform float uFillK; uniform vec4 uJA; uniform vec4 uJB; uniform vec4 uJC; uniform sampler2D tAtlas; uniform sampler2D tHair; uniform sampler2D tAux; uniform vec3 uMean[6];')
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vAlb; varying vec3 vHairC; varying vec3 vFillE; varying float vScreen; varying vec3 vRest; varying vec4 vMisc; varying vec2 vUv; uniform float uNit; uniform float uFillK; uniform vec4 uJA; uniform vec4 uJB; uniform vec4 uJC; uniform sampler2D tAtlas; uniform sampler2D tHair; uniform sampler2D tAux; uniform float uRows; uniform vec3 uMean[6];')
         .replace('#include <color_fragment>', '#include <color_fragment>\n' + HUMAN_FS + '\ndiffuseColor.rgb = albD;')
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += albD * vFillE * uFillK + vec3(0.75, 0.85, 1.0) * 160.0 * uNit * vScreen;');
     };
@@ -2557,7 +2593,7 @@ export function build(layout, ctx = {}) {
     const { meta, bin } = data; const nA = meta.avatars.length;
     avatars.mats = meta.avatars.map((av) => {
       const j = av.joints, J = [new THREE.Vector4(j.hipX, j.hipY, j.kneeY, j.ankleY), new THREE.Vector4(j.shX, j.shY, j.elY, j.neckY), new THREE.Vector4(j.kneeZ, j.elZ, 1.712 / j.top, 1)];
-      return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean, data.aux || zero, av.meanScalp);
+      return makeHumanMat(J, data.atlas || blank, data.hair || blank, av.mean, data.aux || zero, av.meanScalp, Math.max(1, Math.round((meta.atlas?.h || 2048) / 1024)));
     });
     // tiers: [near, (lod1,) mid]; people.json from before P4 has no lod1 (then 0 near, 1 mid)
     const nL = Math.min(3, meta.avatars[0].lods.length); avatars.nL = nL;
@@ -2570,7 +2606,9 @@ export function build(layout, ctx = {}) {
     avatars.female = meta.avatars.map((av, i) => (av.sex === 'f' ? i : -1)).filter((i) => i >= 0);
     // (P4, life #5 / art #3: suits on 2 of 8 bodies put a quarter of Hongdae's Friday crowd in business wear) suit avatars
     // are picked a tenth as often (~3 % of people); the rest share evenly
-    avatars.w = meta.avatars.map((av) => (/^Business/i.test(av.name) ? 0.1 : 1));
+    // (P6, life #1) Hongdae on a Friday is 85 %+ Korean: the East Asian bodies (people.json `ea`) are picked 4x as often as
+    // the others (suits a tenth, whoever wears them): ~80 % of the crowd's near and mid people
+    avatars.w = meta.avatars.map((av) => (/^Business/i.test(av.name) ? 0.1 : av.ea ? 4 : 1));
     avatars.n = nA; avatars.ready = true; avatars.patched = false;
     for (const L of avatars.tiers) for (const t of L) if (t.near) motionMeshes.push(t.mesh);   // (the same array scene.userData.motionMeshes spreads: re-list; near tiers only, P4 perf #2)
     if (ctx.scene?.userData) ctx.scene.userData.motionMeshes = [...(ctx.scene.userData.motionMeshes || []).filter((m) => !motionMeshes.includes(m)), ...motionMeshes];
@@ -2663,7 +2701,7 @@ export function build(layout, ctx = {}) {
     emitters.push(f, r); vEm[v.id] = [f, r];
   }
 
-  const tmpF = [0, 0, 0, 0], M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S1 = new THREE.Vector3(1, 1, 1), V3 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0), PO = {};
+  const tmpF = [0, 0, 0, 0], M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S1 = new THREE.Vector3(1, 1, 1), V3 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0), FWD = new THREE.Vector3(0, 0, 1), QK = new THREE.Quaternion(), PO = {};
   const fwd = new THREE.Vector3(0, 0, -1);
   const hist = new Int32Array(18), ab = new Uint8Array(NP);
   const stats = { agents: NP, walkers: crowd.units.reduce((n, u) => n + u.gsize, 0), vehicles: traffic.vehicles.length, near: 0, mid: 0, drawn: 0, cpuMs: 0, simMs: 0, crowdMs: 0, trisNear: tiers[0].tris, trisMid: tiers[1].tris, trisFar: tiers[2].tris, lanes: traffic.lanes.length, ways: crowd.ways.length, crossings: sim.net.crossings.length };
@@ -2856,8 +2894,13 @@ export function build(layout, ctx = {}) {
       const p = traffic.pose(v, aT, PO), [ef, er] = vEm[v.id];
       if (p.hidden) { ef.nits = 0; er.nits = 0; continue; }
       const B = vByType[v.type], k = cnt[v.type]; if (k >= B.cap) continue; cnt[v.type]++;
-      const y = groundAt(p.x, p.z), yaw = Math.atan2(p.hx, p.hz);
-      Q.setFromAxisAngle(UP, yaw); M4.compose(V3.set(p.x, y, p.z), Q, S1); B.im.setMatrixAt(k, M4);
+      let y = groundAt(p.x, p.z); const yaw = Math.atan2(p.hx, p.hz);
+      Q.setFromAxisAngle(UP, yaw);
+      if (v.type === 'bus') {   // (P6, life #4) the kneel: -8 cm and a 1.2 deg lean to the kerb while it dwells at a stop (eased)
+        const tk = v.dwell != null && v.dwellT > 0 ? 1 : 0; v._kn = (v._kn || 0) + (tk - (v._kn || 0)) * Math.min(1, dt * 2.5);
+        if (v._kn > 1e-3) { y -= 0.08 * v._kn; Q.multiply(QK.setFromAxisAngle(FWD, -0.021 * v._kn)); }
+      }
+      M4.compose(V3.set(p.x, y, p.z), Q, S1); B.im.setMatrixAt(k, M4);
       const col = v._lin || (v._lin = lin(v.paint)); B.im.instanceColor.setXYZ(k, col[0], col[1], col[2]);
       B.st.setXYZW(k, v.brake, v.hazard ? 1 : 0, 1, (v.id * 0.37) % 1);
       B.vel.setXYZ(k, p.hx * v.v, 0, p.hz * v.v);
@@ -2882,7 +2925,11 @@ export function build(layout, ctx = {}) {
     // snapshot, so the input log, replays, ghosts and the movers all see the same city
     attemptTicks: (n) => {
       if (!(n > 0)) return 0;
-      const want = (LIFE.warmMax - W) * (h32(seed, n, 0x3a77) / 4294967296), have = Math.max(0, (sim.prerolled || 0) - W - 2);
+      const want = (LIFE.warmMax - W) * (h32(seed, n, 0x3a77) / 4294967296);
+      // (P6, perf bug 1) a slow device that hasn't pre-rolled that far tops it up here, within LIFE.retryPrerollMs (the
+      // retry's fade hides it), so the retry still opens on a later city, not the same one
+      if (ctx.preroll !== false) { const t0 = performance.now(); while ((sim.prerolled || 0) - W - 2 < want && !(sim.prerolled >= LIFE.warmMax + 15) && performance.now() - t0 < LIFE.retryPrerollMs) sim.preroll(60); }
+      const have = Math.max(0, (sim.prerolled || 0) - W - 2);
       return Math.round(Math.max(0, Math.min(want, have)) * 4) * 60;   // whole quarter seconds of 240 Hz ticks
     },
     // F1 (design #5): vehicles are hard (crash), pedestrians soft (scrape); both pure functions of the take clock
