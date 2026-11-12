@@ -177,7 +177,7 @@ jobs:
           sh fetch-meshopt.sh
           swift build
           mkdir -p "$GITHUB_WORKSPACE/metal-out"
-          ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" ONETAKE_FRAME_OUT="$GITHUB_WORKSPACE/metal-out/walk0-metal.png" swift test 2>&1 | tee swift-test.log
+          ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" ONETAKE_METAL_REQUIRED=1 ONETAKE_FRAME_OUT="$GITHUB_WORKSPACE/metal-out/walk0-metal.png" swift test 2>&1 | tee swift-test.log
           grep -E "Metal device|frame [0-9]+x|ground pixels|no Metal device" swift-test.log || true
           grep -q "with 0 failures" swift-test.log && ! grep -q "skipped" swift-test.log
       - uses: actions/upload-artifact@v4   # [P7 H] the first Metal frame (walk0, lightmapped ground), next to the browser's stills

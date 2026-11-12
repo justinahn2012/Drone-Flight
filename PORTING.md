@@ -538,3 +538,42 @@ yet: PARITY.md section 4, step 1 is the next job, on a Mac.
 ratcheted in ci/known-failures.json at about 10 % past main's value, with owners.
 
 **The A18 run** is unchanged and ready (section 10, `?level=seoul&perf=a18`, one START, one SHARE).
+
+## 12. Phase 7 (stream H): main's runs finish, merges keep their tolerances, the first Metal frame
+
+**Main's runs finish.** `browser-seoul` takes about 2.3 h, and `cancel-in-progress` cancelled every main run that a
+newer push overtook, so no main run had reached the camera gate since bc45fbe. Main's runs now always finish
+(`cancel-in-progress` is false on main only); branches still cancel their superseded runs.
+
+**Merges keep their tolerances** (ci/known-guard.mjs, a `test` step; merge-check runs it too). A merge must keep every
+known-failure entry its parents had, unless the merge message names it on a line `known-drop: <match>` (the row passes
+now). An entry whose match text changed carries `"replaces": "<old match>"`. `--ci-logs` (merge-check runs it when
+`gh` answers) checks every FAIL row CI printed for the parents against the merge's list. Integ11's df2839f would have
+failed with all 11 dropped entries named.
+
+**Gates.** camgate's spawn row binds whenever the spawn still exists, and its known entry matches A's message.
+`[art] bright elements` uses the art panel's count: >= 300 on walk0, walk180 and w21 at 960 wide, and 93 on CI's
+320-wide stills.
+
+**Native.** world.json `meshes[].visibility` carries E's roof-prop height rule; Swift has `heightRules()`. The
+bundle adds life/traffic-snapshots.json (the opening cities, 75-240 s). **The first Metal frame**
+(MetalFrame.swift; native-macos, Apple Paravirtual device) draws walk0 with the night lightmap: every sampled ground
+pixel equals the browser's lookup within 3 % (worst 0.34 %). The PNG is the `metal-frame` artifact.
+
+### Make CI a required check on main (Justin, once, on the GitHub website)
+1. On GitHub, open the repository, then **Settings → Rules → Rulesets → New ruleset → New branch ruleset**.
+2. Set the name to `main green` and **Enforcement status** to **Active**.
+3. Under **Target branches**, choose **Add target → Include default branch**.
+4. Under **Bypass list**, add **Repository admin**. That's you: you can still push in an emergency.
+5. Turn on **Require status checks to pass**, then add these checks: `test`, `audio`, `native-linux`, `native-macos`,
+   `browser` and `browser-seoul`. Leave "Require branches to be up to date" off.
+6. Leave **Require a pull request before merging** off, so the integrator can still push.
+7. Click **Create**.
+
+With the ruleset on, the integrator works like this:
+1. Push the merge to `integ<N>`.
+2. Wait for the run to go green (about 2.5 h).
+3. Push that same commit to main with `git push origin integ<N>:main`.
+
+Checks belong to the commit, so the integ run counts for main. Main then can't receive a commit that hasn't
+passed. Note that `browser-seoul` is only green when every red row has a ratcheted known entry.
