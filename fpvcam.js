@@ -497,6 +497,10 @@ uniform float uHaloW;     // [P5-A] its energy share of the bright pass (0 = off
 uniform vec2 uRetroShG;   // [P6-A] split-tone gate: absolute Oklab L where it fades in (x..y): the ground and the deep darks stay untinted
 uniform sampler2D tDepthN;// [P6-A] the collider depth (half res, packed as depthMat; cleared to 1 = sky / beyond 100 m)
 uniform vec3 uDepthN;     // [P6-A] xy: source uv -> depth texture uv, z: 1 = no split-tone on the sky
+uniform sampler2D tAir;   // [P7-A] canyon airlight, 1/8 res, output space, exposed (AIR_FS)
+uniform vec2 uAirF;       // [P7-A] x: on, y: the exposed sky luma the airlight fills a dark slot up to (none over it)
+uniform vec2 uHaloE;      // [P7-A] the PSF's edge lobe: x share of the 1/8 block radiance (all of it, no bright-pass threshold), y its
+                          // exposed cap; unblurred (8 px box + bilinear: sigma ~5-6 px at 1280 wide)
 vec3 nightTone(vec3 e){
   vec3 x = max(e, 0.0);
   vec3 pc = pow(x, vec3(uTone.x)) / (pow(x, vec3(uTone.x * uTone.y)) * uTone.z + uTone.w);
@@ -731,6 +735,50 @@ void main(){
   }
   fragColor = vec4(acc, 1.0);
 }`;
+// [P7-A] canyon airlight (colour #1, fpv #2; PLAN-P7: D builds the light term, A grades it), night only, 1/8 res, output space.
+// Real sign streets glow in the gap above them (8e17, ccb0: 15-25 codes): the air between the roof lines in-scatters the lit
+// canyon below. Gather, per 1/8 texel: 16 taps on two rings (uAir.z, uAir.z / 2 frame heights) of the 1/8 frame; a tap that is
+// not sky (collider depth < ~90 m) is canyon: its exposed block luma (capped at uAir.w: one sign can't light the sky alone)
+// feeds the mean, and the share of canyon taps is the enclosure (open sky -> 0, a slot between roof lines -> ~0.6-0.8).
+// Out: a weight in its colour: smoothstep(uAirW, enclosure) x smoothstep(uAir.xy, the lit canyon's mean) (a dark alley gets
+// none) x the warm city tint (uAirTint, luma 1) mixed uAirH toward the bright pass's own hue. FINAL lifts a dark sky by it.
+const AIR_FS = /* glsl */`precision highp float;
+${COMMON}
+${LENS}
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D tSmall;   // rgb: bright pass (exposed), a: block-mean scene luma
+uniform sampler2D tExp;
+uniform sampler2D tDepthN;  // collider depth, half res (source space)
+uniform vec2 uDepthS;       // source uv -> depth texture uv
+uniform float uLens;        // 1: the 1/8 frame is in output space (meterLens)
+uniform vec4 uAir;          // xy lit-canyon ramp (mean exposed luma), z ring radius (frame heights), w per-tap exposed cap
+uniform float uAirH;        // share of the signs' own hue
+uniform vec2 uAirW;         // enclosure ramp
+uniform vec3 uAirTint;      // luma 1
+uniform float uAspect;
+void main(){
+  float ev = decodeEv(texelFetch(tExp, ivec2(0), 0));
+  float n = 0.0, nc = 0.0, sL = 0.0; vec3 sC = vec3(0.0);
+  for (int k = 0; k < 2; k++) for (int i = 0; i < 8; i++) {
+    float a = (float(i) + 0.5 * float(k)) * 0.78539816, rr = uAir.z * (k == 0 ? 0.5 : 1.0);
+    vec2 o = vUv + vec2(cos(a) * rr / uAspect, sin(a) * rr);
+    if (o.x < 0.0 || o.y < 0.0 || o.x > 1.0 || o.y > 1.0) continue;   // off the frame: no vote
+    vec2 so = o;
+    if (uLens > 0.5) { float r, th; so = 0.5 + lensD(o, r, th); }
+    float ns = 1.0 - smoothstep(0.985, 0.998, texture(tDepthN, clamp(so, 0.0, 1.0) * uDepthS).r);
+    vec4 s = texture(tSmall, o);
+    n += 1.0; nc += ns;
+    sL += ns * min(s.a * exp2(ev), uAir.w);
+    sC += ns * max(s.rgb, 0.0);
+  }
+  float encl = nc / max(n, 1.0), w = smoothstep(uAirW.x, uAirW.y, encl);
+  float mL = sL / max(nc, 1e-3);
+  float lc = dot(sC, LUMA);
+  vec3 hue = lc > 1e-5 ? sC / lc : uAirTint;
+  hue = clamp(mix(vec3(1.0), hue, 0.5), 0.0, 2.0);                 // half the signs' chroma: a glow, not a coloured sky
+  fragColor = vec4(mix(uAirTint, hue, uAirH) * (w * smoothstep(uAir.x, uAir.y, mL)), 1.0);
+}`;
 // 37-point hex lattice (3 rings) in the unit disc
 const HEX37 = (() => { const p = [[0, 0]]; for (let k = 1; k <= 3; k++) for (let s6 = 0; s6 < 6; s6++) for (let j = 0; j < k; j++) { const f = j / k, a0 = Math.PI / 3 * s6, a1 = Math.PI / 3 * (s6 + 1); p.push([(k * ((1 - f) * Math.cos(a0) + f * Math.cos(a1))) / 3, (k * ((1 - f) * Math.sin(a0) + f * Math.sin(a1))) / 3]); } return p; })();
 
@@ -846,6 +894,23 @@ void main(){
   if (uHaloM > 0.0) e += texture(tHaloM, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uHaloM * uHaloMTint;
   // [P5-A] colour #5 / lighting #6: a second, wider source-tinted lobe (the middle lobe again at 1/16): the glow has a skirt
   if (uHaloW > 0.0) e += texture(tHaloW, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * uHaloW * uHaloMTint;
+  // [P7-A] colour #3: the edge lobe. A lens's near PSF is linear in all the light, not only in what passes the bright-pass
+  // threshold (4 EV over grey, ~236 codes): a letter at 225 fed no lobe at all, so its edge fell 225 -> 120 in 4 px. Here: the
+  // 1/8 block radiance (tSmall.a, every pixel, capped), in the bright pass's hue where there is one; 8 px box + bilinear =
+  // sigma ~5-6 px at 1280 wide, no extra pass. Over a flat wall it is a uniform few-% veil (the exposure fit absorbs it)
+  if (uHaloE.x > 0.0) {
+    vec4 sb = texture(tSmall, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0));
+    float lb = dot(max(sb.rgb, 0.0), LUMA);
+    vec3 hb = lb > 1e-4 ? clamp(mix(vec3(1.0), sb.rgb / lb, smoothstep(1e-4, 0.05, lb)), 0.0, 3.0) : vec3(1.0);
+    e += hb * (min(sb.a * exp2(ev), uHaloE.y) * uHaloE.x);
+  }
+  // [P7-A] colour #1 / fpv #2: the canyon airlight, graded on top of D's light term (seoul-light.js citySkyAir, in the scene):
+  // on sky-depth pixels a dark slot is lifted toward uAirF.y (exposed luma, ~19 codes) by AIR_FS's weight (enclosure x lit
+  // canyon), in its warm tint; a sky D's term (or an open dome) already lifts past that is left alone
+  if (uAirF.x > 0.0) {
+    float sk = smoothstep(0.985, 0.998, texture(tDepthN, clamp(sG, 0.0, 1.0) * uDepthN.xy).r);
+    if (sk > 0.0) e += texture(tAir, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb * (sk * max(uAirF.y - dot(e, LUMA), 0.0));
+  }
   // [P2-A] FPV #2: tBloom is the PSF's narrow lobe, tHalo its wide lobe (energy fractions of the uncapped bright pass)
   // [P3-A] colour #5 / FPV #6 / graphics #3: ghosts come from GHOST_FS (point sources only, aperture-shaped, desaturated)
   if (uGhostS.w > 0.0) e += texture(tGhost, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb;
@@ -1016,10 +1081,26 @@ export const GRADES = {
   //   ground 19 -> 22 (P5 14), below 16 20.0 -> 16.8 % (P5 24.8), ground/wall 0.40 -> 0.42; walk0 ground (22,19,16), not cyan.
   //   GL check at -1.85 on the next merge (C's grime and roofs, lightmap from file): p50 walk0 45.5, club90 48.4, w21 46.7,
   //   station2 30.6 (P5 20); below 16 18.3 / 14.7 / 16.0 / 14.4 %; ground/wall walk0 0.42, w21 0.46, club90 0.73.
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -1.85, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
+  // [P7-A] PLAN-P7 (panel 6 colour #1/#3/#5, fpv #2): air [target exposed luma, sign-hue share, ring radius (frame heights),
+  //   per-tap cap] / airTint / airEncl / airLit: the canyon airlight (AIR_FS), graded on D's light term (seoul-light.js
+  //   citySkyAir). On the merge D's term alone lifts walk0's slot 9 -> ~18 codes but walk180's only to ~10 (C's sign stacks stop
+  //   AE down to EV -4.2); a dark slot is lifted toward 0.022 exposed (~19 codes), warm R > G > B, by enclosure x lit canyon;
+  //   open skies (low enclosure) and skies D already lifts past the target are left alone.
+  //   haloE [share, exposed cap]: the PSF's edge lobe (colour #3): 5 % of the 1/8 block radiance with no bright-pass threshold
+  //   (unblurred, sigma ~5-6 px at 1280). A 3 % share of the bright pass moved nothing (letter edge 2-4 px band 125 -> 124);
+  //   this one (merge run 2, walk0): 2-4 px 124 -> 136, 4-6 px 47 -> 65, 6-8 px 44 -> 53.
+  //   airEncl [0.35, 0.8] -> [0.15, 0.45], airLit [0.01, 0.04] -> [0.005, 0.025] after merge run 2: walk180's slot (enclosure
+  //   ~0.5, far dark facades round it) took only ~20 % of the lift (10 -> 11.5 codes); now it takes all of it (modelled ~18).
+  //   evBias -1.85 -> -1.9: exposure re-fit last on a scratch merge of p7 A + C (sign stacks into the frame, cladding) + D (sky
+  //   term, ground light, re-baked). GL at -1.85 (960 wide): p50 walk0 47.0, club90 49.8 (band top 50), walk180 39.7, station2
+  //   32.6; below 16 13.5 / 14.1 / 22.4 / 12.4 %. Modelled at -1.9: 45.9 / 48.8 / 38.7 / 31.6. walk180 meters EV -4.1 (C's
+  //   near boards fill a third of it) and its ground is 18: a light / content gap, not exposure (club90 caps any lift).
+  //   wb red 1.0 -> 0.98 (colour #5: the fill went amber under the warmer dome, club270 R-G 2.7 -> 8.0, high 7.4 -> 11.5).
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.98, 1.0, 0.96], wbShade: null, evBias: -1.9, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
-    haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3],
+    haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3], haloE: [0.05, 16],
+    air: [0.022, 0.3, 0.2, 4], airTint: [1.3, 0.75, 0.38], airEncl: [0.15, 0.45], airLit: [0.005, 0.025],
     ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
     core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-5.2, -1.6], retroShadow: [230, 0.03], retroShGate: [0.17, 0.26], retroShSky: 1, retroVibGate: [40, 100],
     mag: 0.07, magC: 0.04, magEv: [0.7, 1.6, 3.2, 4.2], grain: 0, grainEv: [0, 0], grainPx: 2,
@@ -1263,7 +1344,10 @@ export class FPVCamera {
       // [P5-A]
       tHaloW: { value: null }, uHaloW: { value: 0 },
       // [P6-A]
-      uRetroShG: { value: new V2(0, 0) }, tDepthN: { value: null }, uDepthN: { value: new V3(1, 1, 0) } };
+      uRetroShG: { value: new V2(0, 0) }, tDepthN: { value: null }, uDepthN: { value: new V3(1, 1, 0) },
+      // [P7-A]
+      tAir: { value: null }, uAirF: { value: new V2(0, 0) }, uHaloE: { value: new V2(0, 16) } };
+    const fl = this.final.u;
     const bl = () => pass(BLOOM_FS, { tSrc: { value: null }, uDir: { value: new V2() } });
     this._nightP = {
       down: pass(DOWN_FS, this.down.u, D), final: pass(FINAL_FS, nfU, D),
@@ -1275,6 +1359,10 @@ export class FPVCamera {
       ghost: pass(GHOST_FS, { tSmall: { value: null }, tExp: { value: null }, uGEv: { value: new V2(9, 10.5) }, uGChroma: { value: 0.3 }, uFringe: { value: 0.08 },
         uBlades: { value: 7 }, uAspect: { value: 16 / 9 }, uG: { value: [new V4(), new V4(), new V4()] }, uGT: { value: [new V3(1, 1, 1), new V3(1, 1, 1), new V3(1, 1, 1)] },
         uLat: { value: HEX37.map(([x, y]) => new V2(x, y)) } }, D), ghostRT: null,
+      // [P7-A] canyon airlight at 1/8 res (AIR_FS); the lens uniforms are FINAL's own objects
+      air: pass(AIR_FS, { tSmall: { value: null }, tExp: { value: null }, tDepthN: { value: null }, uDepthS: { value: new V2(1, 1) }, uLens: { value: 1 },
+        uAir: { value: new V4(0.01, 0.04, 0.2, 4) }, uAirH: { value: 0 }, uAirW: { value: new V2(0.35, 0.8) }, uAirTint: { value: new V3(1, 1, 1) }, uAspect: { value: 16 / 9 },
+        uHalf: fl.uHalf, uF: fl.uF, uK: fl.uK, uSrcTan: fl.uSrcTan }, D), airRT: null,
       // [P2-A] FPV #6 object motion blur: the night blur variant + a half-res velocity pass of the movers (contract P2-A1)
       blur: pass(BLUR_FS, { ...this.blur.u, tVel: { value: null }, uVelOn: { value: 0 } }, D),
       velRT: null, velScene: new THREE.Scene(), proxies: new Map(), velMats: new Map(), velMat: new THREE.ShaderMaterial({
@@ -1940,6 +2028,22 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
       const mt = lk.haloMTint || [1, 1, 1], ml = 0.2126 * mt[0] + 0.7152 * mt[1] + 0.0722 * mt[2];
       nf.uHaloMTint.value.set(mt[0] / ml, mt[1] / ml, mt[2] / ml);
       nf.tHaloW.value = NP.wideOn ? NP.wideRT.texture : NP.haloB.texture; nf.uHaloW.value = NP.wideOn ? lk.haloW[0] * (this.f16 ? 1 : 8) : 0;
+      // [P7-A] the edge lobe (colour #3) and the canyon airlight (colour #1, fpv #2): air [target exposed luma, sign-hue share,
+      // radius, tap cap], airLit [lit-canyon ramp]
+      const he = lk.haloE; nf.uHaloE.value.set(Array.isArray(he) ? he[0] : he || 0, Array.isArray(he) ? he[1] ?? 16 : 16);
+      const ai = lk.air, airOn = !!(ai && ai[0] > 0 && world.colliderScene);
+      if (airOn) {
+        const bw = this.smallRT.width, bh = this.smallRT.height;
+        if (!NP.airRT || NP.airRT.width !== bw || NP.airRT.height !== bh) { NP.airRT?.dispose(); NP.airRT = rt(bw, bh, { type: THREE.HalfFloatType }); }
+        const au = NP.air.u, at = lk.airTint || [1, 1, 1], al = 0.2126 * at[0] + 0.7152 * at[1] + 0.0722 * at[2];
+        au.tSmall.value = this.smallRT.texture; au.tExp.value = nextExp.texture; au.tDepthN.value = this.depthRT.texture;
+        au.uDepthS.value.set(dw / this.depthRT.width, dh / this.depthRT.height); au.uLens.value = LM;
+        const lit = lk.airLit || [0.01, 0.04];
+        au.uAir.value.set(lit[0], lit[1], ai[2] ?? 0.2, ai[3] ?? 4); au.uAirH.value = ai[1] ?? 0; au.uAirW.value.fromArray(lk.airEncl || [0.35, 0.8]);
+        au.uAirTint.value.set(at[0] / al, at[1] / al, at[2] / al); au.uAspect.value = this.outW / this.outH;
+        r.setRenderTarget(NP.airRT); r.clear(true, false, false); r.render(NP.air.scene, this.quadCam);
+      }
+      nf.tAir.value = airOn ? NP.airRT.texture : NP.haloB.texture; nf.uAirF.value.set(airOn ? 1 : 0, airOn ? ai[0] : 0);
       nf.uRetro.value = rt0; nf.uRetroVib.value = lk.retroVib ?? 0.5; nf.uRetroCA.value = (lk.retroCA || 0) * rt0 * 0.004;
       nf.uNoise.value.fromArray(lk.noise || [0.010, 0.0011, 1.6]); nf.uNoiseRGB.value.fromArray(lk.noiseRGB || [1.1, 0.8, 1.5]);
       nf.uNoiseEv.value.set(lk.evMax - (lk.noiseSpan ?? 6), lk.noiseSpan ?? 6);
@@ -1993,9 +2097,10 @@ void main(){ gl_FragColor = vec4(vV, 1.0); }`,
           source: { radiance: lk.coreSrc, flagRamp: lk.coreW, xtalk: lk.coreXtalkSrc, ev: lk.coreEvSrc } },
         ghosts: { list: lk.ghosts, sourceEv: lk.ghostEv, chroma: lk.ghostChroma, fringe: lk.ghostFringe, blades: lk.ghostBlades, resolution: 1 / 8, taps: 37,
           model: 'G(p) = w / s^2 * mean over the aperture (radius R, per channel R * (1 +- fringe)) of S(0.5 + (p - o - 0.5) / s); S = desat(bright pass) * smoothstep(sourceEv, log2(block luma / 0.24))' },
+        air: lk.air ? { target: lk.air[0], signHue: lk.air[1], ringRadius: lk.air[2], tapCap: lk.air[3], tint: lk.airTint, enclosure: lk.airEncl, litCanyon: lk.airLit, model: 'on sky-depth pixels (collider depth >= ~90 m): e += max(target - luma(e), 0) x smoothstep(enclosure, share of 16 ring taps that are not sky) x smoothstep(litCanyon, mean exposed luma of those taps, each capped at tapCap) x mix(tint, signs hue, signHue) (luma 1) (contract P7-A)' } : null,
         retro: { shadow: lk.retroShadow, shadowGate: lk.retroShGate, shadowSkyCut: !!lk.retroShSky, vibGate: lk.retroVibGate, magenta: { amount: lk.mag, chromaGate: lk.magC, ev: lk.magEv, amberGate: lk.retroVibGate } },
         meter: { grid: [16, 12], reject: lk.aeReject, areaSource: lk.aeArea, areaRule: '[thr, weight, weight when > share of taps are area, share] (soft +-0.05)', matrix: lk.aeMatrix, veilCapEv: lk.veilCapEv, resetSolvesCap: true },
-        psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, mid: { energy: lk.haloM?.[0] ?? 0, spacing: lk.haloM?.[1], passes: lk.haloM?.[2], tint: lk.haloMTint || [1, 1, 1] }, mid2: { energy: lk.haloW?.[0] ?? 0, spacing16: lk.haloW?.[1], passes: lk.haloW?.[2], tint: lk.haloMTint || [1, 1, 1], from: 'mid at 1/16' }, ghosts: lk.ghosts, cap: lk.bloomCap },
+        psf: { brightPassEv: lk.psfThEv, narrow: { energy: lk.bloom, passes: lk.psfNarrowIt, spacing: lk.psfNarrowR }, wide: { energy: lk.halo, radius: lk.haloR, tint: lk.haloTint }, mid: { energy: lk.haloM?.[0] ?? 0, spacing: lk.haloM?.[1], passes: lk.haloM?.[2], tint: lk.haloMTint || [1, 1, 1] }, mid2: { energy: lk.haloW?.[0] ?? 0, spacing16: lk.haloW?.[1], passes: lk.haloW?.[2], tint: lk.haloMTint || [1, 1, 1], from: 'mid at 1/16' }, edge: { energy: Array.isArray(lk.haloE) ? lk.haloE[0] : lk.haloE || 0, cap: Array.isArray(lk.haloE) ? lk.haloE[1] : 16, from: 'the 1/8 block radiance (no threshold), bright-pass hue, unblurred' }, ghosts: lk.ghosts, cap: lk.bloomCap },
         noise: { shot: (lk.noise || [])[0], read: (lk.noise || [])[1], chroma: (lk.noise || [])[2], floor: lk.noiseFloor, cellPx: lk.noiseCell, chromaDark: lk.chromaDark, temporal: 'mean of this and last frame lattice (corr 0.5)', texture: '256^2 gaussian, seed 0x9e3779b9 mulberry32' },
         codec: lk.codec, sharpDark: lk.sharpDark, objectBlur: { on: lk.objBlur, contract: 'P2-A1: world.motionMeshes / scene.userData.motionMeshes, geometry attribute instanceVelocity (m/s)' },
       } } : {}),
