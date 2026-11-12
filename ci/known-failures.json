@@ -289,6 +289,7 @@
     {
       "suite": "tools/camgate.py",
       "match": "[exposure] spawn: spawn p50",
+      "replaces": "[exposure] spawn: frame p50",
       "owner": "F with A (PLAN-P6: the spawn, yaw +6, pitch -8, gate spawn p50 >= 40)",
       "why": "[P6 H] new still: main's spawn frames mostly night sky from height (p50 21, local SwiftShader run of 41f6ff0 = main's spawn); F's pitch -8 and A's open-shot exposure. Limit ~10 % under main's value. [P7 H] the match is A's camgate message ('<shot>: spawn p50 X < 40'); the P6 H text ('frame p50') matched nothing, and CI's --hero list left the spawn shot ungated",
       "limit": {

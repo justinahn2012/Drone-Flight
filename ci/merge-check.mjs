@@ -10,6 +10,8 @@
 //   node ci/merge-check.mjs --keep-going     (default) run every step even after one failed; --bail stops at the first
 //   node ci/merge-check.mjs --depth 1        [P6 H] clone at this depth instead of the workflow's own (0 = full history)
 //   node ci/merge-check.mjs --in-place       run in this working tree (phase 5's mode: sees untracked / ignored files)
+//   node ci/merge-check.mjs --no-ci-logs     [P7 H] skip the last step: every FAIL row CI printed for the merge's parents must
+//                                            be tolerated by the merge's ci/known-failures.json (gh; ci/known-guard.mjs)
 //
 // [P6 H, native #1] It runs in a fresh clone of the committed HEAD, fetched at the depth CI's checkout uses (the `test`
 // job's `fetch-depth` in ci.yml: 0 = full history, absent = actions/checkout's default of 1). Phase 5's red main came
@@ -80,6 +82,10 @@ let steps = workflowSteps(yml, JOBS)
   .filter((s) => !/npm ci|apt-get|playwright install/.test(s.run))   // installs: the local tree has its node_modules
   .filter((s) => !ONLY.length || ONLY.some((w) => s.name.toLowerCase().includes(w)))
   .filter((s) => !SKIP.some((w) => s.name.toLowerCase().includes(w) || s.job === w));
+// [P7 H, panel6 native #1] the merge's parents' CI rows, judged against the merge's known list (needs gh; ci/known-guard.mjs)
+const HAS_GH = (() => { try { execSync('gh run list -R justinahn2012/Drone-Flight -L 1', { stdio: 'ignore', timeout: 20000 }); return true; } catch (e) { return false; } })();
+if (HAS_GH && !flag('--no-ci-logs') && (!ONLY.length || ONLY.some((w) => 'known'.includes(w) || w.includes('known'))) && !SKIP.some((w) => w.includes('known')))
+  steps.push({ job: 'merge', name: "Parents' CI rows are covered by this merge's known list (H; ci/known-guard.mjs --ci-logs)", run: 'node ci/known-guard.mjs --ci-logs' });
 if (flag('--list') || !steps.length) { for (const s of steps) console.log(`[${s.job}] ${s.name}\n    ${s.run.split('\n').join('\n    ')}`); if (!steps.length) console.log('no steps matched'); process.exit(steps.length ? 0 : 2); }
 
 const MODS = existsSync(join(ROOT, 'ci/node_modules')) ? join(ROOT, 'ci/node_modules') : existsSync(join(ROOT, 'node_modules')) ? realpathSync(join(ROOT, 'node_modules')) : null;

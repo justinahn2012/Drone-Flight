@@ -72,6 +72,9 @@ jobs:
       - name: Seoul facades (C)
         if: ${{ !cancelled() }}
         run: node seoul/tools/test-facades.mjs
+      - name: Known failures survive merges (H; a merge keeps every parent's ci/known-failures.json entry, or names it known-drop)
+        if: ${{ !cancelled() }}
+        run: node ci/known-guard.mjs
       - name: Seoul life (traffic determinism, budgets, sanity; known failures in ci/known-failures.json)
         if: ${{ !cancelled() }}
         run: node ci/run.mjs tests/seoul-life.mjs
