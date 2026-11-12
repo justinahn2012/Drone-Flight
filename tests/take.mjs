@@ -666,6 +666,43 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     d5.pos = { x: 0, y: 2, z: 15 };
     ok(tk5.nextHint(d5, { ...W5, startPoints: [{ ...W5.startPoints[0], hint: { ...W5.startPoints[0].hint, r: undefined } }] })?.name === 'N' && new Take().nextHint({ ...d5, pos: { x: 0, y: 2, z: 7 } }, { ...W5, startPoints: [{ ...W5.startPoints[0], hint: { ...W5.startPoints[0].hint, r: undefined } }] })?.name === 'N', 'no r: 6 m (then the nearest, N here too)');
     resetProgress();
+    // [P6-F design #5 / ux #1] a `blocked` line is never the guide's target: not as the nearest, not as `first`, not as a start
+    // point's `next`; lineList marks it; it still scores when flown
+    if ('clipGrace' in T) {
+      const Wb = { lines: [{ name: 'X', caption: 'X', pts: 2000, blocked: true, first: true, ...gate(10), pre: [gate(5)], within: 8 }, { name: 'Y', caption: 'Y', pts: 1000, ...gate(60), pre: [gate(50)], within: 20 }], skimBvh,
+        takeStart: { pos: [0, 2, 0] }, startPoints: [{ name: 'S', pos: [0, 2, 0], hint: { text: 'X', line: 'X', until: 2, next: 'X', r: 30 } }] };
+      const tb = new Take(), db = mk(); db.pos = { x: 0, y: 2, z: 0 };
+      ok(tb.nextHint(db, Wb)?.name === 'Y', `a blocked line is skipped by every rule (got ${tb.nextHint(db, Wb)?.name}, the 10 m X is blocked)`);
+      ok(tb.lineList(Wb).find((l) => l.name === 'X')?.blocked === true && !('blocked' in tb.lineList(Wb).find((l) => l.name === 'Y')), 'lineList marks the blocked line');
+      const eb = []; db.vel = { x: 0, y: 0, z: 8 }; for (let z = 0; z < 12; z += 8 * DT) { db.pos = { ...db.pos, z }; eb.push(...tb.update(DT, db, Wb, true)); }
+      ok(eb.some((e) => e.type === 'line' && e.name === 'X'), 'a blocked line still scores when flown');
+      resetProgress();
+      // [P6-F design #2] the opening's grace: the `first` line's gates count up to clipGrace m outside their edges in the first
+      // clipT s: CLIPPED, x1, but flown (FLOW +1, the chain kept); a line without `first`, or later than clipT, gets none
+      const runC = (y, first, tun, t0 = 0) => {
+        const Wc = { lines: [{ name: 'O', caption: 'O', pts: 1500, ...(first ? { first: true } : {}), ...gate(10, { h: 1 }), pre: [gate(5, { h: 1 })], within: 8 }, { name: 'P', caption: 'P', pts: 1000, ...gate(30), pre: [gate(25)], within: 8 }], skimBvh, tuning: tun };
+        const t = new Take(), dd = mk(), out = []; dd.pos = { x: 0, y, z: -40 }; dd.vel = { x: 0, y: 0, z: 8 };
+        out.push(...t.update(DT, dd, Wc, true)); for (let k = 0; k < t0 / DT; k++) out.push(...t.update(DT, dd, Wc, true));
+        for (let z = -2; z < 32; z += 8 * DT) { dd.pos = { ...dd.pos, z }; out.push(...t.update(DT, dd, Wc, true)); }
+        return out;
+      };
+      const tun = { clipGrace: 0.6, clipT: 20 };
+      resetProgress(); const c1 = runC(2.9, true, tun), o1 = c1.find((e) => e.name === 'O'), p1 = c1.find((e) => e.name === 'P');
+      ok(o1 && o1.clipped && o1.pts === 1500 && !o1.clean && p1 && p1.flow === 2, `0.4 m over the first gate's top: CLIPPED x1 (${o1?.pts}), and the next line is at FLOW x${p1?.flow}`);
+      resetProgress(); const c2 = runC(2.0, true, tun), o2 = c2.find((e) => e.name === 'O');
+      ok(o2 && !o2.clipped && o2.pts === Math.round(1500 * 1.25), 'through the middle: a plain line (CLEAN, no CLIPPED)');
+      resetProgress(); ok(!runC(2.9, false, tun).some((e) => e.name === 'O'), 'no grace for a line that is not `first`');
+      resetProgress(); ok(!runC(2.9, true, tun, 21).some((e) => e.name === 'O'), 'no grace after clipT s of take time');
+      resetProgress(); ok(!runC(2.9, true, {}).some((e) => e.name === 'O'), 'no grace without tuning.clipGrace (bando)');
+      resetProgress(); ok(!runC(3.2, true, tun).some((e) => e.name === 'O'), '0.7 m over: outside the 0.6 m grace');
+      // [P6-F ux #3] hintVertReady: at 'ready' a target 5 m across and 2 m down is DOWN; once live, the 3 m rule again
+      const Wv = { lines: [{ name: 'V', caption: 'V', pts: 1000, ...gate(5, { c: [0, 0, 5] }) }], skimBvh, tuning: { hintVertReady: 6 } };
+      const tv = new Take(), dv = mk(); dv.pos = { x: 0, y: 2, z: 0 };
+      ok(tv.nextHint(dv, Wv)?.vert === 'down', `ready: DOWN within 6 m (got ${tv.nextHint(dv, Wv)?.vert})`);
+      tv.update(DT, dv, Wv, true);
+      ok(tv.state === 'live' && tv.nextHint(dv, Wv)?.vert === null, 'live: the 3 m rule (no DOWN at 5 m across)');
+      resetProgress();
+    }
   }
 }
 
@@ -678,10 +715,24 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
   if (fs.existsSync(LJp) && fs.existsSync(Rp)) {
     const LJ = JSON.parse(fs.readFileSync(LJp, 'utf8')), R = JSON.parse(fs.readFileSync(Rp, 'utf8')), st = LJ.tuning.stars;
     const h = createHash('sha256').update(JSON.stringify({ lines: LJ.lines, tuning: LJ.tuning, takeStart: LJ.takeStart })).digest('hex').slice(0, 16);
-    ok(R.lines === h, `tests/seoul/take-sim.json is of this lines.json (${R.lines} vs ${h}; re-record: node seoul/tools/take-sim.mjs --runs 4 --route short,walk,loop,long,hongik,stairs,pop,pass --record)`);
+    ok(R.lines === h, `tests/seoul/take-sim.json is of this lines.json (${R.lines} vs ${h}; re-record: node seoul/tools/take-sim.mjs --runs 8 --route short,walk,loop,long,hongik,hub,stairs,pop,pass --record)`);
     const cl = R.results['long/careful'], rl = R.results['long/regular'], sl = R.results['long/sharp'];
-    ok(cl && starsFor(cl.p75, st) <= 2, `a careful long take is <= 2 stars in every run (best ${cl?.p75}, 3 stars at ${st[2]})`);
-    ok(rl && starsFor(rl.p50, st) === 3, `a regular long take is 3 stars at its p50 (${rl?.p50})`);
+    // [P6-F design #3] 8 runs, and the 3-star cut with margin both ways (phase 5: regular p50 291k against a 290k cut)
+    ok(R.runs >= 8, `the record is of ${R.runs} runs per pilot x route (>= 8: 4 hid the sharp pilot's bimodal opening)`);
+    ok(cl && cl.p75 <= 0.95 * st[2], `careful long p75 ${cl?.p75} <= 0.95 x the 3-star cut ${st[2]}`);
+    ok(rl && rl.p50 >= 1.05 * st[2], `regular long p50 ${rl?.p50} >= 1.05 x the 3-star cut ${st[2]}`);
+    ok(cl && cl.stars.every((n) => n <= 2) && rl && starsFor(rl.p50, st) === 3, `a careful long take is <= 2 stars in every run (${cl?.stars}); regular 3 at its p50`);
+    // [P6-F design #2] monotone skill: sharp p25 >= regular p25 >= careful p25 on the short and long takes
+    for (const r of ['short', 'long']) { const [c, g, s] = ['careful', 'regular', 'sharp'].map((p) => R.results[`${r}/${p}`]?.p25);
+      ok(c != null && s >= g && g >= c, `${r}: p25 sharp ${s} >= regular ${g} >= careful ${c}`); }
+    // [P6-F design #4 / #6] hongik careful <= 1 crash in 8; hub and hongik caption gaps <= 15 s
+    { const hc = R.results['hongik/careful']; ok(hc && hc.crash <= 1, `hongik/careful: ${hc?.crash} crashes in ${hc?.runs} (<= 1; ${JSON.stringify(hc?.by)})`); }
+    for (const k of ['hub/careful', 'hub/regular', 'hub/sharp', 'hongik/careful', 'hongik/regular', 'hongik/sharp']) if (R.results[k]) ok(R.results[k].gapMax <= 15, `${k}: caption gap max ${R.results[k].gapMax} s (<= 15)`);
+    // [P6-F design #5 / ux #1] no guide target is unflyable: a line the sims fly 0 of N is `blocked` in lines.json, and a blocked
+    // line the sims fly >= 10 of 12 should be unblocked (the stair dive, once G1 clears the mouth)
+    { const st0 = ['careful', 'regular', 'sharp'].map((p) => R.results[`stairs/${p}`]).filter(Boolean), n = st0.reduce((a, r) => a + r.runs, 0), got = st0.reduce((a, r) => a + (r.flown ?? 0), 0);
+      const bl = LJ.lines.some((l) => l.name === 'STATION STAIRS' && l.blocked);
+      if (n) ok(bl ? got < Math.ceil(n * 10 / 12) : got >= Math.ceil(n * 10 / 12), `STATION STAIRS ${bl ? 'blocked' : 'open'}: the sims fly it ${got} of ${n} (${bl ? 'unblock at' : 'open needs'} >= 10 of 12)`); }
     const cw = R.results['walk/careful'], sw = R.results['short/sharp'], cs = R.results['short/careful'];
     ok(cw && starsFor(cw.p50, st) >= 1, `the walking street alone at a careful pace is 1 star (${cw?.p50})`);
     // design #4: speed pays (phase 4: sharp +18 % on WALKING STREET's own pts)

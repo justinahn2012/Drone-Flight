@@ -22,7 +22,10 @@
   "bankBonus": true,
   "fastBonus": 1,
   "slowPar": 1.6,
-  "fastPar": 1.15
+  "fastPar": 1.15,
+  "clipGrace": 0.6,
+  "clipT": 20,
+  "hintVertReady": 6
  },
  "lines": [
   {
@@ -90,7 +93,10 @@
     "bankBonus": true,
     "fastBonus": 1,
     "slowPar": 1.6,
-    "fastPar": 1.15
+    "fastPar": 1.15,
+    "clipGrace": 0.6,
+    "clipT": 20,
+    "hintVertReady": 6
    }
   },
   {
@@ -5134,7 +5140,7 @@
     0,
     0.5
    ],
-   "w": 2.2,
+   "w": 3,
    "h": 0.93,
    "u": [
     -0.5,
@@ -5153,7 +5159,7 @@
       0,
       0.5
      ],
-     "w": 2.2,
+     "w": 3,
      "h": 0.93,
      "u": [
       -0.5,
@@ -5180,7 +5186,7 @@
     0,
     -0.5
    ],
-   "w": 2.2,
+   "w": 3,
    "h": 0.93,
    "u": [
     -0.5,
@@ -5199,8 +5205,27 @@
       0,
       -0.5
      ],
-     "w": 2.2,
+     "w": 3,
      "h": 0.93,
+     "u": [
+      -0.5,
+      0,
+      -0.866
+     ]
+    },
+    {
+     "c": [
+      4.726,
+      3.2,
+      -136.547
+     ],
+     "n": [
+      0.866,
+      0,
+      -0.5
+     ],
+     "w": 3,
+     "h": 1.6,
      "u": [
       -0.5,
       0,
@@ -5208,7 +5233,7 @@
      ]
     }
    ],
-   "within": 9,
+   "within": 11,
    "piece": "under-the-stage",
    "first": true,
    "hint": "under the busking canopy · over the crowd"
@@ -5396,6 +5421,31 @@
    "within": 8,
    "piece": "roofline-slot",
    "hint": "the 2.9 m slot between a stair house and a tank"
+  },
+  {
+   "name": "TO THE RED ROAD 1",
+   "caption": "TO THE RED *ROAD*",
+   "pts": 500,
+   "c": [
+    12.112,
+    3.75,
+    -117.868
+   ],
+   "n": [
+    -0.665,
+    0,
+    0.747
+   ],
+   "w": 8,
+   "h": 2.5,
+   "u": [
+    -0.747,
+    0,
+    -0.665
+   ],
+   "two": true,
+   "micro": true,
+   "connector": true
   }
  ],
  "funnels": [
@@ -5428,11 +5478,12 @@
   {
    "name": "Walking street",
    "pos": [
-    -2.442,
+    -2.058,
     4.5,
-    -126.115
+    -127.108
    ],
-   "yaw": -0.774,
+   "yaw": -0.669,
+   "pitch": -0.14,
    "hint": {
     "text": "UNDER THE STAGE · UP THE STREET",
     "line": "UNDER THE STAGE",
@@ -5523,11 +5574,12 @@
  ],
  "takeStart": {
   "pos": [
-   -2.442,
+   -2.058,
    4.5,
-   -126.115
+   -127.108
   ],
-  "yaw": -0.774,
+  "yaw": -0.669,
+  "pitch": -0.14,
   "hint": {
    "text": "UNDER THE STAGE · UP THE STREET",
    "line": "UNDER THE STAGE",

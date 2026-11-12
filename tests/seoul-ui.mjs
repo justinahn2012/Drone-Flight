@@ -126,6 +126,19 @@ if (S) {
     ok(H.next === ord[0] && +H.r > 0 && +H.r <= 40 && +H.r >= ds[0], `the arrow's next line is ${H.next}, r ${H.r} m (<= 40, >= its pre-gate at ${ds[0].toFixed(0)} m)`);
     const tw = up.length * 15 * 0.66 + 24;   // #toast: 600 15px mono, .06em tracking, 12 px padding each side, max-width 86 %
     ok(tw <= 0.86 * 390, `the first toast is one row at 390 px (${up.length} characters, ~${tw.toFixed(0)} of ${(0.86 * 390).toFixed(0)} px)`); }
+  // [P6-F design #5 / ux #1 / ui #4] no guide target is a dead line: the first line, every start point's `next`, and every line
+  // a take-sim route flies 0 times is `blocked` (take.js nextHint, the brackets and the grid's NEXT skip it); ui #1: the
+  // spawn looks down (takeStart.pitch, -2..-12 deg)
+  { const blocked = new Set(LJ.lines.filter((l) => l.blocked).map((l) => l.name));
+    const guided = [...LJ.lines.filter((l) => l.first).map((l) => l.name), ...(LJ.startPoints || []).map((p) => p.hint?.next).filter(Boolean)];
+    ok(guided.every((n) => !blocked.has(n)), `the first line and the start points' next lines are flyable (${[...new Set(guided)].join(', ')}; blocked: ${[...blocked].join(', ') || 'none'})`);
+    const RP = join(ROOT, 'tests', 'seoul', 'take-sim.json'), R = existsSync(RP) ? JSON.parse(readFileSync(RP, 'utf8')) : null;
+    const ROUTE_LINE = { stairs: 'STATION STAIRS', pop: 'PLAYGROUND POP', pass: 'SCREEN PASS' };
+    if (R) for (const [r, nm] of Object.entries(ROUTE_LINE)) { const rs = ['careful', 'regular', 'sharp'].map((p) => R.results[`${r}/${p}`]).filter(Boolean); if (!rs.length) continue;
+      const got = rs.reduce((a, x) => a + (x.flown ?? 0), 0), n = rs.reduce((a, x) => a + x.runs, 0);
+      ok(got > 0 || blocked.has(nm), `${nm}: flown ${got} of ${n} in take-sim${got ? '' : ', so it is blocked (never a guide target)'}`); }
+    const pt = +LJ.takeStart?.pitch || 0;
+    ok(pt <= -2 * Math.PI / 180 && pt >= -12 * Math.PI / 180, `the spawn looks ${(pt * 180 / Math.PI).toFixed(1)} deg down (takeStart.pitch: the canopy, not the sky)`); }
   // [P5-F] ui #5: the timed sub-line at 390 px portrait (#pop .sub: var(--cell) = 18 px mono, .04em tracking; max-width 94 %)
   { const w = (h) => { const t = h.replace(/<[^>]+>/g, ''); return t.length * 18 * 0.64 + (/class="fast"/.test(h) ? 0.6 * 18 : 0); };
     for (const [tag, e] of [['FAST', { dur: 44.2, best: 41.0, fast: true }], ['BEST', { dur: 81.6, best: 44.2 }], ['NEW BEST', { dur: 41.0, best: 44.2, newBest: true }]]) {
