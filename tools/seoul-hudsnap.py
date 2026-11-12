@@ -6,7 +6,8 @@ Same lock / serving as /home/claude/scripts/seoulsnap.py (imported).
 [P6-F] ui #2: the caption shot starts the take (a 'start' event, state 'live') before its line event (phase 5 fired it while
 the take was 'ready', so the shot had no caption), and reports the luma p80 under the caption (#pop) and #live (gate <= 0.35, else the caption
 needs a plate); ui #1: the spawn shot reports the frame's luma p50 (8-bit codes, gate >= 40) and the bracket labels on screen
-(one at 'ready')."""
+(one at 'ready').
+[P7-F] ui #3: the pause shot lists any level card / LINES cell text under the sticky RESUME bar (gate: none)."""
 import argparse, asyncio, base64, fcntl, json, os, sys, time, io
 sys.path.insert(0, '/home/claude/scripts')
 import seoulsnap as S
@@ -62,7 +63,11 @@ async def main(a):
                 for i in range(frames):
                     # [P6-F] `last` runs before the final frame: #pop hides on a wall-clock timer (CAP_DUR), and a swiftshader
                     # frame takes ~1 s, so a caption fired in `setup` was gone by the screenshot (phase 5 and 6's caption shots)
-                    if last and i == frames - 1: await pg.evaluate(last)
+                    # [P7-F] phase 6's fix still lost it: the last frame plus the screenshot take > CAP_DUR (1.6 s) on swiftshader. The
+                    # caption now fires 3 frames before the end (so the plate meter's readback lands) with the page's timers made in
+                    # that call stretched x 30 (its hide timer), then restored, and #pop's CSS animation (popA: fades out by 100 %)
+                    # held at 40 % (opacity 1). The run-2 shot of phase 7 had #pop.show in the DOM but faded to 0 in the picture.
+                    if last and i == max(0, frames - 3): await pg.evaluate("(()=>{const st=window.setTimeout; window.setTimeout=(f,ms,...a)=>st(f,(ms||0)*30,...a); try {" + last + "} finally { window.setTimeout=st; } for (const an of document.getElementById('pop').getAnimations()) { an.currentTime = 0.4 * (an.effect.getComputedTiming().duration || 1300); an.pause(); }})()")
                     d = await pg.evaluate(f"window.__onetake.step(33,1,{'true' if i == frames - 1 else 'false'})"); await pg.wait_for_timeout(30)
                 world = Image.open(io.BytesIO(base64.b64decode(d.split(',')[1])))
                 f = os.path.join(a.out, f'hud-{name}.png'); await pg.screenshot(path=f)
@@ -71,7 +76,9 @@ async def main(a):
                 rep[name]['_p80'] = {k: luma_p(world, bx, w, h) for k, bx in ro.items() if k in ('live', 'pop', 'toast')}
                 rep[name]['_frameP50'] = frame_p50(world)
                 rep[name]['_labels'] = await pg.evaluate("[...document.querySelectorAll('#osd .brl.on')].map((e) => e.textContent)")
-                rep[name]['_pop'] = await pg.evaluate("(()=>{const e=document.getElementById('pop'); return e && e.classList.contains('show') ? {text: e.textContent.replace(/\\s+/g,' ').trim().slice(0,90), plate: e.classList.contains('plate')} : null})()")
+                # [P7-F ui #3] the pause card: no level card's text (name, meta) under the sticky RESUME bar
+                rep[name]['_underBar'] = await pg.evaluate("(()=>{const m=document.getElementById('menu'); if(!m||m.classList.contains('hidden')) return null; const c=document.querySelector('#menu .cta'); if(!c) return null; const B=c.getBoundingClientRect(); const top=B.top+parseFloat(getComputedStyle(c).paddingTop||0)*0.5; return [...document.querySelectorAll('#menu .world b, #menu .world .meta, #menu .ln')].filter(e=>e.offsetParent).map(e=>{const r=e.getBoundingClientRect(); return r.bottom>top && r.top<B.bottom && r.height>0 ? (e.textContent||'').trim().slice(0,24) : null}).filter(Boolean)})()")
+                rep[name]['_pop'] = await pg.evaluate("(()=>{const e=document.getElementById('pop'); return e && e.classList.contains('show') ? {text: e.textContent.replace(/\\s+/g,' ').trim().slice(0,90), plate: e.classList.contains('plate'), opacity: +getComputedStyle(e).opacity} : null})()")
                 print(f'shot {name} -> {f}  luma>0.6 under readouts: {rep[name]}', flush=True)
             # 1. spawn: the take start, READY + its hint, the first toast
             await shot('spawn', "(()=>{const o=window.__onetake; o.respawn(true); o.ui.toast((o.world.takeStart?.hint?.text||'').toUpperCase(), 6);})()")
@@ -90,8 +97,10 @@ async def main(a):
     sp, cp = rep.get('spawn', {}), rep.get('caption', {})
     print(f"GATE spawn frame p50 {sp.get('_frameP50')} (>= 40): {'PASS' if (sp.get('_frameP50') or 0) >= 40 else 'FAIL'}")
     print(f"GATE spawn labels {sp.get('_labels')} (one per line): {'PASS' if len(set(x.rsplit(' ', 1)[0] for x in sp.get('_labels') or [])) == len(sp.get('_labels') or []) else 'FAIL'}")
+    pz = rep.get('pause', {}).get('_underBar')
+    print(f"GATE pause: text under the RESUME bar {pz} (none): {'PASS' if pz == [] else 'FAIL'}")
     p80, pop = (cp.get('_p80') or {}).get('pop'), cp.get('_pop')
-    print(f"GATE caption shown {pop}, luma p80 under #pop {p80} (<= 0.35, or plated): {'PASS' if pop and ((p80 is not None and p80 <= 0.35) or pop.get('plate')) else 'FAIL'}")
+    print(f"GATE caption shown {pop}, luma p80 under #pop {p80} (<= 0.35, or plated): {'PASS' if pop and (pop.get('opacity') or 0) >= 0.5 and ((p80 is not None and p80 <= 0.35) or pop.get('plate')) else 'FAIL'}")
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--dir', required=True); ap.add_argument('--size', default='844x390'); ap.add_argument('--quality', default='low'); ap.add_argument('--out', required=True)

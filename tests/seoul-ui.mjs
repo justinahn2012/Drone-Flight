@@ -174,14 +174,25 @@ if (S) {
   // nothing within 3 m of the camera (the depth check: phase 4's blurred pole) and reads as neon too; the thumb shows
   // street (its lower third >= 2x the top's luma: phase 4's was a sign on a beige wall)
   if (SR) {
+    const lifeHash = createHash('sha256').update(readFileSync(join(ROOT, 'seoul-life.js'))).digest('hex').slice(0, 16);
     const lifeNow = (() => { try { return execFileSync('git', ['log', '-1', '--format=%h', '--', 'seoul-life.js'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (e) { return null; } })();
     const bdShot = !!SR.backdrop?.commit;   // [P5-F] the backdrop's gates bind once it is re-shot with a pose and a build
     if (!bdShot) console.log('PEND stills.json backdrop: phase 4\'s w21 still (no pose, commit or depth): re-shoot (ui #1)');
     for (const k of bdShot ? ['backdrop', 'thumb'] : ['thumb']) {
       const r = SR[k] || {};
       ok(!!r.pose && !!r.commit, `stills.json ${k}: pose "${r.pose || ''}" and commit "${r.commit || ''}" recorded`);
-      if (lifeNow) ok(r.lifeCommit === lifeNow, `stills.json ${k} was shot with seoul-life.js ${r.lifeCommit || '(none)'} (now ${lifeNow})${r.lifeCommit === lifeNow ? '' : ': re-shoot'}`);
+      // [P7-F ui #4] by content (seoul-life.js's sha256, tools/seoul-ui-assets.py lifeHash): depth-proof (H's P6 note: a depth-1
+      // clone read HEAD as seoul-life.js's last commit); a record from before P7 falls back to the git rev
+      if (r.lifeHash) ok(r.lifeHash === lifeHash, `stills.json ${k} was shot with seoul-life.js ${r.lifeHash} (now ${lifeHash})${r.lifeHash === lifeHash ? '' : ': re-shoot'}`);
+      else if (lifeNow) ok(r.lifeCommit === lifeNow, `stills.json ${k} was shot with seoul-life.js ${r.lifeCommit || '(none)'} (now ${lifeNow})${r.lifeCommit === lifeNow ? '' : ': re-shoot'}`);
     }
+    // [P7-F ui #4] the whole depth check binds (phase 6 recorded only `nearest`): a P7 record (lifeHash) carries dark and wall8
+    // for the backdrop, dark <= 0.20 (near-black share) and wall8 <= 0.15 (rays within 8 m: a near wall across the frame)
+    if (bdShot) { const b = SR.backdrop;
+      if (!b.lifeHash) console.log('PEND stills.json backdrop: no dark / wall8 (shot before P7): re-shoot with tools/seoul-stillsnap.py, then seoul-ui-assets.py --depth');
+      else { ok(b.dark != null && b.wall8 != null, `stills.json backdrop records dark (${b.dark}) and wall8 (${b.wall8}) (seoul-ui-assets.py --depth)`);
+        ok(+b.dark <= 0.20, `the backdrop is <= 20 % near-black (dark ${b.dark})`);
+        ok(+b.wall8 <= 0.15, `the backdrop has no near wall across it: ${b.wall8 != null ? (100 * b.wall8).toFixed(1) : '?'} % of rays within 8 m (<= 15 %)`); } }
     if (bdShot) ok(+SR.backdrop?.nearest >= 3, `the backdrop has nothing within 3 m of the camera (nearest hit ${SR.backdrop?.nearest ?? '?'} m)`);
     if (bdShot) ok(+SR.backdrop?.satBright >= 0.03, `the backdrop reads as neon: ${(100 * (+SR.backdrop?.satBright || 0)).toFixed(1)} % saturated-bright (>= 3 %)`);
     // the panel asked 2x; at night the signs light the top third, so the walk0 crop down the street measures 1.40 and phase 4's

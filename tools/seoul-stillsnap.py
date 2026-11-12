@@ -60,7 +60,7 @@ async def main(a):
                 f = os.path.join(a.out, f'{name}.jpg'); open(f, 'wb').write(base64.b64decode(d.split(',')[1]))
                 dep = await pg.evaluate(DEPTH)
                 dep['dark'] = dark_share(f)
-                dep['pass'] = bool(dep.get('near', 0) >= 3 and dep['dark'] <= 0.20)
+                dep['pass'] = bool(dep.get('near', 0) >= 3 and dep['dark'] <= 0.20 and dep.get('wall8', 1) <= 0.15)   # [P7-F ui #4] + wall8 (tests/seoul-ui.mjs gates all three)
                 rep[name] = {'js': js, **dep}
                 print(f'shot {name} -> {f}  depth {dep}', flush=True)
             await b.close()

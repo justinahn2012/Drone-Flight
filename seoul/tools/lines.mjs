@@ -150,6 +150,9 @@ function run({ path, name, caption, value, s0, s1, y0, y1, w, cuts = null, segVa
     if (f.queue) { const q = queueNear(path, S(f.s), f.queueR ?? 14); const mv = q && queueMove(q, f.name);
       if (mv) { addQueue(f.name, cap, f.pts || 750, mv, { feature: f.what, on: name }); continue; }
       report.push(`  (${f.name}: no club queue near ${S(f.s).toFixed(0)} m with open air over it: ${f.queueOnly ? 'no micro' : 'across the street'})`); if (f.queueOnly) continue; }
+    // [P7-F] f.pinch [sA, sB]: the gate at the narrowest station between (across() centres it between the walls / blades)
+    if (f.pinch) { let best = null; for (let sv = f.pinch[0]; sv <= f.pinch[1]; sv += 1) { const T = across(path, S(sv), f.w ?? w, f.y0 ?? y0, f.y1 ?? y1); if (!best || T.w < best.w) best = T; }
+      f.gate = best; report.push(`  (${f.name}: narrowest at [${best.c.map((v) => v.toFixed(1))}], ${best.w.toFixed(2)} m between the walls / blades less 0.5 m each)`); }
     const Gf = f.gate || gateAt(f.s, f.y0 ?? y0, f.y1 ?? y1, f.w ?? w);
     add(f.name, cap, f.pts || 500, Gf, { two: true, micro: true, feature: f.what, on: name, ...(f.heads ? { heads: true } : {}) });
   }
@@ -276,6 +279,10 @@ run({ path: club.points, name: 'BAR ALLEY', caption: 'THE BAR *ALLEY*!', value: 
     { name: 'DOOR QUEUE', caption: 'DOOR *QUEUE*!', s: 121, queue: true, ...HEADS, what: 'the club queue at 120 m (karaoke, blades both sides)' },
     { name: 'CLUB DOORS', s: 173, ...HEADS, pts: 750, what: 'club door at 173 m, head height under the awnings' },
     { name: 'POCHA ROW', s: 188, ...HEADS, pts: 750, what: 'pocha at 187 m, head height' },
+    // [P7-F design #2] the alley pinches between 2/4 and 3/4 (a blade off the north wall at x 30, 3.16 m up, leaves 2.85 m
+    // clear at the flight band; 2/4's gate is 5.2 m wide): a sharp pilot's line from 2/4 ran 0.1 m past the blade and scraped
+    // in 3 of 8 hongik takes. A micro at the narrowest station, centred in the clear width, shows the line through it.
+    { name: 'THE PINCH', caption: 'THE *PINCH*!', pinch: [100, 140], pts: 750, what: 'the alley pinches under a blade, 2.85 m clear' },
   ] });
 // 2b. CLUB STREET: Wausan-ro 19-gil, "클럽거리" proper (hero line 5), 2.0-4.0 m
 { const c19 = longest('와우산로19길'); const L19 = len(c19.points);
@@ -406,7 +413,9 @@ const h3 = layout.streets.filter((s) => s.ko === '홍익로3길').map((s) => ({ 
 for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
   for (const { s, e } of name === 'CABLE LATTICE' ? h3.concat(alleys) : alleys) {
     if (usedAl.some((u) => u.id === s.id || u.ko === s.ko && s.ko)) continue;
-    const L = Math.min(len(s.points), 90), A = across(s.points, 6, s.width - 0.6, 2.0, 3.8), B = across(s.points, L - 6, s.width - 0.6, 2.0, 3.8);
+    // [P7-F] CABLE LATTICE's south gate 12 m short of the 90 m (was 6): at 84 m it sat past the opening the long route leaves by
+    // for TO THE FORK, so every pilot flew through it and doubled back round the corner (8 of 8 long/sharp takes scraped there)
+    const L = Math.min(len(s.points), 90), A = across(s.points, 6, s.width - 0.6, 2.0, 3.8), B = across(s.points, L - (name === 'CABLE LATTICE' ? 12 : 6), s.width - 0.6, 2.0, 3.8);
     if (!clearOf({ ...A, w: A.w * 0.6 }).ok || !clearOf({ ...B, w: B.w * 0.6 }).ok) continue;
     usedAl.push(s);
     add(name, name.replace(/ (\w+)$/, ' *$1*!'), 1500, B, { pre: [A], within: within(dist3(A, B)), par: par(dist3(A, B)) });
@@ -564,7 +573,30 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
   };
   { const S = lines.find((x) => x.name === 'SIGN STACK'), R = lines.find((x) => x.name === 'ROOFLINE' && x.pre);
     const ends = R ? [R.pre[0], R] : [], to = S && ends.sort((a, b) => dist3(a, S) - dist3(b, S))[0];
-    hop('TO THE ROOFLINE', S, to); }
+    hop('TO THE ROOFLINE', S, to);
+    // [P7-F design #1] TO THE ROOFLINE 2, square to the street: TO THE ROOFLINE 1 leads in heading west, ~60 deg off the
+    // ROOFLINE run (n ~ [-0.3, 0, 1]); in 3 of 8 long/sharp sims the pilot cut the corner, crossed the 2.9 m start gate 2.0 m
+    // off centre and joined at 3/4, so the 22-37k street never paid. A second connector on the run's own axis 6-12 m behind
+    // its start gate (the far side of E's ROOF SLOT: a pilot lines up through the slot), facing n, else off the axis toward the
+    // way in; and that start gate 2.9 -> 4.5 m wide (ROOFLINE's and ROOFLINE 4/4's, not the slot's own gate).
+    const T1 = lines.find((x) => x.name === 'TO THE ROOFLINE 1'), R1 = lines.filter((x) => x.name === 'ROOFLINE' && x.pre)[1];
+    if (T1 && R1) {
+      const P = R1.pre[0], n = norm3(P.n), u0 = [n[2], 0, -n[0]], side = Math.sign((T1.c[0] - P.c[0]) * u0[0] + (T1.c[2] - P.c[2]) * u0[2]) || 1, u = u0.map((v) => v * side);
+      let best = null;
+      for (const d of [8, 9, 10, 7, 11, 12, 6]) for (const o of [0, 0.5, -0.5, 1, 1.5, 2, 3, 4]) {
+        const G = g([P.c[0] - n[0] * d + u[0] * o, P.c[1], P.c[2] - n[2] * d + u[2] * o], n, 3.0, 2.0, u);
+        const sc = Math.abs(o) * 2 + Math.abs(d - 8); if (best && sc >= best.sc) continue;
+        if (!clearOf(G).ok || openPath(G, P) !== true || openPath(T1, G) !== true) continue;
+        best = { G, sc, d, o };
+      }
+      if (best) { add('TO THE ROOFLINE 2', 'TO THE *ROOFLINE*', 500, best.G, { two: true, micro: true, connector: true });
+        report.push(`  (TO THE ROOFLINE 2: [${best.G.c.map((v) => v.toFixed(1))}], ${best.d} m behind ROOFLINE's start gate, ${best.o} m toward the way in, facing its n)`); }
+      else report.push('  (TO THE ROOFLINE 2: no clear gate behind ROOFLINE\'s start)');
+      const key = P.c.join();
+      for (const l of lines) if ((l.name === 'ROOFLINE' || l.name.startsWith('ROOFLINE ')) && l.pre) l.pre = l.pre.map((q) => { if (q.c.join() !== key) return q;
+        let W = null; for (const w of [4.5, 4.2, 3.9, 3.6, 3.3]) if (clearOf({ ...q, w }).ok) { W = w; break; }
+        if (!W) return q; report.push(`  (${l.name}: start gate ${q.w.toFixed(1)} -> ${W.toFixed(1)} m wide)`); return { ...q, w: r3(W) }; });
+    } else report.push('  (TO THE ROOFLINE 2: no TO THE ROOFLINE 1 or ROOFLINE)'); }
   // ---- [P4-E design #5] the last transit holes (panel 3: THE FORK -> SIGN STACK 21.5 / 26.4 s on the careful long route; the
   // sims also show BAR ALLEY -> CABLE LATTICE at 15.4-16.2 s and CABLE LATTICE -> THE FORK up to 15.6 s). Gate: no caption gap
   // over 15 s. connectN: n connector micros evenly along the street path (as connect(), but a set count, returned for a via).
@@ -616,7 +648,16 @@ const SET_LINES = {
   // dropped under the 2.0 m pre-gate, and a P-only climb lagged the 28 deg dive onto the mouth's lip: 0/12 with no walkers at
   // all). With take-sim's pilot fixed it flies 23/24 on a scratch merge with G1's stair-mouth keep-out (and 23/24 without it,
   // with more HEADS), so it is open. tests/take.mjs: a blocked line must be < 10/12 in the record, an open one >= 10/12.
-  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true, preY: [2.0, 2.7] },
+  // [P7-F design #3 / ux #2] tried: the pre-gate 0.7 -> 1.2 m tall, centred at 2.2 m (1.6-2.8), as the panel asked. It did not
+  // help phase 5's pilot (stairs-nodive 0/12 regular either way) and its lower 0.4 m is head height: tests/movers.mjs measured
+  // the approach 37 % occupied (auto) / 14 % (low) against <= 5 %, and the no-dive sims took 9 HEADS in 12. Above, the canopy
+  // lip is at 2.76 m, so 2.0-2.7 m is the only clear band: kept.
+  // Measured (8-12 runs, the game crowd, at 1.6-2.8 m): with the dive model 24/24; WITHOUT it 0/12 careful, 0/12 regular,
+  // 1/12 sharp. That pilot starts down off its 3.5 m look-ahead, crosses the pre-gate plane at 1.3-1.5 m (under it, into the
+  // heads: 9 HEADS in 12) and meets the stair mouth's lip at (49.3, 0.1, -307.5). So it is `blocked` again (ux #2: don't guide players to
+  // a dive only a tuned bot flies): it still scores, but the guide, the brackets and the grid's NEXT skip it until
+  // stairs-nodive regular reaches 8/12 (tests/take.mjs).
+  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true, preY: [2.0, 2.7], blocked: true },
   // [P6-F design #2 / ux #3] recut: E's 2.2 x 0.93 m openings (1.95-2.88 m) sit 0.1 m outside the 3.3-3.4 m canopy at each end;
   // the sharp sims left the exit 0.03-0.09 m over its top in 3 of 8 runs and flew the street at FLOW x1. Both openings grow
   // to the highest top that keeps CLEAR under the canopy's underside between them (a ray up every 0.5 m across the move; a top
@@ -665,7 +706,7 @@ function pieceMoves(sp) {   // -> [{pre: rect | null, gate: rect}]
         add(L.name, L.caption, L.pts, m.gate, { pre: [m.pre], within: w, piece: sp.id, ...bl });
         if (!L.oneWay) add(L.name, L.caption, L.pts, neg(m.pre), { pre: [neg(m.gate)], within: w, piece: sp.id, ...bl });
       } else add(L.name, L.caption, L.pts, m.gate, { ...(L.oneWay ? {} : { two: true }), piece: sp.id, ...(L.blocked ? { blocked: true } : {}) });
-      if (L.blocked) report.push(`  (${L.name}: BLOCKED: the guide, brackets and grid skip it until G1 clears the stair mouth)`);
+      if (L.blocked) report.push(`  (${L.name}: BLOCKED: the guide, brackets and grid skip it until a pilot without the dive model flies it, take-sim stairs-nodive)`);
     }
     made.push(`${sp.id} (${mv.length})`);
   }
@@ -814,7 +855,10 @@ for (const sp of startPoints) {
 // (the A* keeps over the heads, the opening's grace), regular p50 347k: 275k would leave careful's best runs 1 % short of 3
 // stars, so the cut stays at 290k (careful 0.94 x, regular 1.20 x). design #2: clipGrace 0.6 m / clipT 20 s (the opening's
 // CLIPPED grace); ux #3: hintVertReady 6 m
-const tuning = { stars: [20000, 100000, 290000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [60, 180, 1.5], microFlow: 0, timed: true, bankBonus: true, fastBonus: 1.0, slowPar: 1.6, fastPar: 1.15,
+// [P7-F] design #1-#3: ROOFLINE now joins at its start for every pilot (TO THE ROOFLINE 2) and the bar alley's pinch pays: careful
+// long went 256k -> 291k p50 and 3 of 8 careful runs reached 290k (best 311.5k). 3 stars at 340k: careful p75 311.5k = 0.92 x,
+// every careful run under it; regular p50 394k = 1.16 x.
+const tuning = { stars: [20000, 100000, 340000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [60, 180, 1.5], microFlow: 0, timed: true, bankBonus: true, fastBonus: 1.0, slowPar: 1.6, fastPar: 1.15,
   clipGrace: 0.6, clipT: 20, hintVertReady: 6 };
 // a copy on the first named non-set-piece line for world loaders that pass lines[] only (take.js reads either)
 const firstLine = lines.find((l) => !l.piece && !l.micro && l.pre); if (firstLine) firstLine.tuning = tuning;

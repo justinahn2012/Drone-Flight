@@ -1,6 +1,10 @@
 // seoul/tools/take-sim.mjs — noisy-pilot takes through the Hongdae lines, scored by take.js with the level's tuning
 // (stream F1, design #1: "stars from noisy-pilot sims"). Node only, ~1-3 min:
-//   node seoul/tools/take-sim.mjs [--runs N] [--route short|loop|long|...|all, or a,b,c] [--json out.json] [--no-movers] [--record]
+//   node seoul/tools/take-sim.mjs [--runs N] [--route short|loop|long|...|all, or a,b,c] [--json out.json] [--no-movers] [--no-dive] [--record [--merge]]
+// [P7-F] --record alone runs the record's set (REC_ROUTES: every set-piece line, stairs-nodive at 12 runs); --merge adds the
+// given routes to a record of the same lines.json; a NO PATH route is logged as DROPPED and kept in the record's `dropped`
+// (tests/take.mjs fails on it); --no-dive (and route stairs-nodive) flies without phase 6's dive model; a 'from' start in a
+// dead end steps in toward the gate (stage1). The long route flies TO THE ROOFLINE 2.
 //   env: PILOT=careful,regular  TL=1 (per-run timelines)  NOPIECES=1 (no set pieces)  NOWALKERS=1
 // [P3-F1] set-piece routes ('from' starts a route 14 m before a line's first gate), walkers, per-run timelines.
 // [P4-F1] the game's crowd (LIFE.maxAgents; env LIFE_Q=low: the low preset's half, design #2); the A* reaches 4 m below the
@@ -26,7 +30,11 @@ import { lifeAgents } from './gateprobe.mjs';
 
 const ROOT = new URL('../', import.meta.url);
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
-const RUNS = +arg('--runs', 6), ROUTE = arg('--route', 'all'), OUT = arg('--json', null), MOVERS = !process.argv.includes('--no-movers');
+const RUNS = +arg('--runs', 6), OUT = arg('--json', null), MOVERS = !process.argv.includes('--no-movers'), NODIVE = process.argv.includes('--no-dive');
+// [P7-F design #6] the record's route set (every set-piece line, the stair dive also without the dive model): --record with no
+// --route runs it
+const REC_ROUTES = 'short,walk,loop,long,hongik,hub,stairs,stairs-nodive,pop,pass,stage0,stage1,thread0,thread1,shelter0,shelter2,slot0,gap';
+const ROUTE = arg('--route', process.argv.includes('--record') ? REC_ROUTES : 'all');
 const layout = JSON.parse(fs.readFileSync(new URL('layout.json', ROOT), 'utf8'));
 const lineData = JSON.parse(fs.readFileSync(new URL('lines.json', ROOT), 'utf8'));
 const geo = buildSeoulGeometry(layout, { lineData });
@@ -115,6 +123,9 @@ const ROUTES = {
   // [P5-F design #5] from the junction straight onto Hongik-ro (its first segment: 30 m)
   hongik: [['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['line', 'INTO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0]],
   stairs: [['from', 'STATION STAIRS', 0, 14], ['line', 'STATION STAIRS', 0]],
+  // [P7-F design #3] the stair dive flown by phase 5's pilot (no dive model: no slope feed-forward, no dive braking), as a
+  // thumb would: tests/take.mjs wants regular >= 8 of 12 (NODIVE_RUNS runs)
+  'stairs-nodive': [['from', 'STATION STAIRS', 0, 14], ['line', 'STATION STAIRS', 0]],
   stage0: [['from', 'UNDER THE STAGE', 0, 14], ['line', 'UNDER THE STAGE', 0]],
   stage1: [['from', 'UNDER THE STAGE', 1, 14], ['line', 'UNDER THE STAGE', 1]],
   thread0: [['from', 'CABLE THREAD', 0, 14], ['line', 'CABLE THREAD', 0]],
@@ -135,7 +146,8 @@ const ROUTES = {
   sig: [...OPEN, ...WALK, ...BACK, ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
   // [P4-E design #5] through the new connectors (TO THE CABLE LATTICE / TO THE FORK / TO THE SIGN STACK n), as the hint's via leads
   long: [...OPEN, ...WALK, ...BACK, ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['line', 'INTO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0], ['line', 'TO THE CABLE LATTICE 1', 0], ['street', 'CABLE LATTICE', 0],
-    ['line', 'TO THE FORK 1', 0], ['line', 'TO THE SIGN STACK 1', 0], ['line', 'TO THE SIGN STACK 2', 0], ['line', 'SIGN STACK', 0], ['line', 'TO THE ROOFLINE 1', 0], ['street', 'ROOFLINE', 1]],
+    ['line', 'TO THE FORK 1', 0], ['line', 'TO THE SIGN STACK 1', 0], ['line', 'TO THE SIGN STACK 2', 0], ['line', 'SIGN STACK', 0], ['line', 'TO THE ROOFLINE 1', 0],
+    ...(entries('TO THE ROOFLINE 2').length ? [['line', 'TO THE ROOFLINE 2', 0]] : []), ['street', 'ROOFLINE', 1]],   // [P7-F design #1] + TO THE ROOFLINE 2, square to the street
   // [P5-F design #6] the air portals: up through PLAYGROUND POP (horizontal: a climb from 4 m under it, 2 m to the side), along
   // the screen face through SCREEN PASS
   pop: [['from', 'PLAYGROUND POP', 0, 2], ['line', 'PLAYGROUND POP', 0]],
@@ -153,12 +165,19 @@ const PILOTS = {
   sharp:   { v: 10.0, noise: 0.12, spread: 0.35, look: 4.5 },
 };
 
-function buildPath(route, rng, spread) {
+const NODIVE_ROUTES = new Set(['stairs-nodive']), NODIVE_RUNS = 12;
+function buildPath(route, rng, spread, noDive = NODIVE) {
   const ts = world.takeStart; let path = [ts.pos.clone()];
   if (route[0][0] === 'from') { const [, nm, kk, back] = route[0]; const g = lineGates(nm, kk)[0];
     // [P5-F] a horizontal gate (PLAYGROUND POP, n up): start `back` m to the side of it (along u), 4 m under it, at >= 2.2 m
     const horiz = Math.abs(g.n[1]) > 0.9, n = horiz ? V(g.u || [1, 0, 0]).setY(0).normalize() : V(g.n).setY(0).normalize();
-    const p0 = V(g.c).addScaledVector(n, -back); if (horiz) p0.y = Math.max(2.2, g.c[1] - 4 * Math.sign(g.n[1])); if (p0.y < 2) p0.y = Math.max(2.2, g.c[1]); path = [p0]; route = route.slice(1); }
+    const at = (bk) => { const q = V(g.c).addScaledVector(n, -bk); if (horiz) q.y = Math.max(2.2, g.c[1] - 4 * Math.sign(g.n[1])); if (q.y < 2) q.y = Math.max(2.2, g.c[1]); return q; };
+    // [P7-F design #6] a start the A* can leave: phase 6's stage1 started 14 m back from the outer pre-gate, in a shop's open
+    // front (walls on 3 sides), every leg failed and the route was dropped (NO PATH). Step in 2 m at a time until the gate's
+    // approach is reachable (straight, else the A*).
+    let p0 = at(back);
+    for (let bk = back; bk >= 4; bk -= 2) { const q = at(bk), a = along(g, -2.5); if (clr(q, RC) < RC) continue; if (losClear(q, a) || astar3(q, a)) { if (bk !== back) console.log(`start ${nm} ${kk}: ${bk} m back, not ${back} (no way out from ${back} m)`); p0 = q; break; } }
+    path = [p0]; route = route.slice(1); }
   for (const [kind, name, k] of route) {
     const gates = kind === 'street' ? streetGates(name, k) : lineGates(name, k);
     if (!gates) { console.log('no line', name, '(skipped)'); continue; }
@@ -188,7 +207,7 @@ function buildPath(route, rng, spread) {
       // [P6-F] the segments of a straight dive (down: the stair dive), its approach included: flown with the dive model in fly()
       // (a climb, SIGN STACK, keeps phase 5's pilot)
       if (gi === 0) path.down = down;
-      if ((carry && down) || (straight && path.down)) for (let k2 = k0; k2 < path.length - 1; k2++) (path.dive ||= new Set()).add(k2);
+      if (!noDive && ((carry && down) || (straight && path.down))) for (let k2 = k0; k2 < path.length - 1; k2++) (path.dive ||= new Set()).add(k2);
     }
   }
   return path;
@@ -259,12 +278,14 @@ function fly(path, P, rng) {
 }
 
 const q = (a, f) => { const s = a.slice().sort((x, y) => x - y); return s.length ? s[Math.min(s.length - 1, Math.floor(f * s.length))] : null; };
-const results = {};
+const results = {}, dropped = [];
 const routes = ROUTE === 'all' ? Object.keys(ROUTES) : ROUTE.split(',');
 const T0 = performance.now();
 for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS).filter(([k]) => !process.env.PILOT || process.env.PILOT.split(',').includes(k))) {
-  const R = []; const rng = new Rng(1000 + rn.length * 31 + pn.length * 7);
-  for (let i = 0; i < RUNS; i++) { const path = buildPath(ROUTES[rn], rng, P.spread); if (!path || path.length < 2) { if (!R.length) console.log(`NO PATH ${rn} ${pn}: every leg skipped (no clear approach), route left out`); break; } if (process.env.TRACE) console.log('PATH', path.map((v) => v.toArray().map((x) => x.toFixed(2)).join(',')).join(' | ')); R.push(fly(path, P, rng)); }
+  if (occ.size > 1.5e6) occ.clear();   // [P7-F] the voxel cache grew past 1.5 GB over the record's 18 routes (OOM-killed at hub)
+  const R = []; const rng = new Rng(1000 + rn.length * 31 + pn.length * 7), nd = NODIVE || NODIVE_ROUTES.has(rn), runs = NODIVE_ROUTES.has(rn) ? Math.max(RUNS, NODIVE_RUNS) : RUNS;
+  // [P7-F design #6] a dropped route is logged and recorded (phase 6: stage1 printed NO PATH and quietly left the record)
+  for (let i = 0; i < runs; i++) { const path = buildPath(ROUTES[rn], rng, P.spread, nd); if (!path || path.length < 2) { console.log(`NO PATH ${rn} ${pn}: every leg skipped (no clear approach), route DROPPED after ${R.length} of ${runs} runs`); dropped.push(`${rn}/${pn}`); break; } if (process.env.TRACE) console.log('PATH', path.map((v) => v.toArray().map((x) => x.toFixed(2)).join(',')).join(' | ')); R.push(fly(path, P, rng)); }
   const tot = R.map((r) => r.total);
   results[`${rn}/${pn}`] = { runs: R.length, p25: q(tot, 0.25), p50: q(tot, 0.5), p75: q(tot, 0.75), crash: R.filter((r) => r.crashed).length, by: R.map((r) => r.by).filter(Boolean),
     stars: R.map((r) => r.stars), lines: q(R.map((r) => r.lines), 0.5), micros: q(R.map((r) => r.micros), 0.5), banks: q(R.map((r) => r.banks), 0.5), scrapes: q(R.map((r) => r.scrapes), 0.5),
@@ -275,14 +296,21 @@ for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS).filter(([k
   console.log(`${rn.padEnd(5)} ${pn.padEnd(8)} ${JSON.stringify(results[`${rn}/${pn}`])}`); if (process.env.TL) for (const r of R) console.log('   ', r.total, r.stars, r.crashed?'CRASH '+r.by:'', '|', r.tl.join(' ; '));
 }
 console.log(`stars ${JSON.stringify(tuning.stars)} | ${((performance.now() - T0) / 1000).toFixed(0)} s`);
-if (OUT) fs.writeFileSync(OUT, JSON.stringify({ tuning, results }, null, 1));
+if (dropped.length) console.log(`DROPPED ${dropped.length} route x pilot: ${dropped.join(', ')}`);
+if (OUT) fs.writeFileSync(OUT, JSON.stringify({ tuning, results, dropped }, null, 1));
 // [P5-F design #3] --record: tests/seoul/take-sim.json, the star fit's evidence (tests/take.mjs: careful long <= 2 stars, regular
 // long 3, against lines.json's stars; stale when lines.json's lines or tuning change)
 if (process.argv.includes('--record')) {
   const { createHash } = await import('node:crypto');
   const h = createHash('sha256').update(JSON.stringify({ lines: lineData.lines, tuning: lineData.tuning, takeStart: lineData.takeStart })).digest('hex').slice(0, 16);
   const keep = ['runs', 'p25', 'p50', 'p75', 'crash', 'by', 'heads', 'stars', 'lines', 'gapMax', 'x2', 'wsPts', 'fast', 'flown'];
-  const rec = { note: `seoul/tools/take-sim.mjs --record: noisy-pilot takes at the game crowd, ${RUNS} runs per pilot x route`, lines: h, stars: lineData.tuning.stars, runs: RUNS,
-    results: Object.fromEntries(Object.entries(results).map(([k, v]) => [k, Object.fromEntries(keep.map((f) => [f, v[f]]))])) };
+  // [P7-F] --merge: add these routes to an existing record of the same lines.json (the record in several processes: one node
+  // running all 18 routes was OOM-killed on the 8 GB box)
+  const prev = process.argv.includes('--merge') ? (() => { try { const P = JSON.parse(fs.readFileSync(new URL('../../tests/seoul/take-sim.json', import.meta.url), 'utf8')); return P.lines === h && P.runs === RUNS ? P : null; } catch (e) { return null; } })() : null;
+  if (process.argv.includes('--merge')) console.log(prev ? `merging into the record (${Object.keys(prev.results).length} pilot x route)` : 'no record of these lines to merge into: a new one');
+  const rec = { note: `seoul/tools/take-sim.mjs --record: noisy-pilot takes at the game crowd, ${RUNS} runs per pilot x route (${[...NODIVE_ROUTES].join(', ')}: ${Math.max(RUNS, NODIVE_RUNS)})`, lines: h, stars: lineData.tuning.stars, runs: RUNS,
+    routes: routes, dropped,
+    results: { ...(prev?.results || {}), ...Object.fromEntries(Object.entries(results).map(([k, v]) => [k, Object.fromEntries(keep.map((f) => [f, v[f]]))])) } };
+  if (prev) { rec.routes = [...new Set([...(prev.routes || []), ...routes])]; rec.dropped = [...(prev.dropped || []).filter((k) => !routes.includes(k.split('/')[0])), ...dropped]; }
   fs.writeFileSync(new URL('../../tests/seoul/take-sim.json', import.meta.url), JSON.stringify(rec, null, 1) + '\n'); console.log('recorded tests/seoul/take-sim.json');
 }

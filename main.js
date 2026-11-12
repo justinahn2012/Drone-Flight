@@ -1679,7 +1679,9 @@ function placeAt(p) {
 // ---------------- [F2] ui #2: the luma-gated caption plate. One async readback of the picture under the caption per caption
 // (WebGL2 PBO + fence: no pipeline stall), read a frame or two later. Gate: the box's 80th-percentile luma > 0.6, i.e. a
 // fifth of it is lit sign / window (club90 had 39 % over 0.85, station2 23 %). Clips meter their own frame (drawCaption).
-const CAP_GATE = 0.6;
+// [P7-F ui #1] 0.35 (was 0.6): the panel's gate for a caption over the world (hudsnap: luma p80 under #pop <= 0.35, else plated).
+// At 0.6 a caption over a blade-lit street (p80 0.4-0.6) had no plate and its white type sat on lit signs.
+const CAP_GATE = 0.35;
 const capM = { want: 0, pbo: null, cap: 0, sync: null, n: 0, buf: null, luma: -1, plate: false };
 function lumaP80(px, n, stride = 4 * 2) {
   const h = new Uint32Array(64); let c = 0;
@@ -1798,17 +1800,29 @@ function headsStamp(e) {
 // [P6-F ux #6] a tick on HEADS!, SCRAPE and a crash: navigator.vibrate on Android; iOS Safari has none, but since iOS 18 toggling an
 // <input type=checkbox switch> plays the system's Taptic tick (through its label, from the touch that is flying the quad, so
 // it carries the page's user activation). Best effort: a browser without either does nothing. Native: UIImpactFeedbackGenerator.
-let hapEl = null, hapT = 0;
-function haptic(ms = 20) {
-  try { navigator.vibrate?.(ms); } catch (er) {}
-  if (!IOS) return;
-  const now = performance.now(); if (now - hapT < 120) return; hapT = now;
+// [P7-F ux #3] iOS plays the switch's tick only inside a user gesture, and haptic() runs from take events in the frame loop: a
+// held stick sends touchmove only, which is not one, so phase 6's mid-flight ticks were silent. Now the tick waits for the
+// next touchend / pointerdown / pointerup (an activation event) and plays from that handler, up to HAP_LATE ms late, else is
+// dropped (a late tick would mislead); with the page's activation still live (navigator.userActivation) it plays at once.
+// A thumb held through the whole event gets nothing: that tick is native-only (UIImpactFeedbackGenerator).
+const HAP_LATE = 300;
+let hapEl = null, hapT = 0, hapQ = 0;
+function hapTick(now) {
+  hapT = now; hapQ = 0;
   try {
     if (!hapEl) { const l = document.createElement('label'), i = document.createElement('input'); i.type = 'checkbox'; i.setAttribute('switch', ''); l.appendChild(i);
       l.setAttribute('aria-hidden', 'true'); l.style.cssText = 'position:fixed;left:-99px;top:0;width:1px;height:1px;opacity:0;pointer-events:none'; document.body.appendChild(l); hapEl = l; }
     hapEl.click();
   } catch (er) {}
 }
+function haptic(ms = 20) {
+  try { navigator.vibrate?.(ms); } catch (er) {}
+  if (!IOS) return;
+  const now = performance.now(); if (now - hapT < 120) return;
+  if (navigator.userActivation?.isActive) hapTick(now); else hapQ = now;
+}
+const hapFlush = () => { if (!hapQ) return; const now = performance.now(); if (now - hapQ <= HAP_LATE) hapTick(now); else hapQ = 0; };
+if (IOS) for (const ev of ['touchend', 'pointerdown', 'pointerup']) document.addEventListener(ev, hapFlush, { passive: true, capture: true });
 // [F2] P3 ui #3: what a crash hit (take.js crash.by, flight.js crashBy: the world.movers body's type)
 const BY = { bus: 'A BUS', taxi: 'A TAXI', car: 'A CAR', truck: 'A TRUCK', van: 'A VAN', scooter: 'A SCOOTER', moped: 'A SCOOTER', motorbike: 'A MOTORBIKE', bike: 'A BIKE', bicycle: 'A BIKE', pedestrian: 'SOMEONE', person: 'SOMEONE', vehicle: 'TRAFFIC' };
 const byText = (b) => { const k = String(b || '').trim().toLowerCase(); if (!k) return ''; const u = k.toUpperCase().replace(/[^A-Z0-9 -]/g, ''); return 'HIT ' + (BY[k] || `${/^[AEIOU]/.test(u) ? 'AN' : 'A'} ${u}`); };
