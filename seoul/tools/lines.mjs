@@ -171,7 +171,7 @@ const HEAD_Y = [1.95, 2.6];
 const HEADS = { y0: HEAD_Y[0], y1: HEAD_Y[1], heads: true };
 // [P4-F1 design #2] the game's crowd (gateprobe.mjs lifeAgents: LIFE.maxAgents, 15,500 at quality auto, half at low;
 // phase 3 tuned at 2,400, a fifth of the people)
-const lifeSim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('auto'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null });   // [integ8] the game's traffic: G1's bus lane round the shelter island
+const lifeSim = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('auto'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null, puddles: geo.dressingOut?.puddles || null });   // [integ8] the game's traffic: G1's bus lane round the shelter island
 const queues = lifeSim.crowd?.queues || [];
 const usedQ = new Set();
 // the queue whose door projects onto `path` within r m of arc length s and within the street (+4 m)
@@ -765,7 +765,7 @@ const R_PROBE = 0.35, NU = 9;
 // and length from the crowd's shared random stream after the walkers, whose number follows maxAgents. The queue moves here
 // are placed on the game's (auto) crowd; this reports how far each one's queue moves at low (contract for G1: draw the
 // queues from their own seed, q.seed, so every preset stands them in the same place).
-{ const low = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('low'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null });
+{ const low = new LifeSim(layout, { seed: 11, density: 1, maxAgents: lifeAgents('low'), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null, puddles: geo.dressingOut?.puddles || null });
   const byLot = new Map((low.crowd?.queues || []).map((q) => [q.lot, q]));
   const mine = (lifeSim.crowd?.queues || []).filter((q) => usedQ.has(q.id));
   report.push(`  (queues at the low preset (${lifeAgents('low')} people): ${mine.map((q) => { const o = byLot.get(q.lot); return o ? `${q.lot} door ${Math.hypot(o.door[0] - q.door[0], o.door[1] - q.door[1]).toFixed(1)} m off, ${o.Q} not ${q.Q} people` : `${q.lot} gone`; }).join('; ') || 'none used'})`); }

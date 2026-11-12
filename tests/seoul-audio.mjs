@@ -41,7 +41,7 @@ const SR = 48000, FPS = 30;
 const LIFE = await (async () => {
   if (!/seoul[\\/]layout\.json$/.test(file) || !existsSync('seoul/lines.json')) return { seed: 7 };
   const { buildSeoulGeometry } = await import('../world-seoul.js'), geo = buildSeoulGeometry(layout, { lineData: JSON.parse(readFileSync('seoul/lines.json', 'utf8')) });
-  return { seed: 11, setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null };
+  return { seed: 11, setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null, puddles: geo.dressingOut?.puddles || null };
 })();
 console.log(`the city: seed ${LIFE.seed}${LIFE.setPieces ? `, ${LIFE.setPieces.length} set pieces, ${LIFE.holes?.length ?? 0} stairwell openings (as the game builds it)` : ''}`);
 let fail = 0; const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fail++; };

@@ -32,7 +32,7 @@ let pass = 0, fail = 0; const ok = (c, m) => { if (c) pass++; else fail++; conso
 const layout = J('layout.json');
 const t0 = performance.now();
 const geo = buildSeoulGeometry(layout, { lineData: J('lines.json') });
-const lifeOpts = (q) => ({ seed: 11, density: 1, maxAgents: lifeAgents(q), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null });   // (P5: + E's stairwell openings)   // [integ8] as world-seoul builds it (ctx.seed 11)
+const lifeOpts = (q) => ({ seed: 11, density: 1, maxAgents: lifeAgents(q), setPieces: geo.setPieces || [], obstacles: geo.dressingOut?.obstacles || null, holes: geo.dressingOut?.holes || null, puddles: geo.dressingOut?.puddles || null });   // (P5: + E's stairwell openings)   // [integ8] as world-seoul builds it (ctx.seed 11)
 const sim = new LifeSim(layout, lifeOpts('auto'));
 const life = { sim, colliders: { at: (t, o) => sim.boxesAt(t, o), hit: (p, r, t) => sim.hit(p, r, t) } };
 const M = lifeMovers(life);
