@@ -1009,13 +1009,18 @@ export function offRoad(mains, x, z, margin = 0.5, skip = null) {
 }
 
 export class CrowdSim {
-  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null, holes = null } = {}) {
+  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null, holes = null, puddles = null } = {}) {
     this.net = net; this.layout = layout; this.seed = seed >>> 0; this.density = density; this.maxAgents = maxAgents;
     // (P5) E's ground openings (stairwells, [[x, z], ...] polygons): nobody stands in one (P4 put 4-5 of exit 9's waiting
     // ring inside the stair dive)
     this.holes = (holes || []).filter((h) => Array.isArray(h) && h.length >= 3);
     // E's dressing discs [[x, z, r]] (life #6: carts, tents, stalls, parked scooters): walkers sidestep them, nobody stands in one
     this.dress = (obstacles || []).filter((o) => o && o[2] > 0 && o[2] < 1.7);
+    // (P8, life: keep people off E's puddles) E's standing water at the post bases ([x, z, tx, tz, a, b]: centre, long axis,
+    // half-axes; seoul-dressing `puddles`): walkers step round them (render side, like the dressing discs: a chain of discs
+    // along the long axis in each walkway's avoidance). Nobody is placed standing in one already (0 of all statics), and
+    // re-placing the statics round them dropped 21 % of the standing clusters near the cameras: left as placed
+    this.pud = (puddles || []).filter((q) => Array.isArray(q) && q.length >= 6 && q[4] > 0 && q[5] > 0);
     // walkways
     this.ways = [];
     for (const st of net.streets) {
@@ -1374,6 +1379,12 @@ export class CrowdSim {
     for (const q of this.queues) for (let j = 0; j < q.Q; j += 2) { const r = j / 2; addObst(q.door[0] + q.t[0] * (0.9 + 0.75 * r) + q.n[0] * 0.72, q.door[1] + q.t[1] * (0.9 + 0.75 * r) + q.n[1] * 0.72, 0.6); }
     for (const l of this.lots) for (const t of l._tables || []) if (!t.stool) addObst(t[0], t[1], 1.0);
     for (const o of this.dress) addObst(o[0], o[1], o[2]);
+    // the puddles near each standing person's spot and each queue's line (evalStatic keeps them out)
+    if (this.pud.length) { this.pudNear = new Array(this.people.length).fill(null);
+      for (const i of this.statics) { const p = this.people[i]; let ax, az, R;
+        if (p.kind === K_STAND) { ax = p.x; az = p.z; R = 1.5; } else if (p.kind === K_QUEUE) { const q = this.queues[p.q]; ax = q.door[0]; az = q.door[1]; R = 6 + 0.4 * q.Q; } else continue;
+        const L = this.pud.filter((u) => Math.hypot(u[0] - ax, u[1] - az) < R + u[4] + 0.5); if (L.length) this.pudNear[i] = L; } }
+    for (const [x, z, tx, tz, a, b] of this.pud) { const n = Math.max(1, Math.ceil((a - b) / (0.6 * b)) + 1); for (let k = 0; k < n; k++) { const u = n > 1 ? -(a - b) + (2 * (a - b) * k) / (n - 1) : 0; addObst(x + tx * u, z + tz * u, b * 1.05); } }
     for (const w of this.ways) w.obst.sort((p, q) => p[0] - q[0]);
   }
   inHole(x, z, pad = 0.45) {
@@ -1382,6 +1393,7 @@ export class CrowdSim {
     return false;
   }
   inDress(x, z, pad = 0) { for (const o of this.dress) { const dx = x - o[0], dz = z - o[1], r = o[2] + pad; if (dx * dx + dz * dz < r * r) return true; } return false; }
+  inPuddle(x, z, pad = 0) { for (const [px, pz, tx, tz, a, b] of this.pud) { const dx = x - px, dz = z - pz, u = (dx * tx + dz * tz) / (a + pad), v = (dz * tx - dx * tz) / (b + pad); if (u * u + v * v < 1) return true; } return false; }
   defaultBuskSites(layout) {
     const out = [], o = {};
     const walk = this.ways.filter((w) => w.kind === 'walking').sort((a, b) => b.area - a.area)[0];
@@ -1522,7 +1534,19 @@ export class CrowdSim {
     for (;;) { const nn = n + 1, Tn = nn * q.G + (hu(q.seed, nn, 1) - 0.5) * 0.6 * q.G; if (Tn > t) break; n = nn; TN = Tn; mN = 1 + Math.floor(hu(q.seed, nn, 2) * 2.6); A += mN; }
     o.A = A; o.N = n; o.TN = TN; o.mN = mN; return o;
   }
+  // (P8) a standing or queueing person whose spot falls in one of E's puddles is drawn (and collides) at its rim + 20 cm:
+  // P7 had 13 of 878 there (9 in club queues along a lamp post's puddle). Every caller (render, worker, colliders) goes
+  // through here, so they agree
   evalStatic(i, t, A, qs) {
+    this._evalStatic(i, t, A, qs);
+    const L = this.pudNear && this.pudNear[i]; if (!L || !A.VIS[i]) return;
+    for (const [px, pz, tx, tz, a, b] of L) {
+      const dx = A.X[i] - px, dz = A.Z[i] - pz, u = dx * tx + dz * tz, v = dz * tx - dx * tz, e = (u / (a + 0.2)) ** 2 + (v / (b + 0.2)) ** 2;
+      if (e >= 1) continue; const k = 1 / Math.sqrt(Math.max(e, 1e-4)), uu = e > 1e-4 ? u * k : 0, vv = e > 1e-4 ? v * k : b + 0.2;
+      A.X[i] = px + tx * uu - tz * vv; A.Z[i] = pz + tz * uu + tx * vv;
+    }
+  }
+  _evalStatic(i, t, A, qs) {
     const p = this.people[i];
     A.WAY[i] = -1; A.VIS[i] = 1; A.WALK[i] = 0; A.POSE[i] = p.pose; A.PH[i] = (t * 0.11 + p.ph0) % 1;
     if (p.kind === K_STAND) {
@@ -1764,13 +1788,13 @@ export const avatarWeights = (meta) => meta.avatars.map((av) => (/^Business/i.te
 
 export class LifeSim {
   // setPieces / obstacles: E's (world-seoul ctx); sites: explicit busking sites (override the set pieces')
-  constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles, holes } = {}) {
+  constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles, holes, puddles } = {}) {
     this.net = buildNetwork(layout);
     // E's median BUS SHELTER islands (design #2, P3): the traffic gives them room (see TrafficSim: shelter offsets)
     this.net.shelters = (setPieces || []).filter((p) => p && p.kind === 'shelter' && p.pos && p.dir && p.island);
     this.traffic = new TrafficSim(this.net, { seed });
     const bs = buskSitesFrom(setPieces);
-    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null), holes });
+    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null), holes, puddles });
     this.t = 0; this.snaps = new Map();
   }
   reset() { this.traffic.reset(); this.t = 0; }
@@ -2610,7 +2634,8 @@ export function build(layout, ctx = {}) {
   // E's set pieces and dressing discs (contract P3-G1/C: world-seoul passes ctx.setPieces = geo.setPieces and ctx.obstacles =
   // geo.dressingOut.obstacles; ctx.dressing (E's geometry output) is read too). Absent: the default rings, no discs.
   const setPieces = ctx.setPieces ?? ctx.dressing?.setPieces ?? null, obstacles = ctx.obstacles ?? ctx.dressing?.obstacles ?? null, holes = ctx.holes ?? ctx.dressing?.holes ?? null;
-  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles, holes });
+  const puddles = ctx.puddles ?? ctx.dressing?.puddles ?? null;   // (P8) E's standing water: nobody stands in it, walkers go round
+  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles, holes, puddles });
   const crowd = sim.crowd, traffic = sim.traffic;
   const group = new THREE.Group(); group.name = 'seoul-life';
   const nit = { value: ctx.nitScale ?? LIFE.nitScale };
@@ -2840,7 +2865,7 @@ export function build(layout, ctx = {}) {
     LW.state = 'starting';
     // [P5 H, perf #2] warmTo: the worker reaches the warm clock before 'ready' (it used to pay that 75 s of traffic on its
     // first frame: 2.65-22 s with no frame back); until then, and after a seek until a post-seek frame lands, inline
-    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
+    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), puddles: lwPlain(puddles), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
   }
   function lwFrame(tNow, cam) {   // -> the worker frame to draw at tNow, or null (inline)
     const w = LW.w; if (!w) return null;
@@ -3069,8 +3094,8 @@ export function build(layout, ctx = {}) {
 // Everything a native port needs to rebuild both sims bit-for-bit from the same layout: constants, vehicle classes,
 // signal timing, the lane graph (stops, successors, entries), walkways with their junction links, doors and portals,
 // the crowd's static set-up (people, units, queues, busk rings), and the seeds. Hashes let CI check parity.
-export function exportData(layout, { seed = 7, density = 1, maxAgents, setPieces, obstacles } = {}) {
-  const sim = new LifeSim(layout, { seed, density, maxAgents, setPieces, obstacles }), T = sim.traffic, C = sim.crowd, r3 = (v) => Math.round(v * 1000) / 1000;
+export function exportData(layout, { seed = 7, density = 1, maxAgents, setPieces, obstacles, puddles } = {}) {
+  const sim = new LifeSim(layout, { seed, density, maxAgents, setPieces, obstacles, puddles }), T = sim.traffic, C = sim.crowd, r3 = (v) => Math.round(v * 1000) / 1000;
   const laneId = (l) => l && l.id;
   sim.advanceTo(90); const h90 = sim.hash();
   return {

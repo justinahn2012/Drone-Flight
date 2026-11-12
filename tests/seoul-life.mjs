@@ -223,6 +223,22 @@ if (existsSync('seoul/people/people.json')) {
     const P = C.people, ns = P.length, cap = P.filter((q) => q.look.style === 5).length / ns, bea = P.filter((q) => q.look.style === 7).length / ns, bp = P.filter((q) => q.look.acc & 2).length / ns, tote = P.filter((q) => q.look.bag).length / ns, puf = P.filter((q) => q.look.coat === 2).length / ns;
     ok(has, `avatar accessories in every LOD (cap, beanie, backpack, tote; P7 none): caps ${(100 * cap).toFixed(0)} %, beanies ${(100 * bea).toFixed(0)} %, backpacks ${(100 * bp).toFixed(0)} %, totes ${(100 * tote).toFixed(0)} %, puffers ${(100 * puf).toFixed(0)} % of people`); }
 }
+// (P8, life: keep people off E's puddles; seoul-dressing `puddles`, snapshot in tests/seoul-life-dressing.json) nobody
+// standing or queueing is drawn in one (P7: 40 person-samples of 2638), and walkers within 25 m of walk0, w21, club90/270
+// and the station step round them (P7: 1.34 % of samples inside one)
+if (existsSync('tests/seoul-life-dressing.json') && file === 'seoul/layout.json') {
+  const D = JSON.parse(readFileSync('tests/seoul-life-dressing.json', 'utf8'));
+  if (D.puddles) {
+    const inP = (x, z) => D.puddles.some(([px, pz, tx, tz, a, b]) => { const dx = x - px, dz = z - pz, u = (dx * tx + dz * tz) / (a - 0.1), v = (dz * tx - dx * tz) / (b - 0.1); return u * u + v * v < 1; });
+    const S = new LifeSim(layout, { seed: 11, setPieces: D.setPieces, obstacles: D.obstacles, puddles: D.puddles }), C = S.crowd;
+    let bad = 0, n = 0; for (const t of [100, 160, 220]) { C.evaluate(t, null, { avoid: false }); for (const i of C.statics) { if (!C.VIS[i]) continue; n++; if (inP(C.X[i], C.Z[i])) bad++; } }
+    let inW = 0, nW = 0;
+    for (const [cx, cz] of [[-36, -23], [-66.7, 88], [63.7, 129.6], [-120, 95]]) for (let t = 75; t < 135; t += 3) {
+      C.evaluate(t, { x: cx, z: cz, fx: null, fz: null });
+      for (let i = 0; i < C.people.length; i++) { if (!C.VIS[i] || C.people[i].kind !== K_WALK || Math.hypot(C.X[i] - cx, C.Z[i] - cz) > 25) continue; nW++; if (inP(C.X[i], C.Z[i])) inW++; } }
+    ok(bad === 0 && inW / nW <= 0.004, `people off the puddles (${D.puddles.length}): ${bad} of ${n} standing / queueing samples in one (P7 40), walkers ${(100 * inW / nW).toFixed(2)} % of ${nW} near-camera samples (P7 1.34 %; gate 0.4 %)`);
+  }
+}
 // (P7, perf #1 with D) vehicles are culled for drawing (render only): behind the camera and past VCULL.far nothing is drawn;
 // every vehicle within VCULL.near still is. P6 drew all ~171 at every pose (0.46 M triangles a pass)
 {
