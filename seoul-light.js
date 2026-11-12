@@ -1105,7 +1105,7 @@ export function attach(world, emitters = [], ctx = {}) {
   const batch = ctx.batch !== false && !!THREE.BatchedMesh;
   const cull = { on: ctx.cull !== false && !!scene, batch, cell: ctx.cullCell || (batch ? 64 : 96), colCell: ctx.colCell || 64, meshes: 0, from: 0, vertsBefore: 0, vertsAfter: 0, col: 0, ms: 0, freed: 0, batches: [] };
   const freeOnUpload = (g) => { if (!renderer || ctx.freeArrays === false) return; for (const a of [...Object.values(g.attributes), g.index]) if (a && !a.onUploadCallback?.__d) { const f = function () { this.array = new this.array.constructor(0); cull.freed += 1; }; f.__d = 1; a.onUpload(f); } };
-  let colBatch = null;
+  let colBatch = null, sigBatch = null;
   if (cull.on) {
     const tc0 = now(), olds = [];
     for (const o of [...scene.children]) {
@@ -1152,6 +1152,13 @@ export function attach(world, emitters = [], ctx = {}) {
         colBatch = batchCells(sp, cm.material); colBatch.name = 'seoul:col'; colBatch.userData.colCell = true; colBatch.matrixAutoUpdate = false;
         freeOnUpload(colBatch.geometry);
         cs.remove(cm); cs.add(colBatch); cull.col = sp.parts.length;
+        // P6 perf (triangles): B's sign housings (signs-depth, ~75k tris) were one unculled mesh, drawn whole in the depth
+        // pass and the mirror every frame; now cells too (frustum-culled; the mirror keeps those within occR)
+        const sd = cs.children.find((c) => c.isMesh && !c.isBatchedMesh && c.name === 'signs-depth' && c.geometry?.getAttribute('position'));
+        if (sd) { const s0 = new THREE.BufferGeometry(); s0.setAttribute('position', sd.geometry.getAttribute('position')); if (sd.geometry.index) s0.setIndex(sd.geometry.index);
+          const ss = splitCells(s0, cull.colCell, 0);
+          if (ss?.parts?.length) { const sb = batchCells(ss, sd.material); sb.name = 'signs-depth'; sb.userData.colCell = true; sb.matrixAutoUpdate = false; freeOnUpload(sb.geometry);
+            cs.remove(sd); cs.add(sb); cull.signCells = ss.parts.length; sigBatch = sb; } }
       } else {
         const pos = g.getAttribute('position'), idx = g.index, nT = (idx ? idx.count : pos.count) / 3, P = pos.array;
         const vi = (t, k) => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
@@ -1243,7 +1250,7 @@ export function attach(world, emitters = [], ctx = {}) {
   cardGeo.setAttribute('aRad', aRad); cardGeo.setAttribute('aFl', aFl);
   cards.frustumCulled = false; cards.count = cardList.length;
   const IM = cards.instanceMatrix.array;
-  function setCard(i, e) {   // plane facing e.normal (written directly: no Matrix4/Quaternion per call)
+  function setCard(i, e, ph = i) {   // plane facing e.normal (written directly: no Matrix4/Quaternion per call); ph: the flicker phase slot
     const n = e.normal || [0, 0, 1], nl = Math.hypot(n[0], n[1], n[2]) || 1, nx = n[0] / nl, ny = n[1] / nl, nz = n[2] / nl;
     // tangent: horizontal right of the normal (or x for up/down faces)
     let tx = nz, tz = -nx, tl = Math.hypot(tx, tz); if (tl < 1e-4) { tx = 1; tz = 0; tl = 1; } tx /= tl; tz /= tl;
@@ -1254,7 +1261,7 @@ export function attach(world, emitters = [], ctx = {}) {
     IM[o + 8] = nx; IM[o + 9] = ny; IM[o + 10] = nz; IM[o + 11] = 0;
     IM[o + 12] = e.pos[0] + nx * 0.05; IM[o + 13] = e.pos[1] + ny * 0.05; IM[o + 14] = e.pos[2] + nz * 0.05; IM[o + 15] = 1;
     const r = rad(e, _r); aRad.array[i * 3] = r[0]; aRad.array[i * 3 + 1] = r[1]; aRad.array[i * 3 + 2] = r[2];
-    aFl.array[i * 3] = e.flicker?.hz || 0; aFl.array[i * 3 + 1] = Math.min(1, e.flicker?.depth || 0); aFl.array[i * 3 + 2] = (i * 2.399) % 6.283;
+    aFl.array[i * 3] = e.flicker?.hz || 0; aFl.array[i * 3 + 1] = Math.min(1, e.flicker?.depth || 0); aFl.array[i * 3 + 2] = (ph * 2.399) % 6.283;
   }
   cardList.forEach((e, i) => setCard(i, e));
   cards.instanceMatrix.needsUpdate = true; aRad.needsUpdate = true; aFl.needsUpdate = true;
@@ -1505,7 +1512,9 @@ export function attach(world, emitters = [], ctx = {}) {
   // scratch (no allocation per frame)
   const nMov = mov.length, movKey = new Float32Array(Math.max(1, nMov)), movOrd = new Int32Array(Math.max(1, nMov));
   const dS = new Float32Array(DW * DW * KD), dI = new Uint16Array(DW * DW * KD), dN = new Uint8Array(DW * DW);
-  const movMeta = mov.map(() => null), cardOn = new Uint8Array(Math.max(1, nMov)).fill(1);
+  // P6 perf (uploads per frame): the moving cards are packed, the lit ones within 160 m first, and only those are drawn
+  // and uploaded (was all 526 cards' matrices + radiance every frame, ~40 KB)
+  const movMeta = mov.map(() => null), movFlick = mov.some((e) => e.flicker?.hz > 0 && e.flicker?.depth > 0);
   const uStats = { ms: 0, dyn: 0, contact: 0 };
   // vehicles for contact shadows: G's head/tail emitter pairs ('<id>:head' / '<id>:tail')
   const cars = []; { const byId = new Map(); for (const e of mov) { const m = /^(.*):(head|tail)$/.exec(e.id || ''); if (!m) continue; const r = byId.get(m[1]) || {}; r[m[2]] = e; byId.set(m[1], r); }
@@ -1532,11 +1541,10 @@ export function attach(world, emitters = [], ctx = {}) {
     } else aRad.clearUpdateRanges();
     // (2) moving: every card follows its emitter; the Nd brightest-nearest are the dynamic lights
     if (nMov) {
-      let nc = 0;
+      let nc = 0, na = 0;
       for (let j = 0; j < nMov; j++) {
-        const e = mov[j], dx = e.pos[0] - cp.x, dz = e.pos[2] - cp.z, d2 = dx * dx + dz * dz, ci = stat.length + j;
-        if (d2 < 160 * 160 && e.nits > 0) { setCard(ci, e); cardOn[j] = 1; }
-        else if (cardOn[j]) { IM.fill(0, ci * 16, ci * 16 + 16); cardOn[j] = 0; }
+        const e = mov[j], dx = e.pos[0] - cp.x, dz = e.pos[2] - cp.z, d2 = dx * dx + dz * dz;
+        if (d2 < 160 * 160 && e.nits > 0) setCard(stat.length + na++, e, stat.length + j);
         if (!(e.nits > 0) || d2 > 120 * 120) continue;
         const w = e.beam ? 4 : (e.nits || 0) / 5000;            // head lamps first, then the brighter tails
         movKey[nc] = w / (d2 + 25); movOrd[nc++] = j;
@@ -1586,11 +1594,12 @@ export function attach(world, emitters = [], ctx = {}) {
       tGD.needsUpdate = true;
       tLD.clearUpdateRanges(); if (nd) tLD.addUpdateRange(0, nd * 2 * 4); tLD.needsUpdate = nd > 0;
       pool.R.value = nd >= Q.Nd ? poolR : 120;   // every lamp within 120 m is a grid light: pools only past it
-      cards.instanceMatrix.clearUpdateRanges(); cards.instanceMatrix.addUpdateRange(stat.length * 16, nMov * 16); cards.instanceMatrix.needsUpdate = true;
-      aRad.addUpdateRange(stat.length * 3, nMov * 3);
+      cards.count = stat.length + na; uStats.cards = na;
+      cards.instanceMatrix.clearUpdateRanges(); if (na) { cards.instanceMatrix.addUpdateRange(stat.length * 16, na * 16); cards.instanceMatrix.needsUpdate = true; aRad.addUpdateRange(stat.length * 3, na * 3); }
+      if (movFlick && na) { aFl.clearUpdateRanges(); aFl.addUpdateRange(stat.length * 3, na * 3); aFl.needsUpdate = true; }
       uStats.dyn = nd;
     }
-    if (nAnim || nMov) aRad.needsUpdate = true;
+    if (aRad.updateRanges.length) aRad.needsUpdate = true;
     // contact shadows: the 12 nearest vehicles within 45 m
     if (cars.length) {
       let nc = 0;
@@ -1714,7 +1723,7 @@ export function attach(world, emitters = [], ctx = {}) {
       if (air.mesh) { air.g.dispose(); air.mat.dispose(); scene.remove(air.mesh); }
       if (pool.mesh) pool.mesh.material.dispose();
       scene.remove(sky); mirror.on = false;
-      for (const bm of cull.batches) bm.dispose?.(); colBatch?.dispose?.();
+      for (const bm of cull.batches) bm.dispose?.(); colBatch?.dispose?.(); sigBatch?.dispose?.();
       if (packMesh) for (const m of [packMesh.housing, packMesh.lens]) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); }
     },
   };
