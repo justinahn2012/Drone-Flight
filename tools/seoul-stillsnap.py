@@ -10,7 +10,7 @@ from playwright.async_api import async_playwright
 DEPTH = """(async () => { const T = await import('three'); const o = window.__onetake, cam = o.fpv.cam; cam.updateMatrixWorld();
   const rc = new T.Raycaster(); rc.near = 0.05; rc.far = 40; const objs = []; o.world.scene.traverse((m) => { if ((m.isMesh || m.isInstancedMesh) && m.visible && m.geometry?.attributes?.position?.array) objs.push(m); });
   let near = 99, n3 = 0, N = 0; const v = new T.Vector2();
-  for (let i = 0; i < 32; i++) for (let j = 0; j < 18; j++) { v.set((i + 0.5) / 16 - 1, (j + 0.5) / 9 - 1); rc.setFromCamera(v, cam); const h = rc.intersectObjects(objs, false)[0]; N++; if (h) { near = Math.min(near, h.distance); if (h.distance < 3) n3++; } }
+  for (let i = 0; i < 32; i++) for (let j = 0; j < 18; j++) { v.set((i + 0.5) / 16 - 1, (j + 0.5) / 9 - 1); rc.setFromCamera(v, cam); let h = null; for (const m of objs) { let hs; try { hs = rc.intersectObject(m, false); } catch (e) { continue; } if (hs[0] && (!h || hs[0].distance < h.distance)) h = hs[0]; } N++; if (h) { near = Math.min(near, h.distance); if (h.distance < 3) n3++; } }
   return { near: +near.toFixed(2), within3: n3, rays: N, pos: cam.position.toArray().map((x) => +x.toFixed(2)) }; })()"""
 
 async def main(a):
