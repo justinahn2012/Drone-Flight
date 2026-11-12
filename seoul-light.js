@@ -98,7 +98,14 @@ export const NIGHT_SKY = { zenith: [1.0, 0.72, 0.45], horizon: [1.3, 0.75, 0.38]
 // over fadeM), and a source's brightest channel is capped at lampCap x the median street lamp's (no violet clouds).
 // P7 (fpv #1, the wet mirror's ghost columns): the 5-tap stretch clamp (uv = fraction of the frame height), the far fade
 // (view distance m: full stretch to fade[0], farCut of it gone by fade[1]) and the mirror's vertical blur step (texels)
-export const MIRROR_STREAK = { clamp: 0.02, fade: [6, 12], farCut: 0.75, blur: 1.0, person: [0.5, 1.7, 0.32], vehicleShrink: 0.86 };
+// P8 (lighting #2 / graphics #2 / fpv #2: club270's plaza went from crisp lamp streaks to smeared fog, p99 235 -> 185; station2's
+// headlamps reflected as hard white ovals): the streak is split by level. A tap's part under hi.thr (scene units: the sky, the air,
+// dim glass) keeps P7's short, distance-faded stretch, the ghost fix; the part over it (lamps, signs, lit glass) streaks hi.len of
+// the frame height, fading by hi.cut only past hi.fade m. The mirror's vertical blur is a Gaussian of sigma `blur` texels cut at
+// 3 sigma (P7's 13 taps stopped at e^-2 of the peak, so a lamp's blur ended in a hard oval), and the mirror is soft-compressed
+// at `knee` scene units before it is blurred (c / (1 + luma / knee)): a 20,000-nit headlamp no longer fills the kernel's support.
+export const MIRROR_STREAK = { clamp: 0.02, fade: [6, 12], farCut: 0.75, blur: 3.0, xBlur: 0.6, knee: 250, hi: { thr: 1.5, len: 0.04, fade: [15, 30], cut: 0.5 },
+  person: [0.5, 1.7, 0.32], vehicleShrink: 0.86 };
 // P7 (colour #1 / fpv #2): the sky's in-scatter through the canyon band (see skyMat): gain (A grades), band top (m, the
 // volume's top layer), max ray length (m), fluence cap per sample (cityHaze caps its two-point mean at 10), march steps
 export const SKY_AIR = { gain: 1.0, top: 50, maxT: 160, cap: 20, steps: 8 };
@@ -424,6 +431,9 @@ uniform mat4 uCityMirrorVP;
 uniform float uCityWet; uniform float uCityDamp;
 float cityPud = 0.0;
 uniform vec2 uCityMirrorTexel;
+uniform vec4 uCityStreak;     // [P8-D] dim part: stretch clamp (frame fraction), fade from, fade to (m), cut
+uniform vec4 uCityStreakHi;   // [P8-D] highlights: threshold (scene units), stretch (frame fraction), fade from, fade to (m)
+vec3 cityLo(vec3 c){ float l = dot(c, vec3(0.2126, 0.7152, 0.0722)); return l > uCityStreakHi.x ? c * (uCityStreakHi.x / l) : c; }   // the part under the threshold
 float cityWet = 0.0;
 float cityHash(vec2 p){ p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
 float cityNoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -1067,6 +1077,8 @@ export function attach(world, emitters = [], ctx = {}) {
     uCityLM: uLM, uCityLMG: uLMG, uCityLMA: uLMA, uCityLMR: uLMR, tCityLM: { value: tLM },
     uCitySkyAir: { value: new THREE.Vector4(ctx.skyAir ?? SKY_AIR.gain, SKY_AIR.top, SKY_AIR.maxT, SKY_AIR.cap) },   // P7: the canyon sky's light term
     tCityMirror: { value: null }, uCityMirrorVP: { value: new THREE.Matrix4() }, uCityWet: { value: ctx.wet ?? 0.7 }, uCityDamp: { value: ctx.damp ?? 0.45 }, uCityMirrorTexel: { value: new THREE.Vector2(1, 1) },
+    uCityStreak: { value: new THREE.Vector4(MIRROR_STREAK.clamp, MIRROR_STREAK.fade[0], MIRROR_STREAK.fade[1], MIRROR_STREAK.farCut) },
+    uCityStreakHi: { value: new THREE.Vector4(MIRROR_STREAK.hi.thr, MIRROR_STREAK.hi.len, MIRROR_STREAK.hi.fade[0], MIRROR_STREAK.hi.fade[1]) },
   };
   if (!aoU?.uAO) U.uCityAO.value = U.uCityAO.value || blackTex;
   if (lm.pending) { lm.apply(lm.pending); lm.pending = null; }
@@ -1129,14 +1141,23 @@ export function attach(world, emitters = [], ctx = {}) {
     // [P7-D] fpv #1 (ghost columns: station2's far footway showed 60-100 px translucent vertical runs): the stretch is
     // clamped to 2 % of the frame height (was up to 5.5 % each way) and fades to the centre tap over 6 m past 6 m of view
     // distance (a far film's streak is a few px, not a column); the mirror's own vertical blur is cut to match (renderMirror)
-    float pud = cityPud / max(uCityWet, 1e-3), st = min(mix(0.055, 0.006, pud) * (0.7 + 0.6 * cityNoise(wpw.xz * 1.7)), ${MIRROR_STREAK.clamp.toFixed(3)})
-      * (1.0 - ${MIRROR_STREAK.farCut.toFixed(2)} * smoothstep(${MIRROR_STREAK.fade[0].toFixed(1)}, ${MIRROR_STREAK.fade[1].toFixed(1)}, length(vViewPosition)));
-    vec3 mr = texture(tCityMirror, muv).rgb * 0.36 + (texture(tCityMirror, muv + vec2(0.0, st * 0.25)).rgb + texture(tCityMirror, muv - vec2(0.0, st * 0.25)).rgb) * 0.2
-      + (texture(tCityMirror, muv + vec2(rip.x * 0.2, st)).rgb + texture(tCityMirror, muv - vec2(rip.y * 0.2, st)).rgb) * 0.12;
+    // [P8-D] the dim part keeps that short stretch; the part of each tap over uCityStreakHi.x streaks uCityStreakHi.y of the
+    // frame (a puddle a third of it), fading by MIRROR_STREAK.hi.cut only past uCityStreakHi.z m, with a per-pixel jitter so the
+    // streak's ends are not one hard edge per column (graphics #2). Energy-neutral: both kernels sum to 1.
+    float pud = cityPud / max(uCityWet, 1e-3), vdist = length(vViewPosition), sn = 0.7 + 0.6 * cityNoise(wpw.xz * 1.7);
+    float st = min(mix(0.055, 0.006, pud) * sn, uCityStreak.x) * (1.0 - uCityStreak.w * smoothstep(uCityStreak.y, uCityStreak.z, vdist));
+    float sh = uCityStreakHi.y * mix(1.0, 0.35, pud) * sn * (1.0 - ${MIRROR_STREAK.hi.cut.toFixed(2)} * smoothstep(uCityStreakHi.z, uCityStreakHi.w, vdist))
+      * (0.8 + 0.4 * cityHash(gl_FragCoord.xy));
+    vec3 m0 = texture(tCityMirror, muv).rgb, m1 = texture(tCityMirror, muv + vec2(0.0, st * 0.25)).rgb, m2 = texture(tCityMirror, muv - vec2(0.0, st * 0.25)).rgb,
+      m3 = texture(tCityMirror, muv + vec2(rip.x * 0.2, st)).rgb, m4 = texture(tCityMirror, muv - vec2(rip.y * 0.2, st)).rgb;
+    vec3 mr = cityLo(m0) * 0.36 + (cityLo(m1) + cityLo(m2)) * 0.2 + (cityLo(m3) + cityLo(m4)) * 0.12;
+    vec3 h1 = texture(tCityMirror, muv + vec2(rip.x * 0.1, sh * 0.45)).rgb, h2 = texture(tCityMirror, muv - vec2(rip.y * 0.1, sh * 0.45)).rgb,
+      h3 = texture(tCityMirror, muv + vec2(rip.x * 0.3, sh)).rgb, h4 = texture(tCityMirror, muv - vec2(rip.y * 0.3, sh)).rgb;
+    mr += (m0 - cityLo(m0)) * 0.36 + (h1 - cityLo(h1) + h2 - cityLo(h2)) * 0.2 + (h3 - cityLo(h3) + h4 - cityLo(h4)) * 0.12;
     totalEmissiveRadiance += mr * (F * cityWet * inb); }`);
       }
     };
-    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW4' : '|city4'); };
+    mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + (wet ? '|cityW5' : '|city4'); };
     mat.needsUpdate = true;
     return true;
   }
@@ -1302,7 +1323,8 @@ export function attach(world, emitters = [], ctx = {}) {
   if (ctx.sky !== false) scene.add(sky);
 
   // ------------------------------------------------------------------------------------- mirror (wet ground)
-  const mirror = { scene: new THREE.Scene(), cam: new THREE.PerspectiveCamera(), rt: null, rt2: null, on: nWet > 0 && !!renderer && ctx.reflect !== false, y: ctx.groundY ?? 0, occR: ctx.mirrorOccR ?? 60 };
+  const mirror = { scene: new THREE.Scene(), cam: new THREE.PerspectiveCamera(), rt: null, rt2: null, on: nWet > 0 && !!renderer && ctx.reflect !== false, y: ctx.groundY ?? 0, occR: ctx.mirrorOccR ?? 60,
+    streak: { blur: MIRROR_STREAK.blur, xBlur: MIRROR_STREAK.xBlur, knee: MIRROR_STREAK.knee } };
   const cardGeo = new THREE.PlaneGeometry(1, 1);
   const cardMat = new THREE.ShaderMaterial({
     uniforms: { uT: U.uCityTime },
@@ -1342,11 +1364,15 @@ export function attach(world, emitters = [], ctx = {}) {
   mirror.scene.add(msky, cards);
   const occ = world.colliderScene || null;
   const blurMat = new THREE.ShaderMaterial({
-    uniforms: { tSrc: { value: null }, uDir: { value: new THREE.Vector2() }, uTexel: { value: new THREE.Vector2() } },
+    uniforms: { tSrc: { value: null }, uDir: { value: new THREE.Vector2() }, uTexel: { value: new THREE.Vector2() }, uKnee: { value: 0 } },
     vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-    fragmentShader: `uniform sampler2D tSrc; uniform vec2 uDir; uniform vec2 uTexel; varying vec2 vUv;
+    // [P8-D] 13 taps at sigma = 2 taps (uDir = sigma / 2 texels per tap): the kernel ends at e^-4.5 of its peak, not P7's e^-2
+    // (a hard oval round every clipped lamp); uKnee > 0 soft-compresses each tap first (the first pass only)
+    fragmentShader: `uniform sampler2D tSrc; uniform vec2 uDir; uniform vec2 uTexel; uniform float uKnee; varying vec2 vUv;
       void main(){ vec3 c = vec3(0.0); float w = 0.0;
-        for (int i = -6; i <= 6; i++) { float k = exp(-float(i * i) / 18.0); c += texture(tSrc, vUv + uDir * uTexel * float(i)).rgb * k; w += k; }
+        for (int i = -6; i <= 6; i++) { float k = exp(-float(i * i) / 8.0); vec3 t = texture(tSrc, vUv + uDir * uTexel * float(i)).rgb;
+          if (uKnee > 0.0) t /= 1.0 + dot(t, vec3(0.2126, 0.7152, 0.0722)) / uKnee;
+          c += t * k; w += k; }
         gl_FragColor = vec4(c / w, 1.0); }`,
     depthTest: false, depthWrite: false,
   });
@@ -1435,9 +1461,11 @@ export function attach(world, emitters = [], ctx = {}) {
     let dx = _v2.x - _v.x, dy = _v2.y - _v.y; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
     blurMat.uniforms.uTexel.value.set(1 / W, 1 / H);
     r.autoClear = true;
-    blurMat.uniforms.tSrc.value = mirror.rt.texture; blurMat.uniforms.uDir.value.set(dx * MIRROR_STREAK.blur, dy * MIRROR_STREAK.blur);   // P7: 2.2 -> 1.0 texel steps (sigma ~1.7 % of the frame, was 3.7 %)
+    // P8: sigma in texels (P6 2.2-step = 6.6, P7 1.0-step = 3); the knee on the first pass; the cross pass at xBlur of it
+    const sg = mirror.streak.blur / 2, sx = mirror.streak.xBlur * 3 / 2;
+    blurMat.uniforms.tSrc.value = mirror.rt.texture; blurMat.uniforms.uDir.value.set(dx * sg, dy * sg); blurMat.uniforms.uKnee.value = mirror.streak.knee;
     r.setRenderTarget(mirror.rt2); r.render(quadScene, quadCam);
-    blurMat.uniforms.tSrc.value = mirror.rt2.texture; blurMat.uniforms.uDir.value.set(-dy * 0.6, dx * 0.6);
+    blurMat.uniforms.tSrc.value = mirror.rt2.texture; blurMat.uniforms.uDir.value.set(-dy * sx, dx * sx); blurMat.uniforms.uKnee.value = 0;
     r.setRenderTarget(mirror.rt); r.render(quadScene, quadCam);
     r.autoClear = ac; r.setClearAlpha(cc);
     r.setRenderTarget(prev);
@@ -1452,7 +1480,19 @@ export function attach(world, emitters = [], ctx = {}) {
       try { renderMirror(r, cam); } catch (e) { mirror.on = false; console.warn('[D] wet mirror off', e); }
     };
   }
-  if (!mirror.on) { const black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1); black.needsUpdate = true; U.tCityMirror.value = black; }
+  const mirrorBlack = (() => { const t = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1); t.needsUpdate = true; return t; })();
+  const mirrorWanted = mirror.on;
+  if (!mirror.on) U.tCityMirror.value = mirrorBlack;
+  // [P8-D] A/B and tuning (fpv #1: "mirror off, buffers cleared"): setOn(false) binds black, so no stale reflection stays on
+  // the ground; setStreak({ clamp, fade, farCut, blur, xBlur, knee, hi: { thr, len, fade } }) is live (uniforms, no recompile)
+  mirror.setOn = (v) => { mirror.on = !!v && mirrorWanted; if (!mirror.on) U.tCityMirror.value = mirrorBlack; return mirror.on; };
+  mirror.setStreak = (o = {}) => {
+    const S = U.uCityStreak.value, H = U.uCityStreakHi.value;
+    if (o.clamp != null) S.x = o.clamp; if (o.fade) { S.y = o.fade[0]; S.z = o.fade[1]; } if (o.farCut != null) S.w = o.farCut;
+    if (o.hi?.thr != null) H.x = o.hi.thr; if (o.hi?.len != null) H.y = o.hi.len; if (o.hi?.fade) { H.z = o.hi.fade[0]; H.w = o.hi.fade[1]; }
+    for (const k of ['blur', 'xBlur', 'knee']) if (o[k] != null) mirror.streak[k] = o[k];
+    return { clamp: S.x, fade: [S.y, S.z], farCut: S.w, hi: { thr: H.x, len: H.y, fade: [H.z, H.w] }, ...mirror.streak };
+  };
 
   // ------------------------------------------------------------------------------------- airlight sprites (lighting #3)
   // Closed-form single scattering of a point source along the view ray (isotropic phase, attenuation to the source):
@@ -1642,6 +1682,7 @@ export function attach(world, emitters = [], ctx = {}) {
     for (const F of farDet) { const S = F.bm.userData.cellSpheres, I = F.bm.userData.instanceIds;
       for (let i = 0; i < S.length; i++) { const c = S[i].center, v = Math.hypot(c.x - cp.x, c.y - cp.y, c.z - cp.z) - S[i].radius <= F.r; if (v !== F.on[i]) { F.bm.setVisibleAt(I[i], v); F.on[i] = v; } } }
   }
+  const debug = { noDyn: false };   // [P8-D] A/B switches (seoulsnap diagnostics), never set by the game
   function update(t, camPos, cam) {
     const t0 = now();
     U.uCityTime.value = (t ?? 0) % 3600;
@@ -1676,7 +1717,7 @@ export function attach(world, emitters = [], ctx = {}) {
       for (let a = 0; a < nd; a++) { let bi = a; for (let b = a + 1; b < nc; b++) if (movKey[b] > movKey[bi]) bi = b; if (bi !== a) { const tk = movKey[a]; movKey[a] = movKey[bi]; movKey[bi] = tk; const to = movOrd[a]; movOrd[a] = movOrd[bi]; movOrd[bi] = to; } }
       // window origin: the camera's cell minus half the window
       const ox = Math.floor((cp.x - x0) / cell) - (DW >> 1), oz = Math.floor((cp.z - z0) / cell) - (DW >> 1);
-      U.uCityDyn.value.set(ox, oz, DW, U.uCityDyn.value.w);
+      U.uCityDyn.value.set(ox, oz, debug.noDyn ? 0 : DW, U.uCityDyn.value.w);   // P8: debug.noDyn = no dynamic lights (A/B)
       dN.fill(0); const gd = tGD.image.data; gd.fill(NONE);
       let poolR = 0;
       for (let a = 0; a < nd; a++) {
@@ -1832,7 +1873,7 @@ export function attach(world, emitters = [], ctx = {}) {
     return null;
   }
   const ctl = {
-    update, patchMaterial, qualityCap, lightmapAt, uniforms: U, sky, steam, mirror, stats, exportData, heightField: HF, probe, visibility,
+    update, patchMaterial, qualityCap, lightmapAt, uniforms: U, sky, steam, mirror, debug, pool, stats, exportData, heightField: HF, probe, visibility,
     lightmapReady: lm.whenReady,   // P4: resolves true when the night lightmap is on the GPU, false if it never will be
     get lightmapData() { return lm.ready ? { key: lm.key, w: lm.size[0], h: lm.size[1], data: lm.data, valid: lm.valid, texels: lm.texels } : null; },
     setWet(v, damp) { U.uCityWet.value = v; if (damp != null) U.uCityDamp.value = damp; }, setHaze(d) { U.uCityHaze.value.x = d; }, setSkyAir(g) { U.uCitySkyAir.value.x = g; }, setIrrGain(g) { U.uCityIrrGain.value = g; },
@@ -1842,7 +1883,7 @@ export function attach(world, emitters = [], ctx = {}) {
       U.tCityMirror.value?.dispose?.();
       for (const p of moverOcc.values()) if (p) { mirror.scene.remove(p); p.geometry.dispose(); }
       personGeo.dispose(); personMat.dispose();
-      mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); quad.geometry.dispose();
+      mirror.rt?.dispose(); mirror.rt2?.dispose(); sky.geometry.dispose(); sky.material.dispose(); mskyMat.dispose(); cards.dispose(); cardGeo.dispose(); cardMat.dispose(); blurMat.dispose(); occMat.dispose(); mirrorBlack.dispose(); quad.geometry.dispose();
       if (steam) { steam.geometry.dispose(); steam.material.dispose(); scene.remove(steam); }
       if (air.mesh) { air.g.dispose(); air.mat.dispose(); scene.remove(air.mesh); }
       if (pool.mesh) pool.mesh.material.dispose();

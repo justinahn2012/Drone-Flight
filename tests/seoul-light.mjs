@@ -48,7 +48,10 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   const fs0 = C.sky.material.fragmentShader, u = C.uniforms.uCitySkyAir.value;
   ok(/citySkyAir\(cameraPosition/.test(fs0) && u.x === SKY_AIR.gain && u.y === SKY_AIR.top && C.sky.material.uniforms.uCitySkyAir === C.uniforms.uCitySkyAir, `sky air term wired (gain ${u.x}, top ${u.y} m)`);
   C.setSkyAir(0.5); ok(C.sky.material.uniforms.uCitySkyAir.value.x === 0.5, 'setSkyAir reaches the sky'); C.setSkyAir(SKY_AIR.gain);
-  ok(MIRROR_STREAK.clamp <= 0.02 && MIRROR_STREAK.fade[1] - MIRROR_STREAK.fade[0] === 6 && MIRROR_STREAK.blur <= 1.2, 'mirror streak: clamp <= 2 % of the frame, 6 m fade, blur step <= 1.2');
+  ok(MIRROR_STREAK.clamp <= 0.02 && MIRROR_STREAK.fade[1] - MIRROR_STREAK.fade[0] === 6 && MIRROR_STREAK.blur <= 3.6, 'mirror streak (dim part): clamp <= 2 % of the frame, 6 m fade, blur sigma <= 3.6 texels');
+  // [P8 D] the highlight part streaks 3-6 % of the frame and fades only past 15 m; the blur ends at <= 2 % of its peak; a knee
+  const H = MIRROR_STREAK.hi;
+  ok(H.len >= 0.03 && H.len <= 0.06 && H.fade[0] >= 15 && H.thr > 0.5 && MIRROR_STREAK.knee > 50 && Math.exp(-36 / 8) < 0.02, `mirror streak (highlights): ${H.len * 100} % past ${H.thr} units, fade from ${H.fade[0]} m, knee ${MIRROR_STREAK.knee}`);
   C.dispose();
 }
 {
