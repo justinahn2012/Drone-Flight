@@ -2145,6 +2145,9 @@ const HUMAN_ANIM = /* glsl */`
   vAlb = alb; vUv = auv; vHairC = iHair.rgb;
   vRest = position; vMisc = vec4(region, bone, coat, acc);
   vScreen = (region > 4.5 && region < 5.5) ? max(phoneP, filmP) : 0.0;
+  // (P7, life bug: station2's phones were floating white dots at 25 m, a 160-nit screen spread by the bloom) the screen
+  // fades to 15 % between 12 and 20 m
+  vScreen *= 1.0 - 0.85 * smoothstep(12.0, 20.0, distance(p, cameraPosition));
   // shopfront fill (lux) arriving from direction iFill.w, wrapped diffuse + a weak overhead/street term
   vec3 L = vec3(sin(iFill.w), 0.25, cos(iFill.w));
   float wrap = max(0.0, (dot(normalize(nrm), normalize(L)) + 0.35) / 1.35);
