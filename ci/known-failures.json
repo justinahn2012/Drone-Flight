@@ -4,11 +4,11 @@
     {
       "suite": "tools/camgate.py",
       "match": "[exposure] walk0: ground p50",
-      "owner": "A with D (PLAN-P4 lighting #1 light the ground, graphics #1)",
-      "why": "hero-street floor p50 21-23 against 40 [P5-A] min 18 -> 10: the exposure re-fit to the refs' frame p50 (walk0 76 -> 49) takes the ground with it (22 -> 13-14 in the A + D port); the ground-to-wall ratio is C and D's (paver albedo, room nits)",
+      "owner": "A with C, D (PLAN-P6 #1 the frame got too dark)",
+      "why": "hero-street floor p50 21-23 against 40 [P5-A] min 18 -> 10: the exposure re-fit to the refs' frame p50 (walk0 76 -> 49) takes the ground with it (22 -> 13-14 in the A + D port); the ground-to-wall ratio is C and D's (paver albedo, room nits) [P6 H, PLAN-P6 gates] min restored 10 -> 16 (main integ10 CI: 14, so this row is red until C's pavers + D's pools + A's re-fit land; the plan's gate, not lowered)",
       "limit": {
         "re": "ground p50 ([0-9.]+)",
-        "min": 10
+        "min": 16
       }
     },
     {
@@ -29,16 +29,6 @@
       "limit": {
         "re": "ground p50 ([0-9.]+)",
         "min": 5
-      }
-    },
-    {
-      "suite": "tools/camgate.py",
-      "match": "[exposure] walk0: clip ",
-      "owner": "A (PLAN-P4 colour #4 halation, colour #5)",
-      "why": "walk0 clips 3.8-4.9 % against 3 % (B's hot cores; A shapes them)",
-      "limit": {
-        "re": "clip ([0-9.]+) %",
-        "max": 5.5
       }
     },
     {
@@ -96,37 +86,6 @@
       }
     },
     {
-      "suite": "tools/camgate.py",
-      "match": "[colour] club90: white area",
-      "owner": "B (PLAN-P4 colour #2 white light boxes)",
-      "why": "white area 0.3 % against 2-5 % (integ8)",
-      "limit": {
-        "re": "white area ([0-9.]+) %",
-        "min": 0.1,
-        "max": 6.5
-      }
-    },
-    {
-      "suite": "tools/camgate.py",
-      "match": "[colour] walk0.r0: neutral R-G",
-      "owner": "A (PLAN-P4 colour #1, #5 the 30 % look)",
-      "why": "neutral fill R-G +12.3 to +12.7 at retro 0 against +10",
-      "limit": {
-        "re": "R-G \\+?(-?[0-9.]+)",
-        "max": 14
-      }
-    },
-    {
-      "suite": "tools/camgate.py",
-      "match": "[colour] station.r0: neutral R-G",
-      "owner": "A (PLAN-P4 colour #1, #5)",
-      "why": "neutral fill R-G +10.9 at retro 0 against +10 (integ8)",
-      "limit": {
-        "re": "R-G \\+?(-?[0-9.]+)",
-        "max": 12.5
-      }
-    },
-    {
       "suite": "tests/browser.mjs",
       "match": "still walk0: ",
       "owner": "A, B, C, D, G1 (PLAN-P4; integrator re-baselines)",
@@ -154,6 +113,136 @@
       "limit": {
         "re": "p95 ([0-9.]+)",
         "min": 30
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] walk0: ground/wall",
+      "owner": "A with C, D (PLAN-P6 #1 the frame got too dark)",
+      "why": "ground/wall 0.35 on main (gate 0.45; seoulsnap 0.25). [P6 H] new PLAN-P6 gate row; limit about 10 % past main's CI value (run 43139873309, integ10 bc45fbe) so it binds while the owners land the fix; delete when the notice says it passes",
+      "limit": {
+        "re": "ground/wall ([0-9.]+)",
+        "min": 0.32
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] walk0: below 16",
+      "owner": "A with C, D (PLAN-P6 #1 the frame got too dark)",
+      "why": "29.3 % of the frame under code 16 on main (gate 18 %, refs 12 %). [P6 H] new PLAN-P6 gate row; limit about 10 % past main's CI value (run 43139873309, integ10 bc45fbe) so it binds while the owners land the fix; delete when the notice says it passes",
+      "limit": {
+        "re": "below 16 ([0-9.]+) %",
+        "max": 32
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] club90: below 16",
+      "owner": "A with C, D (PLAN-P6 #1 the frame got too dark)",
+      "why": "24.3 % under code 16 on main. [P6 H] new PLAN-P6 gate row; limit about 10 % past main's CI value (run 43139873309, integ10 bc45fbe) so it binds while the owners land the fix; delete when the notice says it passes",
+      "limit": {
+        "re": "below 16 ([0-9.]+) %",
+        "max": 27
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] station: below 16",
+      "owner": "A with C, D (PLAN-P6 #1 the frame got too dark)",
+      "why": "28.1 % under code 16 on main (open shot; D's sky + A's open-shot exposure). [P6 H] new PLAN-P6 gate row; limit about 10 % past main's CI value (run 43139873309, integ10 bc45fbe) so it binds while the owners land the fix; delete when the notice says it passes",
+      "limit": {
+        "re": "below 16 ([0-9.]+) %",
+        "max": 31
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget: raw JS heap at settled",
+      "owner": "D (panel5 perf #5: free per stage at materials)",
+      "why": "raw 'settled' 986 MB on main against 700 (the live heap after GC is 172 MB and gated separately). [P6 H] new PLAN-P6 gate row; limit about 10 % past main's CI value (run 43139873309, integ10 bc45fbe) so it binds while the owners land the fix; delete when the notice says it passes",
+      "limit": {
+        "re": "settled ([0-9.]+) MB",
+        "max": 1085
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget walk0: triangles",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "all-pass triangles over 2.6 M (P5 probe 2.0-3.9 M; CI's first count lands with this row). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "triangles ([0-9.]+) M",
+        "max": 4.3
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget walk0: main pass",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "main pass ([0-9.]+) M",
+        "max": 2.2
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget club90: triangles",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "all-pass triangles over 2.6 M (P5 probe 2.0-3.9 M; CI's first count lands with this row). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "triangles ([0-9.]+) M",
+        "max": 4.3
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget club90: main pass",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "main pass ([0-9.]+) M",
+        "max": 2.2
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget station: triangles",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "all-pass triangles over 2.6 M (P5 probe 2.0-3.9 M; CI's first count lands with this row). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "triangles ([0-9.]+) M",
+        "max": 4.3
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget station: main pass",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "main pass ([0-9.]+) M",
+        "max": 2.2
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget spawn: triangles",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "all-pass triangles over 2.6 M (P5 probe 2.0-3.9 M; CI's first count lands with this row). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "triangles ([0-9.]+) M",
+        "max": 4.3
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget spawn: main pass",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "main pass ([0-9.]+) M",
+        "max": 2.2
       }
     }
   ]

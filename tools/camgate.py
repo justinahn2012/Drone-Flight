@@ -25,7 +25,12 @@ ci/known-failures.json tolerates the [colour] rows until stream A lands the neut
   roomsat     median saturation of lit warm surfaces (hue 15-60 deg, max > 120; >= 0.2 % of the frame)  <= 0.55 (target 0.4-0.5, colour #2)
   warm        warm share of the bright saturated pixels                                                45 .. 65 % (colour #2)
   white       share with a clipped channel or near-white (max > 200, sat < 0.15), sign frames only    2 .. 5 % (colour #3)
-Reported (informational): share below 16 (<= 25 %), bright-saturated area (>= 5 %), bright near-white
+[P6 H, PLAN-P6 #1 "the frame got too dark"] hard [exposure] rows, gated wherever the shot is in the set (CI: walk0,
+club90, station + spawn); the fix is materials and light (C, D), then A's exposure re-fit, never a lower gate:
+  gwall       ground box median / wall box median (WALL below: lit plaster above the shop line)   >= 0.45 (P5 0.23-0.25)
+  lt16        share of the frame below code 16, shipped grade, hero shots                        <= 18 % (refs 12 %, P5 22-33 %)
+  spawn       frame median of the spawn still (the player's first frame)                          >= 40
+Reported (informational): share below 16 on other shots, bright-saturated area (>= 5 %), bright near-white
 area (<= 4 %), magenta+cyan+violet share (30-45 %), dark-flat luma noise (3-6 DN).
 Needs numpy, Pillow, scipy. Stills are 8-bit sRGB (seoulsnap JPEGs).
 """
@@ -39,6 +44,9 @@ GROUND = {'walk0': [0.40, 0.70, 0.88, 1.0], 'walk180': [0.35, 0.65, 0.88, 1.0], 
           'station': [0.00, 0.45, 0.86, 1.0], 'station2': [0.30, 0.70, 0.88, 1.0], 'w21': [0.35, 0.65, 0.86, 1.0]}
 GATE = dict(clip=3.0, blob=5.0, ev=(-4.0, 1.5), ground=40.0, sky=30.0, p50=(35.0, 50.0))
 COLOUR = dict(rg=10.0, bg=8.0, roomsat=0.55, warm=(45.0, 65.0), white=(2.0, 5.0))
+# [P6 H] wall boxes for the ground/wall row: a plain stretch of lit facade above the shop signs, per shot
+WALL = {'walk0': [0.33, 0.52, 0.02, 0.22], 'walk180': [0.38, 0.50, 0.0, 0.12], 'club90': [0.40, 0.49, 0.20, 0.33]}
+GATE_P6 = dict(gwall=0.45, lt16=18.0, spawn=40.0)
 P50_SHOTS = {'walk0', 'walk180', 'club90', 'club270', 'w21'}   # [P5-A] canyon frames: the p50 band is binding here
 SIGN_FRAMES = {'walk0', 'walk180', 'club90', 'club270', 'w21'}   # frames where signs dominate (colour #3's white-core target)
 LUMA = np.array([0.2126, 0.7152, 0.0722])
@@ -74,6 +82,11 @@ def stats(path, name):
     if gb:
         x0, x1, y0, y1 = gb
         o['ground'] = float(np.median(Y[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]))
+    wb = WALL.get(name)
+    if wb and gb:   # [P6 H] ground/wall: graphics/lighting panel 5 (walk0 13 / 56 = 0.23 in P5)
+        x0, x1, y0, y1 = wb
+        o['wall'] = float(np.median(Y[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]))
+        o['gwall'] = o['ground'] / max(o['wall'], 1.0)
     top = Y[: H // 4]
     o['sky'] = float(np.median(top[top <= np.median(top)]))
     # dark-flat luma noise (5 px high-pass in flat regions with local mean 12..80)
@@ -102,6 +115,8 @@ def main():
         name = os.path.splitext(os.path.basename(f))[0]
         base, r0 = (name[:-3], True) if name.endswith('.r0') else (name, False)   # <shot>.r0 = the same shot at retro 0
         o = stats(f, base); o['ev'] = evs.get(name); rows[name] = o
+        if base == 'spawn' and not r0 and o['p50'] < GATE_P6['spawn']:   # [P6 H] the first frame a player sees
+            fails.append(f'[exposure] spawn: frame p50 {o["p50"]:.0f} < {GATE_P6["spawn"]:.0f}')
         if base not in hero: continue
         X = lambda msg: fails.append('[exposure] ' + msg)
         C = lambda msg: fails.append('[colour] ' + msg)
@@ -111,6 +126,8 @@ def main():
             if o['ev'] is not None and not (GATE['ev'][0] <= o['ev'] <= GATE['ev'][1]): X(f'{name}: EV {o["ev"]:+.2f} outside {GATE["ev"]}')
             if o.get('ground') is not None and o['ground'] < GATE['ground']: X(f'{name}: ground p50 {o["ground"]:.0f} < {GATE["ground"]:.0f}')
             if o['sky'] > GATE['sky']: X(f'{name}: sky {o["sky"]:.0f} > {GATE["sky"]:.0f}')
+            if o.get('gwall') is not None and o['gwall'] < GATE_P6['gwall']: X(f'{name}: ground/wall {o["gwall"]:.2f} < {GATE_P6["gwall"]:.2f} (ground {o["ground"]:.0f}, wall {o["wall"]:.0f})')
+            if o['lt16'] > GATE_P6['lt16']: X(f'{name}: below 16 {o["lt16"]:.1f} % > {GATE_P6["lt16"]:.0f} %')
             if base in P50_SHOTS and not (GATE['p50'][0] <= o['p50'] <= GATE['p50'][1]): X(f'{name}: frame p50 {o["p50"]:.0f} outside {GATE["p50"][0]:.0f}-{GATE["p50"][1]:.0f}')
             if o.get('roomsat') is not None and o['roomsat'] > COLOUR['roomsat']: C(f'{name}: room saturation {o["roomsat"]:.2f} > {COLOUR["roomsat"]}')
             if o.get('warm') is not None and not (COLOUR['warm'][0] <= o['warm'] <= COLOUR['warm'][1]): C(f'{name}: warm share {o["warm"]:.0f} % outside {COLOUR["warm"]}')
@@ -119,12 +136,12 @@ def main():
             if o.get('rg') is not None and o['rg'] > COLOUR['rg']: C(f'{name}: neutral R-G {o["rg"]:+.1f} > +{COLOUR["rg"]:.0f}')
             if o.get('bg') is not None and abs(o['bg']) > COLOUR['bg']: C(f'{name}: neutral B-G {o["bg"]:+.1f}, |B-G| > {COLOUR["bg"]:.0f}')
     fmt = lambda v, s='{:6.1f}': (s.format(v) if v is not None else '     -')
-    cols = [('EV', 'ev', '{:+6.2f}'), ('clip%', 'clip', None), ('blob%', 'blob', None), ('ground', 'ground', None), ('sky', 'sky', None), ('p50', 'p50', None), ('<16%', 'lt16', None),
+    cols = [('EV', 'ev', '{:+6.2f}'), ('clip%', 'clip', None), ('blob%', 'blob', None), ('ground', 'ground', None), ('g/wall', 'gwall', '{:6.2f}'), ('sky', 'sky', None), ('p50', 'p50', None), ('<16%', 'lt16', None),
             ('bsat%', 'bsat', None), ('bwht%', 'bwhite', None), ('warm%', 'warm', None), ('mcv%', 'mcv', None), ('noise', 'noise', None), ('R-G', 'rg', '{:+6.1f}'), ('B-G', 'bg', '{:+6.1f}'), ('roomS', 'roomsat', '{:6.2f}'), ('white%', 'white', None)]
     print(f'{"shot":12s} ' + ' '.join(f'{h:>6s}' for h, _, _ in cols))
     for n, o in rows.items():
         print(f'{n:12s} ' + ' '.join(fmt(o.get(k), f or '{:6.1f}') for _, k, f in cols))
-    if a.json: json.dump({'rows': rows, 'fails': fails, 'gate': GATE, 'colour': COLOUR}, open(a.json, 'w'), indent=1)
+    if a.json: json.dump({'rows': rows, 'fails': fails, 'gate': {**GATE, **GATE_P6}, 'colour': COLOUR}, open(a.json, 'w'), indent=1)
     for f_ in fails: print('FAIL ' + f_)
     print('\nGATE ' + ('PASS' if not fails else f'FAIL ({sum(f_.startswith("[exposure]") for f_ in fails)} exposure, {sum(f_.startswith("[colour]") for f_ in fails)} colour)'))
     sys.exit(1 if fails else 0)
