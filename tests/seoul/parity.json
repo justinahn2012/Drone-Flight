@@ -3,7 +3,7 @@
  "level": "seoul-hongdae",
  "seed": 11,
  "sources": {
-  "life": "1084a483df9b6759",
+  "life": "532a320daf1f61be",
   "layout": "f99777aeb081b885"
  },
  "note": "LifeSim(layout, {seed}).advanceTo(t): hash() bit-exact; boxesAt(t)[0..11] within 1e-9 m (TrafficSim.pose uses Math.sin for the scooter weave)",
