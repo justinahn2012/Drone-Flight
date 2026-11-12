@@ -63,7 +63,7 @@ if (parents.length > 1) {
   for (const p of parents) {
     const L = listAt(p); if (!L) continue;
     const renamed = new Set(head.filter((k) => k.replaces).map((k) => `${k.suite}\u0000${k.replaces}`));   // an entry may carry "replaces": "<old match>"
-    for (const k of L) if (!seen.has(key(k)) && !renamed.has(key(k)) && !dropped.has(k.match))
+    for (const k of L) if (!seen.has(key(k)) && !renamed.has(key(k)) && !dropped.has(k.match.trim()))   // the message line is trimmed, so compare trimmed (a match may end in a space)
       FAIL(`merge ${sh(`git rev-parse --short ${REV}`)} drops parent ${p.slice(0, 7)}'s known entry ${k.suite}: "${k.match}" (owner ${k.owner}). Keep it (merge both lists), or add a line "known-drop: ${k.match}" to the merge message once the row passes`);
   }
   console.log(`known-guard: merge of ${parents.map((p) => p.slice(0, 7)).join(' + ')}: ${head.length} entries, ${dropped.size} dropped by name`);
