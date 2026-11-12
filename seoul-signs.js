@@ -379,6 +379,75 @@ export function frameFaces(layout, { views = HERO_VIEWS, min = 0.05, nx = 80, ny
   }
   return out;
 }
+// [P8-C] art #3: the frame stacks (geo.frameStack, grouped by wall and u) that hide > `max` of another lit sign's face from
+// a view's eye. A sign face is sampled 3 x 3; a sample is hidden when the eye's ray to it crosses a stack box first.
+// Signs off the view's +-80 deg x +-50 deg cone or over 120 m out are not judged. -> Set of the specs to drop
+export function frameOccluders(specs, views = HERO_VIEWS, max = 0.3, layout = null, lots = null) {
+  const drop = new Set(), stacks = new Map(), worst = new Map();
+  const at = (F, u, y, o) => [F.o[0] + F.r[0] * u + F.n[0] * o, y, F.o[1] + F.r[1] * u + F.n[1] * o];
+  const cand = (s) => s.geo.frameStack || (lots && lots.has(s.lot) && s.geo.out !== undefined && (s.type === 'blade' || s.type === 'round') && !s.geo.tall);
+  for (const s of specs) if (cand(s)) { const k = `${s.lot}|${s.frame.n.join()}|${s.geo.u.toFixed(2)}`; (stacks.get(k) || stacks.set(k, []).get(k)).push(s); }
+  if (!stacks.size) return drop;
+  // a blade box: centre, half extents along the wall normal (its width), the wall (its depth) and up
+  const boxOf = (s) => { const F = s.frame, G = s.geo; return { c: at(F, G.u, G.y + G.h / 2, G.out + G.w / 2), n: F.n, r: F.r, hn: G.w / 2 + 0.03, hr: G.d / 2 + 0.03, hy: G.h / 2 + 0.03 }; };
+  const hit = (B, E, P) => {   // segment E -> P against the oriented box (slabs along n, r, y)
+    let t0 = 0, t1 = 0.98; const d = [P[0] - E[0], P[1] - E[1], P[2] - E[2]], o = [E[0] - B.c[0], E[1] - B.c[1], E[2] - B.c[2]];
+    for (const [ax, h] of [[[B.n[0], 0, B.n[1]], B.hn], [[B.r[0], 0, B.r[1]], B.hr], [[0, 1, 0], B.hy]]) {
+      const od = o[0] * ax[0] + o[1] * ax[1] + o[2] * ax[2], dd = d[0] * ax[0] + d[1] * ax[1] + d[2] * ax[2];
+      if (Math.abs(dd) < 1e-9) { if (Math.abs(od) > h) return false; continue; }
+      let a = (-h - od) / dd, b = (h - od) / dd; if (a > b) [a, b] = [b, a]; t0 = Math.max(t0, a); t1 = Math.min(t1, b); if (t0 > t1) return false;
+    }
+    return true;
+  };
+  // a lit sign's face samples (blades and round boxes: the face across the wall normal; the rest: the face on the wall)
+  const samples = (s) => { const F = s.frame, G = s.geo, out = [];
+    for (const a of [0.2, 0.5, 0.8]) for (const b of [0.2, 0.5, 0.8]) {
+      if (G.out !== undefined && (s.type === 'blade' || s.type === 'round')) out.push(at(F, G.u, G.y + G.h * b, G.out + G.w * a));
+      else out.push(at(F, G.u + G.w * a, G.y + G.h * b, (G.z0 || 0) + (G.d || 0) + 0.02)); }
+    return out; };
+  const judged = specs.filter((s) => s.lit && (NAMED.has(s.type) || s.type === 'roof') && s.frame);
+  for (const v of views) {
+    const E = v.pos, yr = v.yaw * Math.PI / 180, fw = [-Math.sin(yr), -Math.cos(yr)], wallHit = prismRays(layout, E);
+    const az = (p) => Math.atan2(p[0] - E[0], p[2] - E[2]), dA = (a, b) => Math.abs(((a - b + 3 * Math.PI) % (2 * Math.PI)) - Math.PI);
+    const seen = judged.map((s) => [s, samples(s)]).filter(([, P]) => { const c = P[4], dx = c[0] - E[0], dz = c[2] - E[2], dh = Math.hypot(dx, dz);
+      if (dh > 120 || dh < 1) return false; const ca = (dx * fw[0] + dz * fw[1]) / dh; return ca > Math.cos(80 * Math.PI / 180) && Math.abs(Math.atan2(c[1] - E[1], dh)) < 50 * Math.PI / 180; })
+      .map(([s, P]) => { const c = P[4], d = Math.hypot(c[0] - E[0], c[2] - E[2]); return { s, P, d, a: az(c), ha: (Math.max(s.geo.w, s.geo.h) / 2 + 0.3) / d, vis: null }; });
+    for (const [, box] of stacks) {
+      const B = box.map(boxOf), bc = B[0].c, bd = Math.hypot(bc[0] - E[0], bc[2] - E[2]), ba = az(bc), bh = (box[0].geo.w + 0.6) / Math.max(1, bd);
+      for (const q of seen) {
+        const { s, P } = q;
+        if (s.lot === box[0].lot || box.includes(s) || q.d < bd - 1 || dA(q.a, ba) > q.ha + bh) continue;   // own wall's boxes, in front, or off its bearing
+        q.vis ||= P.filter((p) => !wallHit(p, s.lot));   // samples a building hides are not judged
+        let n = 0; for (const p of q.vis) if (B.some((b) => hit(b, E, p))) n++;
+        if (q.vis.length >= 3) worst.set(box, Math.max(worst.get(box) || 0, n / q.vis.length));
+      }
+    }
+  }
+  // a lot's frame stacks never all go: the one that hides least stays (the still keeps its accent)
+  const keep = new Map();
+  for (const [, box] of stacks) if (box[0].geo.frameStack) { const k = box[0].lot, w = worst.get(box) || 0; if (!keep.has(k) || w < keep.get(k)[1]) keep.set(k, [box, w]); }
+  for (const [, box] of stacks) if ((worst.get(box) || 0) > max) { const k = keep.get(box[0].lot); if (k && k[0] === box && [...stacks.values()].filter((b) => b[0].lot === box[0].lot && b[0].geo.frameStack).every((b) => (worst.get(b) || 0) > max)) continue; for (const x of box) drop.add(x); }
+  return drop;
+}
+// [P8-C] (layout, eye) -> (P, lotId) => true when a lot prism other than lotId's stands between the eye and P
+function prismRays(layout, E) {
+  const lots = layout?.lots || []; if (!lots.length) return () => false;
+  const NB = 360, bins = Array.from({ length: NB }, () => []), azOf = (dx, dz) => Math.floor(((Math.atan2(dx, dz) / (2 * Math.PI)) + 1) * NB) % NB;
+  for (const l of lots) { const P = l.footprint || [], top = (l.floors | 0 || 1) * (l.floorH || 3.2) + 0.9;
+    for (let i = 0; i < P.length; i++) { const a = P[i], b = P[(i + 1) % P.length];
+      if (Math.min(Math.hypot(a[0] - E[0], a[1] - E[2]), Math.hypot(b[0] - E[0], b[1] - E[2])) > 160) continue;
+      const w = { id: l.id, a, b, top }; let b0 = azOf(a[0] - E[0], a[1] - E[2]), b1 = azOf(b[0] - E[0], b[1] - E[2]); if ((b1 - b0 + NB) % NB > NB / 2) [b0, b1] = [b1, b0];
+      for (let q = b0; ; q = (q + 1) % NB) { bins[q].push(w); if (q === b1) break; } } }
+  return (P, own) => {
+    const d = [P[0] - E[0], P[1] - E[1], P[2] - E[2]];
+    for (const w of bins[azOf(d[0], d[2])]) { if (w.id === own) continue;
+      const ex = w.b[0] - w.a[0], ez = w.b[1] - w.a[1], den = d[0] * ez - d[2] * ex; if (Math.abs(den) < 1e-9) continue;
+      const t = ((w.a[0] - E[0]) * ez - (w.a[1] - E[2]) * ex) / den; if (t <= 0.001 || t >= 0.995) continue;
+      const u = ((w.a[0] - E[0]) * d[2] - (w.a[1] - E[2]) * d[0]) / den; if (u < 0 || u > 1) continue;
+      const hy = E[1] + d[1] * t; if (hy >= 0 && hy <= w.top) return true; }
+    return false;
+  };
+}
 // a sign frame (facadeFrame / sideFaces) on a frameFaces face: the frame's ends are the edge's ends -> the seen stretch in u
 function frameSpan(Fr, faces) {
   if (!faces) return null;
@@ -407,12 +476,85 @@ export const NAME_HUES = { '몽글술집': 'pink', '해녀감성주점': 'white'
 const CAT_OF_HUE = { red: 'red', orange: 'ygo', amber: 'ygo', yellow: 'ygo', green: 'ygo', pink: 'pink', magenta: 'pink', cyan: 'cyan', teal: 'cyan', blue: 'blue', violet: 'violet', white: 'white', warm: 'white' };
 const CUSE = { home: null, study: 'office' };       // C's floor use -> the sign tenant (null: flats carry no business sign)
 const SINGLE = new Set(['hotel', 'motel', 'office']);
+const NAMED = new Set(['blade', 'fascia', 'channel', 'round']);   // [P8-C] the signs that carry a tenant's name on a wall
 const CH_P = { cafe: 0.55, club: 0.5, shop: 0.4, hotel: 0.7, restaurant: 0.45, bar: 0.45, pocha: 0.45 };
 const SCROLL_P = { bar: 0.5, pocha: 0.6, restaurant: 0.4, pc: 0.6, karaoke: 0.6, conv: 0.1 };
 const STAND_P = { cafe: 0.6, bar: 0.75, pocha: 0.75, restaurant: 0.75, karaoke: 0.8, pc: 0.6, shop: 0.45, club: 0.5, conv: 0.3 };
 // window lettering (시트지) on lit 2F-5F glass: what each trade puts on its windows
 const VINYL_P = { karaoke: 0.85, pc: 0.8, office: 0.7, bar: 0.55, cafe: 0.5, restaurant: 0.45, shop: 0.55, club: 0.4, pocha: 0.5 };
 
+// [P8-C] the ground floor's tenants and its shop-bed signs, shared by generateSigns and groundBays (world-seoul's shop rooms
+// replay them to key each room to the sign over its bay). Geometry stream r only; add() draws the colour stream.
+// tenants per floor: 0 = ground (lot.use; a basement club stays in the ground sign). Upper floors follow C's whole-floor
+// tenants when given: a flat carries no sign; a lit floor's sign is on (97 %), a dark floor's as often as its trade
+// keeps late hours (x 0.8: signs run on timers, rooms face the back)
+  // tenants per floor: 0 = ground (lot.use; a basement club stays in the ground sign). Upper floors follow C's whole-floor
+  // tenants when given: a flat carries no sign; a lit floor's sign is on (97 %), a dark floor's as often as its trade
+  // keeps late hours (x 0.8: signs run on timers, rooms face the back)
+function floorTenants(lot, S, r, nFloors) {
+  const tenants = [];
+  for (let f = 0; f < nFloors; f++) {
+    const cf = f > 0 ? S.floors[f] : null, cu = cf ? (cf.use in CUSE ? CUSE[cf.use] : cf.use) : undefined;
+    if (cu === null) { tenants.push({ f, use: 'home', home: true, lit: false, name: { main: '', sub: '', cat: '' }, phone: '', tag: '' }); continue; }
+    const use = f === 0 ? lot.use : cu !== undefined ? cu : pick(r, UPPER_USES[lot.use] || UPPER_USES.office);
+    const name = makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05);
+    const u = r.next(), lp = LIT_P[use] ?? 0.5;
+    tenants.push({ f, use, name, lit: cf ? (cf.lit ? u < 0.97 : u < lp * 0.8) : u < lp, phone: fakePhone(r), tag: pick(r, TAGS) });
+  }
+  if (lot.use === 'hotel' || lot.use === 'motel') for (const t of tenants) { t.use = lot.use; t.name = tenants[0].name; t.lit = tenants[0].lit; t.home = false; }
+  return tenants;
+}
+function bedPass(lot, S, r, g, near, base, add, shut) {
+  for (const bed of S.fascias) {
+    const BF = slotFrame(bed.c, bed.normal, bed.w, SLOT.bedOut, base, bed.side), Lb = BF.L, xf = { frame: BF }, open = bed.lit !== false;
+    if (!open && !bed.side) shut.add(lot.id);
+    const by0 = bed.c[1] - bed.h / 2, by1 = bed.c[1] + bed.h / 2;
+    const nShops = SINGLE.has(lot.use) ? 1 : Math.max(1, Math.min(4, Math.round(Lb / 6.5))), bay = Lb / nShops;
+    for (let i = 0; i < nShops; i++) {
+      let sh = g;
+      if (i > 0) { const use = pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant);
+        sh = { f: 0, use, name: makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05), lit: r.next() < (LIT_P[use] ?? 0.5), phone: fakePhone(r), tag: pick(r, TAGS) }; }
+      // [P6-C] art #4 (w21's 노을빈티지 was grey paint on a dark band): near the spawn line a shop sign runs on its timer
+      // whether or not the shop is shuttered or its tenant drew dark
+      const on = r.next(), shop = near ? { ...sh, lit: true } : sh.lit && !open && on >= 0.15 ? { ...sh, lit: false } : sh;
+      const u0 = bay * i;
+      // art #1: the sign fills the bed (60-95 % of the bay; the bed is the slot the building gives it)
+      const lo = open ? by0 + 0.05 : Math.max(by0 + 0.05, SLOT.shutterTop + 0.04), hi = by1 - 0.04;
+      const w = Math.max(1.0, Math.min(bay - 0.4, bay * range(r, 0.62, 0.95))), h = Math.min(hi - lo, range(r, 0.8, 1.02)), y = lo + (hi - lo - h) / 2;
+      const channel = r.next() < (CH_P[sh.use] ?? 0.25);
+      add(channel ? 'channel' : 'fascia', shop, { u: u0 + (bay - w) / 2, y, w, h, d: channel ? 0.12 : range(r, 0.2, 0.3), z0: SLOT.bedOut - 0.02, bay }, xf);
+      if (!open) continue;
+      // LED dot scroller on the glass under the bed (bars, pocha, pc, karaoke, restaurants), else a small light box hung by
+      // the door (영업중, the name again) on ~35 % of bays
+      if (r.next() < (SCROLL_P[sh.use] ?? 0.12)) {
+        const sw = Math.min(bay * 0.6, range(r, 1.6, 3.2));
+        add('scroller', shop, { u: u0 + range(r, 0.3, Math.max(0.35, bay - sw - 0.3)), y: 2.46, w: sw, h: 0.26, d: 0.06 }, { ...xf, scrollRow: Math.floor(r.next() * SCROLL_TEXT.length) });
+      } else if (bay > 3 && r.next() < 0.35) {
+        const dw = range(r, 0.8, 1.1); add('fascia', shop, { u: r.next() < 0.5 ? u0 + 0.45 : u0 + bay - 0.45 - dw, y: 2.4, w: dw, h: 0.46, d: 0.12, z0: 0.02, door: true }, xf);
+      }
+      // sidewalk standing sign (입간판): ~0.6 per open shop
+      if (r.next() < (STAND_P[sh.use] ?? 0.25)) add('stand', shop, { u: u0 + range(r, 0.6, Math.max(0.7, bay - 0.6)), y: 0.15, w: 0.55, h: range(r, 1.1, 1.5), d: 0.55, out: range(r, 0.8, 1.4) }, xf);
+      // neon in the shop window (bars, pocha, clubs)
+      if (NIGHT_USES.has(sh.use) && r.next() < 0.5) add('neon', shop, { u: u0 + range(r, 0.4, Math.max(0.5, bay - 2.2)), y: 1.0, w: range(r, 1.2, 1.8), h: range(r, 0.5, 0.8), d: 0.05 }, { ...xf, neonText: pick(r, NEON_WORDS) });
+    }
+  }
+}
+// [P8-C] art #1 (tenant-true rooms, carried twice: walk180's 청춘코인빨래방 sign hung over an office): the shops on a lot's
+// sign beds as the signs name them. info: world-seoul's lotInfo record so far ({ floors, fascias }; a bed's draws depend
+// only on the beds before it, so the beds built up to now are enough). -> per bed { o, r, L, bays: [{ u0, u1, use, name }] }
+export function groundBays(lot, info, seed = 0x5e0a1) {
+  const r = new Rng((seed >>> 0) ^ hashStr(lot.id)), F = facadeFrame(lot), nFloors = Math.max(1, lot.floors | 0);
+  const S = { fascias: info.fascias || [], floors: info.floors || [] }, base = { top: F.top, floors: F.floors, fh: F.fh };
+  const tenants = floorTenants(lot, S, r, nFloors), out = [];
+  bedPass(lot, S, r, tenants[0], false, base, (type, t, geo, extra) => {
+    r.next();   // generateSigns' add() draws each sign's seed from the geometry stream
+    if (!geo.bay) return; const BF = extra.frame;
+    let bed = out.find((b) => b.F === BF); if (!bed) out.push(bed = { F: BF, o: BF.o, r: BF.r, L: BF.L, bays: [] });
+    const i = Math.floor((geo.u + geo.w / 2) / geo.bay + 1e-6);
+    bed.bays.push({ u0: i * geo.bay, u1: (i + 1) * geo.bay, use: t.use, name: t.name });
+  }, new Set());
+  return out.map(({ o, r: rr, L, bays }) => ({ o, r: rr, L, bays }));
+}
 export function generateSigns(layout, opts = {}) {
   const seed = (opts.seed ?? 0x5e0a1) >>> 0, pushOverride = opts.neonPush, pushScale = opts.neonPushScale ?? 1;
   const LI = opts.lotInfo || opts.world?.lotInfo || null;
@@ -437,23 +579,29 @@ export function generateSigns(layout, opts = {}) {
     const info = LI && typeof LI.get === 'function' ? LI.get(lot.id) : null;
     const S = info ? { fascias: info.fascias || (info.fascia ? [info.fascia] : []), bands: info.bands || [], windows: info.windows || [], roofSign: info.roofSign || null, floors: info.floors || [] }
       : synthSlots(lot, F, sides, st);
-    // tenants per floor: 0 = ground (lot.use; a basement club stays in the ground sign). Upper floors follow C's whole-floor
-    // tenants when given: a flat carries no sign; a lit floor's sign is on (97 %), a dark floor's as often as its trade
-    // keeps late hours (x 0.8: signs run on timers, rooms face the back)
-    const tenants = [];
-    for (let f = 0; f < nFloors; f++) {
-      const cf = f > 0 ? S.floors[f] : null, cu = cf ? (cf.use in CUSE ? CUSE[cf.use] : cf.use) : undefined;
-      if (cu === null) { tenants.push({ f, use: 'home', home: true, lit: false, name: { main: '', sub: '', cat: '' }, phone: '', tag: '' }); continue; }
-      const use = f === 0 ? lot.use : cu !== undefined ? cu : pick(r, UPPER_USES[lot.use] || UPPER_USES.office);
-      const name = makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05);
-      const u = r.next(), lp = LIT_P[use] ?? 0.5;
-      tenants.push({ f, use, name, lit: cf ? (cf.lit ? u < 0.97 : u < lp * 0.8) : u < lp, phone: fakePhone(r), tag: pick(r, TAGS) });
-    }
-    if (lot.use === 'hotel' || lot.use === 'motel') for (const t of tenants) { t.use = lot.use; t.name = tenants[0].name; t.lit = tenants[0].lit; t.home = false; }
+    const tenants = floorTenants(lot, S, r, nFloors);
     const biz = (f) => { for (let k = Math.min(f, nFloors - 1); k >= 0; k--) if (!tenants[k].home) return tenants[k]; return tenants[0]; };
     let k = 0;
     const sHues = st.kind === 'walking' && push > 0 ? STREET_HUES[st.name] : null, rH = sHues ? new Rng((seed ^ hashStr(lot.id + '#p8a')) >>> 0) : null;   // [P8-A] (C's renames use '#p8')
+    // [P8-C] ui #2 / art #3 (one walk0 frontage named 한잔카페 on five blades): a tenant's name shows on a face at most twice.
+    // Every named box is counted on its wall (plane key); an upper-floor box (blade, stack box, floor or spandrel-row box; not
+    // a shop's bed sign, a motel's or a roof sign) whose tenant is already on the wall twice takes another floor tenant (an upper-floor use x NAME_A) from its own stream (r8, drawn only then), so no other
+    // sign's geometry or colour moves, and the box keeps its tenant's use (its colour and style draws are unchanged)
+    const faceNames = []; let r8 = null;   // [{ n, d, m: name -> count }]: one per wall plane (normals within 5 deg, 0.3 m)
+    const namesOn = (Fr) => { const d = Fr.o[0] * Fr.n[0] + Fr.o[1] * Fr.n[1];
+      let w = faceNames.find((q) => q.n[0] * Fr.n[0] + q.n[1] * Fr.n[1] > 0.996 && Math.abs(q.d - d) < 0.3);
+      if (!w) faceNames.push(w = { n: Fr.n, d, m: new Map() }); return w.m; };
+    const nameKey = (nm) => (nm.main + (nm.sub ? ' ' + nm.sub : '')).trim();
     const add = (type, t, geo, extra = {}) => {
+      if (NAMED.has(type) && t.name?.main) {
+        const m = namesOn(extra.frame || F);
+        if (!geo.bay && !geo.tall && !geo.roofBox && !geo.cframe && !geo.door && t.use !== 'motel' && t.use !== 'hotel' && (m.get(nameKey(t.name)) || 0) >= 2) {
+          r8 ||= new Rng((seed ^ hashStr(lot.id + '#p8')) >>> 0);
+          for (let tries = 0; tries < 8; tries++) { const use = pick(r8, UPPER_USES[lot.use] || UPPER_USES.office), nm = makeName(r8, use, use === 'cafe' || use === 'shop' ? 0.15 : 0.05);
+            if (!(m.get(nameKey(nm)) || 0)) { t = { ...t, name: nm, tag: pick(r8, TAGS), phone: fakePhone(r8) }; break; } }
+        }
+        m.set(nameKey(t.name), (m.get(nameKey(t.name)) || 0) + 1);
+      }
       // fixed colour draws per sign, whatever the push, so geometry/count/lit never move with push
       const uCat = rc.next(), uHue = rc.next(), uNeon = rc.next(), uNit = rc.next(), uFlk = rc.next(), uAcc = rc.next();
       const uDes = rc.next(), uBulb = rc.next(), uGr = rc.next(), uLet = rc.next(), uDes2 = rc.next(), uFilm = rc.next();
@@ -473,8 +621,11 @@ export function generateSigns(layout, opts = {}) {
       // neon-tube share (T5: <5 % census -> 15 % hero) re-skins small nightlife faces as tube lettering on a black board
       if (nightlife && (type === 'fascia' || type === 'round' || type === 'window') && !geo.roofBox && uNeon < (NEON_SHARE[0] + (NEON_SHARE[1] - NEON_SHARE[0]) * pn) * 3.4) style = 'neon';
       const acc = pickW(uAcc, [['white', 0.5], ['red', 0.2], ['blue', 0.15], ['yellow', 0.15]]);
-      const design = chooseDesign(style, c.cat, c.hue, t.use, uDes, uDes2);
-      let nits = designNits(design, c.cat, uNit, c.hue);
+      // [P8-C] art #3 (walk0's violet frame blade read as a dark slab with dim, smeared letters): a frame stack box is a lit
+      // face (flex) in the ground hues and LED letters on galva in the rest, at the top of its range
+      const fsx = !!geo.frameStack;
+      const design = fsx ? (GROUND_HUES.has(c.hue) ? 'flex' : 'galva') : chooseDesign(style, c.cat, c.hue, t.use, uDes, uDes2);
+      let nits = designNits(design, c.cat, fsx ? 1 : uNit, c.hue);
       const groundK = lerp(NITS.ground[0], NITS.ground[1], uGr);
       if (near && t.lit && design === 'flex' && type !== 'vinyl') nits = Math.max(nits, NITS.nearFace / groundK);   // [P6-C] art #1: face >= 80 nits
       // ~3 % of lit tubes/boxes are failing: irregular flicker (seoul-light can light it; the face flickers in-shader)
@@ -494,41 +645,7 @@ export function generateSigns(layout, opts = {}) {
     const L = F.L;
     // --- ground floor: every sign bed C built (fronts, and corner shops' second frontage) holds 1-4 shop bays (Hongdae:
     //     4-8 m each), each with its sign on the bed. A shuttered bay keeps its sign (mostly dark) above the housing box ---
-    let fasciaY = 3.0;
-    for (const bed of S.fascias) {
-      const BF = slotFrame(bed.c, bed.normal, bed.w, SLOT.bedOut, base, bed.side), Lb = BF.L, xf = { frame: BF }, open = bed.lit !== false;
-      if (!open && !bed.side) shut.add(lot.id);
-      const by0 = bed.c[1] - bed.h / 2, by1 = bed.c[1] + bed.h / 2;
-      const nShops = SINGLE.has(lot.use) ? 1 : Math.max(1, Math.min(4, Math.round(Lb / 6.5))), bay = Lb / nShops;
-      for (let i = 0; i < nShops; i++) {
-        let sh = g;
-        if (i > 0) { const use = pick(r, GROUND_NEXT[lot.use] || GROUND_NEXT.restaurant);
-          sh = { f: 0, use, name: makeName(r, use, use === 'club' ? 0.3 : use === 'cafe' ? 0.15 : use === 'shop' ? 0.15 : 0.05), lit: r.next() < (LIT_P[use] ?? 0.5), phone: fakePhone(r), tag: pick(r, TAGS) }; }
-        // [P6-C] art #4 (w21's 노을빈티지 was grey paint on a dark band): near the spawn line a shop sign runs on its timer
-        // whether or not the shop is shuttered or its tenant drew dark
-        const on = r.next(), shop = near ? { ...sh, lit: true } : sh.lit && !open && on >= 0.15 ? { ...sh, lit: false } : sh;
-        const u0 = bay * i;
-        // art #1: the sign fills the bed (60-95 % of the bay; the bed is the slot the building gives it)
-        const lo = open ? by0 + 0.05 : Math.max(by0 + 0.05, SLOT.shutterTop + 0.04), hi = by1 - 0.04;
-        const w = Math.max(1.0, Math.min(bay - 0.4, bay * range(r, 0.62, 0.95))), h = Math.min(hi - lo, range(r, 0.8, 1.02)), y = lo + (hi - lo - h) / 2;
-        if (i === 0 && !bed.side) fasciaY = y;
-        const channel = r.next() < (CH_P[sh.use] ?? 0.25);
-        add(channel ? 'channel' : 'fascia', shop, { u: u0 + (bay - w) / 2, y, w, h, d: channel ? 0.12 : range(r, 0.2, 0.3), z0: SLOT.bedOut - 0.02, bay }, xf);
-        if (!open) continue;
-        // LED dot scroller on the glass under the bed (bars, pocha, pc, karaoke, restaurants), else a small light box hung by
-        // the door (영업중, the name again) on ~35 % of bays
-        if (r.next() < (SCROLL_P[sh.use] ?? 0.12)) {
-          const sw = Math.min(bay * 0.6, range(r, 1.6, 3.2));
-          add('scroller', shop, { u: u0 + range(r, 0.3, Math.max(0.35, bay - sw - 0.3)), y: 2.46, w: sw, h: 0.26, d: 0.06 }, { ...xf, scrollRow: Math.floor(r.next() * SCROLL_TEXT.length) });
-        } else if (bay > 3 && r.next() < 0.35) {
-          const dw = range(r, 0.8, 1.1); add('fascia', shop, { u: r.next() < 0.5 ? u0 + 0.45 : u0 + bay - 0.45 - dw, y: 2.4, w: dw, h: 0.46, d: 0.12, z0: 0.02, door: true }, xf);
-        }
-        // sidewalk standing sign (입간판): ~0.6 per open shop
-        if (r.next() < (STAND_P[sh.use] ?? 0.25)) add('stand', shop, { u: u0 + range(r, 0.6, Math.max(0.7, bay - 0.6)), y: 0.15, w: 0.55, h: range(r, 1.1, 1.5), d: 0.55, out: range(r, 0.8, 1.4) }, xf);
-        // neon in the shop window (bars, pocha, clubs)
-        if (NIGHT_USES.has(sh.use) && r.next() < 0.5) add('neon', shop, { u: u0 + range(r, 0.4, Math.max(0.5, bay - 2.2)), y: 1.0, w: range(r, 1.2, 1.8), h: range(r, 0.5, 0.8), d: 0.05 }, { ...xf, neonText: pick(r, NEON_WORDS) });
-      }
-    }
+    bedPass(lot, S, r, g, near, base, add, shut);
     // --- upper floors (signs stop around 6-7F; main-road towers 8F): a floor box on the spandrel over each tenant's windows
     //     (C's bands, trimmed to the real window heads and sills), on ~88 % of lit 2F-7F tenants and ~35 % of dark ones ---
     const tower = st.kind === 'main' && nFloors >= 8;
@@ -692,7 +809,8 @@ export function generateSigns(layout, opts = {}) {
           stacks.push(u);
           const acc = Math.floor(r7.next() * n), accHue = r7.next() < 0.5 ? 'cyan' : 'violet';
           for (let k2 = 0; k2 < n; k2++) { const y = fh + 0.3 + k2 * 1.35, f = Math.min(nFloors - 1, Math.floor(y / fh));
-            add('blade', { ...biz(f), lit: true }, { u: u - 0.3, y, w: 0.6, h: 1.1, d: 0.26, out, stackBox: true, frameStack: true, hue: k2 === acc ? accHue : pickW(r7.next(), FRAME_HUES) }, { frame: Fr }); }
+            // [P8-C] art #3: 0.45 x 0.9 (P7's 0.6 x 1.1 hid the signs downstreet), centred where P7's box was
+            add('blade', { ...biz(f), lit: true }, { u: u - 0.3, y: y + 0.1, w: 0.45, h: 0.9, d: 0.24, out, stackBox: true, frameStack: true, hue: k2 === acc ? accHue : pickW(r7.next(), FRAME_HUES) }, { frame: Fr }); }
         }
         // spandrel and parapet rows: between floor f's window heads and floor f + 1's sills (the parapet above the top floor)
         const ww = S.windows.length ? wallWins([Fr.n[0], 0, Fr.n[1]], [Fr.o[0], 0, Fr.o[1]]) : [];
@@ -711,7 +829,15 @@ export function generateSigns(layout, opts = {}) {
         }
       }
     }
-    void fasciaY;
+  }
+  // [P8-C] art #3 (walk180's elements fell 251 -> 222: P7's frame stacks hid the signs downstreet): a frame stack that
+  // hides more than 30 % of any other lit sign's face from a HERO_VIEW eye goes (the whole stack, so each keeps its accent)
+  // The rule covers every projecting box on a frame lot (P5's stack boxes and the second blade stacks too); a corner lot's
+  // side-wall stack (one per corner lot, the street's read of the corner) is thinned to 0.42 m out instead of dropped
+  if (FF.size && opts.frameOcclusion !== false) {
+    const drop = frameOccluders(specs, opts.frameViews || HERO_VIEWS, 0.3, layout, new Set(FF.keys()));
+    for (const s of drop) if (s.frame?.side && !s.geo.frameStack && s.type === 'blade') { s.geo = { ...s.geo, w: Math.min(s.geo.w, 0.42), thinned: true }; drop.delete(s); }
+    if (drop.size) for (let i = specs.length - 1; i >= 0; i--) if (drop.has(specs[i])) specs.splice(i, 1);
   }
   // --- LED screens: from the layout, plus small door screens synthesised for cafes / shops / clubs on hero streets ---
   (layout.screens || []).forEach((s, i) => screens.push({ ...s, idx: i, seed: (seed ^ hashStr(s.id)) >>> 0 }));
@@ -1713,5 +1839,5 @@ export async function build(layout, ctx = {}) {
   };
 }
 
-export const seoulSigns = { build, buildData, exportData, generateSigns, signStats, designFace, colliderTris, groundName, tradeOf, loadFonts, NIT_SCALE, NITS, CENSUS, SHIPPED, PUSH_BY_KIND, K };
+export const seoulSigns = { build, buildData, exportData, generateSigns, signStats, designFace, colliderTris, groundName, groundBays, tradeOf, loadFonts, NIT_SCALE, NITS, CENSUS, SHIPPED, PUSH_BY_KIND, K };
 export default seoulSigns;

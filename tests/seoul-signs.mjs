@@ -181,5 +181,21 @@ if (M.frameFaces && lp.endsWith('layout.json')) {
   ok(tall.every((id) => byLot.has(id)), `every frame lot carries a frame stack (${tall.filter((id) => byLot.has(id)).length}/${tall.length})`);
   const stacks = new Map(); for (const s of fs_) { const k = `${s.lot}|${s.geo.u.toFixed(2)}|${s.frame?.n?.join()}`; (stacks.get(k) || stacks.set(k, []).get(k)).push(s); }
   ok(stacks.size >= 10 && [...stacks.values()].every((b) => b.some((s) => s.cat === 'cyan' || s.cat === 'violet') && b.every((s) => s.lit)), `${stacks.size} frame stacks, each lit with a cyan or violet box (art #4)`);
+  // [P8-C] art #3: the frame boxes are 0.45 x 0.9 lit faces (flex, or LED letters on galva) at the top of their range, and no
+  // projecting box on a frame lot hides > 30 % of another lot's lit sign from a still's eye
+  ok(fs_.every((s) => s.geo.w === 0.45 && s.geo.h === 0.9 && (s.design === 'flex' || s.design === 'galva')), `frame boxes 0.45 x 0.9, flex / galva (${fs_.length})`);
+  const left = M.frameOccluders(a.specs, M.HERO_VIEWS, 0.3, layout, new Set(FF.keys())), thin = [...left].filter((s) => !s.geo.thinned);
+  ok(thin.length === 0, `no projecting box on a frame lot hides > 30 % of a lit sign from walk0 / walk180 / w21 (${thin.map((s) => s.id).join(' ')})`);
+}
+// [P8-C] ui #2 (walk0's 2F frontage carried 한잔카페 on five blades): one tenant per blade; a name shows at most twice on a wall
+// (a motel's or hotel's building name excepted)
+{
+  const walls = new Map(), nk = (s) => (s.name.main + (s.name.sub ? ' ' + s.name.sub : '')).trim();
+  for (const s of a.specs) { if (!s.lit || !['blade', 'fascia', 'channel', 'round'].includes(s.type) || !s.name?.main || s.use === 'motel' || s.use === 'hotel') continue;
+    const F = s.frame, d = F.o[0] * F.n[0] + F.o[1] * F.n[1], ws = walls.get(s.lot) || walls.set(s.lot, []).get(s.lot);
+    let w = ws.find((q) => q.n[0] * F.n[0] + q.n[1] * F.n[1] > 0.996 && Math.abs(q.d - d) < 0.3); if (!w) ws.push(w = { n: F.n, d, m: new Map() });
+    w.m.set(nk(s), (w.m.get(nk(s)) || 0) + 1); }
+  const all = [...walls.values()].flat(), bad = all.filter((w) => Math.max(...w.m.values()) > 2);
+  ok(all.length > 400 && bad.length === 0, `ui #2: no tenant name more than twice on a wall (${bad.length} of ${all.length} walls over)`);
 }
 console.log(`${pass} pass, ${fail} fail`); process.exit(fail ? 1 : 0);
