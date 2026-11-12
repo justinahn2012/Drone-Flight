@@ -1,8 +1,7 @@
 // The Seoul export as a native bundle (tools/export-world.mjs --level seoul-hongdae): world.json's file table checked
 // by sha256, the collider decoded to the game's triangles (collider.soupHash), the packed light / sign streams
-// (data.packed, signs.bin) decoded. UNTESTED: see PARITY.md.
+// (data.packed, signs.bin) decoded. [P6 H] Compiled and tested in CI (native-linux, native-macos): see PARITY.md.
 import Foundation
-import CryptoKit
 import CMeshopt
 
 public struct SeoulBundle {
@@ -20,7 +19,7 @@ public struct SeoulBundle {
         let files = world["files"] as! [String: [String: Any]]
         return try files.keys.sorted().filter { f in
             let d = try data(f), want = files[f]!
-            let sha = SHA256.hash(data: d).map { String(format: "%02x", $0) }.joined()
+            let sha = SHA256Hex.hex(d)   // [P6 H] CryptoKit on Apple, the portable one on the Linux CI job
             return d.count != want["bytes"] as! Int || sha != want["sha256"] as! String
         }
     }
@@ -37,7 +36,7 @@ public struct SeoulBundle {
     /// GeoHash().str("soup").word(triangles).array(soup): must equal world.json collider.soupHash.
     public static func soupHash(_ soup: [Float]) -> String {
         var h = GeoHash(); h.str("soup"); h.word(UInt32(soup.count / 9))
-        soup.withUnsafeBufferPointer { h.floats($0) }
+        _ = soup.withUnsafeBufferPointer { h.floats($0) }
         return h.hex()
     }
 

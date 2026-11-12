@@ -1,0 +1,7 @@
+# [P6 H] vendored by fetch-meshopt.sh (CI and the Mac run it), and SwiftPM's build dir
+Sources/CMeshopt/*.cpp
+Sources/CMeshopt/LICENSE.md
+Sources/CMeshopt/include/meshoptimizer.h
+.build/
+.swiftpm/
+Package.resolved

@@ -1,7 +1,11 @@
 # Neon Seoul native slice: parity spec (P4 stream H, native #6)
 
-**Status: untested.** This package was written on the Linux export box, which has no Swift or Metal toolchain. Nothing
-here has been compiled. The first job on a Mac is `sh fetch-meshopt.sh && ONETAKE_EXPORT=<export dir> swift test`.
+**Status (P6 H): compiled and passing.** First compiled on Linux with Swift 6.1.2 against main bc45fbe's CI export:
+7/7 tests pass (the P4 code needed no fix; SHA-256 now has a portable path beside CryptoKit, the lightmap reader is new).
+CI runs it on every push after the `test` job, against that commit's own export: `native-linux` (swift:6.1-noble) and
+`native-macos` (macos-15: swift test, plus an iOS-SDK `xcodebuild` of the package). Locally:
+`sh fetch-meshopt.sh && ONETAKE_EXPORT=<export dir> swift test` (`ci/merge-check.mjs` runs it when `swift` is on PATH).
+There is no Metal code yet: section 4 is the order, and its step 1 is the next job on the Mac.
 
 The slice proves one thing before any rendering work: the phone reads the web export and gets the same world. Every
 check below has a JS twin in the exporter (tools/export-world.mjs, tools/export-seoul-data.mjs), which already runs
@@ -19,6 +23,8 @@ it on every CI export, so a Swift failure means the port is wrong, not the data.
 | Traffic | LifeSim port: hash after advanceTo(t) at t = 0, 5, 37.5, 90 | life.json `parity.vectors[].hash` |
 | Flight + Take | replay tests/*.otil at 240 Hz | tests/seoul/parity.json (tests/seoul-parity.mjs) |
 | Packed streams | meshopt_decodeVertexBuffer of each `data.packed` file | `decodedBytes`; lossless |
+| Night lightmap | NightLM: NLM2 header, key == light.json `lightmap.key` (a stale key throws), gunzip, un-plane | `lightmap.texelHash` (testNightLightmap) |
+| SHA-256 | CryptoKit (Apple) and the portable FIPS 180-4 path agree on the standard vectors | testSHA256Vectors |
 | signs.bin columns | decode per column (i32 / f32; fixed point x `scale`) | the JSON values (exact) |
 
 The collider is the contract for collision parity. Keep its triangle order (three-mesh-bvh order) when building the

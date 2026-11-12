@@ -37,7 +37,9 @@ const argv = process.argv.slice(2), flag = (f) => argv.includes(f), opt = (f) =>
 const words = (s) => (s ? s.toLowerCase().split(',').map((x) => x.trim()).filter(Boolean) : []);
 const ONLY = words(opt('--only')), SKIP = words(opt('--skip'));
 const IN_PLACE = flag('--in-place'), DEPTH_OPT = opt('--depth');
-const JOBS = flag('--browser') ? ['test', 'audio', 'browser', 'browser-seoul'] : ['test', 'audio'];
+// [P6 H] native-linux (swift build + swift test on the export the test steps just built) joins when swift is on PATH
+const HAS_SWIFT = (() => { try { execSync('swift --version', { stdio: 'ignore' }); return true; } catch (e) { return false; } })();
+const JOBS = [...(flag('--browser') ? ['test', 'audio', 'browser', 'browser-seoul'] : ['test', 'audio']), ...(HAS_SWIFT && !flag('--no-native') ? ['native-linux'] : [])];
 
 /** The `run:` steps of the given jobs in a GitHub workflow (the subset of YAML ci.yml uses: `- name:` / `run: |` blocks,
  *  `run: cmd` one-liners, `if:` lines). -> [{ job, name, run }] */
@@ -53,6 +55,7 @@ export function workflowSteps(yml, jobs) {
     if (ind === 2 && (m = /^ {2}([\w-]+):/.exec(line))) { flush(); job = m[1]; continue; }
     if (t.startsWith('- ') && ind >= 4) { flush(); m = /^- name: (.*)$/.exec(t); step = { job, name: (m ? m[1] : t.slice(2)).replace(/^['"]|['"]$/g, '') }; }
     if (!step) continue;
+    const wd = /^(?:- )?working-directory: (.*)$/.exec(t); if (wd) step.cwd = wd[1].trim();   // [P6 H] native jobs
     const r = /^(?:- )?run: (.*)$/.exec(t);
     if (r) { if (/^\|/.test(r[1])) { block = []; keyInd = line.indexOf('run:'); } else step.run = r[1]; }
   }
@@ -102,7 +105,7 @@ console.log(`merge-check: ${steps.length} steps of ${JOBS.join(', ')} on ${sha?.
 
 const run = (s, n) => new Promise((res) => {
   const t0 = Date.now(), log = join(LOGS, `${String(n).padStart(2, '0')}-${s.name.replace(/[^\w]+/g, '-').slice(0, 50)}.log`);
-  const p = spawn('bash', ['-eo', 'pipefail', '-c', s.run], { cwd: WORK, env: { ...process.env, RUNNER_TEMP: TEMP, CI: 'merge-check' } });
+  const p = spawn('bash', ['-eo', 'pipefail', '-c', s.run], { cwd: s.cwd ? join(WORK, s.cwd) : WORK, env: { ...process.env, RUNNER_TEMP: TEMP, GITHUB_WORKSPACE: WORK, CI: 'merge-check' } });
   let buf = '';
   const tee = (c) => { buf += c; if (flag('--verbose')) process.stdout.write(c); };
   p.stdout.on('data', tee); p.stderr.on('data', tee);

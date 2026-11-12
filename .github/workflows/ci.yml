@@ -122,6 +122,59 @@ jobs:
           path: exports/
           retention-days: 30
 
+  # [P6 H, native #2] the native slice (native/OneTakeSeoul) compiled and run against this commit's own Seoul export
+  # (the test job's "exports" artifact): GeoHash and SHA-256 vectors, every file's sha256, the collider bit for bit
+  # (soupHash), world.glb meshopt decode within 2 mm of the game's bounds, the packed streams, and the night lightmap
+  # (NLM2 key check + RGB9E5 texels, hash-equal to the JS decode). Linux first (Swift 6.1 container), then macOS, which
+  # also builds the CryptoKit path that ships on the phone.
+  native-linux:
+    needs: test
+    if: ${{ !cancelled() && needs.test.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    container: swift:6.1-noble
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: exports
+          path: exports
+      - name: Toolchain extras (curl for the meshopt vendor script, zlib headers)
+        run: command -v curl >/dev/null && [ -f /usr/include/zlib.h ] || { apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates zlib1g-dev; }
+      - name: swift build + swift test (native/OneTakeSeoul against exports/seoul-hongdae)
+        working-directory: native/OneTakeSeoul
+        shell: bash
+        run: |
+          sh fetch-meshopt.sh
+          swift build
+          ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" swift test 2>&1 | tee swift-test.log
+          grep -q "with 0 failures" swift-test.log && ! grep -q "skipped" swift-test.log
+
+  native-macos:   # [P6 H] the Apple side of the same package (CryptoKit, the SDK's zlib); no Metal code yet (PARITY.md section 4)
+    needs: test
+    if: ${{ !cancelled() && needs.test.result != 'skipped' }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: exports
+          path: exports
+      - name: swift build + swift test (macOS, Xcode's Swift)
+        working-directory: native/OneTakeSeoul
+        shell: bash
+        run: |
+          swift --version
+          sh fetch-meshopt.sh
+          swift build
+          ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" swift test 2>&1 | tee swift-test.log
+          grep -q "with 0 failures" swift-test.log && ! grep -q "skipped" swift-test.log
+      - name: iOS build (the package for the phone's SDK; compile only)
+        working-directory: native/OneTakeSeoul
+        shell: bash
+        run: xcodebuild -scheme SeoulBundle -destination 'generic/platform=iOS' -skipPackagePluginValidation build CODE_SIGNING_ALLOWED=NO | tail -20
+
   audio:   # [P3 H] G2's suite: offline Web Audio in node (node-web-audio-api, which links libasound), ~5 min
     runs-on: ubuntu-24.04   # [P4 H] pinned: ubuntu-latest is moving to 26.04, where apt-installed deps (libasound, playwright's) broke
     timeout-minutes: 20
