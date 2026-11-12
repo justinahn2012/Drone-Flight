@@ -31,7 +31,8 @@ final class ParityTests: XCTestCase {
         let d = try b.data(file), t = try NightLM(d, key: key)
         XCTAssertEqual(t.width, L["width"] as! Int); XCTAssertEqual(t.height, L["height"] as! Int)
         XCTAssertEqual(t.texels.count, t.width * t.height)
-        if let want = L["texelHash"] as? String { var h = GeoHash(); h.str("nlm"); h.uints(t.texels); XCTAssertEqual(h.hex(), want, "decoded texels") }
+        let want = L["texelHash"] as? String; XCTAssertNotNil(want, "light.json lightmap.texelHash (tools/export-seoul-data.mjs, P6)")
+        var h = GeoHash(); h.str("nlm"); h.uints(t.texels); XCTAssertEqual(h.hex(), want ?? "", "decoded texels = the JS decode")
         let lit = t.texels.filter { $0 != 0 }.count, tx = L["texels"] as? [String: Int] ?? [:]
         XCTAssertGreaterThanOrEqual(lit, (tx["ground"] ?? 0) + (tx["facade"] ?? 0) / 2, "lit texels")
         let (r, g, bb) = NightLM.rgb(t.texels[t.texels.count / 2]); XCTAssert(r.isFinite && g.isFinite && bb.isFinite)

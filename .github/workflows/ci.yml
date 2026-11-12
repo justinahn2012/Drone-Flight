@@ -115,6 +115,9 @@ jobs:
         run: |
           node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae --strict
           node tools/export-world.mjs --level seoul-hongdae --out exports/seoul-hongdae --check --strict
+      - name: Seoul bundle size (H; per-file deflate as an .ipa holds it, <= 60 MB)
+        if: ${{ !cancelled() && hashFiles('exports/seoul-hongdae/world.json') != '' }}
+        run: node ci/bundle-size.mjs exports/seoul-hongdae --max 60
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
@@ -173,7 +176,11 @@ jobs:
       - name: iOS build (the package for the phone's SDK; compile only)
         working-directory: native/OneTakeSeoul
         shell: bash
-        run: xcodebuild -scheme SeoulBundle -destination 'generic/platform=iOS' -skipPackagePluginValidation build CODE_SIGNING_ALLOWED=NO | tail -20
+        run: |   # SwiftPM's generated schemes: <package>-Package when there are several targets, else the product's name
+          xcodebuild -list
+          S=$(xcodebuild -list -json | python3 -c 'import json,sys; d=json.load(sys.stdin); s=(d.get("workspace") or d.get("project"))["schemes"]; print(next((x for x in s if x.endswith("-Package")), next((x for x in s if x == "SeoulBundle"), s[0])))')
+          echo "scheme: $S"
+          xcodebuild -scheme "$S" -destination 'generic/platform=iOS' -skipPackagePluginValidation build CODE_SIGNING_ALLOWED=NO | tail -20
 
   audio:   # [P3 H] G2's suite: offline Web Audio in node (node-web-audio-api, which links libasound), ~5 min
     runs-on: ubuntu-24.04   # [P4 H] pinned: ubuntu-latest is moving to 26.04, where apt-installed deps (libasound, playwright's) broke
