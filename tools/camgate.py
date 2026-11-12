@@ -59,6 +59,7 @@ LUMA = np.array([0.2126, 0.7152, 0.0722])
 # the stacks must fill (walk0, walk180, w21), wherever they are in the set (refs 8e17 / ccb0: 631 / 338; panel6 155-251).
 # CI renders 320x180 on SwiftShader, where small sources merge or drop out: the same count reads ~0.31 x the 1280-wide
 # seoulsnap still (A's P6 CI run 43163186613 against panel6's stills: walk0 48 / 155, club90 55 / 170, station 96 / 327),
+# and on the same build (main 2dc3578 run 43180707219 vs panel6, eab7226): 55 / 155, 50 / 170, 88 / 327, mean 0.31),
 # so a still narrower than 960 px is gated at round(300 x 0.31) = 93. The threshold is the art target either way.
 ELEMENT_SHOTS = {'walk0', 'walk180', 'w21'}
 GATE_EL = dict(n=300, ci_scale=0.31)
