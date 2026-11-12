@@ -26,8 +26,8 @@
 // pack, the sign wash: a Lambert record with omni >= washOmni lights its own wall within washM as if the wall faced it at
 // washCos x (1 - d / washM)^2: the colour of a box or a letter on the wall round it).
 // P6: 4 (the drawn sky dome in the bake, the wall-pack pool lobe, the store spill's trapezoid).
-// P8: 5 (the store spill 0.7, wall packs on shuttered and dark fronts).
-export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 4, file: './seoul/light/night-lm.bin', dilate: 6,
+// P8: 5 (the store spill 0.7 and its trapezoid matched with a tolerance: Float32(0.7) !== 0.7; wall packs on shuttered and dark fronts).
+export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 5, file: './seoul/light/night-lm.bin', dilate: 6,
   packFloorM: 3, washM: 1.5, washCos: 0.25, washOmni: 0.25 };
 
 // ---- lobes (seoul-light.js imports these: one copy for JS, the GLSL mirror lives there)
@@ -95,7 +95,7 @@ export function kAtP(M, i, px, py, pz, L) {
   const ty0 = M[o + 12], n0 = M[o + 5], n1 = M[o + 6], n2 = M[o + 7];
   let fe;
   if (ty0 === 0) { const om = M[o + 4], ce = -(ux * n0 + uy * n1 + uz * n2), sp = M[o + 19]; fe = Math.max(ce, 0) * (1 - om) + (0.55 + 0.45 * ce) * om;
-    if (sp > 0) fe += sp * Math.max(0.857 * uy + 0.515 * ce, 0) * (sp === SHOP_SPILL ? spillTrap(px - mx, py - my, pz - mz, n0, n2, M[o + 3], a, M[o + 13]) : 1); }
+    if (sp > 0) fe += sp * Math.max(0.857 * uy + 0.515 * ce, 0) * (Math.abs(sp - SHOP_SPILL) < 1e-3 ? spillTrap(px - mx, py - my, pz - mz, n0, n2, M[o + 3], a, M[o + 13]) : 1); }
   else if (ty0 === 1) fe = lobeStreet(-ux, -uy, -uz, n0, n2);
   else if (ty0 === 3) fe = lobePack(-ux, -uy, -uz, n0, n2);
   else fe = lobeBeam(-ux, -uy, -uz, n0, n2);

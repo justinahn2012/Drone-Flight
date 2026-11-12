@@ -29,6 +29,11 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   const g = (dx, dy, dz) => { const d = Math.hypot(dx, dy, dz); return lobePack(dx / d, dy / d, dz / d, 1, 0) * (-dy / d) / (d * d); };   // pavers 4.2 m under, forward +x
   const w1 = (() => { const dx = -0.24, dy = -1, d = Math.hypot(dx, dy); return lobePack(dx / d, dy / d, 0, 1, 0) * (0.24 / d) / (d * d); })();
   ok(g(0.5, -4.2, 0) > 4 * g(7, -4.2, 0) && w1 > 2 * g(0.5, -4.2, 0) && g(-1, -4.2, 0) >= 0 && lobePack(0, 1, 0, 1, 0) === 0, `wall pack pool: under ${g(0.5, -4.2, 0).toFixed(4)}, 7 m out ${g(7, -4.2, 0).toFixed(4)}, wall 1 m below ${w1.toFixed(4)}`); }
+// 0b2 P8: a ground-floor shop's glass record carries the 0.7 spill (the trapezoid), not a clamped 0.3 (the P8 bug a min(0.5) made)
+{ const E = (spill) => { const C = attach(world(), [{ id: 'store:t', pos: [0, 1.5, 0], normal: [0, 0, 1], w: 4, h: 2.6, nits: 80, kind: 'store', ...(spill != null ? { spill } : {}) }], { layout: flat, steam: false, airlight: false, cull: false });
+    const v = C.probe(0.5, 0, 2.5)?.direct || 0; C.dispose(); return v; };
+  const d = E(null), w3 = E(0.3), w0 = E(0);
+  ok(d - w0 > 1.8 * (w3 - w0), `shop spill 0.7 trapezoid: ${d.toFixed(1)} lux 2.5 m out (spill 0.3: ${w3.toFixed(1)}, none: ${w0.toFixed(1)})`); }
 // 0c P7: a festoon string over a N-S street is a line light along its span (x), and one over an E-W street along z
 { const lay = { streets: [{ id: 'ns', points: [[0, -50], [0, 50]] }, { id: 'ew', points: [[-50, 0], [50, 0]] }] };
   const E = [{ id: 'dress:festoon:ns:20.0', pos: [0, 7, -30], normal: [0, -1, 0], w: 9, h: 0.12 }, { id: 'dress:festoon:ew:70.0', pos: [20, 7, 0], normal: [0, -1, 0], w: 9, h: 0.12 }];

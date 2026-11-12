@@ -743,8 +743,8 @@ export function attach(world, emitters = [], ctx = {}) {
     m.x = e.pos[0]; m.y = e.pos[1]; m.z = e.pos[2]; m.A = A; m.omni = e.omni ?? T.omni; m.n = n; m.I = I; m.range = range; m.ty = ty; m.peak = peak; m.flick = e.flicker;
     m.hl = hl; m.a = Math.abs(hl);
     // P4 spill (Lambert faces only): records' own e.spill, else the type's for a ground-floor fascia (box bottom under 3.4 m)
-    m.down = ty !== LT.lambert ? 0 : Math.max(0, Math.min(0.5, e.spill ?? (T.spill && Math.abs(n[1]) < 0.3 && e.pos[1] - (e.h || 0.5) / 2 < 3.4 ? T.spill : 0)));
-    m.down = SPILL[spillCode(m.down)];   // P5: the record's 2 bits (0, 0.15, 0.3, 0.5)
+    m.down = ty !== LT.lambert ? 0 : Math.max(0, Math.min(SHOP_SPILL, e.spill ?? (T.spill && Math.abs(n[1]) < 0.3 && e.pos[1] - (e.h || 0.5) / 2 < 3.4 ? T.spill : 0)));
+    m.down = SPILL[spillCode(m.down)];   // P5: the record's 2 bits (0, 0.15, 0.3, 0.7: P8)
     if (hl > 0) { const tl = Math.hypot(n[2] + 1e-5, n[0]); m.tx = (n[2] + 1e-5) / tl; m.ty_ = 0; m.tz = -n[0] / tl; } else { m.tx = 0; m.ty_ = 1; m.tz = 0; }
     return m;
   }
@@ -758,7 +758,7 @@ export function attach(world, emitters = [], ctx = {}) {
     const d = Math.sqrt(d2), ux = lx / d, uy = ly / d, uz = lz / d; L3[0] = ux; L3[1] = uy; L3[2] = uz;
     let fe;
     if (m.ty === LT.lambert) { const ce = -(ux * m.n[0] + uy * m.n[1] + uz * m.n[2]); fe = Math.max(ce, 0) * (1 - m.omni) + (0.55 + 0.45 * ce) * m.omni;
-      if (m.down > 0) fe += m.down * Math.max(0.857 * uy + 0.515 * ce, 0) * (m.down === SHOP_SPILL ? spillTrap(px - m.x, py - m.y, pz - m.z, m.n[0], m.n[2], m.A, m.a, m.hl) : 1); }   // P6: the shop's trapezoid
+      if (m.down > 0) fe += m.down * Math.max(0.857 * uy + 0.515 * ce, 0) * (Math.abs(m.down - SHOP_SPILL) < 1e-3 ? spillTrap(px - m.x, py - m.y, pz - m.z, m.n[0], m.n[2], m.A, m.a, m.hl) : 1); }   // P6: the shop's trapezoid
     else if (m.ty === LT.street) fe = lobeStreet(-ux, -uy, -uz, m.n[0], m.n[2]);
     else if (m.ty === LT.pack) fe = lobePack(-ux, -uy, -uz, m.n[0], m.n[2]);
     else fe = lobeBeam(-ux, -uy, -uz, m.n[0], m.n[2]);
