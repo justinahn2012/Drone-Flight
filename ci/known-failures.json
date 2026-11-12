@@ -5,10 +5,10 @@
       "suite": "tools/camgate.py",
       "match": "[exposure] walk0: ground p50",
       "owner": "A with D (PLAN-P4 lighting #1 light the ground, graphics #1)",
-      "why": "hero-street floor p50 21-23 against 40 [P5-A] min 18 -> 10: the exposure re-fit to the refs' frame p50 (walk0 76 -> 49) takes the ground with it (22 -> 13-14 in the A + D port); the ground-to-wall ratio is C and D's (paver albedo, room nits)",
+      "why": "hero-street floor p50 21-23 against 40 [P5-A] min 18 -> 10 [P6-A] 10 -> 16 (PLAN-P6 gates; panel 5 colour/fpv/lighting/graphics: 10 locked in a regression, P5 walk0 ground 14): the floor comes back in C's paver albedo and D's spill, not more exposure, and the new ground/wall >= 0.45 row (tools/camgate.py) holds the ratio",
       "limit": {
         "re": "ground p50 ([0-9.]+)",
-        "min": 10
+        "min": 16
       }
     },
     {
