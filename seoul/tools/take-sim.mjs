@@ -6,6 +6,8 @@
 // [P4-F1] the game's crowd (LIFE.maxAgents; env LIFE_Q=low: the low preset's half, design #2); the A* reaches 4 m below the
 // street (down the stair dive) over a heightfield floor: the street at 0, E's stairwell openings (dressing holes) open
 // (design #1); routes open UNDER THE STAGE into the walking street (design #4); prints FAST lines and the first x2.
+// [P6-F] design #2 / #4: 8 runs (the record), the opening's outer pre-gate flown first, an A* that keeps over the heads (LOWY);
+// the record keeps `by` (what crashed a run) and `heads`.
 // [P5-F] design #1: the take opens at the junction (lines.json takeStart), UNDER THE STAGE (its `first` entry, out of the
 // junction) then the walking street out to its SE end; longer routes fly it back (entry 1) to the junction. design #6:
 // the air portals (pop, pass); an unknown route or line name throws a readable error (phase 4: buildPath crashed on
@@ -50,7 +52,11 @@ const world = { bvh, lastDist: Infinity, funnels: geo.funnels, envelope: { min: 
 // [P4-F1 design #1] Y0 -4 (phase 3: 1 m, so the stair dive was "NO LEG") over a heightfield floor: below the street (y < 0)
 // a voxel is open only with a floor under it within 6 m (a stairwell's steps or landing: E's openings and the part under
 // the slab); under the street there is none (the ground is above it), so the A* never routes through the earth
-const RC = 0.9, Y0 = -4, NY = 39; const occ = new Map(), _rd = new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(0, -1, 0));
+const RC = 0.9, Y0 = -4, NY = 39;
+// [P6-F design #4] a pilot keeps over the heads: an A* step at street level below LOWY m (the crowd, the cars) costs LOWC x
+// (phase 5's careful hongik takes dipped to 1.0 m under a sign before DOOR QUEUE and met a car: 3 crashes in 8). Below the
+// street (the stair dive) is unaffected.
+const LOWY = 1.9, LOWC = +(process.env.LOWC || 4); const occ = new Map(), _rd = new THREE.Ray(new THREE.Vector3(), new THREE.Vector3(0, -1, 0));
 const underground = (x, y, z) => { if (y >= 0) return false; _rd.origin.set(x, y, z); return !bvh.raycastFirst(_rd, THREE.DoubleSide, 0, 6); };
 const key = (i, j, k) => (i + 400) * 2e6 + (j + 700) * 1000 + k;
 const blocked = (i, j, k) => { if (k < 0 || k >= NY) return true; const K = key(i, j, k); let o = occ.get(K); if (o === undefined) { o = underground(i, Y0 + k, j) || clr(new THREE.Vector3(i, Y0 + k, j), RC + 0.01) < RC; occ.set(K, o); } return o; };
@@ -65,7 +71,7 @@ function astar3(a, b) {
   let it = 0, found = false;
   while (open.length && it++ < 2e6) {
     const [, k, p] = pop(); if (k === tk) { found = true; break; }
-    for (const [dx, dz, dy, c] of N) { const q = [p[0] + dx, p[1] + dz, p[2] + dy]; const qk = key(...q); if (blocked(...q) && qk !== tk) continue; const ng = g.get(k) + c; if (ng < (g.get(qk) ?? Infinity)) { g.set(qk, ng); from.set(qk, [k, p]); push([ng + h(q), qk, q]); } }
+    for (const [dx, dz, dy, c] of N) { const q = [p[0] + dx, p[1] + dz, p[2] + dy]; const qk = key(...q); if (blocked(...q) && qk !== tk) continue; const ng = g.get(k) + c * (q[2] + Y0 >= 0 && q[2] + Y0 < LOWY ? LOWC : 1); if (ng < (g.get(qk) ?? Infinity)) { g.set(qk, ng); from.set(qk, [k, p]); push([ng + h(q), qk, q]); } }
   }
   if (!found) return null;
   const P = [t]; let k = tk; while (from.has(k)) { const [pk, pp] = from.get(k); P.push(pp); k = pk; }
@@ -95,7 +101,8 @@ function streetGates(name, k = 0) {
 }
 // k: the entry index, or 'first' (the entry flagged `first`: UNDER THE STAGE toward the hub)
 const pickEntry = (name, k) => { const E = entries(name); return k === 'first' ? E.find((l) => l.first) || E[0] : E[k]; };
-const lineGates = (name, k = 0) => { const e = pickEntry(name, k); return e ? [...(e.pre || []), e] : null; };
+// [P6-F] a line with several pre-gates (UNDER THE STAGE's outer one, 8 m out): the farthest first
+const lineGates = (name, k = 0) => { const e = pickEntry(name, k); return e ? [...(e.pre || []).slice().sort((a, b) => V(b.c).distanceTo(V(e.c)) - V(a.c).distanceTo(V(e.c))), e] : null; };
 // [P5-F design #1] a take opens UNDER THE STAGE out of the junction (its exit lines up with the walking street's start gate),
 // then the street to its SE end; BACK flies it home to the junction (entry 1: repeats, the chain kept)
 // (and back under the stage toward the junction: entry 0, a repeat; it splits the 14-16 s run to HONGIK-RO 1/4)
@@ -124,7 +131,7 @@ const ROUTES = {
   queue: [['from', 'OVER THE QUEUE', 0, 10], ['line', 'OVER THE QUEUE', 0]],
   door: [['from', 'DOOR QUEUE', 0, 10], ['line', 'DOOR QUEUE', 0]],
   roofline: [['from', 'ROOFLINE', 0, 14], ['street', 'ROOFLINE', 0], ['line', 'ROOF SLOT', 0]],
-  hub: [...OPEN, ...WALK, ...BACK, ['street', 'RED ROAD', 1]],
+  hub: [...OPEN, ...WALK, ...BACK, ['line', 'TO THE RED ROAD 1', 0], ['street', 'RED ROAD', 1]],   // [P6-F design #6] + TO THE RED ROAD
   sig: [...OPEN, ...WALK, ...BACK, ['line', 'CABLE THREAD', 0], ['street', 'BAR ALLEY', 0], ['line', 'THE GAP', 0], ['street', 'HONGIK-RO', 0], ['line', 'SCREEN CANYON', 0], ['line', 'BUS SHELTER', 0], ['line', 'STATION STAIRS', 0]],
   // [P4-E design #5] through the new connectors (TO THE CABLE LATTICE / TO THE FORK / TO THE SIGN STACK n), as the hint's via leads
   long: [...OPEN, ...WALK, ...BACK, ['street', 'HONGIK-RO', 0], ['line', 'TO THE BAR ALLEY 1', 0], ['line', 'INTO THE BAR ALLEY 1', 0], ['street', 'BAR ALLEY', 0], ['line', 'TO THE CABLE LATTICE 1', 0], ['street', 'CABLE LATTICE', 0],
@@ -215,9 +222,9 @@ function fly(path, P, rng) {
     // [P4-F1] x2: take time of the first caption at FLOW >= 2 (design #4: by 20 s); fast: FAST lines; voids: heads moves voided;
     // ws: WALKING STREET's own time (s) and pts
     x2: (() => { const e = evs.find((e) => (e.type === 'line' || e.type === 'repeat') && e.flow >= 2); return e ? +(e.at - start).toFixed(1) : null; })(),
-    fast: evs.filter((e) => e.fast).length, voids: evs.reduce((a, e) => a + (e.voids?.length || 0), 0),
+    fast: evs.filter((e) => e.fast).length, clipped: evs.filter((e) => e.clipped).length, voids: evs.reduce((a, e) => a + (e.voids?.length || 0), 0),
     ws: (() => { const e = evs.find((e) => e.type === 'line' && e.name === 'WALKING STREET'); return e ? { dur: e.dur, speed: e.speed, pts: e.pts } : null; })(),
-    names: evs.filter((e) => e.type === 'line').map((e) => e.name), tl: evs.filter((e)=>['line','repeat','bank','scrape','crash','cut','void'].includes(e.type)).map((e)=>`${e.at.toFixed(1)} ${e.type} ${e.name||''}${e.by?' by '+e.by:''}${e.heads?' HEADS':''}${e.voids?' VOID '+e.voids:''} +${e.pts||0} x${e.flow||''}${e.fast?' FAST':''}${e.dur?' '+e.dur+'s':''}${e.p?' @'+e.p:''}`) };
+    names: evs.filter((e) => e.type === 'line').map((e) => e.name), tl: evs.filter((e)=>['line','repeat','bank','scrape','crash','cut','void'].includes(e.type)).map((e)=>`${e.at.toFixed(1)} ${e.type} ${e.name||''}${e.by?' by '+e.by:''}${e.heads?' HEADS':''}${e.voids?' VOID '+e.voids:''} +${e.pts||0} x${e.flow||''}${e.fast?' FAST':''}${e.clipped?' CLIPPED':''}${e.dur?' '+e.dur+'s':''}${e.p?' @'+e.p:''}`) };
 }
 
 const q = (a, f) => { const s = a.slice().sort((x, y) => x - y); return s.length ? s[Math.min(s.length - 1, Math.floor(f * s.length))] : null; };
@@ -233,7 +240,7 @@ for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS).filter(([k
     heads: R.reduce((a, r) => a + r.heads, 0), first: q(R.map((r) => r.first ?? 99), 0.5), gapMean: q(R.map((r) => r.gapMean ?? 99), 0.5), gapMax: q(R.map((r) => r.gapMax ?? 99), 0.5), t: q(R.map((r) => r.t), 0.5), maxFlow: q(R.map((r) => r.maxFlow), 0.5),
     // [P5-F] flown: runs in which the route's last line fired (the portals, the stair dive: design #2 / #6, >= 10 of 12)
     flown: R.filter((r) => r.names.includes(ROUTES[rn][ROUTES[rn].length - 1][1])).length,
-    x2: q(R.map((r) => r.x2 ?? 999), 0.5), fast: q(R.map((r) => r.fast), 0.5), voids: R.reduce((a, r) => a + r.voids, 0), wsDur: q(R.map((r) => r.ws?.dur ?? 0), 0.5), wsPts: q(R.map((r) => r.ws?.pts ?? 0), 0.5), agents: lifeAgents() };
+    x2: q(R.map((r) => r.x2 ?? 999), 0.5), fast: q(R.map((r) => r.fast), 0.5), clipped: R.reduce((a, r) => a + r.clipped, 0), voids: R.reduce((a, r) => a + r.voids, 0), wsDur: q(R.map((r) => r.ws?.dur ?? 0), 0.5), wsPts: q(R.map((r) => r.ws?.pts ?? 0), 0.5), agents: lifeAgents() };
   console.log(`${rn.padEnd(5)} ${pn.padEnd(8)} ${JSON.stringify(results[`${rn}/${pn}`])}`); if (process.env.TL) for (const r of R) console.log('   ', r.total, r.stars, r.crashed?'CRASH '+r.by:'', '|', r.tl.join(' ; '));
 }
 console.log(`stars ${JSON.stringify(tuning.stars)} | ${((performance.now() - T0) / 1000).toFixed(0)} s`);
@@ -243,8 +250,8 @@ if (OUT) fs.writeFileSync(OUT, JSON.stringify({ tuning, results }, null, 1));
 if (process.argv.includes('--record')) {
   const { createHash } = await import('node:crypto');
   const h = createHash('sha256').update(JSON.stringify({ lines: lineData.lines, tuning: lineData.tuning, takeStart: lineData.takeStart })).digest('hex').slice(0, 16);
-  const keep = ['runs', 'p25', 'p50', 'p75', 'crash', 'stars', 'lines', 'gapMax', 'x2', 'wsPts', 'fast', 'flown'];
-  const rec = { note: 'seoul/tools/take-sim.mjs --record: noisy-pilot takes at the game crowd (p75 of 4 runs is the best run)', lines: h, stars: lineData.tuning.stars, runs: RUNS,
+  const keep = ['runs', 'p25', 'p50', 'p75', 'crash', 'by', 'heads', 'stars', 'lines', 'gapMax', 'x2', 'wsPts', 'fast', 'flown'];
+  const rec = { note: `seoul/tools/take-sim.mjs --record: noisy-pilot takes at the game crowd, ${RUNS} runs per pilot x route`, lines: h, stars: lineData.tuning.stars, runs: RUNS,
     results: Object.fromEntries(Object.entries(results).map(([k, v]) => [k, Object.fromEntries(keep.map((f) => [f, v[f]]))])) };
   fs.writeFileSync(new URL('../../tests/seoul/take-sim.json', import.meta.url), JSON.stringify(rec, null, 1) + '\n'); console.log('recorded tests/seoul/take-sim.json');
 }

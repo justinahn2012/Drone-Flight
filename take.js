@@ -38,6 +38,12 @@
 // [P5-F design #4 / UX #5] speed pays on the whole street: with tuning.bankBonus a timed named line's multiplier k also pays
 // (k - 1) x the pts of its own micros flown since its pre-gate (the event's `bonus`), and those micros score x1 themselves
 // (their events still carry dur / fast); Seoul sets fastBonus 1.0 (x2 at par). tuning.fastPar: FAST only within par x fastPar.
+// [P6-F design #2 / ux #3] the opening's grace: with tuning.clipGrace > 0, in the first clipT s of a take the `first` line's
+// gates also count a pass up to clipGrace m outside their edges; a move that used the grace scores x1 (no FLOW, CLEAN or
+// speed multiplier) as CLIPPED (event clipped: true) but is flown: it adds its FLOW and keeps the chain, so one 9 cm miss
+// under the stage no longer costs the whole street its x2 (phase 5: sharp short p25 50.7k < careful 52.3k).
+// [P6-F design #5 / ux #1] a line flagged `blocked` (lines.json: unflyable for now, STATION STAIRS) is never guided to:
+// nextHint skips it at every rule; lineList carries `blocked` for the UI's brackets and grid. It still scores if flown.
 // No three.js import: plain vector maths, runs headless in node too.
 
 export const TAKE_TUNING = {
@@ -87,6 +93,10 @@ export const TAKE_TUNING = {
   slowPar: 0,          // design #4: > 0: the speed multiplier is x1 from dur = par x slowPar (not the end of the window): a
                        // careful 5 m/s pass (par x 1.6 at the 8 m/s par) earns the base, the bonus is for flying fast
   fastPar: 0,          // UX #5: > 0: the FAST tag only at dur <= par x fastPar (0: from fastAt x fastBonus up, phase 4's rule)
+  // [P6-F] (bando: off)
+  clipGrace: 0,        // design #2: m of grace round the `first` line's gates in the first clipT s of a take (CLIPPED, x1)
+  clipT: 20,           // s of take time the grace lasts
+  hintVertReady: 3,    // ux #3: nextHint's hintVert while the take is 'ready' (Seoul 6: the DOWN cue at the spawn's descent)
 };
 const T = TAKE_TUNING;
 
@@ -113,15 +123,15 @@ function compileGate(g) {
   const k = dot(u, n); u = norm([u[0] - n[0] * k, u[1] - n[1] * k, u[2] - n[2] * k]);
   return { c: g.c, n, u, v: cross(n, u), hw: g.w / 2, hh: g.h / 2 };
 }
-// +1 / -1 if the segment a->b crosses the gate's rectangle along +n / -n, else 0
-function crossGate(G, a, b) {
+// +1 / -1 if the segment a->b crosses the gate's rectangle along +n / -n, else 0 ([P6-F] m: grace, metres added to each edge)
+function crossGate(G, a, b, m = 0) {
   const da = (a.x - G.c[0]) * G.n[0] + (a.y - G.c[1]) * G.n[1] + (a.z - G.c[2]) * G.n[2];
   const db = (b.x - G.c[0]) * G.n[0] + (b.y - G.c[1]) * G.n[1] + (b.z - G.c[2]) * G.n[2];
   let s = 0;
   if (da < 0 && db >= 0) s = 1; else if (da >= 0 && db < 0) s = -1; else return 0;
   const t = da / (da - db);
   const q = [a.x + (b.x - a.x) * t - G.c[0], a.y + (b.y - a.y) * t - G.c[1], a.z + (b.z - a.z) * t - G.c[2]];
-  return Math.abs(dot(q, G.u)) <= G.hw && Math.abs(dot(q, G.v)) <= G.hh ? s : 0;
+  return Math.abs(dot(q, G.u)) <= G.hw + m && Math.abs(dot(q, G.v)) <= G.hh + m ? s : 0;
 }
 const plainCaption = (s) => String(s || '').replace(/\*/g, '');
 // down one of world.funnels' shafts ({c:[x, z], top, r}): within r of the axis, anywhere below its top (its floor
@@ -255,7 +265,7 @@ export class Take {
     const all = (world.lines || []).filter((l) => !l.piece || has.has(l.piece));
     this._ord = null; this._lines = all.filter((l) => !l.carve).map((l) => ({ l, main: compileGate(l), pre: (l.pre || []).map(compileGate) }));
     this._carves = all.filter((l) => l.carve).map((l) => ({ l, st: (l.carve.axes || [0]).map(() => ({ ref: null, acc: 0, out: 0, t0: 0 })) }));
-    this._names = [...new Map(all.map((l) => [l.name, l])).values()];
+    this._names = [...new Map(all.map((l) => [l.name, l])).values()]; this._blocked = null;
     this._pre = new Map();
   }
 
@@ -351,23 +361,28 @@ export class Take {
     if (!a) return;
     if (Math.hypot(p.x - a.x, p.y - a.y, p.z - a.z) > this._T.teleport) { this._carveReset(); return; }
     const now = this._now;
+    // [P6-F design #2] the opening's grace: the `first` line, in the first clipT s of a scored take
+    const cg = !this.free && this._T.clipGrace > 0 && this._t <= this._T.clipT ? this._T.clipGrace : 0;
     // pre-gates first (a fast pass can cross a pre-gate and its line in the same frame)
-    this._lines.forEach((L, li) => L.pre.forEach((G, gi) => { const s = crossGate(G, a, p); if (s) { this._pre.set(li * 8 + gi, { t: now, s }); this._preT = now; } }));
+    this._lines.forEach((L, li) => L.pre.forEach((G, gi) => { let s = crossGate(G, a, p), clip = false;
+      if (!s && cg && L.l.first) { s = crossGate(G, a, p, cg); clip = !!s; }
+      if (s) { this._pre.set(li * 8 + gi, clip ? { t: now, s, clip } : { t: now, s }); this._preT = now; } }));
     // [P5-F] under bankBonus a street's micros are scored before the named lines in the same frame (its last segment ends
     // on the street's own gate, so the street pays on it too); otherwise the lines' order (bando bit-exact)
     const order = this._T.bankBonus ? (this._ord ||= [...this._lines.keys()].sort((x, y) => (this._lines[y].l.micro ? 1 : 0) - (this._lines[x].l.micro ? 1 : 0) || x - y)) : null;
     (order ? order.map((li) => [this._lines[li], li]) : this._lines.map((L, li) => [L, li])).forEach(([L, li]) => {
-      const s = crossGate(L.main, a, p);
+      let s = crossGate(L.main, a, p), clip = false;
+      if (!s && cg && L.l.first) { s = crossGate(L.main, a, p, cg); clip = !!s; }
       if (!s || (!L.l.two && s < 0)) return;
       let t0 = now;
       if (L.pre.length) {
         let rec = null;
         L.pre.forEach((_, gi) => { const r = this._pre.get(li * 8 + gi); if (r && now - r.t <= (L.l.within ?? 6) && r.s === (L.l.two ? s : 1) && (!rec || r.t < rec.t)) rec = r; });
         if (!rec) return;
-        t0 = rec.t;
+        t0 = rec.t; if (rec.clip) clip = true;
         L.pre.forEach((_, gi) => this._pre.delete(li * 8 + gi));
       }
-      const e = this._award(L.l, now, t0);
+      const e = this._award(L.l, now, t0, clip);
       if (e) ev.push(e);
     });
     for (const C of this._carves) {
@@ -407,7 +422,7 @@ export class Take {
 
   // events carry t0 = take time (s, the clock of stats.time) of the move's start (its pre-gate / the carve's start),
   // ago = s from then to now (the replay frame to caption is the event's wall time - ago), t = take time now
-  _award(l, now, t0) {
+  _award(l, now, t0, clip = false) {
     const name = l.name, caption = l.caption || name, micro = !!l.micro;
     if (now - (this._cool[name] ?? -99) < this._T.cooldown) return null;
     const ago = +Math.max(0, now - t0).toFixed(3), tt = +this._t.toFixed(2), tt0 = +Math.max(0, this._t - ago).toFixed(2);
@@ -416,10 +431,11 @@ export class Take {
       this._cool[name] = now; rec.n++; saveProg();
       return { type: 'line', name, caption, pts: 0, flow: 1, free: true, micro, t0: tt0, ago, t: tt };
     }
-    const clean = !this._dirty; this._dirty = false;
+    const clean = !this._dirty && !clip; this._dirty = false;
     const cm = clean ? this._T.cleanMult : 1;
     // [P4-F1 design #3 / UX #6] a timed move (pre-gate to gate): its time, the best before it, and with `par` the speed bonus
     const tm = this._timed(l, rec, ago);
+    if (clip) { tm.k = 1; tm.ev = { ...tm.ev, clipped: true }; tm.log = { ...tm.log, clipped: true }; }   // [P6-F] CLIPPED: x1
     if (this._done.has(name)) {
       if (this._lastName === name) return null;                     // fly something else first
       this._cool[name] = now;
@@ -431,7 +447,7 @@ export class Take {
       return e;
     }
     this._cool[name] = now;
-    const flow = this._flow, pts = Math.round((l.pts || 0) * flow * cm * tm.k) + this._bankBonus(l, tm.k, tt0);
+    const flow = this._flow, pts = Math.round((l.pts || 0) * (clip ? 1 : flow) * cm * tm.k) + this._bankBonus(l, tm.k, tt0);
     this._unbanked += pts; this._idle = 0; this._lastName = name; this._done.add(name); this._lineAt = now;
     this._flow = Math.min(this._T.flowMax, flow + (micro ? this._T.microFlow : 1)); this._maxFlow = Math.max(this._maxFlow, flow);
     const e = this._dedupe({ type: 'line', name, caption, pts, flow, clean, micro, t0: tt0, ago, t: tt, ...tm.ev, ...this._bonusEv });
@@ -531,7 +547,7 @@ export class Take {
   lineList(world) {
     if (world) this._compile(world);
     return (this._names || []).map((l) => { const r = PROG[l.name]; return { name: l.name, caption: l.caption || l.name, pts: l.pts || 0, micro: !!l.micro,
-      flown: !!r?.n, n: r?.n || 0, bestFlow: r?.flow || 0, bestPts: r?.pts || 0, bestT: r?.bestT || 0, bestDur: r?.bd || 0, par: l.par || 0, inTake: this._done.has(l.name) }; });
+      flown: !!r?.n, n: r?.n || 0, bestFlow: r?.flow || 0, bestPts: r?.pts || 0, bestT: r?.bestT || 0, bestDur: r?.bd || 0, par: l.par || 0, inTake: this._done.has(l.name), ...(l.blocked ? { blocked: true } : {}) }; });
   }
   // {flown, total}: named lines (not micro) ever flown; micro: the same for micro-lines; best: best take; stars: its stars;
   // perfects: PERFECT takes ever
@@ -558,7 +574,8 @@ export class Take {
   nextHint(drone, world) {
     if (world) this._compile(world);
     const p = drone.pos, now = this._now;
-    const eligible = (n) => (!PROG[n]?.n ? 1 : !this._done.has(n) ? 2 : 0);    // 1 fresh, 2 not this take, 0 no
+    const blk = this._blocked || (this._blocked = new Set((this._names || []).filter((l) => l.blocked).map((l) => l.name)));
+    const eligible = (n) => (blk.has(n) ? 0 : !PROG[n]?.n ? 1 : !this._done.has(n) ? 2 : 0);    // 1 fresh, 2 not this take, 0 no ([P6-F] or blocked)
     const d3 = (c) => Math.hypot(c[0] - p.x, c[1] - p.y, c[2] - p.z);
     // where to steer for line L's first gate G: [target, stage, route length]
     const aim = (L, G) => {
@@ -592,7 +609,7 @@ export class Take {
     // nearest line: design #4, the guide pointed at WALKING STREET from 393 m away with SCREEN CANYON 10 m ahead)
     const ts = world?.takeStart?.pos, nearStart = !(this._T.firstR < Infinity) || !ts || Math.hypot(p.x - (ts.x ?? ts[0]), p.z - (ts.z ?? ts[2])) <= this._T.firstR;
     if (!pick && nearStart && !this._names?.some((l) => !l.micro && PROG[l.name]?.n)) {
-      const L = this._lines.find((x) => x.l.first && !x.l.micro);
+      const L = this._lines.find((x) => x.l.first && !x.l.micro && !blk.has(x.l.name));
       if (L) { const G = L.pre.length ? L.pre[0] : L.main, [tgt, stage] = aim(L, G); pick = { L, tgt, stage, fresh: true }; }
     }
     // 3. nearest fresh, else nearest not flown this take
@@ -607,7 +624,8 @@ export class Take {
     if (!pick) return null;
     const c = pick.tgt, dx = c[0] - p.x, dy = c[1] - p.y, dz = c[2] - p.z, hd = Math.hypot(dx, dz);
     const h = drone.heading ?? Math.atan2(-drone.vel.x, -drone.vel.z);
-    const vert = Math.abs(dy) > 1 && (hd < this._T.hintVert || (pick.prog && hd < 0.5 * Math.abs(dy))) ? (dy < 0 ? 'down' : 'up') : null;
+    const hv = this._state === 'ready' ? this._T.hintVertReady : this._T.hintVert;   // [P6-F ux #3]
+    const vert = Math.abs(dy) > 1 && (hd < hv || (pick.prog && hd < 0.5 * Math.abs(dy))) ? (dy < 0 ? 'down' : 'up') : null;
     return { name: pick.L.l.name, caption: pick.L.l.caption || pick.L.l.name, pos: c.slice(), dist: +Math.hypot(dx, dy, dz).toFixed(2),
       bearing: -wrap(Math.atan2(-dx, -dz) - h), elev: Math.atan2(dy, hd), fresh: pick.fresh, vert, stage: pick.stage, inProgress: !!pick.prog };
   }
@@ -633,7 +651,7 @@ export class Take {
 export function defaultTakeUI(e, pop) {
   const n = (v) => Math.round(v || 0).toLocaleString('en-US');
   switch (e.type) {
-    case 'line': pop(e.pts ? `${plainCaption(e.caption)}  ${e.flow > 1 ? `×${e.flow}  ` : ''}+${n(e.pts)}${e.clean ? '  CLEAN' : ''}` : plainCaption(e.caption), 'line'); break;
+    case 'line': pop(e.pts ? `${plainCaption(e.caption)}  ${e.flow > 1 && !e.clipped ? `×${e.flow}  ` : ''}+${n(e.pts)}${e.clipped ? '  CLIPPED' : e.clean ? '  CLEAN' : ''}` : plainCaption(e.caption), 'line'); break;
     case 'repeat': pop(`${plainCaption(e.caption || e.name)}  REPEAT +${n(e.pts)}`, 'line'); break;
     case 'bank': if (!e.cut) pop(`BANKED +${n(e.pts)}`, 'score'); break;
     case 'scrape': if (e.lost) pop(`SCRAPE · FLOW ×${e.flow}`, 'warn'); break;

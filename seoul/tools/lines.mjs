@@ -16,6 +16,10 @@
 // [P4-F1] phase 4 (panel 3): tuned at the game's crowd (LIFE.maxAgents, design #2); the stair dive's pre-gate over the heads
 // under the canopy lip (design #1); timed street lines carry `par` for the speed bonus (design #3); the take opens UNDER
 // THE STAGE, whose exit lines up with the walking street's start gate (design #4).
+// [P6-F] phase 6 (panel 5): `blocked` lines (the guide, the brackets and the grid skip them: STATION STAIRS until G1's walkers
+// keep out of the stair mouth, design #5 / ux #1); the opening re-cut (UNDER THE STAGE's first entry 1.95-3.3 m, plus an outer
+// pre-gate at 3.2 m 8 m out, design #2); TO THE RED ROAD (design #6); the spawn turned +6 deg and looking 8 deg down (ui #1);
+// stars [20k, 100k, 290k] re-fitted on 8 runs (design #3).
 import fs from 'node:fs';
 import * as THREE from 'three';
 import { buildSeoulGeometry } from '../../world-seoul.js';
@@ -99,6 +103,7 @@ function openPath(a, b) {
 // the first station (arc length) along the list where the gate keeps >= 75 % of its width clear
 const bestAcross = (pts, list, w, y0, y1) => { let first = null; for (const s of list) { const G = across(pts, s, w, y0, y1); first ||= G; if (G.w >= Math.min(w, 3) * 0.75 && clearOf(G).ok) return G; } return first; };
 const lines = [], funnels = [], report = [];
+let transit = null;   // [P6-F] the street-path connectors, for a connector placed after the set pieces (TO THE RED ROAD)
 const add = (name, caption, pts, main, extra = {}) => {
   main = fit(main, name); if (extra.pre) extra.pre = extra.pre.map((p) => fit(p, name + ' (pre)'));
   const path = extra.pre && extra.straight ? openPath(extra.pre[0], main) : true;
@@ -593,6 +598,7 @@ for (const name of ['CABLE LATTICE', 'NARROW ALLEY']) {
     // TO THE BAR ALLEY 1 -> BAR ALLEY 1/4 ran 13.7-15.6 s (the turn off Wausan-ro, then the alley's first 32 m): one more, at the
     // alley's mouth
     { const T1 = lines.find((x) => x.name === 'TO THE BAR ALLEY 1'); if (T1) connectN('INTO THE BAR ALLEY', T1, first('BAR ALLEY'), 1, [0.75]); }
+    transit = { connectN, last };
   }
 }
 
@@ -605,8 +611,17 @@ const SET_LINES = {
   // [P4-F1 design #1] the dive's pre-gate at 2.0-2.7 m under the canopy lip (2.76 m), not E's 0.55-2.35 m in the mouth:
   // someone stands or walks on that approach 100 % of the time (the steps themselves <= 1 %), and forced dives took 20
   // HEADS! in 18. From there to E's landing gate is the ~27 deg dive, over the heads and under the roof.
-  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true, preY: [2.0, 2.7] },
-  'under-the-stage': { name: 'UNDER THE STAGE', caption: 'UNDER THE *STAGE*!', pts: 1500 },
+  // [P6-F design #5 / ux #1] blocked: walkers crossing the stair mouth occupy the dive 28-41 % (movers.mjs PEND) and it flies
+  // 0/12 in take-sim, so the guide must not send anyone there. Lift it (delete `blocked`) when take-sim's stairs route flies
+  // >= 10/12 on G1's stair-mouth routing (tests/take.mjs and seoul-ui check a guided line isn't 0/12).
+  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true, preY: [2.0, 2.7], blocked: true },
+  // [P6-F design #2 / ux #3] recut: E's 2.2 x 0.93 m openings (1.95-2.88 m) sit 0.1 m outside the 3.3-3.4 m canopy at each end;
+  // the sharp sims left the exit 0.03-0.09 m over its top in 3 of 8 runs and flew the street at FLOW x1. Both openings grow
+  // to the highest top that keeps CLEAR under the canopy's underside between them (a ray up every 0.5 m across the move; a top
+  // above it would invite a line into the roof), else keep their top, and up to 3.0 m wide; the floor stays over the heads.
+  // (At this build the underside is 3.20 m at the edges, so E's 2.88 m top is already the limit: the width grows, and the
+  // height miss is take.js's CLIPPED grace.)
+  'under-the-stage': { name: 'UNDER THE STAGE', caption: 'UNDER THE *STAGE*!', pts: 1500, recut: { tops: [3.3, 3.2, 3.1, 3.05, 3.0, 2.95], ws: [3.0, 2.6] } },
   'bus-shelter': { name: 'BUS SHELTER', caption: 'THROUGH THE *SHELTER*!', pts: 1000 },
   'cable-thread': { name: 'CABLE THREAD', caption: 'CABLE *THREAD*!', pts: 1500 },
   'roofline-slot': { name: 'ROOF SLOT', caption: 'THE ROOF *SLOT*!', pts: 1500 },
@@ -626,6 +641,15 @@ function pieceMoves(sp) {   // -> [{pre: rect | null, gate: rect}]
     const L = SET_LINES[sp.id]; if (!L) continue;
     const mv = pieceMoves(sp).filter((m) => m.gate);
     if (!mv.length) { report.push(`  (set piece ${sp.id}: no gates, no line)`); continue; }
+    if (L.recut) for (const m of mv) { let roof = Infinity;
+      if (m.pre) for (let f = 0; f <= 1.0001; f += 0.05) for (let du = -1.5; du <= 1.5001; du += 0.5) { const u = m.gate.u || [-m.gate.n[2], 0, m.gate.n[0]];
+        ray.origin.set(m.pre.c[0] + (m.gate.c[0] - m.pre.c[0]) * f + u[0] * du, 1.0, m.pre.c[2] + (m.gate.c[2] - m.pre.c[2]) * f + u[2] * du); ray.direction.set(0, 1, 0);
+        const h = bvh.raycastFirst(ray, THREE.DoubleSide, 0, 10); if (h) roof = Math.min(roof, 1.0 + h.distance); }
+      for (const k of ['pre', 'gate']) { const G = m[k]; if (!G || Math.abs(G.n[1]) > 0.5) continue;
+      const bot = G.c[1] - G.h / 2, was = `${G.w.toFixed(2)} x ${G.h.toFixed(2)}`;
+      let got = null; for (const ww of L.recut.ws) { for (const top of [...L.recut.tops, bot + G.h]) { if (top < bot + G.h - 1e-6) break; if (top > roof - CLEAR && top > bot + G.h + 1e-6) continue; if (ww <= G.w && top <= bot + G.h + 1e-6) break; const T = { ...G, c: [G.c[0], r3((bot + top) / 2), G.c[2]], w: r3(Math.max(G.w, ww)), h: r3(top - bot) }; if (clearOf(T).ok) { got = T; break; } } if (got) break; }
+      if (got) { m[k] = got; report.push(`  (${L.name} ${k}: recut ${was} -> ${got.w.toFixed(2)} x ${got.h.toFixed(2)} m, ${bot.toFixed(2)}-${(bot + got.h).toFixed(2)} m; canopy underside ${roof.toFixed(2)} m)`); }
+      else report.push(`  (${L.name} ${k}: no taller opening clears the canopy (underside ${roof.toFixed(2)} m), kept ${was})`); } }
     for (const m of mv) {
       if (m.pre && L.preY) {
         const [y0, y1] = L.preY, was = `${(m.pre.c[1] - m.pre.h / 2).toFixed(2)}-${(m.pre.c[1] + m.pre.h / 2).toFixed(2)}`;
@@ -635,9 +659,11 @@ function pieceMoves(sp) {   // -> [{pre: rect | null, gate: rect}]
       }
       if (m.pre) {
         const w = within(dist3(m.pre, m.gate) + 4);
-        add(L.name, L.caption, L.pts, m.gate, { pre: [m.pre], within: w, piece: sp.id });
-        if (!L.oneWay) add(L.name, L.caption, L.pts, neg(m.pre), { pre: [neg(m.gate)], within: w, piece: sp.id });
-      } else add(L.name, L.caption, L.pts, m.gate, { ...(L.oneWay ? {} : { two: true }), piece: sp.id });
+        const bl = L.blocked ? { blocked: true } : {};
+        add(L.name, L.caption, L.pts, m.gate, { pre: [m.pre], within: w, piece: sp.id, ...bl });
+        if (!L.oneWay) add(L.name, L.caption, L.pts, neg(m.pre), { pre: [neg(m.gate)], within: w, piece: sp.id, ...bl });
+      } else add(L.name, L.caption, L.pts, m.gate, { ...(L.oneWay ? {} : { two: true }), piece: sp.id, ...(L.blocked ? { blocked: true } : {}) });
+      if (L.blocked) report.push(`  (${L.name}: BLOCKED: the guide, brackets and grid skip it until G1 clears the stair mouth)`);
     }
     made.push(`${sp.id} (${mv.length})`);
   }
@@ -645,8 +671,18 @@ function pieceMoves(sp) {   // -> [{pre: rect | null, gate: rect}]
   // [P4-F1 design #4] a new profile's first line is the stage (toward the hub: its exit runs into the walking street)
   // [P5-F] only when the stage opens the take (stageNear): phase 4 flagged it with WALKING STREET already `first` (two firsts)
   if (stageNear) { const f = lines.find((l) => l.name === 'UNDER THE STAGE' && Math.hypot(l.c[0] - stageExit.G.c[0], l.c[2] - stageExit.G.c[2]) < 0.5);
-    if (f) f.first = true; else { const w = lines.find((l) => l.name === 'WALKING STREET' && l.pre); if (w) w.first = true; } }
+    if (f) f.first = true; else { const w = lines.find((l) => l.name === 'WALKING STREET' && l.pre); if (w) w.first = true; }
+    // [P6-F design #2] an outer pre-gate for the opening: 8 m before its own, centred at 3.2 m (2.4-4.0, 3 m wide), so a pilot
+    // coming down off the 4.5 m spawn arms the stage before the canopy (either pre-gate arms it; the window covers the outer one)
+    if (f && f.pre?.[0]) { const P = f.pre[0], n = norm3(f.n), O = fit(g([P.c[0] - n[0] * 8, 3.2, P.c[2] - n[2] * 8], f.n, 3.0, 1.6, P.u || f.u), 'UNDER THE STAGE (outer pre)');
+      if (clearOf(O).ok) { f.pre.push(O); f.within = within(dist3(O, f) + 4); report.push(`  (UNDER THE STAGE: outer pre-gate ${O.w.toFixed(1)} x ${O.h.toFixed(1)} m at [${O.c.map((v) => v.toFixed(1))}], window ${f.within} s)`); }
+      else report.push('  (UNDER THE STAGE: no clear outer pre-gate)'); } }
   if (lines.filter((l) => l.first).length !== 1) report.push(`  WARNING: ${lines.filter((l) => l.first).length} lines flagged first`); }
+// [P6-F design #6] TO THE RED ROAD: out of UNDER THE STAGE toward the junction (entry 0), across Hongik-ro to the Red Road's
+// start gate (entry 1), 85 % of the way (at the middle THE SPLIT still came 13.7-16 s after it): phase 5's hub/careful ran
+// 15.9-19 s there with no caption
+{ const S0 = lines.find((l) => l.name === 'UNDER THE STAGE' && !l.first && l.pre), R1 = lines.filter((l) => l.name === 'RED ROAD' && l.pre)[1];
+  if (transit && S0 && R1) transit.connectN('TO THE RED ROAD', S0, R1.pre[0], 1, [0.85]); else report.push('  (TO THE RED ROAD: no stage or Red Road entry)'); }
 
 // ---- [P3-F1 design #2] no gate a vehicle can touch. Phase 2: a bus filled BUS SHELTER's gate 42 % of 240 s and 4 of 4 sim
 // flights crashed `by: 'bus'`. Every gate (and pre-gate) below the vehicles' reach is probed against the drawn traffic
@@ -734,7 +770,10 @@ const stageL = lines.find((l) => l.name === 'UNDER THE STAGE' && l.first);
 // [P5-F design #1] hubFirst: the spawn hovers 13 m behind the junction (the Red Road's mouth, across Hongik-ro) at 4.5 m,
 // over the buses (roofs 3.15 m), looking at the stage's pre-gate: the stage, then the walking street out to its SE end.
 // hint.order: the lines the copy names, in the order they're flown (seoul-ui checks it against the arc)
-const walkStart = hubFirst && stageL ? (() => { const p = st('Walking street', 0, WP, 4.5, 13), q = stageL.pre[0].c; return { ...p, yaw: r3(yawTo(q[0] - p.pos[0], q[2] - p.pos[2])) }; })()
+// [P6-F ui #1] turned +6 deg (left: the busking ring and the lit canopy to the centre, the opening's bracket right of it) and
+// looking 8 deg down (`pitch`, rad: main.js holds the view there while the take is 'ready'), so the canopy fills the frame
+const SPAWN_YAW = 6 * Math.PI / 180, SPAWN_PITCH = -8 * Math.PI / 180;
+const walkStart = hubFirst && stageL ? (() => { const p = st('Walking street', 0, WP, 4.5, 13), q = stageL.pre[0].c; return { ...p, yaw: r3(yawTo(q[0] - p.pos[0], q[2] - p.pos[2]) + SPAWN_YAW), pitch: r3(SPAWN_PITCH) }; })()
   : { ...st('Walking street', 15, WP, 3.2) };
 const startPoints = [
   stageL ? { ...walkStart, hint: { text: hubFirst ? 'UNDER THE STAGE · UP THE STREET' : 'UNDER THE STAGE · THEN THE WALKING STREET', line: 'UNDER THE STAGE', until: 2, next: 'UNDER THE STAGE',
@@ -768,11 +807,17 @@ for (const sp of startPoints) {
 // par x 1.15; design #3: stars re-fitted at P5 (take-sim, 4 runs x 3 pilots, tests/seoul/take-sim.json): 1 star = the walking
 // street alone at a careful pace (walk careful 24.8-25.7k), 2 = a careful loop (119k), 3 = 290k: regular long p50 345k less a
 // crash margin, above every careful long run (best 276k; at P4's 150k a careful long take was 3 stars)
-const tuning = { stars: [20000, 100000, 290000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [60, 180, 1.5], microFlow: 0, timed: true, bankBonus: true, fastBonus: 1.0, slowPar: 1.6, fastPar: 1.15 };
+// [P6-F] design #3: stars from take-sim --runs 8 with margin both ways (careful long p75 <= 0.95 x the 3-star cut, regular
+// long p50 >= 1.05 x it). The panel's 275k came from phase 5's careful p75 (259.6k); at this build careful long p75 is 271.7k
+// (the A* keeps over the heads, the opening's grace), regular p50 347k: 275k would leave careful's best runs 1 % short of 3
+// stars, so the cut stays at 290k (careful 0.94 x, regular 1.20 x). design #2: clipGrace 0.6 m / clipT 20 s (the opening's
+// CLIPPED grace); ux #3: hintVertReady 6 m
+const tuning = { stars: [20000, 100000, 290000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [60, 180, 1.5], microFlow: 0, timed: true, bankBonus: true, fastBonus: 1.0, slowPar: 1.6, fastPar: 1.15,
+  clipGrace: 0.6, clipT: 20, hintVertReady: 6 };
 // a copy on the first named non-set-piece line for world loaders that pass lines[] only (take.js reads either)
 const firstLine = lines.find((l) => !l.piece && !l.micro && l.pre); if (firstLine) firstLine.tuning = tuning;
 const out = { version: 2, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', tuning, lines, funnels, startPoints,
-  takeStart: { pos: startPoints[0].pos, yaw: startPoints[0].yaw, hint: startPoints[0].hint } };
+  takeStart: { pos: startPoints[0].pos, yaw: startPoints[0].yaw, ...(startPoints[0].pitch ? { pitch: startPoints[0].pitch } : {}), hint: startPoints[0].hint } };
 fs.writeFileSync(new URL('lines.json', ROOT), JSON.stringify(out, null, 1));
 console.log(report.join('\n'));
 const nm = (f) => new Set(lines.filter(f).map((l) => l.name)).size;

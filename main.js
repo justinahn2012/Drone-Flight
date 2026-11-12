@@ -817,7 +817,7 @@ function updateTake(dt, inp) {
   if (S.game !== takeGame) { takeGame = S.game; take.reset(); freeTake.reset(); }
   for (const e of (S.game === 'free' ? freeTake : take).update(dt, drone, world, on)) takeEvent(e);
 }
-drone.onCrash = (impact) => { audio.thud(impact); };
+drone.onCrash = (impact) => { audio.thud(impact); haptic(40); };   // [P6-F ux #6]
 
 // ---------------- camera rig
 const camQ = new THREE.Quaternion();
@@ -832,6 +832,15 @@ const motion = { vel: new THREE.Vector3(), ang: new THREE.Vector3(), vib: 1, hz:
 const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), rigP = new THREE.Vector3(), rigQ = new THREE.Quaternion();
 const yawQ = new THREE.Quaternion(), UP = new THREE.Vector3(0, 1, 0);   // D5 counter-yaw (not yawS: that is Cine's yaw smoothing)
 let cpPrev = 0, cpResets = -1, cyPrev = 0;
+// [P6-F ui #1] the spawn's look: lines.json takeStart.pitch (rad, - = down; Seoul -8 deg, the lit canopy over the crowd fills the
+// frame instead of the sky) while the take is 'ready' at the take start, easing out (0.35 s) once it starts. View only.
+let readyLook = 0;
+function readyLookTarget() {
+  // (world-seoul's world.takeStart keeps pos / yaw / hint only: the pitch comes from the level's lines file)
+  const ts = world.takeStart, pt = +ts?.pitch || (world.level ? +levelData(levelOf(world.level))?.startPitch || 0 : 0), t = curTake();
+  if (!pt || !ts?.pos || S.game === 'free' || t?.state !== 'ready') return 0;
+  const q = ts.pos; return Math.hypot(drone.pos.x - (q.x ?? q[0]), drone.pos.y - (q.y ?? q[1]), drone.pos.z - (q.z ?? q[2])) < 3 ? pt : 0;
+}
 function rigCamera(dt) {
   // [E] the body pose between the last two physics ticks (physAlpha = leftover accumulator / tick, see frame())
   rigP.lerpVectors(drone.prev, drone.pos, physAlpha); rigQ.slerpQuaternions(drone.prevQ, drone.q, physAlpha);
@@ -840,7 +849,8 @@ function rigCamera(dt) {
   // fast pitch nods (flight.js camView: advanced inside the physics tick, read between the last two ticks like the pose,
   // so it replays from the input log; eases back to 0 in the other modes)
   const cp = drone.camView(physAlpha, tilt);
-  tiltQ.setFromAxisAngle(_v.set(1, 0, 0), tilt + cp);
+  const rl = readyLookTarget(); readyLook = drone.resets !== cpResets ? rl : readyLook + (rl - readyLook) * (1 - Math.exp(-dt / 0.35));
+  tiltQ.setFromAxisAngle(_v.set(1, 0, 0), tilt + cp + readyLook);
   _q.copy(rigQ).multiply(tiltQ);
   const cy = drone.camYaw?.(physAlpha) ?? 0;           // D5 (FPV r4 #5): cine counter-yaw about world up, from the tick state
   _q.premultiply(yawQ.setFromAxisAngle(UP, cy));
@@ -1783,7 +1793,21 @@ function headsStamp(e) {
   h.querySelector('small').textContent = vd || (e.lost ? `FLOW ×${e.flow || 1} · −${e.lost}` : 'SCRAPE');
   h.classList.remove('show'); void h.offsetWidth; h.classList.add('show');
   clearTimeout(headsTm); headsTm = setTimeout(() => h.classList.remove('show'), 1250);
-  try { navigator.vibrate?.(20); } catch (er) {}   // Android; iOS Safari has none (native: a haptic tick)
+  haptic(20);
+}
+// [P6-F ux #6] a tick on HEADS!, SCRAPE and a crash: navigator.vibrate on Android; iOS Safari has none, but since iOS 18 toggling an
+// <input type=checkbox switch> plays the system's Taptic tick (through its label, from the touch that is flying the quad, so
+// it carries the page's user activation). Best effort: a browser without either does nothing. Native: UIImpactFeedbackGenerator.
+let hapEl = null, hapT = 0;
+function haptic(ms = 20) {
+  try { navigator.vibrate?.(ms); } catch (er) {}
+  if (!IOS) return;
+  const now = performance.now(); if (now - hapT < 120) return; hapT = now;
+  try {
+    if (!hapEl) { const l = document.createElement('label'), i = document.createElement('input'); i.type = 'checkbox'; i.setAttribute('switch', ''); l.appendChild(i);
+      l.setAttribute('aria-hidden', 'true'); l.style.cssText = 'position:fixed;left:-99px;top:0;width:1px;height:1px;opacity:0;pointer-events:none'; document.body.appendChild(l); hapEl = l; }
+    hapEl.click();
+  } catch (er) {}
 }
 // [F2] P3 ui #3: what a crash hit (take.js crash.by, flight.js crashBy: the world.movers body's type)
 const BY = { bus: 'A BUS', taxi: 'A TAXI', car: 'A CAR', truck: 'A TRUCK', van: 'A VAN', scooter: 'A SCOOTER', moped: 'A SCOOTER', motorbike: 'A MOTORBIKE', bike: 'A BIKE', bicycle: 'A BIKE', pedestrian: 'SOMEONE', person: 'SOMEONE', vehicle: 'TRAFFIC' };
@@ -2018,12 +2042,18 @@ const BR_N = 3, BR_R = 30, _br = new THREE.Ray(), brOcc = new Map();
 // gates sit 28 and 31 m from the spawn, and only one was bracketed (updateHud sets it at 10 Hz)
 let brR = BR_R;
 const brRadius = (t) => (t && S.game !== 'free' && (t.state === 'ready' || (t.state === 'live' && (+t.stats?.time || 0) < 12 && !t.stats?.lines?.length)) ? 34 : BR_R);
+// [P6-F ux #2 / ui #1] while the take is 'ready', only the hinted line's `first` entry (phase 5 bracketed both of UNDER THE
+// STAGE's start gates, "UNDER THE STAGE 30M" over "...20M" 12 px apart); never a `blocked` line (design #5)
 function bracketCands(arm) {
   const out = [], flown = new Set(lineList().filter((l) => l.flown).map((l) => l.name));
   const armG = arm ? armGate(arm) : null;
   if (armG?.c && dist3(armG.c) < brR + 4) out.push({ g: armG, name: arm.name, end: true });
+  const t = curTake(), ready = !!t && S.game !== 'free' && t.state === 'ready';
+  const hinted = ready ? (world.takeStart?.hint?.next || world.takeStart?.hint?.line || null) : null;
+  const firstOf = hinted ? (world.lines || []).find((l) => l?.name === hinted && l.first) : null;
   for (const l of world.lines || []) {
-    if (!l?.name || isMicro(l) || l.carve || flown.has(l.name) || (arm && l.name === arm.name)) continue;
+    if (!l?.name || isMicro(l) || l.carve || l.blocked || flown.has(l.name) || (arm && l.name === arm.name)) continue;
+    if (firstOf && l.name === hinted && l !== firstOf) continue;
     for (const g of l.pre?.length ? l.pre : [l]) if (g?.c && dist3(g.c) < brR + 4) out.push({ g, name: l.name, end: false });
   }
   return out;
@@ -2084,13 +2114,15 @@ function drawBrackets() {
   if (state === 'fly' && brCands.length && !summaryUp()) {
     if (brPxH !== viewH) { brPxH = viewH; brPx = parseFloat(getComputedStyle(labels[0]).fontSize) || 12; }   // label px (calc(--cell * .78), vh-based)
     const C = brCands.map((cd) => ({ cd, d: dist3(cd.g.c) })).filter((x) => x.d <= brR).sort((a, b) => a.d - b.d);
+    const named = new Set();                                          // [P6-F ui #1] one label per line: the nearer gate
     for (const { cd, d } of C) {
       if (n >= BR_N) break;
+      if (!cd.end && named.has(cd.name)) continue;
       const c = cd.g.c; if (!projectView({ x: c[0], y: c[1], z: c[2] }) || gateOccluded(cd, d)) continue;
       const P = gateCorners(cd.g); if (!P) continue;
       const bx = [Math.min(P[0].x, P[1].x, P[2].x, P[3].x), Math.min(P[0].y, P[1].y, P[2].y, P[3].y), Math.max(P[0].x, P[1].x, P[2].x, P[3].x), Math.max(P[0].y, P[1].y, P[2].y, P[3].y)];
       if (boxes.some((b) => ovl(b, bx) > 0.3)) continue;
-      boxes.push(bx); brSeenT.set(cd.name, now);
+      boxes.push(bx); brSeenT.set(cd.name, now); if (!cd.end) named.add(cd.name);
       let path = '';
       for (let i = 0; i < 4; i++) {
         const a = P[i], pv = P[(i + 3) % 4], nx = P[(i + 1) % 4];
@@ -2179,18 +2211,18 @@ function digestLines(src, L, pieces = null) {
   for (const l of src?.lines || []) {
     if (!l || !l.name || isMicro(l) || l.carve || (l.piece && has && !has.has(l.piece))) continue;
     let e = by.get(l.name);
-    if (!e) by.set(l.name, (e = { name: l.name, piece: l.piece || null, run: !!l.pre?.length, w: Infinity, own: l.hint || '' }));
+    if (!e) by.set(l.name, (e = { name: l.name, piece: l.piece || null, run: !!l.pre?.length, w: Infinity, own: l.hint || '', blocked: !!l.blocked }));
     for (const g of [l, ...(l.pre || [])]) if (+g.w > 0) e.w = Math.min(e.w, +g.w);
   }
   const copy = L?.lineCopy || {}, legacy = Array.isArray(L?.lineNames) ? L.lineNames : [];
   const names = [...by.values()].map((e) => {
     const c = copy[e.name] || {}, raw = e.own || c.hint || legacy.find((x) => x?.name === e.name)?.hint || '';
     const w = isFinite(e.w) ? (Math.round(e.w * 10) / 10).toFixed(1) : '';
-    return { name: e.name, piece: e.piece, group: c.group || (e.piece ? 'pieces' : e.run ? 'streets' : 'gaps'), hint: String(raw).replace(/\{w\}/g, w) };
+    return { name: e.name, piece: e.piece, group: c.group || (e.piece ? 'pieces' : e.run ? 'streets' : 'gaps'), hint: String(raw).replace(/\{w\}/g, w), ...(e.blocked ? { blocked: true } : {}) };
   });
   const tun = src?.tuning || (src?.lines || []).find((l) => l && l.tuning)?.tuning || null;
   const tip = src?.takeStart?.hint?.text || src?.startPoints?.[0]?.hint?.text || '';
-  return { names, tuning: TakeLib.mergeTuning ? TakeLib.mergeTuning(tun) : TT(), firstTip: tip };
+  return { names, tuning: TakeLib.mergeTuning ? TakeLib.mergeTuning(tun) : TT(), firstTip: tip, startPitch: +src?.takeStart?.pitch || 0 };   // [P6-F] the spawn's look
 }
 function levelData(L) {
   if (!L?.lines) return null;
@@ -2289,9 +2321,13 @@ function lineList() {
     // C12 (D5): PROG[name].bestT, the line's best time (s), via lineList or the stored record; [F2] P4 ux #6: the line's own
     // best time (pre-gate to gate: lineList bestDur, PROG bd, F1's timed lines) when it has one
     const bt = c?.t > 0 ? c.t : +S1?.[name]?.bd > 0 ? +S1[name].bd : +S1?.[name]?.bestT > 0 ? +S1[name].bestT : 0;
-    return { name, hint: hintFor(name), flown: !!(c?.n || r), f: Math.max(c?.f || 0, r?.f || 0), bt };
+    return { name, hint: hintFor(name), flown: !!(c?.n || r), f: Math.max(c?.f || 0, r?.f || 0), bt, ...(blockedLine(name) ? { blocked: true } : {}) };
   });
 }
+// [P6-F design #5 / ux #1 / ui #4] a line lines.json marks `blocked` (unflyable for now: STATION STAIRS until G1 clears the
+// stair mouth): never NEXT, never bracketed, never the guide's target; its grid cell says so
+const blockedLine = (name) => !!(dataFor(progLevel)?.names.find((x) => x.name === name)?.blocked ||
+  (Array.isArray(world.lines) && world.level === progLevel && world.lines.some((l) => l?.name === name && l.blocked)));
 const flownCount = () => lineList().filter((l) => l.flown).length;
 // [S0] a level's lines may carry their own hint; [F2] else its levels.json lineNames hint; bando's LINE_HINT only on bando
 const hintFor = (name) => (progLevel === 'bando' && LINE_HINT[name]) || dataFor(progLevel)?.names.find((x) => x.name === name)?.hint ||
@@ -2302,7 +2338,7 @@ const hintFor = (name) => (progLevel === 'bando' && LINE_HINT[name]) || dataFor(
 function nearestGate(name, at = camPose.pos) {
   let best = null, bd = Infinity;
   for (const l of world.lines || []) {
-    if (!l || (name ? l.name !== name : isMicro(l) || uiProg.lines[l.name])) continue;
+    if (!l || (name ? l.name !== name : isMicro(l) || uiProg.lines[l.name] || l.blocked)) continue;   // [P6-F] never a blocked line
     const g = l.pre?.[0]?.c || l.c; if (!g) continue;
     const d = Math.hypot(g[0] - at.x, g[1] - at.y, g[2] - at.z);
     if (d < bd) { bd = d; best = { name: l.name, pos: new THREE.Vector3(g[0], g[1], g[2]), dist: d, fresh: true }; }
@@ -2342,11 +2378,11 @@ function renderProgress() {
   const nx = loadedId ? nextLine() : null;
   $('lnCount').textContent = `${fl}/${L.length}`;
   const cell = (l) => {
-    const next = !l.flown && nx?.name === l.name;
-    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.hint, bt = l.flown && l.bt > 0 ? `<i> · ${fmtDur(l.bt)}</i>` : '';   // [F2] P4: one time format (the caption's)
+    const next = !l.flown && !l.blocked && nx?.name === l.name;
+    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.blocked ? 'closed for now' : l.hint, bt = l.flown && l.bt > 0 ? `<i> · ${fmtDur(l.bt)}</i>` : '';   // [F2] P4: one time format (the caption's)
     // [F2] P4 ui #3: the compact grid (short landscape) drops the sub-line for ×N under the tick, so a cell is two lines at most
     const fx = l.flown && l.f >= 1 ? `<u class="fx">×${l.f}</u>` : '';
-    return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}${bt}</small>${fx}</div>`;
+    return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}${l.blocked && !l.flown ? ' shut' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}${bt}</small>${fx}</div>`;
   };
   // [F2] P3 ui #2 / ux #3: the level's groups (lineGroups) under 11 px mono heads, each with its own count; a line in no
   // listed group goes last, under no head
@@ -2439,9 +2475,9 @@ function onTakeEvent(e) {
   const now = performance.now() / 1000;
   // F1: line progress / NEW badges, CLEAN on the caption, SCRAPE warning (C: scrape {impact, flow, lost})
   if (e.type === 'start') newLines.clear();
-  if (e.type === 'line' || e.type === 'repeat') { noteLine(e); lineTag = e.clean && !e.free ? ' · <b>CLEAN</b>' : ''; }
+  if (e.type === 'line' || e.type === 'repeat') { noteLine(e); lineTag = e.clipped ? ' · <b>CLIPPED</b>' : e.clean && !e.free ? ' · <b>CLEAN</b>' : ''; }   // [P6-F] the opening's grace
   if (e.type === 'scrape' && e.heads) headsStamp(e);                  // [F2] P3: HEADS! at any FLOW
-  else if (e.type === 'scrape' && e.lost) warn(`SCRAPE · FLOW ×${e.flow || 1}`, 1.2);
+  else if (e.type === 'scrape' && e.lost) { warn(`SCRAPE · FLOW ×${e.flow || 1}`, 1.2); haptic(15); }
   else if (e.type === 'void' && e.voids?.length) warn(`${e.voids.join(' · ')} · VOID`, 1.4);   // [F2] P4 ux #5: F1's grace contact
   switch (e.type) {
     case 'start':
@@ -2449,7 +2485,7 @@ function onTakeEvent(e) {
       bestAtStart = scoreView().best || 0; runStats.maxSpeed = 0; runStats.maxFlow = 1;
       break;
     case 'line': {
-      const text = e.caption || e.name || 'NICE!', flow = e.flow || 1, pl = placeAt(drone.pos);   // [F2] ui #6: where it was flown
+      const text = e.caption || e.name || 'NICE!', flow = e.clipped ? 1 : e.flow || 1, pl = placeAt(drone.pos);   // [P6-F] CLIPPED scores x1   // [F2] ui #6: where it was flown
       showLine(text, `<span class="pts">+${fmtN(e.pts)}</span>${timedSub(e)}`, flow, pl);   // [P5-F] ui #5: points in the quiet grey   // ×N lives on the FLOW line only (UI #2)
       caption(text, flow, pl); runStats.maxFlow = Math.max(runStats.maxFlow, flow);
       break;

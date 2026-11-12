@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
 """tools/seoul-stillsnap.py --dir . --shots tools/seoul-stills-poses.json --out DIR (P5-F ui #1 / #2): identity stills from the build, HUD off, quality auto, acro, held still (seoulsnap's serving + lock).
-Per shot it also casts a 32 x 18 grid of camera rays into the scene and reports the nearest hit (the depth check: a frame
-with anything within 3 m of the camera is rejected: phase 4's backdrop had a blurred pole through it)."""
+Per shot it also casts a 32 x 18 grid of camera rays into the collider BVH and reports the nearest hit (the depth check: a
+frame with anything within 3 m of the camera is rejected: phase 4's backdrop had a blurred pole through it), the share of
+rays within 8 m, and the share of near-black pixels (P6-F ui #3: nearest >= 3 m and <= 20 % under 0.05 luma)."""
 import argparse, asyncio, base64, fcntl, json, os, sys, time
 sys.path.insert(0, '/home/claude/scripts')
 import seoulsnap as S
 from playwright.async_api import async_playwright
 
+# [P6-F ui #3] the depth check casts the grid into the collider BVH (world.bvh: every building, prop and pole the quad can
+# hit, built once and never freed), not the scene's meshes: phase 5's version skipped meshes whose CPU arrays were freed after
+# upload (every building), so it read "nearest 99 m" while a wall filled the left 28 % of the backdrop. It also reports the
+# share of rays that hit within 8 m (`wall8`: a near wall across the frame) and, from the still, the share of pixels under
+# 0.05 luma (`dark`). Gate (panel 5): nearest >= 3 m and dark <= 20 %.
 DEPTH = """(async () => { const T = await import('three'); const o = window.__onetake, cam = o.fpv.cam; cam.updateMatrixWorld();
-  const rc = new T.Raycaster(); rc.near = 0.05; rc.far = 40; const objs = []; o.world.scene.traverse((m) => { if ((m.isMesh || m.isInstancedMesh) && m.visible && m.geometry?.attributes?.position?.array) objs.push(m); });
-  let near = 99, n3 = 0, N = 0; const v = new T.Vector2();
-  for (let i = 0; i < 32; i++) for (let j = 0; j < 18; j++) { v.set((i + 0.5) / 16 - 1, (j + 0.5) / 9 - 1); rc.setFromCamera(v, cam); let h = null; for (const m of objs) { let hs; try { hs = rc.intersectObject(m, false); } catch (e) { continue; } if (hs[0] && (!h || hs[0].distance < h.distance)) h = hs[0]; } N++; if (h) { near = Math.min(near, h.distance); if (h.distance < 3) n3++; } }
-  return { near: +near.toFixed(2), within3: n3, rays: N, pos: cam.position.toArray().map((x) => +x.toFixed(2)) }; })()"""
+  const bvh = o.world.bvh; if (!bvh) return { err: 'no world.bvh' };
+  const rc = new T.Raycaster(); let near = 999, n3 = 0, n8 = 0, N = 0; const v = new T.Vector2();
+  for (let i = 0; i < 32; i++) for (let j = 0; j < 18; j++) { v.set((i + 0.5) / 16 - 1, (j + 0.5) / 9 - 1); rc.setFromCamera(v, cam);
+    const h = bvh.raycastFirst(rc.ray, T.DoubleSide, 0.05, 400); N++; if (h) { near = Math.min(near, h.distance); if (h.distance < 3) n3++; if (h.distance < 8) n8++; } }
+  return { near: +near.toFixed(2), within3: n3, wall8: +(n8 / N).toFixed(3), rays: N, via: 'bvh', pos: cam.position.toArray().map((x) => +x.toFixed(2)) }; })()"""
+
+def dark_share(path, thr=0.05):
+    from PIL import Image
+    im = Image.open(path).convert('L'); px = im.getdata(); n = len(px) or 1
+    return round(sum(1 for y in px if y / 255 < thr) / n, 3)
 
 async def main(a):
     w, h = map(int, a.size.split('x')); os.makedirs(a.out, exist_ok=True)
@@ -47,6 +59,8 @@ async def main(a):
                     await pg.wait_for_timeout(40)
                 f = os.path.join(a.out, f'{name}.jpg'); open(f, 'wb').write(base64.b64decode(d.split(',')[1]))
                 dep = await pg.evaluate(DEPTH)
+                dep['dark'] = dark_share(f)
+                dep['pass'] = bool(dep.get('near', 0) >= 3 and dep['dark'] <= 0.20)
                 rep[name] = {'js': js, **dep}
                 print(f'shot {name} -> {f}  depth {dep}', flush=True)
             await b.close()
