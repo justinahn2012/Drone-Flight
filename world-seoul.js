@@ -1633,6 +1633,9 @@ export async function buildSeoul(renderer, a, b) {
   prog(0.9, 'Hongdae: light');
   const lightMod = opts.light === false ? null : await tryModule('./seoul-light.js', 'seoulLight');
   if (lightMod?.attach) { try { parts.light = await lightMod.attach(world, emitters, ctx); } catch (e) { console.warn('seoulLight.attach', e); } }
+  // [P8-G1 perf #3] the life worker started during 'life' and warmed while the light attached: wait (bounded) for its first
+  // frame, so the first update draws the worker's crowd (P7: inline 18-24 ms a frame until a reply got through)
+  if (parts.life?.lifeWorker?.ready) { const t0w = (globalThis.performance || Date).now(); stats.lifeWorker = await Promise.race([parts.life.lifeWorker.ready, new Promise((r) => setTimeout(() => r('timeout'), opts.lifeWorkerWait ?? 6000))]); stats.ms.lifeWorkerWait = Math.round((globalThis.performance || Date).now() - t0w); }
   update(world.spawn, 0);
   stats.ms.total = Math.round((globalThis.performance || Date).now() - T0);
   globalThis.__seoulStats = stats;

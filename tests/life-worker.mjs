@@ -117,6 +117,24 @@ lw.dispose();
   ok(ma < mb, `main thread: update() ${ma.toFixed(2)} ms with the worker vs ${mb.toFixed(2)} ms inline (median, node)`);
   A.dispose(); B.dispose(); lw2.dispose();
 }
+// 6b. [P8 G1, perf #3: the panel's first worker frame came back 657 s after its request, so the level drew inline for its
+// first 138 frames] the first frame rides on 'ready' (opts.cam, opts.fr): the build's very first update draws the worker's
+// crowd, and it is the crowd the inline build draws
+{
+  const THREE = await import('three');
+  const lifeMod = await import('../seoul-life.js');
+  const sp = layout.spawn.pos, W = lifeMod.LIFE.warm, cam0 = [sp[0], sp[1], sp[2], -Math.sin(layout.spawn.yaw || 0), -Math.cos(layout.spawn.yaw || 0)];
+  const lw3 = await LifeWorker.create(layout, { seed: 7, density: 1, maxAgents: lifeMod.LIFE.maxAgents, warmTo: W, cam: cam0, fr: 1, throwOnError: true }, { WorkerImpl: Worker });
+  const mk = (w) => lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene(), lifeWorker: w });
+  const A = mk(lw3), B = mk(false), cam = new THREE.Vector3(sp[0], sp[1], sp[2]), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), layout.spawn.yaw || 0);
+  const st = await A.lifeWorker.ready;
+  A.update(0, cam, q); B.update(0, cam, q);
+  const tier = (L) => L.group.children.find((m) => m.name === 'crowd-near'), ga = tier(A).geometry, gb = tier(B).geometry;
+  let d = 0; if (ga.instanceCount === gb.instanceCount) for (let i = 0; i < ga.instanceCount * 4; i++) d = Math.max(d, Math.abs(ga.attributes.iPos.array[i] - gb.attributes.iPos.array[i])); else d = Infinity;
+  ok(st === 'on' && A.lifeWorker.firstUsed === 1 && lw3.stats.first && d < 1e-4 && A.stats.drawn === B.stats.drawn,
+    `the first frame comes with 'ready' (state ${st}): update 1 draws the worker's crowd (first used: update ${A.lifeWorker.firstUsed}; P7 the panel's 139th), ${A.stats.drawn} people as inline ${B.stats.drawn}, near tier within ${d.toExponential(1)} m`);
+  A.dispose(); B.dispose(); lw3.dispose();
+}
 // 7. [P5 H, perf #2 / native #4] seek-safe: a far seek fast-forwards in slices; a newer request retargets it (the worker
 // never finishes a frame nobody will draw); the result is bit-identical to one advanceTo; the main thread draws inline
 // until a frame from after the seek lands, never a stale one

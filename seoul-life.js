@@ -2852,25 +2852,34 @@ export function build(layout, ctx = {}) {
   // browser = start one (?lifeworker=0 turns it off); a LifeWorker instance = use it (node tests). Until it is ready,
   // after a seek (|t - frame t| > 0.25 s), or if it fails, the inline evaluate runs as before.
   const lwq = typeof location !== 'undefined' ? new URLSearchParams(location.search || '').get('lifeworker') : null;
-  const LW = { w: null, f: null, dt: 1 / 60, last: null, used: 0, inline: 0, state: 'off', hash0: sim.hash(), disposed: false };   // (the sim as built: t = 0)
+  const LW = { w: null, f: null, dt: 1 / 60, last: null, used: 0, inline: 0, state: 'off', hash0: sim.hash(), disposed: false, firstUsed: null };   // (the sim as built: t = 0)
+  // [P8 G1, perf #3] LW.ready resolves (to the state) once the worker is on with its first frame in hand, or failed / off:
+  // world-seoul waits for it (bounded) before its first update, so the level opens on the worker's crowd
+  let lwDone; LW.ready = new Promise((r) => { lwDone = r; });
   const lwPlain = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
   const lwAttach = (w) => {
     if (!w) { LW.state = 'unavailable'; return; }
     if (w.info && (w.info.agents !== crowd.X.length || w.info.vehicles !== traffic.vehicles.length || w.info.hash !== LW.hash0)) { LW.state = 'mismatch'; w.dispose(); return; }
-    if (LW.disposed) { w.dispose(); return; }
+    if (LW.disposed) { w.dispose(); LW.state = 'disposed'; return; }
     LW.w = w; LW.state = 'on';
   };
-  if (ctx.lifeWorker && typeof ctx.lifeWorker === 'object') lwAttach(ctx.lifeWorker);
+  const lwEnd = () => lwDone(LW.state);
+  if (ctx.lifeWorker && typeof ctx.lifeWorker === 'object') { lwAttach(ctx.lifeWorker); lwEnd(); }
   else if (ctx.lifeWorker !== false && lwq !== '0' && (ctx.lifeWorker === true || typeof window !== 'undefined') && LifeWorker.supported()) {
     LW.state = 'starting';
     // [P5 H, perf #2] warmTo: the worker reaches the warm clock before 'ready' (it used to pay that 75 s of traffic on its
     // first frame: 2.65-22 s with no frame back); until then, and after a seek until a post-seek frame lands, inline
-    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), puddles: lwPlain(puddles), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
-  }
+    // [P8] cam / fr: the first frame (at warmTo, from the spawn, in the first update's stagger phase) comes with 'ready'
+    const sp = layout.spawn?.pos, cam0 = Array.isArray(sp) ? [sp[0], sp[1], sp[2], Math.sin(layout.spawn.yaw || 0) * -1, -Math.cos(layout.spawn.yaw || 0)] : null;
+    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), puddles: lwPlain(puddles), warmTo: W, cam: cam0, fr: 1 })
+      .then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); }).finally(lwEnd);
+  } else lwEnd();
   function lwFrame(tNow, cam) {   // -> the worker frame to draw at tNow, or null (inline)
     const w = LW.w; if (!w) return null;
     if (w.error) { LW.state = 'failed: ' + w.error; LW.w = null; return null; }
-    if (LW.last != null) { const d = tNow - LW.last; if (d > 0 && d < 0.1) LW.dt += (d - LW.dt) * 0.2; }
+    // [P8] frames up to 0.5 s apart count (a slow or loaded device: P7 kept 1/60 s, asked for a clock it had already passed,
+    // and drew inline every frame)
+    if (LW.last != null) { const d = tNow - LW.last; if (d > 0 && d < 0.5) LW.dt += (d - LW.dt) * (LW.dt < 0.05 && d > 0.1 ? 0.6 : 0.2); }
     LW.last = tNow;
     // [P5 H] fr: the crowd's frame counter the next update would evaluate with (its far / behind-camera stagger keys on
     // it): the worker evaluates in the inline sim's phase (P4 didn't: a 7.9 % tier-total gap on the frames the stagger flips)
@@ -2878,7 +2887,7 @@ export function build(layout, ctx = {}) {
     w.request(tNow + LW.dt, [cam.x, camP.y, cam.z, cam.fx, cam.fz], c + 2);
     const f = w.latest(); if (f) { if (LW.f) w.release(LW.f); LW.f = f; }
     const use = LW.f && Math.abs(LW.f.t - tNow) <= 0.25 ? LW.f : null;
-    if (use) { LW.used++; crowd.frame = c + 1; } else LW.inline++;   // (inline: evaluate advances it)
+    if (use) { LW.used++; crowd.frame = c + 1; if (LW.firstUsed == null) LW.firstUsed = LW.used + LW.inline; } else LW.inline++;   // (inline: evaluate advances it; firstUsed: the update that first drew the worker's crowd)
     return use;
   }
   function update(t, camPos, camQuat) {
