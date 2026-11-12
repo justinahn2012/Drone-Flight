@@ -277,6 +277,11 @@ body.coaching:not(.portrait):not(.sumup):not(.replaying) #ghost{display:block}
 .stars path{fill:none;stroke:#8c8a86;stroke-width:1.3;stroke-linejoin:round}
 .stars .on path{fill:var(--amber);stroke:#000;stroke-width:1.2;paint-order:stroke}
 .stars small{margin-left:5px;font:600 11px var(--mono);letter-spacing:.06em;color:#c6c3bc}
+/* [P8-F design #4] CLEAN TAKE: the medal above 3 stars (a CUT at tuning.cleanTake, no SCRAPE), amber line on the card's dark, where
+   NEXT sat; the head wraps rather than squeeze CUT. PERFECT on a narrow card */
+.stars .medal{margin-left:7px;padding:3px 6px 2px;border-radius:4px;border:1.5px solid var(--amber);color:var(--amber);font:700 11px/1 var(--mono);
+  letter-spacing:.14em;white-space:nowrap;text-shadow:none;box-shadow:0 0 10px rgba(255,190,60,.35)}
+.bhead{flex-wrap:wrap;row-gap:6px}
 /* summary up: the OSD steps back (tag stays), no stick rings */
 body.sumup #osd .o:not(.tl){opacity:.25}
 body.sumup .float{display:none}

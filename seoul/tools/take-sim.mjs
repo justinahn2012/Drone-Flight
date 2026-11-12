@@ -267,7 +267,7 @@ function fly(path, P, rng) {
   const start = evs.find((e) => e.type === 'start')?.at ?? 0;
   return { total: tk.total, stars: starsFor(tk.total, tuning.stars), crashed, by: evs.find((e) => e.type === 'crash')?.by || null, t: +t.toFixed(1),
     lines: evs.filter((e) => e.type === 'line' && !e.micro).length, micros: evs.filter((e) => e.type === 'line' && e.micro).length, banks: evs.filter((e) => e.type === 'bank' && !e.cut).length,
-    scrapes: evs.filter((e) => e.type === 'scrape').length, heads: evs.filter((e) => e.heads).length, maxFlow: tk.stats.maxFlow,
+    scrapes: evs.filter((e) => e.type === 'scrape').length, cleanTake: evs.some((e) => e.type === 'cut' && e.cleanTake), missed: evs.filter((e) => e.type === 'missed').map((e) => e.name), heads: evs.filter((e) => e.heads).length, maxFlow: tk.stats.maxFlow,
     first: caps.length ? +(caps[0] - start).toFixed(1) : null, gapMean: gaps.length ? +(gaps.reduce((a, b) => a + b, 0) / gaps.length).toFixed(1) : null, gapMax: gaps.length ? +Math.max(...gaps).toFixed(1) : null,
     // [P4-F1] x2: take time of the first caption at FLOW >= 2 (design #4: by 20 s); fast: FAST lines; voids: heads moves voided;
     // ws: WALKING STREET's own time (s) and pts
@@ -292,6 +292,8 @@ for (const rn of routes) for (const [pn, P] of Object.entries(PILOTS).filter(([k
     heads: R.reduce((a, r) => a + r.heads, 0), first: q(R.map((r) => r.first ?? 99), 0.5), gapMean: q(R.map((r) => r.gapMean ?? 99), 0.5), gapMax: q(R.map((r) => r.gapMax ?? 99), 0.5), t: q(R.map((r) => r.t), 0.5), maxFlow: q(R.map((r) => r.maxFlow), 0.5),
     // [P5-F] flown: runs in which the route's last line fired (the portals, the stair dive: design #2 / #6, >= 10 of 12)
     flown: R.filter((r) => r.names.includes(ROUTES[rn][ROUTES[rn].length - 1][1])).length,
+    // [P8-F design #4 / #5] runs that won CLEAN TAKE; the streets the guide-following bot joined past their start (missed events)
+    cleanTakes: R.filter((r) => r.cleanTake).length, missed: [...new Set(R.flatMap((r) => r.missed))],
     x2: q(R.map((r) => r.x2 ?? 999), 0.5), fast: q(R.map((r) => r.fast), 0.5), clipped: R.reduce((a, r) => a + r.clipped, 0), voids: R.reduce((a, r) => a + r.voids, 0), wsDur: q(R.map((r) => r.ws?.dur ?? 0), 0.5), wsPts: q(R.map((r) => r.ws?.pts ?? 0), 0.5), agents: lifeAgents() };
   console.log(`${rn.padEnd(5)} ${pn.padEnd(8)} ${JSON.stringify(results[`${rn}/${pn}`])}`); if (process.env.TL) for (const r of R) console.log('   ', r.total, r.stars, r.crashed?'CRASH '+r.by:'', '|', r.tl.join(' ; '));
 }
@@ -303,7 +305,7 @@ if (OUT) fs.writeFileSync(OUT, JSON.stringify({ tuning, results, dropped }, null
 if (process.argv.includes('--record')) {
   const { createHash } = await import('node:crypto');
   const h = createHash('sha256').update(JSON.stringify({ lines: lineData.lines, tuning: lineData.tuning, takeStart: lineData.takeStart })).digest('hex').slice(0, 16);
-  const keep = ['runs', 'p25', 'p50', 'p75', 'crash', 'by', 'heads', 'stars', 'lines', 'gapMax', 'x2', 'wsPts', 'fast', 'flown'];
+  const keep = ['runs', 'p25', 'p50', 'p75', 'crash', 'by', 'heads', 'stars', 'lines', 'gapMax', 'x2', 'wsPts', 'fast', 'flown', 'cleanTakes', 'missed'];
   // [P7-F] --merge: add these routes to an existing record of the same lines.json (the record in several processes: one node
   // running all 18 routes was OOM-killed on the 8 GB box)
   const prev = process.argv.includes('--merge') ? (() => { try { const P = JSON.parse(fs.readFileSync(new URL('../../tests/seoul/take-sim.json', import.meta.url), 'utf8')); return P.lines === h && P.runs === RUNS ? P : null; } catch (e) { return null; } })() : null;

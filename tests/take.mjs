@@ -398,6 +398,45 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
   resetProgress();
 }
 
+// ---- 20b. [P8-F design #4] CLEAN TAKE (a CUT at >= tuning.cleanTake with 0 SCRAPE); [P8-F design #5 / ux #5] a street joined past
+// its start gate sends one `missed` event per street per take (tuning.missedStart)
+{
+  resetProgress();
+  const ct0 = T.cleanTake;
+  const run = (scrape) => {
+    const tk = new Take(), d = mk(), evs = [];
+    flyTo(tk, d, 21, 10, true, evs);
+    if (scrape) { d.lastImpact = 3.5; hold(tk, d, DT, true, evs, 3); d.lastImpact = 0; }
+    hold(tk, d, 5, false, evs, 0);
+    return { tk, cut: evs.find((e) => e.type === 'cut') };
+  };
+  T.cleanTake = 0; { const r = run(false); ok(r.cut && !('cleanTake' in r.cut) && !('cleanTake' in r.cut.stats) && r.tk.cleanTake === false, 'cleanTake 0 (bando): the cut event keeps its shape'); }
+  T.cleanTake = 1000; { const r = run(false); ok(r.cut?.cleanTake === true && r.cut.stats.cleanTake === true && r.tk.cleanTake, `a CUT at ${r.cut?.total} >= 1000, no SCRAPE: CLEAN TAKE`); }
+  { const r = run(true); ok(r.cut && r.cut.cleanTake === false && !r.tk.cleanTake, 'a SCRAPE: no CLEAN TAKE'); }
+  T.cleanTake = 1e9; { const r = run(false); ok(r.cut && r.cut.cleanTake === false, 'under the bar: no CLEAN TAKE'); }
+  T.cleanTake = ct0;
+  const SL = [
+    { name: 'S', caption: 'S', pts: 2000, ...gate(40), pre: [gate(-5)], within: 30 },
+    { name: 'S 1/2', caption: 'S 1/2', pts: 750, micro: true, seg: 'S', ...gate(20), pre: [gate(-5)], within: 15 },
+    { name: 'S 2/2', caption: 'S 2/2', pts: 750, micro: true, seg: 'S', ...gate(40), pre: [gate(20)], within: 15 },
+  ];
+  const W = { lines: SL, skimBvh };
+  const fly = (z0, on, again = false) => {
+    const m0 = T.missedStart; T.missedStart = on;
+    const tk = new Take(), d = { ...mk(), pos: { x: 0, y: 2, z: z0 } }, evs = [];
+    const go = (z1) => { d.vel = { x: 0, y: 0, z: 10 }; while (d.pos.z < z1) { d.pos = { ...d.pos, z: Math.min(z1, d.pos.z + 10 * DT) }; evs.push(...tk.update(DT, d, W, true)); } };
+    go(41);
+    if (again) { d.pos = { ...d.pos, z: 10 }; tk._last = null; go(41); }   // the same street joined late twice in one take
+    T.missedStart = m0; return evs;
+  };
+  { const e = fly(10, true), m = e.filter((x) => x.type === 'missed');
+    ok(m.length === 1 && m[0].name === 'S' && e.some((x) => x.name === 'S 2/2') && !e.some((x) => x.name === 'S' && x.type === 'line'), `joined past the start: one missed S (${JSON.stringify(m)})`); }
+  { const e = fly(-20, true); ok(!e.some((x) => x.type === 'missed') && e.some((x) => x.type === 'line' && x.name === 'S'), 'flown from the start gate: S pays, no missed'); }
+  { const e = fly(10, false); ok(!e.some((x) => x.type === 'missed'), 'missedStart off (bando): no missed'); }
+  { const e = fly(10, true, true); ok(e.filter((x) => x.type === 'missed').length === 1, 'missed once per street per take'); }
+  resetProgress();
+}
+
 // ---- 20. r5 PERFECT (CUT, 3 stars, every line CLEAN, 0 SCRAPE), perfectLive; C12 ghostPose
 {
   resetProgress();
@@ -753,7 +792,9 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     // [P7-F design #6] every set-piece line in the record (phase 6: CABLE THREAD, BUS SHELTER, ROOF SLOT and THE GAP weren't), open
     for (const r of ['pop', 'pass', 'stage0', 'stage1', 'thread0', 'thread1', 'shelter0', 'shelter2', 'slot0', 'gap']) { const n = ['careful', 'regular', 'sharp'].reduce((a, p) => a + (R.results[`${r}/${p}`]?.stars ? R.results[`${r}/${p}`].stars.length : 0), 0);
       const got = ['careful', 'regular', 'sharp'].reduce((a, p) => a + (R.results[`${r}/${p}`]?.flown ?? 0), 0);
-      ok(n > 0 && got >= Math.ceil(n * 10 / 12), `${r}: flown in ${got} of ${n} sim takes (>= 10 of 12)`); }
+      ok(n > 0 && got >= Math.ceil(n * 10 / 12), `${r}: flown in ${got} of ${n} sim takes (>= 10 of 12)`);
+      // [P8-F design #3] and every pilot >= 7 of 8 on its own (the pooled rule hid pop/regular at 6 of 8)
+      for (const pl of ['careful', 'regular', 'sharp']) { const x = R.results[`${r}/${pl}`]; ok(x && x.flown >= Math.ceil(x.runs * 7 / 8), `${r}/${pl}: flown in ${x?.flown} of ${x?.runs} (>= 7 of 8 per pilot)`); } }
     // [P7-F design #1] ROOFLINE joined at its start: long/sharp flies it in >= 7 of 8 (phase 6: 5 of 8, joining at 3/4 off TO THE
     // ROOFLINE 1), and speed pays on the long take at the median (phase 6: sharp 352k, regular 351k)
     { const ls = R.results['long/sharp'], lr = R.results['long/regular'];

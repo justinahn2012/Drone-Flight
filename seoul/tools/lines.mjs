@@ -298,7 +298,9 @@ run({ path: club.points, name: 'BAR ALLEY', caption: 'THE BAR *ALLEY*!', value: 
 // and hands over the slot as anchors['playground-pop'] (mast, crown edge toward it at the crown's widest height, the gate
 // 0.65 m clear of both); without it, phase 3's 4 x 4 m square over the busker
 { const A = geo.dressingOut?.anchors?.['playground-pop'], pg = (layout.hero || []).find((h) => h.id === 'playground')?.pos || [80, 2, 97];
-  const G = fit(A ? g(A.gate.c, A.gate.n, A.gate.w, A.gate.h, A.gate.u) : g([pg[0], 7, pg[2]], [0, 1, 0], 4, 4, [1, 0, 0]), 'PLAYGROUND POP');
+  // [P8-F design #3] 0.5 m wider than E's slot gate (0.65 m clear of the mast and the crown each side -> 0.4 m, CLEAR is 0.3):
+  // P7's record flew it regular 6/8, careful 7/8 (the per-pilot floor is 7/8)
+  const G = fit(A ? g(A.gate.c, A.gate.n, r3(A.gate.w + 0.5), A.gate.h, A.gate.u) : g([pg[0], 7, pg[2]], [0, 1, 0], 4, 4, [1, 0, 0]), 'PLAYGROUND POP');
   add('PLAYGROUND POP', 'PLAYGROUND *POP*!', 500, G, { micro: true, feature: A ? 'between the light mast and the zelkova over the Playground busker' : 'over the Playground busker' });
   if (A) report.push(`  (PLAYGROUND POP: ${G.w.toFixed(1)} x ${G.h.toFixed(1)} m at ${G.c[1]} m between the mast at [${A.mast[0]}, ${A.mast[2]}] and the crown ${A.crownEdge} m off its trunk, slot ${A.gap} m)`); }
 // 3. HONGIK-RO: down the main road from the station to the university, 5-8 m: over the buses, under the lamp arms' reach
@@ -815,8 +817,11 @@ const stageL = lines.find((l) => l.name === 'UNDER THE STAGE' && l.first);
 // hint.order: the lines the copy names, in the order they're flown (seoul-ui checks it against the arc)
 // [P6-F ui #1] turned +6 deg (left: the busking ring and the lit canopy to the centre, the opening's bracket right of it) and
 // looking 8 deg down (`pitch`, rad: main.js holds the view there while the take is 'ready'), so the canopy fills the frame
-const SPAWN_YAW = 6 * Math.PI / 180, SPAWN_PITCH = -8 * Math.PI / 180;
-const walkStart = hubFirst && stageL ? (() => { const p = st('Walking street', 0, WP, 4.5, 13), q = stageL.pre[0].c; return { ...p, yaw: r3(yawTo(q[0] - p.pos[0], q[2] - p.pos[2]) + SPAWN_YAW), pitch: r3(SPAWN_PITCH) }; })()
+// [P8-F ui #4 / ux #6] `right`: after the clearance slide below, SPAWN_RIGHT m to the camera's right, yaw kept (a pure slide): a 2F
+// round box (화장품) ~2.5 m off the left lens filled ~12 % of the lower left, blurred, under the CLIMB · TURN pad
+const SPAWN_YAW = 6 * Math.PI / 180, SPAWN_PITCH = -8 * Math.PI / 180, SPAWN_RIGHT = 2.0;
+const walkStart = hubFirst && stageL ? (() => { const p = st('Walking street', 0, WP, 4.5, 13), q = stageL.pre[0].c, yaw = yawTo(q[0] - p.pos[0], q[2] - p.pos[2]) + SPAWN_YAW;
+  return { ...p, yaw: r3(yaw), pitch: r3(SPAWN_PITCH), right: SPAWN_RIGHT }; })()
   : { ...st('Walking street', 15, WP, 3.2) };
 const startPoints = [
   stageL ? { ...walkStart, hint: { text: hubFirst ? 'UNDER THE STAGE · UP THE STREET' : 'UNDER THE STAGE · THEN THE WALKING STREET', line: 'UNDER THE STAGE', until: 2, next: 'UNDER THE STAGE',
@@ -836,6 +841,10 @@ for (const sp of startPoints) {
   let k = 0; for (; k <= 10; k++) { P.set(sp.pos[0] + fx * k, sp.pos[1], sp.pos[2] + fz * k); const q = bvh.closestPointToPoint(P, cp, 0, 1.0); if (!q || q.distance >= 1.0) break; }
   if (k > 10) { report.push(`  (start ${sp.name}: no clear hover within 10 m)`); continue; }
   if (k) { sp.pos = [r3(P.x), sp.pos[1], r3(P.z)]; report.push(`  (start ${sp.name}: moved ${k} m ahead, clear of the geometry)`); }
+  if (sp.right) { const R = sp.right; delete sp.right;
+    P.set(sp.pos[0] + Math.cos(sp.yaw) * R, sp.pos[1], sp.pos[2] - Math.sin(sp.yaw) * R); const q = bvh.closestPointToPoint(P, cp, 0, 1.0);
+    if (!q || q.distance >= 1.0) { sp.pos = [r3(P.x), sp.pos[1], r3(P.z)]; report.push(`  (start ${sp.name}: ${R} m right, clear)`); }
+    else report.push(`  (start ${sp.name}: ${R} m right is ${q.distance.toFixed(2)} m from geometry: kept)`); }
 }
 // ---- [P2-F1 design #1] the level's take tuning, merged over take.js TAKE_TUNING (bando keeps its own). Stars fitted from
 // noisy-pilot sims (seoul/tools/take-sim.mjs, movers on; clean bots, so a little under their numbers): the walking street
@@ -859,7 +868,10 @@ for (const sp of startPoints) {
 // long went 256k -> 291k p50 and 3 of 8 careful runs reached 290k (best 311.5k). 3 stars at 340k: careful p75 311.5k = 0.92 x,
 // every careful run under it; regular p50 394k = 1.16 x.
 const tuning = { stars: [20000, 100000, 340000], bankT: 10.0, holdZone: 1.5, armHold: true, firstR: 60, pace: [60, 180, 1.5], microFlow: 0, timed: true, bankBonus: true, fastBonus: 1.0, slowPar: 1.6, fastPar: 1.15,
-  clipGrace: 0.6, clipT: 20, hintVertReady: 6 };
+  clipGrace: 0.6, clipT: 20, hintVertReady: 6,
+  // [P8-F] design #4: CLEAN TAKE (a CUT at >= 450k with no SCRAPE), the tier above 3 stars (P7: long/sharp p50 482k, regular p75
+  // 429k); design #5 / ux #5: say when a street was joined past its start gate
+  cleanTake: 450000, missedStart: true };
 // a copy on the first named non-set-piece line for world loaders that pass lines[] only (take.js reads either)
 const firstLine = lines.find((l) => !l.piece && !l.micro && l.pre); if (firstLine) firstLine.tuning = tuning;
 const out = { version: 2, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', tuning, lines, funnels, startPoints,
