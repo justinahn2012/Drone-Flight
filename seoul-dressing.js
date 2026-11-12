@@ -290,6 +290,9 @@ export function geometry(layout, opts = {}) {
   const corrHit = (b, m = 1.5) => { for (const [a, c] of corr) { if (Math.min(a[0], c[0]) > b[3] + m || Math.max(a[0], c[0]) < b[0] - m || Math.min(a[1], c[1]) > b[4] + m || Math.max(a[1], c[1]) < b[1] - m || Math.min(a[2], c[2]) > b[5] + m || Math.max(a[2], c[2]) < b[2] - m) continue;
     const n = Math.max(1, Math.ceil(Math.hypot(...v3.sub(c, a)) / 0.5)); for (let k = 0; k <= n; k++) { const p = [lerp(a[0], c[0], k / n), lerp(a[1], c[1], k / n), lerp(a[2], c[2], k / n)];
       if (p[0] > b[0] - m && p[0] < b[3] + m && p[1] > b[1] - m && p[1] < b[4] + m && p[2] > b[2] - m && p[2] < b[5] + m) return true; } } return false; };
+  // [P7-E] the take's start points (the drone spawns there): the phase-7 additions keep 1.5 m off them (test-seoul: 0.8 m)
+  const starts = (opts.lines?.startPoints || []).map((sp) => sp.pos).filter(Boolean);
+  const startOK = (pts, m = 1.5) => { for (const p of pts) for (const q of starts) if (Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) < m) return false; return true; };
   const polyCorrOK = (pts, m = 1.2) => { for (const p of pts) for (const [a, c] of corr) if (segD3(p, a, c) < m) return false; return true; };
   const shopTop = opts.shopTop ?? 2.95, fasciaY = opts.fasciaY ?? 3.05;
   const dens = clamp(opts.density ?? 1, 0, 3);   // clutter density (scooters, stools, bags): a perf knob, 1 = the reference look
@@ -1652,6 +1655,7 @@ export function geometry(layout, opts = {}) {
       if (eoulD((x0 + x1) / 2, (z0 + z1) / 2) < 80 && area >= 45) {
         if (Rl() < 0.8) { const frp = Rl() < 0.65, w = frp ? 1.6 + Rl() * 0.8 : 1.3, dd = frp ? 1.2 + Rl() * 0.6 : 1.3, hh = frp ? 1.2 + Rl() * 0.5 : 1.7, col = frp ? (Rl() < 0.6 ? [0.42, 0.6, 0.7] : [0.7, 0.68, 0.6]) : [0.62, 0.63, 0.64];
           placeIn(Math.hypot(w, dd) / 2 + 0.1, (F) => {
+            if (!startOK([W(F, 0, 0, 0), W(F, 0, 0.5 + hh, 0)], 1.5 + Math.hypot(w, dd) / 2)) return false;
             set('dr_steel'); boxMM(F, -w / 2 - 0.05, 0, -dd / 2 - 0.05, w / 2 + 0.05, 0.12, dd / 2 + 0.05, ['ny']);                       // the stand's frame
             near(() => { for (const sx of [-1, 1]) for (const sz of [-1, 1]) boxMM(F, sx * (w / 2 - 0.05) - 0.04, 0.12, sz * (dd / 2 - 0.05) - 0.04, sx * (w / 2 - 0.05) + 0.04, 0.5, sz * (dd / 2 - 0.05) + 0.04, ['ny', 'py']); });
             if (frp) { set('dr_prop', { c: col }); boxMM(F, -w / 2, 0.5, -dd / 2, w / 2, 0.5 + hh, dd / 2, ['ny']);
@@ -1661,7 +1665,7 @@ export function geometry(layout, opts = {}) {
             facts.roofTanks = (facts.roofTanks || 0) + 1;
           }); }
         const s2 = spot(1.3); if (s2 && Rl() < 0.7) { const ya = Math.atan2(tz, tx), out = [Math.sin(ya), 0, -Math.cos(ya)].map((v) => (Rl() < 0.5 ? v : -v));
-          for (let i = 0; i < 2; i++) { const x = s2[0] + tx * (i - 0.5) * 1.0, z = s2[1] + tz * (i - 0.5) * 1.0; if (!fits(x, z, 0.55) || corrHit([x - 0.6, H, z - 0.6, x + 0.6, H + 1.2, z + 0.6], 1.5)) continue;
+          for (let i = 0; i < 2; i++) { const x = s2[0] + tx * (i - 0.5) * 1.0, z = s2[1] + tz * (i - 0.5) * 1.0; if (!fits(x, z, 0.55) || corrHit([x - 0.6, H, z - 0.6, x + 0.6, H + 1.2, z + 0.6], 1.5) || !startOK([[x, H + 0.4, z]], 2.0)) continue;
             roofAC.push({ c: [x, H + 0.4, z], n: out, size: [0.84, 0.64, 0.32], roof: true, tint: [1, 1, 0.97] }); taken.push([x, z, 0.55]); facts.roofCondensers = (facts.roofCondensers || 0) + 1; } }
       }
     }
@@ -1810,7 +1814,7 @@ export function geometry(layout, opts = {}) {
         const Ha = hAt(ax - nx * 0.15, az - nz * 0.15), Hb = hAt(bx + nx * 0.15, bz + nz * 0.15), top = Math.min(Ha, Hb) - 0.6;
         if (top < 6.3 || !M.lotAt(ax - nx * 0.15, az - nz * 0.15) || !M.lotAt(bx + nx * 0.15, bz + nz * 0.15) || M.lotAt(ax + nx * 0.25, az + nz * 0.25) || M.lotAt(bx - nx * 0.25, bz - nz * 0.25)) continue;
         const ya = 5.8 + R2() * Math.min(3.5, top - 5.8), yb = clamp(ya + (R2() - 0.5) * 1.2, 5.8, top), pts = sagLine([ax, ya, az], [bx, yb, bz], 0.05 + R2() * 0.03);
-        if (!polyGateOK(pts, 0.5) || !polyCorrOK(pts, 1.2)) { facts.rejectedByGates++; continue; }
+        if (!polyGateOK(pts, 0.5) || !polyCorrOK(pts, 1.2) || !startOK(pts, 1.5)) { facts.rejectedByGates++; continue; }
         item(() => {
           cables.push({ pts: pts.map(r3), r: 0.005 }); colTube(pts, 0.012);
           set('dr_steel', { col: false }); near(() => { for (const p of [pts[0], pts[pts.length - 1]]) box(FW, p[0], p[1], p[2], 0.04, 0.04, 0.04); });
