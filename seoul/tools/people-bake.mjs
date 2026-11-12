@@ -22,9 +22,14 @@ await MeshoptSimplifier.ready;
 THREE.TextureLoader.prototype.load = function () { return new THREE.Texture(); };   // node: no images (the atlas tool reads them)
 
 // the order is the avatar index the crowd uses; 4 men, 4 women, November night clothing (jackets, suits, hoodies, trousers)
+// (P6, life #1) + the library's six East Asian bodies (Hongdae on a Friday is 85 %+ Korean): Business_Male_02, Male_Adult_09,
+// Male_Adult_10, Business_Female_03, Female_Adult_11, Female_Adult_05 (Female_Adult_03 tried: sleeveless,
+// and its long hair cards stood off a bare scalp, 71 % on hair). 14 avatars in a 4 x 4 grid (atlas 2048 x 4096)
 const AVATARS = [
   ['Business_Male_01', 'm'], ['Male_Adult_03', 'm'], ['Male_Adult_04', 'm'], ['Male_Adult_18', 'm'],
   ['Business_Female_04', 'f'], ['Female_Adult_07', 'f'], ['Female_Adult_09', 'f'], ['Female_Adult_13', 'f'],
+  ['Business_Male_02', 'm', 'ea'], ['Male_Adult_09', 'm', 'ea'], ['Male_Adult_10', 'm', 'ea'],
+  ['Business_Female_03', 'f', 'ea'], ['Female_Adult_11', 'f', 'ea'], ['Female_Adult_05', 'f', 'ea'],
 ];
 const LODS = [{ name: 'near', tris: 3400 }, { name: 'lod1', tris: 1700 }, { name: 'mid', tris: 760 }];   // (P4 perf #2: lod1 for 8-18 m)
 
@@ -46,12 +51,12 @@ const classOf = (mat, boneName) => {
   return 2;
 };
 
-const out = { version: 1, source: 'Microsoft Rocketbox Avatar Library (MIT licence, (c) 2020 Microsoft)', atlas: { w: 2048, h: 2048, hairW: 1024, hairH: 512 }, avatars: [] };
+const out = { version: 1, source: 'Microsoft Rocketbox Avatar Library (MIT licence, (c) 2020 Microsoft)', atlas: { w: 2048, h: 4096, hairW: 1024, hairH: 1024 }, avatars: [] };
 const chunks = []; let off = 0;
 const push = (ta) => { const pad = (4 - (off % 4)) % 4; if (pad) { chunks.push(new Uint8Array(pad)); off += pad; } const b = new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength); chunks.push(b.slice()); const o = off; off += b.byteLength; return o; };
 const uvSamples = [];
 
-for (const [ai, [name, sex]] of AVATARS.entries()) {
+for (const [ai, [name, sex, ea]] of AVATARS.entries()) {
   const buf = readFileSync(join(dir, name + '.fbx'));
   const obj = new FBXLoader().parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), '');
   obj.updateMatrixWorld(true);
@@ -114,7 +119,7 @@ for (const [ai, [name, sex]] of AVATARS.entries()) {
   const idx0 = new Uint32Array(nV); for (let i = 0; i < nV; i++) idx0[i] = remap[i];
   // UV samples for the atlas tool's class means (body/head/hair textures in their own UV space)
   const smp = { name, tex: texOf, s: [] }; for (let j = 0; j < nU; j += 3) { const i = uniq[j]; smp.s.push([mat[i], cls[i], +uv[i * 2].toFixed(4), +uv[i * 2 + 1].toFixed(4)]); } uvSamples.push(smp);
-  const av = { name, sex, joints, lods: [], materials: texOf, tris0: nV / 3 };
+  const av = { name, sex, ...(ea ? { ea: true } : {}), joints, lods: [], materials: texOf, tris0: nV / 3 };
   for (const L of LODS) {
     let idx = idx0;
     if (nV / 3 > L.tris) { const [r, err] = MeshoptSimplifier.simplify(idx0, uPos, 3, L.tris * 3, 0.05, []); idx = r; av['err_' + L.name] = +err.toFixed(5); }

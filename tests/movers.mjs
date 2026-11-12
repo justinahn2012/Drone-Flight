@@ -14,7 +14,7 @@
 // too: its traffic is the same (7), and
 //  8. [P4-F1 design #1] the stair dive's approach (6 m to its pre-gate at 2.0-2.7 m) is <= 5 % occupied by people, at
 //     both presets; the dive itself (pre-gate to the landing gate) too once nobody stands inside E's stairwell openings
-//     (seoul-life places exit 9's waiting people round the portal without E's discs: PENDING G1 until then)
+//     (P6: a gate, no longer a PEND: seoul-life keeps its walkers round the stair mouth)
 import fs from 'node:fs';
 import * as THREE from 'three';
 import { buildSeoulGeometry } from '../world-seoul.js';
@@ -181,8 +181,9 @@ const vehAt = (t, pred) => sim.boxesAt(t, []).map((b) => ({ ...b, v: sim.traffic
       ok(a8 <= 5, `${q}: the stair dive's approach (6 m to the pre-gate at ${(P.c[1] - P.h / 2).toFixed(1)}-${(P.c[1] + P.h / 2).toFixed(1)} m) is ${a8.toFixed(1)} % occupied (<= 5 %)`);
       // (P5 G1: was a PEND; exit 9's waiting ring and the basement clubs' bouncers now keep out of E's holes)
       ok(inHole === 0, `${q}: nobody stands in E's stairwell openings (${inHole}; P4: 4-5, the dive 100 % occupied)`);
-      // (P5) with nobody standing in the holes, what is left is walkers crossing the stair mouth on their way (G1 open item)
-      if (d8 > 5) console.log(`PEND ${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied by walkers crossing the stair mouth (<= 5 %)`); else ok(true, `${q}: the dive is ${d8.toFixed(1)} % occupied (<= 5 %)`);
+      // (P6 G1, design #1: was a PEND at 41 / 28 %) walkers keep 1.2 m off exit 9's stair mouth (0.3 m at the stair head,
+      // where the line comes in above heads) and the exit's people step out at the stair head
+      ok(d8 <= 5, `${q}: the dive (pre-gate to the landing gate) is ${d8.toFixed(1)} % occupied by people (<= 5 %; P5 41 / 28 %)`);
     }
   }
 }

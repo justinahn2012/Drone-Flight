@@ -1,7 +1,7 @@
 # seoul/tools/people-aux.py: the crowd avatars' head-map masks (stream G1, phase 4: life #1, graphics #3, art #3).
 # Run after people-bake.mjs and people-atlas.py (it reads people.json, people.bin and atlas.jpg).
 #   python3 seoul/tools/people-aux.py [people dir]
-# aux.png 1024 x 512 RGB, avatar i's head map in a 256^2 cell (col i % 4, row i // 4), in the head map's own UV layout:
+# aux.png 1024 x (256 x rows) RGB, avatar i's head map in a 256^2 cell (col i % 4, row i // 4), in the head map's own UV layout:
 #   R  scalp hair: the hair painted on the head map (and brows, beards, buns). The shader re-tints it to the person's
 #      hair colour like the hair cards (P3 tinted it toward the skin colour, so the near-black cards sat on brown or
 #      blond painted hair: the "black patches" on ~1 head in 8, the "bars over the eyes" at 15-40 m).
@@ -21,8 +21,8 @@ pdir = sys.argv[1] if len(sys.argv) > 1 else 'seoul/people'
 meta = json.load(open(os.path.join(pdir, 'people.json')))
 binb = open(os.path.join(pdir, 'people.bin'), 'rb').read()
 atlas = np.asarray(Image.open(os.path.join(pdir, 'atlas.jpg')).convert('RGB'), dtype=np.float32) / 255
-A = meta['atlas']; CELL = 256
-aux = np.zeros((2 * CELL, 4 * CELL, 3), np.float32)
+A = meta['atlas']; CELL = 256; ROWS = A['h'] // 1024   # (P6) 4 rows of 4 since the 14-avatar bake
+aux = np.zeros((ROWS * CELL, 4 * CELL, 3), np.float32)
 lin = lambda c: np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
 ss = lambda e0, e1, x: (lambda t: t * t * (3 - 2 * t))(np.clip((x - e0) / (e1 - e0), 0, 1))
 
@@ -79,7 +79,7 @@ for ai, av in enumerate(meta['avatars']):
     chinY = float(front[:, 1].min())
     # head-map texel space for this avatar: atlas uv -> (u, v from the top of the head map) in [0, 1]
     vt = 1 - UV[:, 1]
-    hu = UV[:, 0] * 4 - col; hvv = (vt - row * 0.5 - 0.25) * 4
+    hu = UV[:, 0] * 4 - col; hvv = (vt - (row + 0.5) / ROWS) * 2 * ROWS
     inmap = (hvv >= -1e-4) & (hvv <= 1 + 1e-4) & (hu >= -1e-4) & (hu <= 1 + 1e-4)
     tris = [t for t in I if inmap[t].all() and (B[t, 3] == 0).all()]
     uvpx = np.stack([hu * CELL, hvv * CELL], 1)
@@ -154,7 +154,7 @@ for ai, av in enumerate(meta['avatars']):
     av['face'] = { 'noseY': round(float(nose[1]), 4), 'noseZ': round(float(nose[2]), 4), 'chinY': round(chinY, 4), 'eyeY': round(eyeY, 4) }
     av['meanScalp'] = [round(float(v), 5) for v in meanScalp]
     print(f"{av['name']}: nose {nose[1]:.3f}/{nose[2]:.3f} chin {chinY:.3f} eyes {eyeY:.3f}; mask texels {(mk > 0.5).sum()}, hair {(hair > 0.5).sum()} of {cov.sum()}; scalp {np.round(meanScalp, 3)}")
-meta['aux'] = { 'w': 4 * CELL, 'h': 2 * CELL, 'cell': CELL, 'channels': 'r scalp hair, g face mask' }
+meta['aux'] = { 'w': 4 * CELL, 'h': ROWS * CELL, 'cell': CELL, 'channels': 'r scalp hair, g face mask' }
 Image.fromarray((np.clip(aux, 0, 1) * 255 + 0.5).astype(np.uint8)).save(os.path.join(pdir, 'aux.png'), optimize=True)
 json.dump(meta, open(os.path.join(pdir, 'people.json'), 'w'), indent=1)
 print('aux.png', os.path.getsize(os.path.join(pdir, 'aux.png')) // 1024, 'KB')

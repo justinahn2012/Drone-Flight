@@ -44,6 +44,13 @@ ok(nan === 0, 'no NaN'); ok(overlap === 0, `no bumper overlaps (${overlap})`);
       if (hw) ww++; if (hs) ws++; }
   }
   ok(ww / n < 0.05 && ws / n < 0.003, `walker overlaps near the camera (at 3x P1 density): ${(100 * ww / n).toFixed(2)} % with walkers, ${(100 * ws / n).toFixed(2)} % inside standing people (P1: 6.1 %, 0.47 %)`);
+  // (P6, life #3) the lanes don't self-sort: in the outer thirds of the walking-street and Yanghwa-ro walkways, >= 15 % walk
+  // the other way (P5: 0 %, so walk0 showed only backs and walk180 only faces)
+  { const B = {}; for (let t = 100; t < 400; t += 20) { C.evaluate(t, null, { avoid: false });
+      for (let i = 0; i < C.people.length; i++) { if (!C.VIS[i] || C.people[i].kind !== K_WALK || C.WAY[i] < 0) continue; const w = C.ways[C.WAY[i]]; if (w.kind !== 'walking' && w.kind !== 'main') continue;
+        const f = (C.WD[i] - w.dmin) / (w.dmax - w.dmin); if (f > 1 / 3 && f < 2 / 3) continue; const k = w.kind + (f < 0.5 ? 'L' : 'R'); B[k] ??= [0, 0]; B[k][C.WDIR[i] > 0 ? 0 : 1]++; } }
+    const mins = Object.entries(B).map(([k, [p, m]]) => [k, Math.min(p, m) / Math.max(1, p + m)]);
+    ok(mins.length === 4 && mins.every(([, v]) => v >= 0.15), `walkways' outer thirds walk both ways: minority ${mins.map(([k, v]) => `${k} ${(100 * v).toFixed(0)} %`).join(', ')} (P5: 0 %)`); }
   // standing people shuffle; queues admit and step up
   C.evaluate(60, null, { avoid: false }); const st = C.people.filter((p) => p.kind === K_STAND).map((p) => [C.X[p.id], C.Z[p.id], C.YAW[p.id]]);
   C.evaluate(240, null, { avoid: false }); let moved = 0; C.people.filter((p) => p.kind === K_STAND).forEach((p, i) => { if (Math.hypot(C.X[p.id] - st[i][0], C.Z[p.id] - st[i][1]) > 0.05 || Math.abs(C.YAW[p.id] - st[i][2]) > 0.05) moved++; });
@@ -171,8 +178,8 @@ if (existsSync('seoul/people/people.json')) {
   for (const av of meta.avatars) av.lods.forEach((L, k) => { tris[k].push(L.tris); const bd = new Uint8Array(bin, L.bone, L.verts * 4), ix = new Uint16Array(bin, L.index, L.tris * 3), p = new Float32Array(bin, L.pos, L.verts * 3);
     for (let i = 0; i < L.verts; i++) { const b1 = bd[i * 4], b2 = bd[i * 4 + 1], r = bd[i * 4 + 3]; if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b1) || ![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14].includes(b2) || r > 6 || !isFinite(p[i * 3 + 1])) bad++; }
     for (const q of ix) if (q >= L.verts) bad++; });
-  ok(meta.avatars.length >= 8 && bad === 0 && Math.max(...tris[0]) <= 3600 && Math.max(...tris[1]) <= 1800 && Math.max(...tris[2]) <= 900 && meta.avatars.every((a) => a.mean && a.joints.top > 1.6 && a.joints.top < 1.95),
-    `avatars: ${meta.avatars.length} (${meta.avatars.filter((a) => a.sex === 'm').length} men), near ${Math.max(...tris[0])} / lod1 ${Math.max(...tris[1])} / mid ${Math.max(...tris[2])} tris, ${bad} bad vertices, ${(b.byteLength / 1024).toFixed(0)} KB (MIT, Microsoft Rocketbox)`);
+  ok(meta.avatars.length >= 14 && meta.avatars.filter((a) => a.ea).length >= 6 && bad === 0 && Math.max(...tris[0]) <= 3600 && Math.max(...tris[1]) <= 1800 && Math.max(...tris[2]) <= 900 && meta.avatars.every((a) => a.mean && a.joints.top > 1.6 && a.joints.top < 1.95),
+    `avatars: ${meta.avatars.length} (${meta.avatars.filter((a) => a.sex === 'm').length} men, ${meta.avatars.filter((a) => a.ea).length} East Asian; P5: 8, 0), near ${Math.max(...tris[0])} / lod1 ${Math.max(...tris[1])} / mid ${Math.max(...tris[2])} tris, ${bad} bad vertices, ${(b.byteLength / 1024).toFixed(0)} KB (MIT, Microsoft Rocketbox)`);
   const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
   const L2 = lifeMod.build(layout, { audio: false, scene: new THREE.Scene(), peopleData: { meta, bin } }), cam = new THREE.Vector3(-36, 3, -23), qq = new THREE.Quaternion();
   for (let k = 0; k < 10; k++) L2.update(10 + k / 30, cam, qq);
@@ -184,6 +191,11 @@ if (existsSync('seoul/people/people.json')) {
   ok(L2.avatars.ready && nAv > 50 && nAv === L2.stats.near + L2.stats.mid && L2.stats.contacts === nAv && L2.motionMeshes.filter((m) => m.isInstancedMesh).length === 5 && L2.motionMeshes.some((m) => m.count > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 1))
     && L2.motionMeshes.some((m) => !m.isInstancedMesh && m.geometry.instanceCount > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 0.5)),
     `render path: ${nAv} near/mid people on avatars, ${L2.stats.contacts} contact shadows, ${L2.motionMeshes.length} meshes with instanceVelocity (5 vehicle types + crowd tiers; A's object blur)`);
+  // (P6, life #1) a Hongdae crowd: >= 65 % of the near and mid people at walk0 on the East Asian bodies (P5: 0 of 8 avatars);
+  // and how often a near person's avatar repeats on another near person within 8 m (reported: 14 bodies can't keep a
+  // 0.37 p/m^2 street free of repeats; the per-person clothes, hair and skin tints carry the rest)
+  { const meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), ea = L2.avatars.tiers.flat().reduce((a, t, k) => a + (meta.avatars[k % meta.avatars.length].ea ? t.n : 0), 0);
+    ok(ea / nAv >= 0.65, `East Asian bodies: ${(100 * ea / nAv).toFixed(0)} % of ${nAv} near/mid people at walk0 (${meta.avatars.length} avatars; P5 0 %)`); }
 }
 // life #4 (P4): people react to a low drone (render side; the soft colliders stay on the sim's positions). A walker the drone
 // hovers beside at 1.5 m height is drawn slower (0.4x), stepped aside ~0.5 m away from it, and flinches on the first moment.
@@ -192,7 +204,10 @@ if (existsSync('seoul/people/people.json')) {
   const L3 = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene() }), C3 = L3.crowd, q0 = new THREE.Quaternion();
   C3.evaluate(140, null, { avoid: false }); let wi = -1;
   // (P5: 1 person in 3 ducks: pick one of those)
-  for (let i = 0; i < C3.people.length; i++) if (C3.people[i].kind === K_WALK && C3.VIS[i] && C3.WALK[i] > 0.9 && Math.hypot(C3.X[i] + 36, C3.Z[i] + 23) < 40 && lifeMod.h32(i, 0xf11c) % 3 === 0) { wi = i; break; }
+  // (P6: with counterflow on the walkways the first such walker was walking upstream through 25 people within 3 m, and the
+  // crowd's avoidance, not the drone, set where it was drawn: pick one with nobody else within 1.5 m)
+  const alone = (i) => { for (let j = 0; j < C3.people.length; j++) if (j !== i && C3.VIS[j] && Math.abs(C3.X[j] - C3.X[i]) < 1.5 && Math.hypot(C3.X[j] - C3.X[i], C3.Z[j] - C3.Z[i]) < 1.5) return false; return true; };
+  for (let i = 0; i < C3.people.length; i++) if (C3.people[i].kind === K_WALK && C3.VIS[i] && C3.WALK[i] > 0.9 && Math.hypot(C3.X[i] + 36, C3.Z[i] + 23) < 40 && lifeMod.h32(i, 0xf11c) % 3 === 0 && alone(i)) { wi = i; break; }
   let flinch = false, minD = 9, aside = 0, off = 0, sx = 0;
   const posOf = () => { for (const T of [...L3.group.children]) { const g = T.geometry; if (!g?.isInstancedBufferGeometry || !g.attributes.iLook || !/crowd/.test(T.name)) continue; for (let k = 0; k < g.instanceCount; k++) if (g.attributes.iLook.array[k * 4 + 3] === Math.fround(((C3.people[wi].id * 2654435761) >>> 0) / 4294967296)) return [g.attributes.iPos.array[k * 4], g.attributes.iPos.array[k * 4 + 2], g.attributes.iAnim.array[k * 4 + 2], g.attributes.iAnim.array[k * 4 + 1]]; } return null; };
   for (let k = 0; k < 60; k++) {   // 2 s at 30 fps, the camera 1.6 m beside the walker at 1.5 m
@@ -233,15 +248,19 @@ if (existsSync('seoul/people/people.json')) {
 {
   const lifeMod = await import('../seoul-life.js'), THREE = await import('three'), { lifeMovers } = await import('../seoul-movers.js');
   const L5 = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene() });
+  // (P6, perf bug 1) 350 frames of update()'s work (the drawn city, 8 pre-roll steps), then a retry: P5 returned +0 here (the
+  // pre-roll re-simulated the warm start from 0), so a slow device retried on the same city
+  for (let k = 0; k < 350; k++) { L5.sim.advanceTo(LIFE.warm + k / 60); L5.sim.preroll(8); }
   const a0 = L5.attemptTicks(1); let pr = 0; const tp = performance.now(); while (pr < LIFE.warmMax + 15) pr = L5.sim.preroll(600); const prMs = performance.now() - tp;
   const W = L5.colliders.warm, ws = [1, 2, 3, 4, 5, 6].map((n) => W + L5.attemptTicks(n) / 240);
   const M = lifeMovers(L5); let same = 0, tried = 0, worstMs = 0;
   for (const n of [3, 1, 5]) {
-    const t0 = L5.attemptTicks(n) / 240 + 2.5, a = performance.now(); const B = L5.colliders.at(t0, []); worstMs = Math.max(worstMs, performance.now() - a);
+    // (P6) CPU time, not wall clock: P5's 500 ms gate failed once at 632 ms while the browser and audio renders shared the box
+    const t0 = L5.attemptTicks(n) / 240 + 2.5, a = process.cpuUsage(); const B = L5.colliders.at(t0, []); const c = process.cpuUsage(a); worstMs = Math.max(worstMs, (c.user + c.system) / 1000);
     for (const b of B.filter((x) => x.type !== 'scooter').slice(0, 6)) { tried++; const h = M.hit([b.c[0], b.c[1], b.c[2]], 0.1, t0); if (h && h.kind === 'vehicle' && h.id === b.id) same++; }
   }
-  ok(a0 === 0 && new Set(ws.map((w) => w.toFixed(2))).size >= 5 && ws.every((w) => w >= W && w <= LIFE.warmMax) && Math.max(...ws) - Math.min(...ws) > 60 && same === tried && tried >= 12 && worstMs < 500,
-    `fresh tableau per retry: warm ${ws.map((w) => w.toFixed(0)).join(' / ')} s (before the pre-roll: +${a0}; pre-roll to ${pr.toFixed(0)} s ${prMs.toFixed(0)} ms in all); the movers hit the drawn vehicle ${same}/${tried}; a jump costs <= ${worstMs.toFixed(0)} ms`);
+  ok(a0 > 0 && new Set(ws.map((w) => w.toFixed(2))).size >= 5 && ws.every((w) => w >= W && w <= LIFE.warmMax) && Math.max(...ws) - Math.min(...ws) > 60 && same === tried && tried >= 12 && worstMs < 500,
+    `fresh tableau per retry: warm ${ws.map((w) => w.toFixed(0)).join(' / ')} s (after 350 frames: +${(a0 / 240).toFixed(1)} s, P5 +0; pre-roll to ${pr.toFixed(0)} s ${prMs.toFixed(0)} ms in all); the movers hit the drawn vehicle ${same}/${tried}; a jump costs <= ${worstMs.toFixed(0)} ms CPU`);
 }
 // life #2 (P4): vehicles right side out. P3's box() wound every face against its normal and the loft was wound inward (98 % of
 // a car's body faced in: a close taxi showed its far panel's inside, buses were hollow). Per primitive: >= 95 % of each part's
@@ -283,8 +302,10 @@ if (existsSync('seoul/people/aux.png')) {
     return { w, h, bpp, px: out };
   };
   const A = png(readFileSync('seoul/people/aux.png')), meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), bb = readFileSync('seoul/people/people.bin'), bin = bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength);
-  const aux = (u, v, ch) => { const vt = 1 - v, rw = Math.floor(vt * 2), loc = (vt - rw * 0.5 - 0.25) * 4; if (loc <= 0 || loc >= 1) return -1;
-    const x = Math.min(A.w - 1, Math.floor(u * A.w)), y = Math.min(A.h - 1, Math.floor((rw * 0.5 + loc * 0.5) * A.h)); return A.px[(y * A.w + x) * A.bpp + ch] / 255; };
+  // (P6) R atlas rows of 1024 px (the shader's uRows): 2 for the 8-avatar bake, 4 for the 14-avatar one
+  const NR = Math.max(1, Math.round((meta.atlas?.h || 2048) / 1024));
+  const aux = (u, v, ch) => { const vt = 1 - v, rw = Math.floor(vt * NR), loc = (vt - (rw + 0.5) / NR) * 2 * NR; if (loc <= 0 || loc >= 1) return -1;
+    const x = Math.min(A.w - 1, Math.floor(u * A.w)), y = Math.min(A.h - 1, Math.floor(((rw + loc) / NR) * A.h)); return A.px[(y * A.w + x) * A.bpp + ch] / 255; };
   const rows = []; let good = true;
   for (const av of meta.avatars) for (const [li, L] of av.lods.entries()) {
     const P = new Float32Array(bin, L.pos, L.verts * 3), UV = new Float32Array(bin, L.uv, L.verts * 2), Bn = new Uint8Array(bin, L.bone, L.verts * 4), F = av.face;
@@ -299,9 +320,11 @@ if (existsSync('seoul/people/aux.png')) {
       if (!best || best[3] > 0.5 || bd > 0.03 * 0.03) onHair++; }   // (a card standing off the head counts: nothing under it)
     const e = eyes ? eyeHit / eyes : 0, m = low ? lowHit / low : 0, c = cards ? onHair / cards : 1;
     rows.push(`${av.name.replace(/_Adult|usiness/g, '')}${li ? 'm' : 'n'} ${eyeHit}/${eyes} ${(100 * m).toFixed(0)}% ${(100 * c).toFixed(0)}%`);
-    if (!(eyes >= 1 && eyeHit === 0 && low >= 3 && m >= 0.9 && c >= 0.75)) good = false;
+    // (P6: the mid LODs of some of the new bodies keep no vertex within 8 mm of the eye line: nothing to sample there, and the
+    // mid LOD shares the near LOD's UVs and mask; the near LOD must still have eye samples)
+    if (!((eyes >= 1 || li > 0) && eyeHit === 0 && low >= 3 && m >= 0.9 && c >= 0.75)) good = false;
   }
-  ok(good, `face masks and scalp (eyes under the mask / lower face masked / hair cards over scalp hair), all 8 avatars near+mid: ${rows.join(', ')}`);
+  ok(good, `face masks and scalp (eyes under the mask / lower face masked / hair cards over scalp hair), all ${meta.avatars.length} avatars near+mid: ${rows.join(', ')}`);
 }
 // native export (H): life.json round-trips through JSON and carries the parity hash
 { const d = JSON.parse(JSON.stringify(exportData(layout, { seed: 7 }))); ok(d.lanes.length === a.traffic.lanes.length && d.walkways.length === a.crowd.ways.length && d.parity.trafficHash90 === ha[ha.length - 1], `exportData(): life.json with ${d.lanes.length} lanes, ${d.walkways.length} walkways, ${d.crowd.units.length} units, parity hash ${d.parity.trafficHash90}`); }
