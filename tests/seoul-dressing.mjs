@@ -174,6 +174,50 @@ for (const sp of E.setPieces) for (const [k, g] of Object.entries(sp.gates || {}
   ok(lines.lines.filter((l) => l.name === 'SIGN STACK').every((l) => l.via?.length === 1 && l.via[0].unless?.length === 6), 'SIGN STACK has a via along the street');
 }
 
+// 7. [P7-E perf #1] distance tiers: every lod key is split into cells by seoul-light (>= 12k tris, > 1 cell), each cell's
+// sphere centre lies in its own square (build().update decides N / F per square from it), and the in-view dressing at the
+// stills' poses (node frustum, 64 m cells, N within LOD_R of the square, F beyond) stays under 200k triangles
+{
+  const { splitCells } = await import('../seoul-light.js');
+  const { LOD_R } = await import('../seoul-dressing.js');
+  const lodKeys = Object.keys(E.merged).filter((k) => DRESS_MATS[k]?.lod);
+  ok(lodKeys.length >= 6 && lodKeys.some((k) => DRESS_MATS[k].lod === 'far') && lodKeys.every((k) => DRESS_MATS[k].fold === false && DRESS_MATS[k].lodR === LOD_R), `tier keys (${lodKeys.join(', ')})`);
+  const parts = {};
+  for (const k of lodKeys) {
+    const g = E.merged[k], n = g.getAttribute('position').count / 3, sp = splitCells(g, 64);
+    parts[k] = sp.parts;
+    ok(n >= 12000 && sp.parts.length > 1, `${k}: split into cells (${n} tris, ${sp.parts.length} cells)`);
+    const bad = sp.parts.filter((p) => Math.floor(p.sphere.center.x / 64) !== p.cell[0] || Math.floor(p.sphere.center.z / 64) !== p.cell[1]);
+    ok(bad.length <= Math.max(1, sp.parts.length * 0.02), `${k}: cell sphere centres in their own square (${bad.length} of ${sp.parts.length} off)`);
+  }
+  // the poses (seoulsnap's SHOTS): yaw 0 looks -z; a wide FPV frustum (tan 1.9 x 1.07)
+  const SH = { walk0: [-36, 3, -23, 0, 4], walk180: [-36, 3, -23, 180, 4], station: [31.8, 8, -309, 0, 0], station2: [31.8, 8, -309, 180, 0], club90: [63.7, 3, 129.6, 90, 4], club270: [63.7, 3, 129.6, 270, 4], w21: [-66.7, 3, 88, 0, 4], high: [0, 60, 60, 0, -35] };
+  const cellsOf = (k) => parts[k] || splitCells(E.merged[k], 64)?.parts || [];
+  const all = Object.keys(E.merged).map((k) => [k, cellsOf(k)]);
+  const view = {}, before = {};
+  for (const [s, [x, y, z, yaw, pit]] of Object.entries(SH)) {
+    const yr = yaw * Math.PI / 180, pr = pit * Math.PI / 180, f = [-Math.sin(yr) * Math.cos(pr), Math.sin(pr), -Math.cos(yr) * Math.cos(pr)], r = [Math.cos(yr), 0, -Math.sin(yr)];
+    const u = [f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]], hy = Math.max(0, y - 10);
+    let tot = 0, old = 0;
+    for (const [k, ps] of all) { const lod = DRESS_MATS[k]?.lod;
+      for (const p of ps) { const c = p.sphere.center, R = p.sphere.radius, d = [c.x - x, c.y - y, c.z - z], fz = d[0] * f[0] + d[1] * f[1] + d[2] * f[2], fx = d[0] * r[0] + d[1] * r[1] + d[2] * r[2], fy = d[0] * u[0] + d[1] * u[1] + d[2] * u[2];
+        if (fz < -R || Math.abs(fx) > fz * 1.9 + R * 2.15 || Math.abs(fy) > fz * 1.07 + R * 1.47) continue;
+        if (k === 'dr_roof' && y < E.facts.roofHideY - 0.25) continue;
+        if (lod !== 'far') old += p.tris;
+        if (lod) { const x0 = p.cell[0] * 64, z0 = p.cell[1] * 64, dx = Math.max(x0 - x, 0, x - x0 - 64), dz = Math.max(z0 - z, 0, z - z0 - 64), nearC = Math.hypot(dx, dz, hy) < LOD_R; if ((lod === 'near') !== nearC) continue; }
+        tot += p.tris; } }
+    view[s] = tot; before[s] = old;
+  }
+  console.log('dressing tris in view (tiers / all near):', Object.entries(view).map(([s, v]) => `${s} ${(v / 1000).toFixed(0)}k/${(before[s] / 1000).toFixed(0)}k`).join(', '));
+  ok(Object.values(view).every((v) => v <= 200000), `dressing in view <= 200k at every still pose (max ${(Math.max(...Object.values(view)) / 1000).toFixed(0)}k)`);
+  // [P7-E lighting #4] puddles at the post bases: a soft-edged wet decal (no collider), the crowd's discs on it; club270's
+  // lamp pole (72.4, 130.6) stands in one
+  const pud = E.merged.dr_puddle, pp = pud?.getAttribute('position').array || [];
+  ok((E.facts.puddles || 0) >= 100 && DRESS_MATS.dr_puddle?.noCol && DRESS_MATS.dr_puddle.wet, `puddles at post bases (${E.facts.puddles})`);
+  let atClub = 0; for (let i = 0; i < pp.length; i += 3) if (Math.hypot(pp[i] - 72.39, pp[i + 2] - 130.58) < 1.2) atClub++;
+  ok(atClub > 6 && E.obstacles.some((o) => Math.hypot(o[0] - 71.6, o[1] - 129.8) < 0.8 && o[2] >= 0.6), `club270's pole stands in a puddle the walkers step round (${atClub} verts)`);
+}
+
 // 6. top-down map: C's roofs dark, ribbons grey, dressing coloured by key, emitters as dots, holes outlined
 const mapOut = arg('--map', null);
 if (mapOut) {

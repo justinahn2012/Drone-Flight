@@ -59,6 +59,21 @@ export const DRESS_MATS = {
   // reads as a lit sheet with the tables behind it instead of an open box
   dr_vinyl: { color: [0.32, 0.30, 0.28], rough: 0.12, transparent: true, opacity: 0.4, double: true, noCol: true, emissive: true, vcol: true, albedo: [0.05, 0.05, 0.05] },
 };
+// [P7-E lighting #4] standing water at the post bases (see the posts): a transparent decal over the ground, drawn by
+// seoul-light's wet path as a full puddle (material() raises cityPud to uCityWet inside the rim; uv.x is the rim's fade)
+DRESS_MATS.dr_puddle = { color: [1, 1, 1], rough: 0.1, vcol: true, decal: true, noCol: true, transparent: true, opacity: 1, wet: true, puddle: true, fold: false, albedo: [0.07, 0.066, 0.062] };
+// [P7-E perf #1] distance tiers. The busy kit (scooters, crates, awnings, post sleeves, AC brackets, tree limbs and crowns)
+// is drawn in two versions: `lod: 'near'` keys (…N, the full model) and `lod: 'far'` keys (…F, a proxy: a few boxes, a
+// single-band sleeve, half the leaf cards at 1.45x). seoul-light splits every key into 64 m cells (BatchedMesh instances);
+// build().update shows a cell's N part and hides its F part when the camera is within LOD_R of the cell's square (with the
+// camera's height over 10 m added), and the other way round beyond it. N-only parts (limbs, brackets, fallen leaves) have
+// no proxy. Same draw for draw within LOD_R, so every close-up is unchanged; the collider is untouched (render only).
+// A port draws the same rule: world.json materials[k].lod / .lodR.
+export const LOD_R = 30;
+{ const M = DRESS_MATS, T = (base, lod, o = {}) => ({ ...base, ...o, fold: false, lod, lodR: LOD_R });
+  const metal = { color: [1, 1, 1], rough: 0.4, metal: 0.7, vcol: true, albedo: [0.2, 0.2, 0.21] };
+  Object.assign(M, { dr_propN: T(M.dr_prop, 'near'), dr_propF: T(M.dr_prop, 'far'), dr_paintN: T(M.dr_paint, 'near'),
+    dr_metalN: T(metal, 'near'), dr_barkN: T(M.dr_bark, 'near'), dr_leafcardN: T(M.dr_leafcard, 'near'), dr_leafcardF: T(M.dr_leafcard, 'far') }); }
 // [P5-E art #6] the street carts' menu light boxes (one per cart menu above, in its order): items with 2026 prices, photo tones
 const CART_MENU = [
   { items: ['떡볶이 5,000', '순대 5,000', '튀김 3,000'], cols: ['#c8321c', '#5a3a34', '#d89a3a'] },
@@ -91,6 +106,21 @@ export function material(key, renderer) {
   if (m.map) {   // [P3-E] textured keys (ginkgo cards, bark): files next to this module's repo root
     mat.map = texOf(m.map, renderer, m.mapRepeat); mat.color.setRGB(...m.color);
     if (m.alphaTest) { mat.alphaTest = m.alphaTest; mat.side = THREE.DoubleSide; }
+  }
+  if (m.puddle) {
+    // seoul-light's patchMaterial (wet) runs this first and then its own chunk edits: ours follows its roughness block, so
+    // cityPud / cityWet (WET_HEAD) are set by then; inside the rim it is standing water (mirror sharp, roughness 0.12, the
+    // ground under it darker), at the rim it fades out; dry (uCityWet 0) or unpatched, nothing draws
+    mat.userData.wet = 1; mat.depthWrite = false;
+    mat.onBeforeCompile = function (sh) {
+      const wetOn = /cityW/.test(this.customProgramCacheKey?.() || '');
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying float vPudA;').replace('#include <begin_vertex>', '#include <begin_vertex>\nvPudA = uv.x;');
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vPudA;')
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n' + (wetOn
+          ? '  { float pa = smoothstep(0.0, 1.0, vPudA); cityPud = max(cityPud, uCityWet * pa); cityWet = max(cityWet, cityPud); diffuseColor.rgb *= mix(1.0, 0.7, pa); diffuseColor.a = pa * clamp(uCityWet * 1.6, 0.0, 1.0); }'
+          : '  diffuseColor.a = 0.0;'));
+    };
+    mat.customProgramCacheKey = () => 'seoul:dr-puddle';
   }
   if (m.cardNormals) {
     // leaf cards keep their crown-mass normal on both faces (three flips it on back faces), and alpha holds up in the mips
@@ -268,17 +298,28 @@ export function geometry(layout, opts = {}) {
   const emitters = [], setPieces = [], holes = [], cables = [], labels = [], lamps = [], anchors = {};   // [P4-E] anchors: real objects a line hangs off (lines.mjs)
   const spPush = setPieces.push.bind(setPieces);
   setPieces.push = (...sps) => { for (const sp of sps) gates.push(...spGates(sp)); return spPush(...sps); };
-  const msParts = {}, triParts = {}; let tLap = Date.now(), nLap = 0; const lap = (k) => { const t = Date.now(); msParts[k] = t - tLap; tLap = t; let n = 0; for (const a of Object.values(acc)) n += a.p.length / 9; triParts[k] = Math.round(n - nLap); nLap = n; };
+  const msParts = {}, triParts = {}; let tLap = Date.now(), nLap = 0; const lap = (k) => { const t = Date.now(); msParts[k] = t - tLap; tLap = t; let n = 0; for (const a of Object.values(acc)) n += a.p.length / 9; triParts[k] = Math.round(n - nLap); nLap = n; if (opts.ranges) opts.ranges.push([k, Object.fromEntries(Object.entries(acc).map(([q, a]) => [q, a.p.length / 9]))]); };   // [P7-E] opts.ranges (debug): each lap's per-key triangle counts
   const facts = { tris: 0, colTris: 0, items: 0, rejectedByGates: 0, scooters: 0, tents: 0, trees: 0, awnings: 0, cablesExtra: 0, drops: 0, signals: 0, crossings: 0, plates: 0, doors: 0, b1: 0, stairs2f: 0 };
 
   // ---------------- kit state: material key, colour (vcol keys), emission (emissive keys), collidable
   // [P6-E perf] S.draw false: collider only (the cables: build() draws them as screen-space lines, which cover close-ups too)
   const S = { key: 'concrete', c: [0.5, 0.5, 0.5], em: null, col: true, n: null, draw: true };
   const set = (key, o = {}) => { S.key = key; S.c = o.c || S.c; S.em = o.em ?? null; S.col = o.col ?? !specOf(key).noCol; S.n = o.n || null; S.draw = true; return S; };
+  // [P7-E perf #1] the tier in force (null: always drawn; 'N' near, 'F' far): near(fn) / far(fn) route what fn draws to the
+  // tier keys (emissive, transparent and decal keys stay untiered); plain keys take their colour into the vertex colour
+  let tier = null;
+  const TIER_C = { dark: [0.03, 0.03, 0.032], concrete: [0.32, 0.31, 0.29], metal: [0.3, 0.3, 0.31], white: [0.7, 0.7, 0.68] };
+  const tierKey = (k) => { const m = specOf(k); if (m.emissive || m.transparent || m.decal || m.mass || k === 'dr_roof' || k === 'dr_ac') return null;
+    if (tier === 'F') return k === 'dr_leafcard' ? 'dr_leafcardF' : 'dr_propF';   // proxies: one vcol key (+ the crowns' cards)
+    return (k === 'dr_bark' || k === 'dr_leafcard' || k === 'dr_paint' ? k : k === 'dr_steel' || k === 'dr_galv' ? 'dr_metal' : 'dr_prop') + tier; };
+  const near = (fn) => { const t = tier; tier = 'N'; try { return fn(); } finally { tier = t; } };
+  const far = (fn) => { const t = tier; tier = 'F'; try { return fn(); } finally { tier = t; } };
   const uvDef = [[0, 0], [1, 0], [1, 1], [0, 1]];
   function tri(a, b, c, ua = [0, 0], ub = [1, 0], uc = [1, 1], e) {
-    if (S.draw) A(S.key).tri(a, b, c, ua, ub, uc, e ? e[0] : S.em, e ? e[1] : S.em, e ? e[2] : S.em, S.c, S.n);
-    if (S.col) { col.need(9); col.p3(a[0], a[1], a[2]); col.p3(b[0], b[1], b[2]); col.p3(c[0], c[1], c[2]); }
+    const tk = tier && S.draw ? tierKey(S.key) : null;
+    if (tk) { const m = specOf(S.key); A(tk).tri(a, b, c, ua, ub, uc, null, null, null, m.vcol && specOf(tk).vcol ? S.c : (m.map && !specOf(tk).map ? m.albedo : m.color) || TIER_C[S.key] || G3, S.n); }
+    else if (S.draw) A(S.key).tri(a, b, c, ua, ub, uc, e ? e[0] : S.em, e ? e[1] : S.em, e ? e[2] : S.em, S.c, S.n);
+    if (S.col && tier !== 'F') { col.need(9); col.p3(a[0], a[1], a[2]); col.p3(b[0], b[1], b[2]); col.p3(c[0], c[1], c[2]); }   // proxies never collide
   }
   // quad p0..p3 facing nrm (winding fixed), uv per corner, optional per-corner emission
   function quad(p0, p1, p2, p3, nrm, uvs = uvDef, e4) {
@@ -856,16 +897,20 @@ export function geometry(layout, opts = {}) {
     // [P4-E design #6] o.wide: crown radius x (a park zelkova, 느티나무), o.park: no grate, o.rust: November zelkova colour; returns the leaf clusters
     const ginkgo = (x, z, tx, tz, H, Rt, o = {}) => {
       const F = frameH([x, 0, z], tx, tz);
-      if (!o.park) { set('dr_steel'); boxMM(F, -0.62, 0, -0.62, 0.62, 0.02, 0.62, ['ny']);                 // cast grate
-        set('dr_steel'); for (const e of [-0.62, 0.62]) boxMM(F, e - 0.02, 0, -0.64, e + 0.02, 0.05, 0.64, ['ny']); }
+      if (!o.park) near(() => { set('dr_steel'); boxMM(F, -0.62, 0, -0.62, 0.62, 0.02, 0.62, ['ny']);       // cast grate ([P7-E] near only: 2-5 cm high)
+        set('dr_steel'); for (const e of [-0.62, 0.62]) boxMM(F, e - 0.02, 0, -0.64, e + 0.02, 0.05, 0.64, ['ny']); });
       const turn = clamp(0.35 + Rt() * 0.75, 0, 1), bare = Rt() < 0.12, yB = 2.6 + Rt() * 0.7;   // crown base (pruned for buses)
       const lean = [(Rt() - 0.5) * 0.18, (Rt() - 0.5) * 0.18], ax = (y) => [x + lean[0] * y / H, y, z + lean[1] * y / H];
       const Rmax = ((bare ? 1.4 : 1.7) + Rt() * 0.8) * (o.wide || 1), Rof = (y) => { const t = clamp((y - yB) / (H - yB), 0, 1); return Rmax * Math.max(0.12, Math.sin(Math.min(1, t * 1.6 + 0.15) * Math.PI * 0.5) * (1 - t ** 1.6)); };
       // trunk (bark), straight leader to the top
       set('dr_bark');
-      { const n = 4; for (let i = 0; i < n; i++) { const y0 = H * 0.92 * i / n, y1 = H * 0.92 * (i + 1) / n, r0 = lerp(0.17, 0.035, i / n), r1 = lerp(0.17, 0.035, (i + 1) / n), p0 = ax(y0), p1 = ax(y1);
+      // [P7-E perf #1] past LOD_R the trunk is 4 sides x 2 (16 tris, the bark's albedo; 40 near)
+      far(() => { for (let i = 0; i < 2; i++) { const y0 = H * 0.92 * i / 2, y1 = H * 0.92 * (i + 1) / 2, r0 = lerp(0.17, 0.035, i / 2), r1 = lerp(0.17, 0.035, (i + 1) / 2), p0 = ax(y0), p1 = ax(y1);
+        for (let k = 0; k < 4; k++) { const a0 = k / 4 * TAU + 0.4, a1 = (k + 1) / 4 * TAU + 0.4, P = (p, r, a) => [p[0] + Math.cos(a) * r, p[1], p[2] + Math.sin(a) * r];
+          quad(P(p0, r0, a0), P(p0, r0, a1), P(p1, r1, a1), P(p1, r1, a0), [Math.cos((a0 + a1) / 2), 0, Math.sin((a0 + a1) / 2)]); } } });
+      near(() => { const n = 4; for (let i = 0; i < n; i++) { const y0 = H * 0.92 * i / n, y1 = H * 0.92 * (i + 1) / n, r0 = lerp(0.17, 0.035, i / n), r1 = lerp(0.17, 0.035, (i + 1) / n), p0 = ax(y0), p1 = ax(y1);
         for (let k = 0; k < 5; k++) { const a0 = k / 5 * TAU, a1 = (k + 1) / 5 * TAU, P = (p, r, a) => [p[0] + Math.cos(a) * r, p[1], p[2] + Math.sin(a) * r];
-          quad(P(p0, r0, a0), P(p0, r0, a1), P(p1, r1, a1), P(p1, r1, a0), [Math.cos((a0 + a1) / 2), 0, Math.sin((a0 + a1) / 2)], [[k / 5, y0 / 1.2], [(k + 1) / 5, y0 / 1.2], [(k + 1) / 5, y1 / 1.2], [k / 5, y1 / 1.2]]); } } }
+          quad(P(p0, r0, a0), P(p0, r0, a1), P(p1, r1, a1), P(p1, r1, a0), [Math.cos((a0 + a1) / 2), 0, Math.sin((a0 + a1) / 2)], [[k / 5, y0 / 1.2], [(k + 1) / 5, y0 / 1.2], [(k + 1) / 5, y1 / 1.2], [k / 5, y1 / 1.2]]); } } });
       // limbs: a loose spiral of ascending branches, shorter toward the top; leaf clusters along each
       const nB = bare ? 9 : 11 + Math.floor(Rt() * 4), clusters = [];
       let az = Rt() * TAU;
@@ -875,13 +920,14 @@ export function geometry(layout, opts = {}) {
         const dir = [Math.cos(az) * Math.cos(up), Math.sin(up), Math.sin(az) * Math.cos(up)], tip = [base[0] + dir[0] * L, base[1] + dir[1] * L, base[2] + dir[2] * L];
         const mid = [base[0] + dir[0] * L * 0.5 + Math.cos(az) * 0.08, base[1] + dir[1] * L * 0.5 - 0.05, base[2] + dir[2] * L * 0.5 + Math.sin(az) * 0.08];
         const r = lerp(0.055, 0.025, t);
-        set('dr_bark', { col: r > 0.03 }); tube([base, mid, tip], r, 3);
+        set('dr_bark', { col: r > 0.03 }); if (bare) tube([base, mid, tip], r, 3); else near(() => tube([base, mid, tip], r, 3));   // [P7-E] in leaf, the limbs sit in the crown: near only
         if (!bare) { const nc = 1 + Math.round(L * 1.1); for (let j = 0; j < nc; j++) { const f = 0.35 + 0.65 * (j + Rt() * 0.5) / nc; clusters.push([base[0] + dir[0] * L * f + (Rt() - 0.5) * 0.5, base[1] + dir[1] * L * f + (Rt() - 0.3) * 0.5, base[2] + dir[2] * L * f + (Rt() - 0.5) * 0.5]); } }
         else if (Rt() < 0.5) clusters.push(tip);
       }
       // the leader's own clusters, up to the spire, and a fill of the crown envelope (no hollow cone)
       const nFill = bare ? 4 : 18 + Math.floor(Rt() * 8);
       for (let i = 0; i < nFill; i++) { const y = lerp(yB + 0.4, H - 0.2, Math.sqrt(Rt())), rr = Rof(y) * Math.sqrt(Rt()) * 0.9, a = Rt() * TAU, p = ax(y); clusters.push([p[0] + Math.cos(a) * rr, y, p[2] + Math.sin(a) * rr]); }
+      let nCard = 0;
       for (const c of clusters) {
         const p = ax(c[1]), dx = c[0] - p[0], dz = c[2] - p[2], rr = Math.hypot(dx, dz), R1 = Math.max(0.3, Rof(c[1])), out = clamp(rr / R1, 0, 1.2);
         const hT = clamp((c[1] - yB) / (H - yB), 0, 1), n = v3.norm([dx / R1, 0.45 + 0.4 * hT, dz / R1]);
@@ -889,7 +935,9 @@ export function geometry(layout, opts = {}) {
         const g = clamp(turn + (out - 0.6) * 0.35 + (hT - 0.5) * 0.25 + (Rt() - 0.5) * 0.35, 0, 1);
         let col = (bare ? mixc(GOLD, BROWN, Rt() * 0.6) : g < 0.35 ? mixc(GRN, YEL, g / 0.35) : mixc(YEL, GOLD, (g - 0.35) / 0.65)).map((v) => v * ao * (0.85 + Rt() * 0.3));
         if (o.rust) col = mixc(col, [0.5 * ao, 0.22 * ao, 0.06 * ao], 0.7 + 0.25 * g);   // November zelkova: rust to brown (pop1: pale cream under the floods)
-        card(c, (bare ? 0.75 : 1.05) + Rt() * 0.5, Rt() * Math.PI, (Rt() - 0.5) * 0.8, n, col, Math.floor(Rt() * 8));
+        const cs = (bare ? 0.75 : 1.05) + Rt() * 0.5, cy = Rt() * Math.PI, ct = (Rt() - 0.5) * 0.8, tile = Math.floor(Rt() * 8);
+        // [P7-E perf #1] the crown: every card near; past LOD_R every other card at 1.45x (the same crown envelope and colours)
+        near(() => card(c, cs, cy, ct, n, col, tile)); if (!(nCard++ & 1)) far(() => card(c, cs * 1.45, cy, ct, n, col, tile));
       }
       // fallen leaves: flat cards on the pavement round the pit (more under a bare tree), off the carriageway
       const nF = bare ? 12 : Math.round(3 + turn * 6);
@@ -899,7 +947,7 @@ export function geometry(layout, opts = {}) {
         const s2 = 0.45 + Rt() * 0.4, yw = Rt() * TAU, cx = Math.cos(yw) * s2 / 2, cz = Math.sin(yw) * s2 / 2, y = 0.004 + i * 0.0004, tile = Math.floor(Rt() * 8);
         const u0 = (tile % 4) / 4, vt = 1 - Math.floor(tile / 4) * 0.5;
         set('dr_leafcard', { c: mixc(GOLD, BROWN, Rt() * 0.5).map((v) => v * 0.8), n: [0, 1, 0] });
-        quad([fx - cx + cz, y, fz - cz - cx], [fx + cx + cz, y, fz + cz - cx], [fx + cx - cz, y, fz + cz + cx], [fx - cx - cz, y, fz - cz + cx], [0, 1, 0], [[u0, vt - 0.5], [u0 + 0.25, vt - 0.5], [u0 + 0.25, vt], [u0, vt]]);
+        near(() => quad([fx - cx + cz, y, fz - cz - cx], [fx + cx + cz, y, fz + cz - cx], [fx + cx - cz, y, fz + cz + cx], [fx - cx - cz, y, fz - cz + cx], [0, 1, 0], [[u0, vt - 0.5], [u0 + 0.25, vt - 0.5], [u0 + 0.25, vt], [u0, vt]]));
       }
       return clusters;
     };
@@ -1234,7 +1282,7 @@ export function geometry(layout, opts = {}) {
       const light = (cc) => 0.2126 * cc[0] + 0.7152 * cc[1] + 0.0722 * cc[2] > 0.3;
       const USE_KO = { restaurant: ['식당', '분식', '김밥', '국밥', '치킨'], cafe: ['카페', '커피', '디저트'], bar: ['호프', '포차', '이자카야'], pocha: ['포장마차', '실내포차'], conv: ['편의점'], shop: ['옷가게', '잡화', '안경'], karaoke: ['노래방', '코인노래방'], club: ['라운지'] };
       const pool = USE_KO[f.l.use] || ['상회', '마트'], name = /[가-힣]/.test(f.l.osmName || '') && (f.l.osmName || '').length <= 9 ? f.l.osmName : pool[Math.floor(Ra() * pool.length)];
-      item(() => {
+      item(() => near(() => {
         const a = W(F, -w / 2, yTop, zs * 0.03), b = W(F, w / 2, yTop, zs * 0.03), cc = W(F, w / 2, yLow, zs * depth), d = W(F, -w / 2, yLow, zs * depth);
         const n = v3.norm(v3.cross(v3.sub(b, a), v3.sub(d, a))), up = n[1] > 0 ? n : v3.mul(n, -1);
         const nS = striped ? Math.max(4, Math.round(w / 0.32)) : 1;
@@ -1259,7 +1307,14 @@ export function geometry(layout, opts = {}) {
         for (const sx of [-1, 1]) { const el = W(F, sx * (w / 2 - 0.35), yLow + 0.12, zs * depth * 0.5); tube([W(F, sx * (w / 2 - 0.05), yTop - 0.7, zs * 0.04), el, W(F, sx * (w / 2 - 0.08), yLow - 0.02, zs * (depth - 0.05))], 0.018, 4); }
         labels.push({ id: 'awn:' + f.l.id, kind: 'awning', pos: r3(W(F, 0, (yv0 + yLow) / 2, zv + zs * 0.004)), normal: r3(out), w: Math.min(w - 0.3, 0.16 * 1.1 * [...name].length + 0.4), h: 0.15, nits: 6, ink: light(c) ? '#2a2420' : '#f4efe4', lines: [name] });
         facts.awnings++;
-      }, { margin: 0.35 });
+        // [P7-E perf #1] past LOD_R: the stripes as one quad a face, a flat valance, the roller box (~4 tris a stripe + 14; ~300 near)
+        far(() => {
+          for (let i = 0; i < nS; i++) { const t0 = i / nS, t1 = (i + 1) / nS, P = (t, v) => { const p = v3.add(a, v3.mul(v3.sub(b, a), t)), q = v3.add(d, v3.mul(v3.sub(cc, d), t)); return v3.add(p, v3.mul(v3.sub(q, p), v)); }, cs = striped && i % 2 ? c2 : c;
+            set('dr_prop', { c: cs.map((x) => x * 0.53) }); quad(P(t0, 0), P(t1, 0), P(t1, 1), P(t0, 1), up); set('dr_prop', { c: cs.map((x) => x * 0.9) }); quad(P(t0, 0), P(t0, 1), P(t1, 1), P(t1, 0), v3.mul(up, -1)); }
+          set('dr_prop', { c }); quad(W(F, -w / 2, yv0 - 0.04, zv), W(F, w / 2, yv0 - 0.04, zv), W(F, w / 2, yLow, zv), W(F, -w / 2, yLow, zv), out); quad(W(F, -w / 2, yv0 - 0.04, zv), W(F, -w / 2, yLow, zv), W(F, w / 2, yLow, zv), W(F, w / 2, yv0 - 0.04, zv), v3.mul(out, -1));
+          set('dr_galv'); boxMM(F, -w / 2, yTop - 0.06, zs * 0.03 - 0.07, w / 2, yTop + 0.08, zs * 0.03 + 0.07, ['ny']);
+        });
+      }), { margin: 0.35 });
     }
   }
   lap('awnings');
@@ -1285,8 +1340,8 @@ export function geometry(layout, opts = {}) {
         set('dr_steel');
         const zr = (wP / 2 + 0.08) * (v3.dot(D(st.F, 0, 0, 1), [f.nx, 0, f.nz]) > 0 ? 1 : -1);
         tube([W(st.F, 0.05, 1.0, zr), W(st.F, run, 1.0, zr), W(st.F, run, 1.0, -zr)], 0.025, 4);
-        for (let x = 0.05; x <= run + 1e-6; x += run / 4) boxMM(st.F, x - 0.02, 0.0, zr - 0.02, x + 0.02, 1.0, zr + 0.02);
-        boxMM(st.F, run - 0.02, 0.0, -zr - 0.02, run + 0.02, 1.0, -zr + 0.02);
+        near(() => { for (let x = 0.05; x <= run + 1e-6; x += run / 4) boxMM(st.F, x - 0.02, 0.0, zr - 0.02, x + 0.02, 1.0, zr + 0.02);
+          boxMM(st.F, run - 0.02, 0.0, -zr - 0.02, run + 0.02, 1.0, -zr + 0.02); });
         // door at the bottom (the end wall's glow is the open door) + a sign light over the pit head
         emit({ id: 'dress:b1:' + f.l.id, kind: 'store', pos: W(st.F, st.xL - 0.3, st.y1 + 1.2, 0), normal: [0, 1, 0], w: wP, h: 1.2, rgb: glow, nits: 80, range: 6 });
         occRect(st.F, -0.3, run, -wP / 2, wP / 2, 0.2); facts.b1++;
@@ -1311,7 +1366,9 @@ export function geometry(layout, opts = {}) {
         item(() => {
           set('dr_steel');
           for (const zz of [-wS / 2 + 0.03, wS / 2 - 0.03]) tube([W(F, 0, 0, zz), W(F, run, fh, zz)], 0.05, 4);          // stringers
-          for (let k = 0; k < nS; k++) boxMM(F, k * tread, (k + 1) * rise - 0.03, -wS / 2 + 0.05, (k + 1) * tread, (k + 1) * rise, wS / 2 - 0.05, null);
+          near(() => { for (let k = 0; k < nS; k++) boxMM(F, k * tread, (k + 1) * rise - 0.03, -wS / 2 + 0.05, (k + 1) * tread, (k + 1) * rise, wS / 2 - 0.05, null); });
+          far(() => { const G = { o: W(F, run / 2, fh / 2, 0), x: v3.norm(D(F, run, fh, 0)), y: v3.norm(D(F, -fh, run, 0)), z: F.z };   // [P7-E] past LOD_R the flight is one sloped slab
+            boxMM(G, -Math.hypot(run, fh) / 2, -0.06, -wS / 2 + 0.05, Math.hypot(run, fh) / 2, 0.02, wS / 2 - 0.05); });
           boxMM(F, run, fh - 0.08, -wS / 2, run + 1.3, fh, wS / 2);                                                          // landing
           for (const x of [run, run + 1.3]) boxMM(F, x - 0.04, 0, -zw * (wS / 2 - 0.04) - 0.04, x + 0.04, fh, -zw * (wS / 2 - 0.04) + 0.04);
           tube([W(F, 0, 0.95, -zw * wS / 2), W(F, run, fh + 0.95, -zw * wS / 2), W(F, run + 1.3, fh + 0.95, -zw * wS / 2), W(F, run + 1.3, fh + 0.95, zw * wS / 2)], 0.022, 4);
@@ -1336,28 +1393,36 @@ export function geometry(layout, opts = {}) {
     const hasBox = R() < 0.6, boxC = hasBox ? [srgb(0xe8e8e4), srgb(0xc8261e), srgb(0xf2b705), srgb(0x161616), srgb(0x2ac1bc)][Math.floor(R() * 5)] : null;
     const Rs = rng('scoot' + F.o[0].toFixed(2) + F.o[2].toFixed(2)), lean = 0.06 + Rs() * 0.05;            // on the side stand
     const G = { o: F.o, x: F.x, y: v3.norm(v3.add([0, 1, 0], v3.mul(F.z, -lean))), z: v3.norm(v3.add(F.z, v3.mul([0, 1, 0], lean))) };
-    const nb = ['ny'];
-    for (const x of [-0.6, 0.62]) { set('dr_prop', { c: [0.018, 0.018, 0.018] }); cyl(G, [x, 0.25, 0], 'z', 0.25, 0.11, 8); }
-    set('dr_prop', { c: body });
-    // leg shield: three facets curving from the steering head down to the floor; the front fender over the wheel
-    { const sh = [[0.42, 1.0], [0.47, 0.72], [0.44, 0.45], [0.3, 0.3]]; for (let i = 0; i < 3; i++) { const [x0, y0] = sh[i], [x1, y1] = sh[i + 1], w0 = 0.2 + i * 0.02, w1 = 0.22 + i * 0.02;
-      quad(W(G, x0, y0, -w0), W(G, x0, y0, w0), W(G, x1, y1, w1), W(G, x1, y1, -w1), D(G, 1, 0.3, 0)); } }
-    boxMM(G, 0.45, 0.47, -0.09, 0.82, 0.52, 0.09, ['ny']);
-    boxMM(G, -0.3, 0.28, -0.19, 0.32, 0.34, 0.19, nb);                                                 // floorboard
-    // rear cowl: tapered, elliptical (a scaled frame), and the seat on it
-    { const C = { o: W(G, -0.42, 0.56, 0), x: G.x, y: v3.mul(G.y, 0.75), z: G.z }; cyl(C, [0, 0, 0], 'x', 0.27, 0.62, 6, 0.2); }
-    set('dr_prop', { c: [0.025, 0.022, 0.02] }); { const C = { o: W(G, -0.36, 0.79, 0), x: G.x, y: v3.mul(G.y, 0.45), z: G.z }; cyl(C, [0, 0, 0], 'x', 0.17, 0.66, 6, 0.15); }
-    // steering column, bars, mirrors, headlight; tail lamp (a red reflector, off)
-    set('dr_steel', { col: false }); tube([W(G, 0.44, 0.95, 0), W(G, 0.52, 1.06, 0)], 0.035, 4); tube([W(G, 0.5, 1.06, -0.34), W(G, 0.53, 1.08, 0), W(G, 0.5, 1.06, 0.34)], 0.014, 3);
-    for (const sz of [-1, 1]) { tube([W(G, 0.5, 1.07, sz * 0.24), W(G, 0.47, 1.28, sz * 0.3)], 0.007, 3); quad(W(G, 0.465, 1.27, sz * 0.3 - 0.05), W(G, 0.465, 1.27, sz * 0.3 + 0.05), W(G, 0.465, 1.33, sz * 0.3 + 0.05), W(G, 0.465, 1.33, sz * 0.3 - 0.05), D(G, -1, 0, 0)); }
-    set('dr_prop', { c: body }); boxMM(G, 0.46, 0.98, -0.14, 0.58, 1.1, 0.14);
-    set('dr_galv', { col: false }); quad(W(G, 0.585, 0.99, -0.06), W(G, 0.585, 0.99, 0.06), W(G, 0.585, 1.07, 0.06), W(G, 0.585, 1.07, -0.06), D(G, 1, 0, 0));
+    near(() => {   // [P7-E perf #1] the full scooter within LOD_R; the proxy below past it
+      const nb = ['ny'];
+      for (const x of [-0.6, 0.62]) { set('dr_prop', { c: [0.018, 0.018, 0.018] }); cyl(G, [x, 0.25, 0], 'z', 0.25, 0.11, 8); }
+      set('dr_prop', { c: body });
+      // leg shield: three facets curving from the steering head down to the floor; the front fender over the wheel
+      { const sh = [[0.42, 1.0], [0.47, 0.72], [0.44, 0.45], [0.3, 0.3]]; for (let i = 0; i < 3; i++) { const [x0, y0] = sh[i], [x1, y1] = sh[i + 1], w0 = 0.2 + i * 0.02, w1 = 0.22 + i * 0.02;
+        quad(W(G, x0, y0, -w0), W(G, x0, y0, w0), W(G, x1, y1, w1), W(G, x1, y1, -w1), D(G, 1, 0.3, 0)); } }
+      boxMM(G, 0.45, 0.47, -0.09, 0.82, 0.52, 0.09, ['ny']);
+      boxMM(G, -0.3, 0.28, -0.19, 0.32, 0.34, 0.19, nb);                                                 // floorboard
+      // rear cowl: tapered, elliptical (a scaled frame), and the seat on it
+      { const C = { o: W(G, -0.42, 0.56, 0), x: G.x, y: v3.mul(G.y, 0.75), z: G.z }; cyl(C, [0, 0, 0], 'x', 0.27, 0.62, 6, 0.2); }
+      set('dr_prop', { c: [0.025, 0.022, 0.02] }); { const C = { o: W(G, -0.36, 0.79, 0), x: G.x, y: v3.mul(G.y, 0.45), z: G.z }; cyl(C, [0, 0, 0], 'x', 0.17, 0.66, 6, 0.15); }
+      // steering column, bars, mirrors, headlight; tail lamp (a red reflector, off)
+      set('dr_steel', { col: false }); tube([W(G, 0.44, 0.95, 0), W(G, 0.52, 1.06, 0)], 0.035, 4); tube([W(G, 0.5, 1.06, -0.34), W(G, 0.53, 1.08, 0), W(G, 0.5, 1.06, 0.34)], 0.014, 3);
+      for (const sz of [-1, 1]) { tube([W(G, 0.5, 1.07, sz * 0.24), W(G, 0.47, 1.28, sz * 0.3)], 0.007, 3); quad(W(G, 0.465, 1.27, sz * 0.3 - 0.05), W(G, 0.465, 1.27, sz * 0.3 + 0.05), W(G, 0.465, 1.33, sz * 0.3 + 0.05), W(G, 0.465, 1.33, sz * 0.3 - 0.05), D(G, -1, 0, 0)); }
+      set('dr_prop', { c: body }); boxMM(G, 0.46, 0.98, -0.14, 0.58, 1.1, 0.14);
+      set('dr_galv', { col: false }); quad(W(G, 0.585, 0.99, -0.06), W(G, 0.585, 0.99, 0.06), W(G, 0.585, 1.07, 0.06), W(G, 0.585, 1.07, -0.06), D(G, 1, 0, 0));
+      set('dr_steel', { col: false }); tube([W(G, -0.1, 0.32, -0.2), W(G, -0.1, 0.02, -0.38)], 0.012, 3);                 // the side stand
+      if (hasBox) {   // 배달통 on the rear rack, its lid seam a shade darker
+        set('dr_steel', { col: false }); boxMM(G, -0.95, 0.86, -0.18, -0.55, 0.88, 0.18, ['ny']);
+        set('dr_prop', { c: boxC }); boxMM(G, -1.0, 0.88, -0.24, -0.52, 1.24, 0.24, ['ny']);
+      }
+    });
     set('dr_glow', { em: NI([1, 0.1, 0.05], 2), col: false }); quad(W(G, -0.735, 0.6, 0.08), W(G, -0.735, 0.6, -0.08), W(G, -0.735, 0.66, -0.08), W(G, -0.735, 0.66, 0.08), D(G, -1, 0, 0));
-    set('dr_steel', { col: false }); tube([W(G, -0.1, 0.32, -0.2), W(G, -0.1, 0.02, -0.38)], 0.012, 3);                 // the side stand
-    if (hasBox) {   // 배달통 on the rear rack, its lid seam a shade darker
-      set('dr_steel', { col: false }); boxMM(G, -0.95, 0.86, -0.18, -0.55, 0.88, 0.18, ['ny']);
-      set('dr_prop', { c: boxC }); boxMM(G, -1.0, 0.88, -0.24, -0.52, 1.24, 0.24, ['ny']);
-    }
+    far(() => {    // ~60 tris (the full one ~215): tyres, leg shield, cowl, seat, the delivery box
+      set('dr_prop', { c: [0.018, 0.018, 0.018] }); for (const x of [-0.6, 0.62]) boxMM(G, x - 0.25, 0, -0.055, x + 0.25, 0.5, 0.055, ['ny']);
+      set('dr_prop', { c: body }); boxMM(G, 0.3, 0.3, -0.21, 0.47, 1.05, 0.21, ['ny']); boxMM(G, -0.73, 0.34, -0.2, -0.1, 0.74, 0.2, ['ny']);
+      set('dr_prop', { c: [0.025, 0.022, 0.02] }); boxMM(G, -0.68, 0.74, -0.16, -0.04, 0.86, 0.16, ['ny']);
+      if (hasBox) { set('dr_prop', { c: boxC }); boxMM(G, -1.0, 0.86, -0.24, -0.52, 1.24, 0.24, ['ny']); }
+    });
     facts.scooters++;
   };
   {
@@ -1386,8 +1451,9 @@ export function geometry(layout, opts = {}) {
         if (occFree(x, z, 0.4) && M.ribbonD(x, z, true) > 0.3) item(() => {
           const F = frameH([x, 0, z], f.tx, f.tz), n = 1 + Math.floor(R() * 3);
           for (let i = 0; i < n; i++) { const kind = R(), xo = (i - (n - 1) / 2) * 0.5;
-            if (kind < 0.45) { set('dr_prop', { c: [srgb(0x1f7a3a), srgb(0x6b3d1d), srgb(0xd8a017)][Math.floor(R() * 3)] }); const h = 1 + Math.floor(R() * 4); for (let k = 0; k < h; k++) boxMM(F, xo - 0.22, k * 0.3, -0.16, xo + 0.22, k * 0.3 + 0.29, 0.16); }
-            else { set('dr_prop', { c: [srgb(0xd23a2a), srgb(0x2f6fd6), srgb(0x2a9a5a)][Math.floor(R() * 3)] }); const h = 1 + Math.floor(R() * 5); for (let k = 0; k < h; k++) boxMM(F, xo - 0.15 + k * 0.004, k * 0.075, -0.15, xo + 0.15 + k * 0.004, k * 0.075 + 0.43, 0.15, k ? ['ny'] : null); } }
+            // [P7-E perf #1] a stack is one box past LOD_R
+            if (kind < 0.45) { set('dr_prop', { c: [srgb(0x1f7a3a), srgb(0x6b3d1d), srgb(0xd8a017)][Math.floor(R() * 3)] }); const h = 1 + Math.floor(R() * 4); near(() => { for (let k = 0; k < h; k++) boxMM(F, xo - 0.22, k * 0.3, -0.16, xo + 0.22, k * 0.3 + 0.29, 0.16); }); far(() => boxMM(F, xo - 0.22, 0, -0.16, xo + 0.22, h * 0.3 - 0.01, 0.16, ['ny'])); }
+            else { set('dr_prop', { c: [srgb(0xd23a2a), srgb(0x2f6fd6), srgb(0x2a9a5a)][Math.floor(R() * 3)] }); const h = 1 + Math.floor(R() * 5); near(() => { for (let k = 0; k < h; k++) boxMM(F, xo - 0.15 + k * 0.004, k * 0.075, -0.15, xo + 0.15 + k * 0.004, k * 0.075 + 0.43, 0.15, k ? ['ny'] : null); }); far(() => boxMM(F, xo - 0.15, 0, -0.15, xo + 0.15 + h * 0.004, (h - 1) * 0.075 + 0.43, 0.15, ['ny'])); } }
         }, { margin: 0.3 }) && occAdd(x, z, 0.6);
       }
       // trash bags + flattened boxes at ~1 in 4 frontages (pick-up piles at the kerb or the wall)
@@ -1402,7 +1468,7 @@ export function geometry(layout, opts = {}) {
       const Rp = rng('pole' + p.x.toFixed(1) + p.z.toFixed(1));
       if (Rp() < 0.45) item(() => trashPile(p.x + (Rp() - 0.5) * 0.4, p.z + (Rp() - 0.5) * 0.4, Rp, 0.3), { margin: 0.3 });
       if (Rp() < 0.55) item(() => { const y = 4.6 + Rp() * 2.2, r = 0.28 + Rp() * 0.2, a0 = Rp() * TAU, pts = []; for (let i = 0; i <= 14; i++) { const a = (i / 14) * TAU; pts.push([p.x + Math.cos(a0) * (0.22 + r * (1 + Math.cos(a)) * 0.5), y + Math.sin(a) * r, p.z + Math.sin(a0) * (0.22 + r * (1 + Math.cos(a)) * 0.5)]); }
-        set('dark'); tube(pts, 0.025, 3); }, { margin: 0.3 });
+        set('dark'); near(() => tube(pts, 0.025, 3)); }, { margin: 0.3 });   // [P7-E] 5 cm coils: near only
       if (Rp() < 0.35) item(() => { set('dr_prop', { c: [0.32, 0.33, 0.33] }); const F = frameH([p.x, 0, p.z], p.tx || 1, p.tz || 0); boxMM(F, -0.2, 3.9, 0.2, 0.2, 4.5, 0.42); }, { margin: 0.3 });
     }
     // main-road pavements: electrical cabinets, cones, a few bollards at walking-street mouths
@@ -1426,9 +1492,11 @@ export function geometry(layout, opts = {}) {
     for (let i = 0; i < n; i++) {
       const a = R() * TAU, d = R() * spread, r = 0.2 + R() * 0.14, g = R();
       set('dr_prop', { c: g < 0.6 ? [0.62, 0.62, 0.6] : g < 0.8 ? [0.66, 0.5, 0.52] : g < 0.92 ? [0.7, 0.55, 0.18] : [0.08, 0.08, 0.08] });
-      blob([x + Math.cos(a) * d, r * 0.85 + (i > 4 ? 0.3 : 0), z + Math.sin(a) * d], r, r * 0.85, r * 1.1, R, 0, 0.22);
+      const c = [x + Math.cos(a) * d, r * 0.85 + (i > 4 ? 0.3 : 0), z + Math.sin(a) * d];
+      near(() => blob(c, r, r * 0.85, r * 1.1, R, 0, 0.22)); far(() => octa(c, r, r * 0.85));   // [P7-E] a bag is 8 tris past LOD_R (20 near)
     }
-    if (R() < 0.5) { set('dr_prop', { c: [0.36, 0.25, 0.14] }); const F = frameH([x + 0.35, 0, z + 0.2], R() - 0.5, R() - 0.5); for (let k = 0; k < 2 + Math.floor(R() * 3); k++) boxMM(F, -0.35, k * 0.06, -0.28, 0.35, k * 0.06 + 0.055, 0.28); }
+    if (R() < 0.5) { set('dr_prop', { c: [0.36, 0.25, 0.14] }); const F = frameH([x + 0.35, 0, z + 0.2], R() - 0.5, R() - 0.5); let nk = 0; while (nk < 2 + Math.floor(R() * 3)) nk++;   // (the loop's own draws: one per test)
+      near(() => { for (let k = 0; k < nk; k++) boxMM(F, -0.35, k * 0.06, -0.28, 0.35, k * 0.06 + 0.055, 0.28); }); far(() => boxMM(F, -0.35, 0, -0.28, 0.35, (nk - 1) * 0.06 + 0.055, 0.28, ['ny'])); }
   }
 
   lap('kit');
@@ -1543,7 +1611,7 @@ export function geometry(layout, opts = {}) {
           const w = 2.4 + Rl() * 1.6, d = 2.0 + Rl() * 1.0, h = 2.3, roofC = [srgb(0x2a5aa8), srgb(0x2a5aa8), srgb(0xb8b8b4), srgb(0xa8402a)][Math.floor(Rl() * 4)], litW = Rl() < 0.4;   // [P6-E art #5] 25 -> 40 % lit
           placeIn(Math.hypot(w, d) / 2, (F) => {
             set('dr_prop', { c: [0.5, 0.5, 0.48] }); boxMM(F, -w / 2, 0, -d / 2, w / 2, h, d / 2, ['ny', 'py']);
-            set('dr_prop', { c: [0.36, 0.36, 0.35], col: false }); for (let x = -w / 2 + 0.5; x < w / 2 - 0.2; x += 0.5) for (const sz of [-1, 1]) quad(W(F, x - 0.025, 0.02, sz * (d / 2 + 0.008)), W(F, x + 0.025, 0.02, sz * (d / 2 + 0.008)), W(F, x + 0.025, h - 0.02, sz * (d / 2 + 0.008)), W(F, x - 0.025, h - 0.02, sz * (d / 2 + 0.008)), D(F, 0, 0, sz));
+            set('dr_prop', { c: [0.36, 0.36, 0.35], col: false }); for (let x = -w / 2 + 0.5; x < w / 2 - 0.2; x += 0.5) for (const sz of [-1, 1]) near(() => quad(W(F, x - 0.025, 0.02, sz * (d / 2 + 0.008)), W(F, x + 0.025, 0.02, sz * (d / 2 + 0.008)), W(F, x + 0.025, h - 0.02, sz * (d / 2 + 0.008)), W(F, x - 0.025, h - 0.02, sz * (d / 2 + 0.008)), D(F, 0, 0, sz)));   // [P7-E] panel seams: near only
             set('dr_prop', { c: roofC }); quad(W(F, -w / 2 - 0.12, h + 0.12, -d / 2 - 0.12), W(F, w / 2 + 0.12, h + 0.12, -d / 2 - 0.12), W(F, w / 2 + 0.12, h - 0.02, d / 2 + 0.12), W(F, -w / 2 - 0.12, h - 0.02, d / 2 + 0.12), [0, 1, 0]);
             set('dr_prop', { c: [0.3, 0.32, 0.34], col: false }); quad(W(F, -0.45, 0.02, d / 2 + 0.015), W(F, 0.45, 0.02, d / 2 + 0.015), W(F, 0.45, 2.0, d / 2 + 0.015), W(F, -0.45, 2.0, d / 2 + 0.015), D(F, 0, 0, 1));
             if (litW) { set('dr_glow', { em: NI([1.0, 0.86, 0.68], 28), col: false }); quad(W(F, w / 2 - 1.1, 1.1, d / 2 + 0.016), W(F, w / 2 - 0.4, 1.1, d / 2 + 0.016), W(F, w / 2 - 0.4, 1.7, d / 2 + 0.016), W(F, w / 2 - 1.1, 1.7, d / 2 + 0.016), D(F, 0, 0, 1));
@@ -1560,14 +1628,14 @@ export function geometry(layout, opts = {}) {
             set('dr_roof', { c: Rl() < 0.7 ? [0.05 + Rl() * 0.04, 0.13 + Rl() * 0.08, 0.03] : [0.12, 0.08, 0.05], col: false }); const hy = 0.3 + Rl() * 0.12; quad(W(F, x - 0.28, hy, z - 0.18), W(F, x + 0.28, hy, z - 0.18), W(F, x + 0.28, hy, z + 0.18), W(F, x - 0.28, hy, z + 0.18), [0, 1, 0]); } });
         } else if (kind === 'dish') placeIn(0.6, (F) => { set('dr_steel', { col: false }); cyl(F, [0, 0.6, 0], 'y', 0.025, 1.2, 4, 0.025, false);
             const G = { o: W(F, 0, 1.2, 0), x: v3.norm(D(F, 0.6, 0.8, 0)), y: v3.norm(D(F, -0.8, 0.6, 0)), z: F.z }; set('dr_prop', { c: [0.6, 0.6, 0.58], col: false }); cyl(G, [0.05, 0, 0], 'x', 0.05, 0.1, 7, 0.3, false);
-            set('dr_steel', { col: false }); tube([W(G, 0.08, 0.25, 0), W(G, 0.45, 0, 0), W(G, 0.08, -0.25, 0)], 0.008, 3); });
+            set('dr_steel', { col: false }); near(() => tube([W(G, 0.08, 0.25, 0), W(G, 0.45, 0, 0), W(G, 0.08, -0.25, 0)], 0.008, 3)); });
         else if (kind === 'vent') placeIn(0.4, (F) => { const turb = Rl() < 0.6; set('dr_galv', { col: false }); cyl(F, [0, 0.45, 0], 'y', 0.12, 0.9, 6, 0.12, false);
             if (turb) cyl(F, [0, 1.12, 0], 'y', 0.22, 0.44, 7, 0.08); else cyl(F, [0, 0.98, 0], 'y', 0.24, 0.12, 6, 0.08); });
         else if (kind === 'solar') placeIn(1.1, (F) => { lowH = Math.min(lowH, H); set('dr_roof', { c: DRESS_MATS.dr_steel.color }); for (const sx of [-0.8, 0.8]) { boxMM(F, sx - 0.03, 0, -0.5, sx + 0.03, 0.4, -0.44); boxMM(F, sx - 0.03, 0, 0.44, sx + 0.03, 1.0, 0.5); }
             { const a = W(F, -0.95, 0.42, -0.55), b = W(F, 0.95, 0.42, -0.55), c = W(F, 0.95, 1.02, 0.55), d = W(F, -0.95, 1.02, 0.55); set('dr_roof', { c: [0.02, 0.03, 0.07] }); quad(a, b, c, d, v3.norm(v3.cross(v3.sub(b, a), v3.sub(d, a))[1] > 0 ? v3.cross(v3.sub(b, a), v3.sub(d, a)) : v3.cross(v3.sub(d, a), v3.sub(b, a))));
               set('dr_roof', { c: [0.5, 0.5, 0.52], col: false }); for (const t of [0.33, 0.66]) { const p = (q, r) => v3.add(q, v3.mul(v3.sub(r, q), t)); const e0 = p(a, d), e1 = p(b, c); quad(v3.add(e0, [0, 0.006, 0]), v3.add(e1, [0, 0.006, 0]), v3.add(e1, [0, 0.026, 0]), v3.add(e0, [0, 0.026, 0]), [0, 1, 0]); } } });
-        else if (kind === 'laundry') placeIn(1.0, (F) => { set('dr_galv', { col: false }); for (const sx of [-0.8, 0.8]) tube([W(F, sx, 0, -0.35), W(F, sx, 1.3, 0), W(F, sx, 0, 0.35)], 0.012, 3);
-            for (const z of [-0.12, 0, 0.12]) tube([W(F, -0.8, 1.28, z), W(F, 0.8, 1.28, z)], 0.006, 3);
+        else if (kind === 'laundry') placeIn(1.0, (F) => { set('dr_galv', { col: false }); near(() => { for (const sx of [-0.8, 0.8]) tube([W(F, sx, 0, -0.35), W(F, sx, 1.3, 0), W(F, sx, 0, 0.35)], 0.012, 3);
+            for (const z of [-0.12, 0, 0.12]) tube([W(F, -0.8, 1.28, z), W(F, 0.8, 1.28, z)], 0.006, 3); });
             for (let i = 0; i < 6; i++) { if (Rl() < 0.3) continue; const x = -0.65 + i * 0.26, z = [-0.12, 0, 0.12][i % 3], h = 0.35 + Rl() * 0.4; set('dr_prop', { c: [[0.7, 0.7, 0.68], [0.1, 0.1, 0.12], [0.2, 0.3, 0.55], [0.6, 0.2, 0.2], [0.55, 0.5, 0.4]][Math.floor(Rl() * 5)], col: false });
               quad(W(F, x - 0.11, 1.28 - h, z), W(F, x + 0.11, 1.28 - h, z), W(F, x + 0.11, 1.28, z), W(F, x - 0.11, 1.28, z), D(F, 0, 0, 1)); quad(W(F, x - 0.11, 1.28 - h, z), W(F, x - 0.11, 1.28, z), W(F, x + 0.11, 1.28, z), W(F, x + 0.11, 1.28 - h, z), D(F, 0, 0, -1)); } });
         else if (kind === 'tank') placeIn(0.7, (F) => { set('dr_prop', { c: Rl() < 0.6 ? [0.025, 0.025, 0.03] : [0.08, 0.18, 0.45] }); cyl(F, [0, 0.55, 0], 'y', 0.55, 1.1, 8); });
@@ -1594,11 +1662,11 @@ export function geometry(layout, opts = {}) {
       set('dr_prop', { c: enamel }); box(F, 0, 0, 0, hx, hy, hz, ['pz', 'nz']);                         // housing (back to the wall)
       set('dr_ac', { c: t.map((v) => v * 0.95), col: true }); quad(W(F, -hx, -hy, hz), W(F, hx, -hy, hz), W(F, hx, hy, hz), W(F, -hx, hy, hz), D(F, 0, 0, 1));
       if (!u.roof) {   // wall bracket: two angles to the wall, their struts
-        set('dr_steel', { col: false }); for (const sx of [-1, 1]) { const x = sx * (hx - 0.08); tube([W(F, x, -hy - 0.45, -hz - 0.2), W(F, x, -hy - 0.02, hz - 0.03)], 0.014, 3); }
+        near(() => { set('dr_steel', { col: false }); for (const sx of [-1, 1]) { const x = sx * (hx - 0.08); tube([W(F, x, -hy - 0.45, -hz - 0.2), W(F, x, -hy - 0.02, hz - 0.03)], 0.014, 3); } });   // [P7-E] 3 cm struts: near only
       } else { set('dr_steel'); boxMM(F, -hx, -hy - 0.12, -hz, hx, -hy, hz, ['py', 'ny']); }
       // the insulated pipes out of the side and into the wall (one bundle)
       const side = Ru() < 0.5 ? 1 : -1;
-      set('dr_prop', { c: [0.5, 0.48, 0.42], col: false }); tube([W(F, side * hx, -0.06, -hz * 0.3), W(F, side * (hx + 0.07), -0.04, -hz - 0.21)], 0.024, 3);
+      near(() => { set('dr_prop', { c: [0.5, 0.48, 0.42], col: false }); tube([W(F, side * hx, -0.06, -hz * 0.3), W(F, side * (hx + 0.07), -0.04, -hz - 0.21)], 0.024, 3); });
       facts.ac = (facts.ac || 0) + 1;
     }
   }
@@ -1639,7 +1707,7 @@ export function geometry(layout, opts = {}) {
         const pts = cat(a, b, (0.03 + R() * 0.04) * L, Math.max(3, Math.ceil(L / 3)));
         if (!polyGateOK(pts, 0.35)) { facts.rejectedByGates++; continue; }
         cable(pts, 0.009 + R() * 0.006, 3, 0.012); facts.drops++;
-        set('dr_prop', { c: [0.3, 0.3, 0.3] }); boxMM(FW, wx - 0.08, wy - 0.12, wz - 0.08, wx + 0.08, wy + 0.08, wz + 0.08); set('dark');
+        set('dr_prop', { c: [0.3, 0.3, 0.3] }); near(() => boxMM(FW, wx - 0.08, wy - 0.12, wz - 0.08, wx + 0.08, wy + 0.08, wz + 0.08)); set('dark');
       }
     }
   }
@@ -1680,11 +1748,11 @@ export function geometry(layout, opts = {}) {
         const r = kind === 'cable' ? (R() < 0.3 ? 0.03 : 0.01 + R() * 0.008) : 0.005;
         if (!item(() => {
           cables.push({ pts: pts.map(r3), r }); colTube(pts, Math.max(r, 0.012));
-          set('dr_steel', { col: false }); for (const p of [pts[0], pts[pts.length - 1]]) box(FW, p[0], p[1], p[2], 0.04, 0.04, 0.04);
+          set('dr_steel', { col: false }); near(() => { for (const p of [pts[0], pts[pts.length - 1]]) box(FW, p[0], p[1], p[2], 0.04, 0.04, 0.04); });
           if (kind === 'fest') {
             const L = Math.hypot(bx - ax, bz - az), nb = Math.floor(L / 0.4);
             for (let i = 1; i < nb; i++) { const t = i / nb, j = t * (pts.length - 1), j0 = Math.floor(j), f2 = j - j0, a = pts[j0], b = pts[Math.min(pts.length - 1, j0 + 1)], p = [lerp(a[0], b[0], f2), lerp(a[1], b[1], f2), lerp(a[2], b[2], f2)];
-              set('dark', { col: false }); box(FW, p[0], p[1] - 0.035, p[2], 0.012, 0.025, 0.012);
+              set('dark', { col: false }); near(() => box(FW, p[0], p[1] - 0.035, p[2], 0.012, 0.025, 0.012));   // the socket: near only (the bulb stays)
               set('dr_glow', { em: NI(srgb(0xffb46b), 1500), col: false }); octa([p[0], p[1] - 0.1, p[2]], 0.026, 0.045); }
             const m = pts[Math.floor(pts.length / 2)];
             emit({ id: 'dress:festoon:' + st.id + ':' + s.toFixed(1), kind: 'neon', pos: [m[0], m[1] - 0.1, m[2]], normal: [0, -1, 0], w: +L.toFixed(2), h: 0.12, rgb: [1.0, 0.62, 0.32], nits: 400, omni: 0.8, range: 12 });
@@ -1742,7 +1810,8 @@ export function geometry(layout, opts = {}) {
     let nP = 0, nB = 0;
     for (const p of posts) {
       const base = p.walk ? [0.055, 0.058, 0.062] : [0.26, 0.26, 0.25];
-      item(() => { sleeve(p.x, p.z, 0.1, 0, p.h - 0.05, base, 0.3, p.walk ? 2 : true); set('dr_paint', { c: base.map((v) => v * 0.8), col: false }); cyl(FW, [p.x, 0.15, p.z], 'y', 0.15, 0.3, 8, 0.12, false); nP++; }, { noGate: true });
+      item(() => { near(() => { sleeve(p.x, p.z, 0.1, 0, p.h - 0.05, base, 0.3, p.walk ? 2 : true); set('dr_paint', { c: base.map((v) => v * 0.8), col: false }); cyl(FW, [p.x, 0.15, p.z], 'y', 0.15, 0.3, 8, 0.12, false); });
+        far(() => { set('dr_prop', { c: base, col: false }); cyl(FW, [p.x, (p.h - 0.05) / 2, p.z], 'y', 0.1, p.h - 0.05, 6, 0.1, false); }); nP++; }, { noGate: true });   // [P7-E] past LOD_R: one plain 6-sided band
       if (p.ped && p.walk && R() < 0.55) {
         const d = BANNERS[Math.floor(R() * BANNERS.length)], c = srgb(parseInt(d.bg.slice(1), 16)), [ax, az] = p.away, F = frameH([p.x, 0, p.z], -ax, -az);   // local x toward the street centre
         if (item(() => {
@@ -1754,18 +1823,49 @@ export function geometry(layout, opts = {}) {
     }
     for (const p of opts.poles || []) {
       if (!inCore(p.x, p.z)) continue;
-      item(() => {
+      item(() => { near(() => {
         sleeve(p.x, p.z, 0.18, 0.9, 2.6, [0.42, 0.4, 0.36], 0.34, true, 10, 0.012);                       // the anti-flyer sheet, flyers on it
         const Rp = rng('band' + p.x.toFixed(2) + p.z.toFixed(2));
         for (let j = 0; j < 2; j++) for (let k = 0; k < 10; k++) { const a0 = k / 10 * TAU, a1 = (k + 1) / 10 * TAU, y0 = 0.4 + j * 0.25, yy = y0 + 0.25, sh = (k + j) % 2;   // yellow-black chevrons
           set('dr_prop', { c: sh ? [0.7, 0.5, 0.03] : [0.03, 0.03, 0.03], col: false }); const r = 0.18;
           quad([p.x + Math.cos(a0) * r, y0, p.z + Math.sin(a0) * r], [p.x + Math.cos(a1) * r, y0, p.z + Math.sin(a1) * r], [p.x + Math.cos(a1) * r, yy, p.z + Math.sin(a1) * r], [p.x + Math.cos(a0) * r, yy, p.z + Math.sin(a0) * r], [Math.cos((a0 + a1) / 2), 0, Math.sin((a0 + a1) / 2)]); }
         const a = Rp() * TAU, F = frameH([p.x + Math.cos(a) * 0.18, 2.9, p.z + Math.sin(a) * 0.18], -Math.sin(a), Math.cos(a));
-        set('dr_prop', { c: [0.7, 0.7, 0.68], col: false }); boxMM(F, -0.07, -0.13, 0, 0.07, 0.13, 0.008);
+        set('dr_prop', { c: [0.7, 0.7, 0.68], col: false }); boxMM(F, -0.07, -0.13, 0, 0.07, 0.13, 0.008); });
+        far(() => { set('dr_prop', { c: [0.37, 0.27, 0.03], col: false }); cyl(FW, [p.x, 0.65, p.z], 'y', 0.18, 0.5, 6, 0.18, false); set('dr_prop', { c: [0.42, 0.4, 0.36] }); cyl(FW, [p.x, 1.75, p.z], 'y', 0.185, 1.7, 6, 0.185, false); });
         nP++;
       }, { noGate: true });
     }
     facts.posts = nP; facts.banners = nB;
+    // ---- [P7-E lighting #4 / graphics #3] standing water at the post bases: the kerb line round a pole base is the low point,
+    // so every utility pole off the main roads and a third of the walking-street lamp posts stand in a puddle (club270's
+    // lamp pole: P4's bright wet patch). dr_puddle is a soft-edged decal (uv.x: 1 inside, 0 at the rim) that seoul-light's
+    // wet path draws as full standing water (material(): cityPud = uCityWet inside; gone when dry). Its discs go to
+    // `obstacles`, so G1's walkers step round it instead of standing on the reflection. Own stream: nothing else moves.
+    const Rq = rng('puddle' + seed), streetOf = new Map(M.streets.map((s) => [s.id, s]));
+    const inHole = (x, z) => holes.some((h) => pip(x, z, h));
+    const puddle = (cx, cz, tx, tz, a, b, id) => {
+      const N = 10, rad = [...Array(N)].map(() => 0.82 + Rq() * 0.3), y = 0.03;
+      const P = (k, f) => { const th = (k % N) / N * TAU, r = rad[k % N] * f, u = Math.cos(th) * a * r, v = Math.sin(th) * b * r; return [cx + tx * u - tz * v, y, cz + tz * u + tx * v]; };
+      for (let k = 0; k < N; k++) { const q = P(k, 1); if (M.lotAt(q[0], q[2]) || inHole(q[0], q[2]) || M.ribbonD(q[0], q[2], true) < -0.2) return false; }
+      const up = (p, q, r, ua, ub, uc) => { const cy = (q[2] - p[2]) * (r[0] - p[0]) - (q[0] - p[0]) * (r[2] - p[2]); if (cy >= 0) tri(p, q, r, ua, ub, uc); else tri(p, r, q, ua, uc, ub); };
+      set('dr_puddle', { c: [0.07, 0.066, 0.062], col: false });
+      const C0 = [cx, y, cz], I1 = [1, 0], O0 = [0, 0];
+      for (let k = 0; k < N; k++) { const i0 = P(k, 0.7), i1 = P(k + 1, 0.7), o0 = P(k, 1), o1 = P(k + 1, 1); up(C0, i0, i1, I1, I1, I1); up(i0, o0, o1, I1, O0, O0); up(i0, o1, i1, I1, O0, I1); }
+      for (const s of [-0.55, 0, 0.55]) occAdd(cx + tx * a * s, cz + tz * a * s, Math.max(0.25, b * 0.85));
+      facts.puddles = (facts.puddles || 0) + 1; if (id) (facts.puddleAt ||= []).push(id);
+      return true;
+    };
+    const inward = (x, z, st) => { const p = M.project(st, x, z), dx = p.px - x, dz = p.pz - z, l = Math.hypot(dx, dz) || 1; return [dx / l, dz / l]; };
+    for (const p of opts.poles || []) {
+      const st = streetOf.get(p.street); if (!st || st.kind === 'main' || !inCore(p.x, p.z)) continue;
+      const a = 1.8 + Rq() * 0.6, b = 0.75 + Rq() * 0.25, s = (Rq() - 0.5) * 0.3, [ix, iz] = inward(p.x, p.z, st), tl = Math.hypot(p.tx || 1, p.tz || 0), tx = (p.tx || 1) / tl, tz = (p.tz || 0) / tl;
+      puddle(p.x + ix * b * 0.55 + tx * s, p.z + iz * b * 0.55 + tz * s, tx, tz, a, b, null);
+    }
+    for (const p of posts) {
+      if (!p.walk || Rq() > 0.35) continue;
+      const a = 0.7 + Rq() * 0.5, b = 0.45 + Rq() * 0.2, [ix, iz] = [-p.away[0], -p.away[1]], tx = -iz, tz = ix;
+      puddle(p.x + ix * (0.3 + b * 0.5), p.z + iz * (0.3 + b * 0.5), tx, tz, a, b, null);
+    }
   }
   lap('posts');
   // ---- [P3-E fpv #3] background massing inside the block box where C built nothing (the strip's interior: 118 empty 24 m
@@ -2294,12 +2394,45 @@ void main(){
     if (y == null) return;
     const vis = y >= roofY - 0.25; for (const m of roofMeshes) m.visible = vis;
   };
-  const update = (t = 0, camPos = null) => { ensureLit(); updateLamps(t); updateRoof(camPos); RING_U.uTime.value = t;
+  // [P7-E perf #1] the distance tiers (DRESS_MATS[k].lod): per seoul-light cell (a BatchedMesh instance; its square is the
+  // cell its bounding-sphere centre falls in), N parts draw within LOD_R of the square (the camera's height over 10 m added),
+  // F parts beyond it. A far key left whole (no seoul-light, or under splitCells' 12k-tri floor): N everywhere, F never.
+  const TIERS = Object.entries(DRESS_MATS).filter(([, m]) => m.lod).map(([k, m]) => ['seoul:' + k, m.lod === 'near']);
+  let tierM = [], tierSeen = 0, tierOff = false; const tierCam = new THREE.Vector3(), tierLast = new THREE.Vector3(1e9, 0, 0);
+  const tierStats = { near: 0, far: 0, off: false, cell: 0 };
+  const updateTiers = (camPos) => {
+    if (!ctx.scene?.getObjectsByProperty) return;
+    if (!tierM.length || tierM.some((t) => !t.m.parent) || (++tierSeen % 600) === 0) {
+      const prev = tierM; tierM = [];
+      for (const [name, isN] of TIERS) for (const m of ctx.scene.getObjectsByProperty('name', name)) tierM.push(prev.find((t) => t.m === m) || { m, isN, vis: [] });
+      const parts = (name) => { const ms = tierM.filter((t) => t.m.name === name).map((t) => t.m); return ms.reduce((n, m) => n + (m.isBatchedMesh ? (m.userData.cellSpheres?.length || 1) : 1), 0); };
+      tierOff = TIERS.some(([name, isN]) => !isN && tierM.some((t) => t.m.name === name) && parts(name) < 2);
+      tierStats.off = tierOff; tierLast.set(1e9, 0, 0);
+    }
+    if (!tierM.length) return;
+    if (camPos) tierCam.copy(camPos); else if (ctx.camera) ctx.camera.getWorldPosition(tierCam); else return;
+    if (tierCam.distanceToSquared(tierLast) < 0.25) return;
+    tierLast.copy(tierCam);
+    const cell = ctx.scene.userData?.seoulLight?.stats?.cull?.cell || 64, hy = Math.max(0, tierCam.y - 10); tierStats.cell = cell;
+    const nearSq = (ix, iz) => { const x0 = ix * cell, z0 = iz * cell, dx = Math.max(x0 - tierCam.x, 0, tierCam.x - x0 - cell), dz = Math.max(z0 - tierCam.z, 0, tierCam.z - z0 - cell); return dx * dx + dz * dz + hy * hy < LOD_R * LOD_R; };
+    let nN = 0, nF = 0;
+    for (const t of tierM) {
+      const m = t.m;
+      if (tierOff || !(m.isBatchedMesh && m.userData.cellSpheres) && !m.userData.cell) {   // whole: the full model only
+        m.visible = t.isN; if (m.isBatchedMesh) { const I = m.userData.instanceIds || []; for (let i = 0; i < I.length; i++) if (t.vis[i] === false) { m.setVisibleAt(I[i], true); t.vis[i] = true; } } continue; }
+      if (m.isBatchedMesh) {
+        const S = m.userData.cellSpheres, I = m.userData.instanceIds; m.visible = true;
+        for (let i = 0; i < S.length; i++) { const c = S[i].center, v = nearSq(Math.floor(c.x / cell), Math.floor(c.z / cell)) === t.isN; if (t.vis[i] !== v) { m.setVisibleAt(I[i], v); t.vis[i] = v; } if (v) { if (t.isN) nN++; else nF++; } }
+      } else { m.visible = nearSq(m.userData.cell[0], m.userData.cell[1]) === t.isN; if (m.visible) { if (t.isN) nN++; else nF++; } }
+    }
+    tierStats.near = nN; tierStats.far = nF;
+  };
+  const update = (t = 0, camPos = null) => { ensureLit(); updateLamps(t); updateRoof(camPos); updateTiers(camPos); RING_U.uTime.value = t;
     if (!skyHor) skyHor = ctx.scene?.getObjectByName?.('seoul.sky')?.material?.uniforms?.uHor?.value || null;
     if (skyHor) RING_U.uHaze.value.copy(skyHor).multiplyScalar(RING_LOOK.hazeK / nit); };
   return {
     group, update, emitters: [], setPieces: geo.setPieces,
-    stats: { cables: polys.length, cableSegs: lineMesh ? lineMesh.geometry.index.count / 6 : 0, labels: geo.labels.length, lamps: geo.lamps.length, beyond: beyondStats, ...geo.facts },
+    stats: { cables: polys.length, cableSegs: lineMesh ? lineMesh.geometry.index.count / 6 : 0, labels: geo.labels.length, lamps: geo.lamps.length, beyond: beyondStats, tiers: tierStats, ...geo.facts },
     dispose() { for (const d of disposables) d.dispose?.(); group.removeFromParent(); },
   };
 }
