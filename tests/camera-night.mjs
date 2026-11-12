@@ -53,7 +53,7 @@ if (process.argv.includes('--print')) console.log(JSON.stringify(gotT));
 for (const k in TABLES) ok(gotT[k] === TABLES[k], `bando table ${k} changed (${gotT[k]} != ${TABLES[k]})`);
 
 // --- 2. night tone curve
-const EV_P6 = -1.85;   // [P6-A] the fitted night evBias (re-fit last, on A + C + D)
+const EV_P6 = -1.9;    // [P6-A] the fitted night evBias (re-fit last, on A + C + D); [P7-A] -1.85 -> -1.9 on p7 A + C + D
 const N = M.GRADES.night, [a, d, mid] = N.tone, wp = 0.24 * 2 ** N.clipEv, [b, c] = M.nightToneBC(a, d, mid, wp);
 const f = (x) => x ** a / (x ** (a * d) * b + c);
 ok(Math.abs(f(0.24) - mid) < 1e-9, 'tone passes grey');
@@ -93,7 +93,7 @@ ok(/const GHOST_FS/.test(src) && !/uGhostT/.test(C.FINAL_FS), 'ghosts come from 
 }
 
 // --- 5. [P4-A] phase-4 night camera: stop recovered, source-tinted middle lobe, magenta window + amber gate, NaN guard, mover dilation
-ok(N.evBias === EV_P6 && N.toe === 0.025, `P6 exposure re-fit on A + C + D: evBias ${EV_P6}, toe 0.025 (fpv #1)`);
+ok(N.evBias === EV_P6 && N.toe === 0.025, `P6/P7 exposure re-fit on A + C + D: evBias ${EV_P6}, toe 0.025 (fpv #1)`);
 ok(N.coreEvSrc[0] === -5.2 && N.coreEvSrc[1] === -1.6, 'P4 colour #4 / P5 re-fit: true-source ramp [-5.2, -1.6]');
 ok(Array.isArray(N.haloM) && N.haloM[0] >= 0.035 && N.haloM[0] <= 0.045 && N.haloM[1] > 0 && N.haloMTint.every((v) => v === 1), 'P4 colour #4 / P5 colour #5: middle lobe 3.5-4.5 %, source-tinted');
 ok(/uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(C.NIGHT_FINAL_BODY ?? '') || /uHaloM > 0\.0\) e \+= texture\(tHaloM/.test(pp(C.FINAL_FS, { NIGHT: 1 })), 'P4: FINAL adds the middle lobe after eCore');

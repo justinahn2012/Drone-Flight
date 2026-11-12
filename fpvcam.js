@@ -1087,13 +1087,20 @@ export const GRADES = {
   //   AE down to EV -4.2); a dark slot is lifted toward 0.022 exposed (~19 codes), warm R > G > B, by enclosure x lit canyon;
   //   open skies (low enclosure) and skies D already lifts past the target are left alone.
   //   haloE [share, exposed cap]: the PSF's edge lobe (colour #3): 5 % of the 1/8 block radiance with no bright-pass threshold
-  //   (unblurred, sigma ~5-6 px at 1280). A 3 % share of the bright pass moved nothing (letter edge 2-4 px band 125 -> 124).
+  //   (unblurred, sigma ~5-6 px at 1280). A 3 % share of the bright pass moved nothing (letter edge 2-4 px band 125 -> 124);
+  //   this one (merge run 2, walk0): 2-4 px 124 -> 136, 4-6 px 47 -> 65, 6-8 px 44 -> 53.
+  //   airEncl [0.35, 0.8] -> [0.15, 0.45], airLit [0.01, 0.04] -> [0.005, 0.025] after merge run 2: walk180's slot (enclosure
+  //   ~0.5, far dark facades round it) took only ~20 % of the lift (10 -> 11.5 codes); now it takes all of it (modelled ~18).
+  //   evBias -1.85 -> -1.9: exposure re-fit last on a scratch merge of p7 A + C (sign stacks into the frame, cladding) + D (sky
+  //   term, ground light, re-baked). GL at -1.85 (960 wide): p50 walk0 47.0, club90 49.8 (band top 50), walk180 39.7, station2
+  //   32.6; below 16 13.5 / 14.1 / 22.4 / 12.4 %. Modelled at -1.9: 45.9 / 48.8 / 38.7 / 31.6. walk180 meters EV -4.1 (C's
+  //   near boards fill a third of it) and its ground is 18: a light / content gap, not exposure (club90 caps any lift).
   //   wb red 1.0 -> 0.98 (colour #5: the fill went amber under the warmer dome, club270 R-G 2.7 -> 8.0, high 7.4 -> 11.5).
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.98, 1.0, 0.96], wbShade: null, evBias: -1.85, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.98, 1.0, 0.96], wbShade: null, evBias: -1.9, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3], haloE: [0.05, 16],
-    air: [0.022, 0.3, 0.2, 4], airTint: [1.3, 0.75, 0.38], airEncl: [0.35, 0.8], airLit: [0.01, 0.04],
+    air: [0.022, 0.3, 0.2, 4], airTint: [1.3, 0.75, 0.38], airEncl: [0.15, 0.45], airLit: [0.005, 0.025],
     ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
     core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-5.2, -1.6], retroShadow: [230, 0.03], retroShGate: [0.17, 0.26], retroShSky: 1, retroVibGate: [40, 100],
     mag: 0.07, magC: 0.04, magEv: [0.7, 1.6, 3.2, 4.2], grain: 0, grainEv: [0, 0], grainPx: 2,
