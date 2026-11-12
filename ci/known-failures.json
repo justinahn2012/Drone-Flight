@@ -185,6 +185,116 @@
         "re": "p95 ([0-9.]+)",
         "min": 30
       }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] club90: below 16",
+      "owner": "A with C, D (PLAN-P6 #1 the frame got too dark)",
+      "why": "24.3 % under code 16 on main. [P6 H] new PLAN-P6 gate row; limit about 10 % past main's CI value (run 43139873309, integ10 bc45fbe) so it binds while the owners land the fix; delete when the notice says it passes",
+      "limit": {
+        "re": "below 16 ([0-9.]+) %",
+        "max": 27
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget: raw JS heap at settled",
+      "owner": "D (panel5 perf #5: free per stage at materials)",
+      "why": "raw 'settled' 986 MB on main against 700 (the live heap after GC is 172 MB and gated separately). [P6 H] new PLAN-P6 gate row; limit about 10 % past main's CI value (run 43139873309, integ10 bc45fbe) so it binds while the owners land the fix; delete when the notice says it passes",
+      "limit": {
+        "re": "settled ([0-9.]+) MB",
+        "max": 1085
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget walk0: triangles",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "all-pass triangles over 2.6 M (P5 probe 2.0-3.9 M; CI's first count lands with this row). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "triangles ([0-9.]+) M",
+        "max": 4.3
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget walk0: main pass",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "main pass ([0-9.]+) M",
+        "max": 2.2
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget club90: triangles",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "all-pass triangles over 2.6 M (P5 probe 2.0-3.9 M; CI's first count lands with this row). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "triangles ([0-9.]+) M",
+        "max": 4.3
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget club90: main pass",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "main pass ([0-9.]+) M",
+        "max": 2.2
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget station: triangles",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "all-pass triangles over 2.6 M (P5 probe 2.0-3.9 M; CI's first count lands with this row). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "triangles ([0-9.]+) M",
+        "max": 4.3
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget station: main pass",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "main pass ([0-9.]+) M",
+        "max": 2.2
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget spawn: triangles",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "all-pass triangles over 2.6 M (P5 probe 2.0-3.9 M; CI's first count lands with this row). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "triangles ([0-9.]+) M",
+        "max": 4.3
+      }
+    },
+    {
+      "suite": "tests/browser.mjs",
+      "match": "budget spawn: main pass",
+      "owner": "D, E, C (panel5 perf #2: drip decals into the facade shader, roof props only above 20 m, instanced posts, LOD0 people <= 60)",
+      "why": "main pass over 1.3 M (P5 probe 0.8-2.0 M). [P6 H] limit = P5's worst + 10 %",
+      "limit": {
+        "re": "main pass ([0-9.]+) M",
+        "max": 2.2
+      }
+    },
+    {
+      "suite": "tools/camgate.py",
+      "match": "[exposure] spawn: frame p50",
+      "owner": "F with A (PLAN-P6: the spawn, yaw +6, pitch -8, gate spawn p50 >= 40)",
+      "why": "[P6 H] new still: main's spawn frames mostly night sky from height (p50 21, local SwiftShader run of 41f6ff0 = main's spawn); F's pitch -8 and A's open-shot exposure. Limit ~10 % under main's value",
+      "limit": {
+        "re": "frame p50 ([0-9.]+)",
+        "min": 19
+      }
     }
   ]
 }
