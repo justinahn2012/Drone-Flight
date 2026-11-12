@@ -33,6 +33,13 @@ export const DRESS_MATS = {
   dr_galv: { color: [0.40, 0.41, 0.42], rough: 0.38, metal: 0.8, albedo: [0.40, 0.41, 0.42] },        // galvanised / stainless
   dr_glass: { color: [0.025, 0.03, 0.034], rough: 0.04, transparent: true, opacity: 0.3, double: true, albedo: [0.03, 0.03, 0.03] },
   dr_prop: { color: [1, 1, 1], rough: 0.6, vcol: true, albedo: [0.25, 0.22, 0.2] },                   // plastics, fabric, paint
+  // [P6-E perf] the low roof props (planters, pipe runs, solar panels: every top under the 0.9 m parapet): their own mesh,
+  // drawn only with the camera at or above the lowest roof that carries one (facts.roofHideY; build() hides it below, where
+  // the parapets hide them anyway). Same look as dr_prop / dr_galv / dr_steel through the vertex colour.
+  // [P6-E fpv #6 / art bug] the posts' powder coat: semi-gloss, so a post 2 m from the lens (w21) carries the signs' highlights
+  // down its length and reads as a painted steel tube, not a flat dark column (dr_prop's 0.6 kills every highlight)
+  dr_paint: { color: [1, 1, 1], rough: 0.32, vcol: true, albedo: [0.06, 0.06, 0.065] },
+  dr_roof: { color: [1, 1, 1], rough: 0.6, vcol: true, fold: false, roofOnly: true, albedo: [0.3, 0.3, 0.29] },
   dr_tarp: { color: [1, 1, 1], rough: 0.75, vcol: true, emissive: true, double: true, albedo: [0.35, 0.14, 0.05] },   // lit from inside
   dr_glow: { color: [0.02, 0.02, 0.02], rough: 0.35, emissive: true, albedo: [0.02, 0.02, 0.02] },    // lit faces, tubes, doors
   dr_roadpaint: { color: [1, 1, 1], rough: 0.5, vcol: true, decal: true, noCol: true, albedo: [0.6, 0.6, 0.58] },   // wet via S3's name rule
@@ -1501,7 +1508,7 @@ export function geometry(layout, opts = {}) {
   const roofAC = [];
   {
     const W8 = [['shed', 0.17], ['planters', 0.17], ['dish', 0.12], ['vent', 0.12], ['solar', 0.09], ['laundry', 0.09], ['tank', 0.08], ['ac', 0.1], ['pipe', 0.06]];
-    let nR = 0, nDeck = 0;
+    let nR = 0, nDeck = 0, lowH = Infinity, nShedLamp = 0;
     for (const l of M.lots) {
       const P = l.footprint, H = l._H, area = Math.abs(polyArea(P)), [x0, x1, z0, z1] = l._bb;
       if (area < 30 || !inCore((x0 + x1) / 2, (z0 + z1) / 2)) continue;
@@ -1533,26 +1540,32 @@ export function geometry(layout, opts = {}) {
       for (let k = 0; k < n; k++) {
         let u = Rl(), kind = W8[W8.length - 1][0]; for (const [kk, p] of W8) { if (u < p) { kind = kk; break; } u -= p; }
         if (kind === 'shed') { if (taken.some((d) => d[3] === 'shed')) continue;
-          const w = 2.4 + Rl() * 1.6, d = 2.0 + Rl() * 1.0, h = 2.3, roofC = [srgb(0x2a5aa8), srgb(0x2a5aa8), srgb(0xb8b8b4), srgb(0xa8402a)][Math.floor(Rl() * 4)], litW = Rl() < 0.25;
+          const w = 2.4 + Rl() * 1.6, d = 2.0 + Rl() * 1.0, h = 2.3, roofC = [srgb(0x2a5aa8), srgb(0x2a5aa8), srgb(0xb8b8b4), srgb(0xa8402a)][Math.floor(Rl() * 4)], litW = Rl() < 0.4;   // [P6-E art #5] 25 -> 40 % lit
           placeIn(Math.hypot(w, d) / 2, (F) => {
             set('dr_prop', { c: [0.5, 0.5, 0.48] }); boxMM(F, -w / 2, 0, -d / 2, w / 2, h, d / 2, ['ny', 'py']);
             set('dr_prop', { c: [0.36, 0.36, 0.35], col: false }); for (let x = -w / 2 + 0.5; x < w / 2 - 0.2; x += 0.5) for (const sz of [-1, 1]) quad(W(F, x - 0.025, 0.02, sz * (d / 2 + 0.008)), W(F, x + 0.025, 0.02, sz * (d / 2 + 0.008)), W(F, x + 0.025, h - 0.02, sz * (d / 2 + 0.008)), W(F, x - 0.025, h - 0.02, sz * (d / 2 + 0.008)), D(F, 0, 0, sz));
             set('dr_prop', { c: roofC }); quad(W(F, -w / 2 - 0.12, h + 0.12, -d / 2 - 0.12), W(F, w / 2 + 0.12, h + 0.12, -d / 2 - 0.12), W(F, w / 2 + 0.12, h - 0.02, d / 2 + 0.12), W(F, -w / 2 - 0.12, h - 0.02, d / 2 + 0.12), [0, 1, 0]);
             set('dr_prop', { c: [0.3, 0.32, 0.34], col: false }); quad(W(F, -0.45, 0.02, d / 2 + 0.015), W(F, 0.45, 0.02, d / 2 + 0.015), W(F, 0.45, 2.0, d / 2 + 0.015), W(F, -0.45, 2.0, d / 2 + 0.015), D(F, 0, 0, 1));
-            if (litW) { set('dr_glow', { em: NI([1.0, 0.86, 0.68], 16), col: false }); quad(W(F, w / 2 - 1.1, 1.1, d / 2 + 0.016), W(F, w / 2 - 0.4, 1.1, d / 2 + 0.016), W(F, w / 2 - 0.4, 1.7, d / 2 + 0.016), W(F, w / 2 - 1.1, 1.7, d / 2 + 0.016), D(F, 0, 0, 1)); }
+            if (litW) { set('dr_glow', { em: NI([1.0, 0.86, 0.68], 28), col: false }); quad(W(F, w / 2 - 1.1, 1.1, d / 2 + 0.016), W(F, w / 2 - 0.4, 1.1, d / 2 + 0.016), W(F, w / 2 - 0.4, 1.7, d / 2 + 0.016), W(F, w / 2 - 1.1, 1.7, d / 2 + 0.016), D(F, 0, 0, 1));
+              // [P6-E art #5 / graphics #4] an occupied shed has a bulkhead over its door (400 lm, 3000 K): from the air a lit
+              // pane and a pool on the roof slab, which is how the reference roofs read at night (the props in it, not as black)
+              set('dr_steel', { col: false }); boxMM(F, -0.1, 2.1, d / 2, 0.1, 2.2, d / 2 + 0.07, ['nz']);
+              set('dr_glow', { em: NI([1.0, 0.8, 0.56], 7000), col: false }); boxMM(F, -0.08, 2.085, d / 2 + 0.005, 0.08, 2.1, d / 2 + 0.065, ['py', 'nz']);
+              emit({ id: 'dress:shedlamp:' + l.id, kind: 'street', role: 'roof', pos: W(F, 0, 2.08, d / 2 + 0.04), normal: D(F, 0, -0.9, 0.44), w: 0.16, h: 0.06, rgb: [1.0, 0.8, 0.56], nits: Math.round(400 / (Math.PI * 0.16 * 0.06)), lumens: 400, cct: 3000, lot: l.id });
+              nShedLamp++; }
           }) && (taken[taken.length - 1][3] = 'shed');
         } else if (kind === 'planters') { const nb = 3 + Math.floor(Rl() * 3), rows = Rl() < 0.3 ? 2 : 1;
-          placeIn(Math.max(nb * 0.33, rows * 0.5), (F) => { for (let r = 0; r < rows; r++) for (let i = 0; i < nb; i++) { const x = (i - (nb - 1) / 2) * 0.64, z = (r - (rows - 1) / 2) * 0.48, g = Rl();
-            set('dr_prop', { c: g < 0.2 ? [0.12, 0.3, 0.6] : g < 0.3 ? [0.45, 0.2, 0.1] : [0.72, 0.72, 0.7] }); boxMM(F, x - 0.3, 0, z - 0.2, x + 0.3, 0.3, z + 0.2, ['ny', 'py']);
-            set('dr_prop', { c: Rl() < 0.7 ? [0.05 + Rl() * 0.04, 0.13 + Rl() * 0.08, 0.03] : [0.12, 0.08, 0.05], col: false }); const hy = 0.3 + Rl() * 0.12; quad(W(F, x - 0.28, hy, z - 0.18), W(F, x + 0.28, hy, z - 0.18), W(F, x + 0.28, hy, z + 0.18), W(F, x - 0.28, hy, z + 0.18), [0, 1, 0]); } });
+          placeIn(Math.max(nb * 0.33, rows * 0.5), (F) => { lowH = Math.min(lowH, H); for (let r = 0; r < rows; r++) for (let i = 0; i < nb; i++) { const x = (i - (nb - 1) / 2) * 0.64, z = (r - (rows - 1) / 2) * 0.48, g = Rl();
+            set('dr_roof', { c: g < 0.2 ? [0.12, 0.3, 0.6] : g < 0.3 ? [0.45, 0.2, 0.1] : [0.72, 0.72, 0.7] }); boxMM(F, x - 0.3, 0, z - 0.2, x + 0.3, 0.3, z + 0.2, ['ny', 'py']);
+            set('dr_roof', { c: Rl() < 0.7 ? [0.05 + Rl() * 0.04, 0.13 + Rl() * 0.08, 0.03] : [0.12, 0.08, 0.05], col: false }); const hy = 0.3 + Rl() * 0.12; quad(W(F, x - 0.28, hy, z - 0.18), W(F, x + 0.28, hy, z - 0.18), W(F, x + 0.28, hy, z + 0.18), W(F, x - 0.28, hy, z + 0.18), [0, 1, 0]); } });
         } else if (kind === 'dish') placeIn(0.6, (F) => { set('dr_steel', { col: false }); cyl(F, [0, 0.6, 0], 'y', 0.025, 1.2, 4, 0.025, false);
             const G = { o: W(F, 0, 1.2, 0), x: v3.norm(D(F, 0.6, 0.8, 0)), y: v3.norm(D(F, -0.8, 0.6, 0)), z: F.z }; set('dr_prop', { c: [0.6, 0.6, 0.58], col: false }); cyl(G, [0.05, 0, 0], 'x', 0.05, 0.1, 7, 0.3, false);
             set('dr_steel', { col: false }); tube([W(G, 0.08, 0.25, 0), W(G, 0.45, 0, 0), W(G, 0.08, -0.25, 0)], 0.008, 3); });
         else if (kind === 'vent') placeIn(0.4, (F) => { const turb = Rl() < 0.6; set('dr_galv', { col: false }); cyl(F, [0, 0.45, 0], 'y', 0.12, 0.9, 6, 0.12, false);
             if (turb) cyl(F, [0, 1.12, 0], 'y', 0.22, 0.44, 7, 0.08); else cyl(F, [0, 0.98, 0], 'y', 0.24, 0.12, 6, 0.08); });
-        else if (kind === 'solar') placeIn(1.1, (F) => { set('dr_steel'); for (const sx of [-0.8, 0.8]) { boxMM(F, sx - 0.03, 0, -0.5, sx + 0.03, 0.4, -0.44); boxMM(F, sx - 0.03, 0, 0.44, sx + 0.03, 1.0, 0.5); }
-            { const a = W(F, -0.95, 0.42, -0.55), b = W(F, 0.95, 0.42, -0.55), c = W(F, 0.95, 1.02, 0.55), d = W(F, -0.95, 1.02, 0.55); set('dr_prop', { c: [0.02, 0.03, 0.07] }); quad(a, b, c, d, v3.norm(v3.cross(v3.sub(b, a), v3.sub(d, a))[1] > 0 ? v3.cross(v3.sub(b, a), v3.sub(d, a)) : v3.cross(v3.sub(d, a), v3.sub(b, a))));
-              set('dr_prop', { c: [0.5, 0.5, 0.52], col: false }); for (const t of [0.33, 0.66]) { const p = (q, r) => v3.add(q, v3.mul(v3.sub(r, q), t)); const e0 = p(a, d), e1 = p(b, c); quad(v3.add(e0, [0, 0.006, 0]), v3.add(e1, [0, 0.006, 0]), v3.add(e1, [0, 0.026, 0]), v3.add(e0, [0, 0.026, 0]), [0, 1, 0]); } } });
+        else if (kind === 'solar') placeIn(1.1, (F) => { lowH = Math.min(lowH, H); set('dr_roof', { c: DRESS_MATS.dr_steel.color }); for (const sx of [-0.8, 0.8]) { boxMM(F, sx - 0.03, 0, -0.5, sx + 0.03, 0.4, -0.44); boxMM(F, sx - 0.03, 0, 0.44, sx + 0.03, 1.0, 0.5); }
+            { const a = W(F, -0.95, 0.42, -0.55), b = W(F, 0.95, 0.42, -0.55), c = W(F, 0.95, 1.02, 0.55), d = W(F, -0.95, 1.02, 0.55); set('dr_roof', { c: [0.02, 0.03, 0.07] }); quad(a, b, c, d, v3.norm(v3.cross(v3.sub(b, a), v3.sub(d, a))[1] > 0 ? v3.cross(v3.sub(b, a), v3.sub(d, a)) : v3.cross(v3.sub(d, a), v3.sub(b, a))));
+              set('dr_roof', { c: [0.5, 0.5, 0.52], col: false }); for (const t of [0.33, 0.66]) { const p = (q, r) => v3.add(q, v3.mul(v3.sub(r, q), t)); const e0 = p(a, d), e1 = p(b, c); quad(v3.add(e0, [0, 0.006, 0]), v3.add(e1, [0, 0.006, 0]), v3.add(e1, [0, 0.026, 0]), v3.add(e0, [0, 0.026, 0]), [0, 1, 0]); } } });
         else if (kind === 'laundry') placeIn(1.0, (F) => { set('dr_galv', { col: false }); for (const sx of [-0.8, 0.8]) tube([W(F, sx, 0, -0.35), W(F, sx, 1.3, 0), W(F, sx, 0, 0.35)], 0.012, 3);
             for (const z of [-0.12, 0, 0.12]) tube([W(F, -0.8, 1.28, z), W(F, 0.8, 1.28, z)], 0.006, 3);
             for (let i = 0; i < 6; i++) { if (Rl() < 0.3) continue; const x = -0.65 + i * 0.26, z = [-0.12, 0, 0.12][i % 3], h = 0.35 + Rl() * 0.4; set('dr_prop', { c: [[0.7, 0.7, 0.68], [0.1, 0.1, 0.12], [0.2, 0.3, 0.55], [0.6, 0.2, 0.2], [0.55, 0.5, 0.4]][Math.floor(Rl() * 5)], col: false });
@@ -1561,10 +1574,10 @@ export function geometry(layout, opts = {}) {
         else if (kind === 'ac') { const s = spot(1.6); if (!s) continue; const nu = 2 + Math.floor(Rl() * 3), ya = Math.atan2(tz, tx);
           for (let i = 0; i < nu; i++) { const x = s[0] + tx * (i - (nu - 1) / 2) * 1.0, z = s[1] + tz * (i - (nu - 1) / 2) * 1.0; if (!fits(x, z, 0.55) || corrHit([x - 0.6, H, z - 0.6, x + 0.6, H + 1.2, z + 0.6], 1.5)) continue;
             roofAC.push({ c: [x, H + 0.4, z], n: [Math.sin(ya), 0, -Math.cos(ya)].map((v) => (Rl() < 0.5 ? v : -v)), size: [0.84, 0.64, 0.32], roof: true, tint: [1, 1, 0.97] }); taken.push([x, z, 0.55]); } }
-        else if (kind === 'pipe') placeIn(0.5, (F) => { const L = 2 + Rl() * 3; set('dr_galv', { col: false }); tube([W(F, -L / 2, 0.25, 0), W(F, L / 2, 0.25, 0), W(F, L / 2, 0.25, 0.01)], 0.05, 5); set('concrete', { col: false }); for (let x = -L / 2 + 0.3; x < L / 2; x += 1.2) boxMM(F, x - 0.1, 0, -0.12, x + 0.1, 0.2, 0.12, ['ny']); });
+        else if (kind === 'pipe') placeIn(0.5, (F) => { lowH = Math.min(lowH, H); const L = 2 + Rl() * 3; set('dr_roof', { c: DRESS_MATS.dr_galv.color, col: false }); tube([W(F, -L / 2, 0.25, 0), W(F, L / 2, 0.25, 0), W(F, L / 2, 0.25, 0.01)], 0.05, 5); set('dr_roof', { c: [0.3, 0.29, 0.27], col: false }); for (let x = -L / 2 + 0.3; x < L / 2; x += 1.2) boxMM(F, x - 0.1, 0, -0.12, x + 0.1, 0.2, 0.12, ['ny']); });
       }
     }
-    facts.roofProps = nR + roofAC.length; facts.roofDecks = nDeck;
+    facts.roofProps = nR + roofAC.length; facts.roofDecks = nDeck; facts.roofHideY = Number.isFinite(lowH) ? +lowH.toFixed(2) : 0; facts.shedLamps = nShedLamp;
   }
   lap('roofs');
   // ---- [P3-E graphics #2] AC condensers: C places them (its facade rules), E draws them. Contract P3-E1: C records each unit
@@ -1715,11 +1728,11 @@ export function geometry(layout, opts = {}) {
       posts.push({ x, z, h, r: 0.1, ped, away: [ax, az], st: best.st, walk: best.st.kind === 'walking' || best.st.kind === 'club' });
     }
     const sleeve = (x, z, r, y0, y1, base, bands, residue, sides = 8, bump = 0) => {
-      const Rp = rng('sleeve' + x.toFixed(2) + ':' + z.toFixed(2)), ys = [y0]; for (const y of [0.9, 1.35, 1.8, 2.4]) if (y > y0 + 0.05 && y < y1 - 0.05) ys.push(y); ys.push(y1);   // bands: flyers live at 0.9-2.4 m
+      const Rp = rng('sleeve' + x.toFixed(2) + ':' + z.toFixed(2)), ys = [y0]; for (const y of [0.9, 1.35, 1.8, 2.4, ...(residue === 2 ? [2.9, 3.4] : [])]) if (y > y0 + 0.05 && y < y1 - 0.05) ys.push(y); ys.push(y1);   // bands: flyers live at 0.9-2.4 m ([P6-E] stickers to 3.4 m on the walking-street posts)
       for (let j = 0; j + 1 < ys.length; j++) for (let k = 0; k < sides; k++) {
         const a0 = (k / sides) * TAU, a1 = ((k + 1) / sides) * TAU, r0 = r + (bump && k % 2 ? bump : 0), r1 = r + (bump && (k + 1) % 2 ? bump : 0), am = (a0 + a1) / 2;
-        const yc = (ys[j] + ys[j + 1]) / 2, stick = residue && yc > 0.9 && yc < 2.5 && Rp() < 0.4;
-        set('dr_prop', { c: stick ? paper[Math.floor(Rp() * paper.length)].map((v) => v * (0.7 + Rp() * 0.3)) : base.map((v) => v * (0.9 + Rp() * 0.2)), col: false });
+        const yc = (ys[j] + ys[j + 1]) / 2, stick = residue && yc > 0.9 && (yc < 2.5 ? Rp() < 0.4 : yc < 3.45 && Rp() < 0.22);
+        set(stick ? 'dr_prop' : 'dr_paint', { c: stick ? paper[Math.floor(Rp() * paper.length)].map((v) => v * (0.7 + Rp() * 0.3)) : base.map((v) => v * (0.9 + Rp() * 0.2)), col: false });
         const rr = stick ? 0.004 : 0;
         quad([x + Math.cos(a0) * (r0 + rr), ys[j], z + Math.sin(a0) * (r0 + rr)], [x + Math.cos(a1) * (r1 + rr), ys[j], z + Math.sin(a1) * (r1 + rr)], [x + Math.cos(a1) * (r1 + rr), ys[j + 1], z + Math.sin(a1) * (r1 + rr)], [x + Math.cos(a0) * (r0 + rr), ys[j + 1], z + Math.sin(a0) * (r0 + rr)], [Math.cos(am), 0, Math.sin(am)]);
       } };
@@ -1729,7 +1742,7 @@ export function geometry(layout, opts = {}) {
     let nP = 0, nB = 0;
     for (const p of posts) {
       const base = p.walk ? [0.055, 0.058, 0.062] : [0.26, 0.26, 0.25];
-      item(() => { sleeve(p.x, p.z, 0.1, 0, p.h - 0.05, base, 0.3, true); set('dr_prop', { c: base.map((v) => v * 0.8), col: false }); cyl(FW, [p.x, 0.15, p.z], 'y', 0.15, 0.3, 8, 0.12, false); nP++; }, { noGate: true });
+      item(() => { sleeve(p.x, p.z, 0.1, 0, p.h - 0.05, base, 0.3, p.walk ? 2 : true); set('dr_paint', { c: base.map((v) => v * 0.8), col: false }); cyl(FW, [p.x, 0.15, p.z], 'y', 0.15, 0.3, 8, 0.12, false); nP++; }, { noGate: true });
       if (p.ped && p.walk && R() < 0.55) {
         const d = BANNERS[Math.floor(R() * BANNERS.length)], c = srgb(parseInt(d.bg.slice(1), 16)), [ax, az] = p.away, F = frameH([p.x, 0, p.z], -ax, -az);   // local x toward the street centre
         if (item(() => {
@@ -2269,7 +2282,19 @@ void main(){
   const ensureLit = () => { if (patched || !lineMesh) return; const L = ctx.scene?.userData?.seoulLight; if (L?.patchMaterial) { L.patchMaterial(lineMesh.material); patched = true; } };
   // [P4-E fpv #4] haze toward the sky's own horizon (seoul-light's 'seoul.sky' uHor, scene units): the ring fades into the skyglow
   let skyHor = null;
-  const update = (t = 0) => { ensureLit(); updateLamps(t); RING_U.uTime.value = t;
+  // [P6-E perf] the low roof props (dr_roof) draw only with the camera at or above the lowest roof carrying one: below it,
+  // every one of them is behind its parapet. world-seoul names the mesh, seoul-light may swap it for a BatchedMesh (same
+  // name) after this build: look it up again when the one held has left the scene.
+  const roofY = geo.facts?.roofHideY ?? 0; let roofMeshes = [], roofSeen = 0;
+  const _cp = new THREE.Vector3();
+  const updateRoof = (camPos) => {
+    if (!ctx.scene || !roofY) return;
+    if (!roofMeshes.length || roofMeshes.some((m) => !m.parent) || (++roofSeen % 600) === 0) roofMeshes = ctx.scene.getObjectsByProperty ? ctx.scene.getObjectsByProperty('name', 'seoul:dr_roof') : [];
+    let y = camPos?.y; if (y == null) { const cam = ctx.camera; if (cam) { cam.getWorldPosition(_cp); y = _cp.y; } }
+    if (y == null) return;
+    const vis = y >= roofY - 0.25; for (const m of roofMeshes) m.visible = vis;
+  };
+  const update = (t = 0, camPos = null) => { ensureLit(); updateLamps(t); updateRoof(camPos); RING_U.uTime.value = t;
     if (!skyHor) skyHor = ctx.scene?.getObjectByName?.('seoul.sky')?.material?.uniforms?.uHor?.value || null;
     if (skyHor) RING_U.uHaze.value.copy(skyHor).multiplyScalar(RING_LOOK.hazeK / nit); };
   return {
