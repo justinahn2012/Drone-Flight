@@ -715,7 +715,12 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
   if (fs.existsSync(LJp) && fs.existsSync(Rp)) {
     const LJ = JSON.parse(fs.readFileSync(LJp, 'utf8')), R = JSON.parse(fs.readFileSync(Rp, 'utf8')), st = LJ.tuning.stars;
     const h = createHash('sha256').update(JSON.stringify({ lines: LJ.lines, tuning: LJ.tuning, takeStart: LJ.takeStart })).digest('hex').slice(0, 16);
-    ok(R.lines === h, `tests/seoul/take-sim.json is of this lines.json (${R.lines} vs ${h}; re-record: node seoul/tools/take-sim.mjs --runs 8 --route short,walk,loop,long,hongik,hub,stairs,pop,pass --record)`);
+    ok(R.lines === h, `tests/seoul/take-sim.json is of this lines.json (${R.lines} vs ${h}; re-record: node seoul/tools/take-sim.mjs --runs 8 --record)`);
+    // [P7-F design #6] every route of the record's set, none dropped (phase 6: stage1 printed NO PATH and quietly left the record)
+    { const SET = ['short', 'walk', 'loop', 'long', 'hongik', 'hub', 'stairs', 'stairs-nodive', 'pop', 'pass', 'stage0', 'stage1', 'thread0', 'thread1', 'shelter0', 'shelter2', 'slot0', 'gap'];
+      ok(Array.isArray(R.dropped) && R.dropped.length === 0, `take-sim dropped no route x pilot (${JSON.stringify(R.dropped)}: NO PATH fails the record)`);
+      const miss = SET.flatMap((r) => ['careful', 'regular', 'sharp'].map((p) => `${r}/${p}`)).filter((k) => !(R.results[k]?.runs >= R.runs));
+      ok(miss.length === 0, `the record has every route of the set at ${R.runs}+ runs per pilot (missing or short: ${miss.join(', ') || 'none'})`); }
     const cl = R.results['long/careful'], rl = R.results['long/regular'], sl = R.results['long/sharp'];
     // [P6-F design #3] 8 runs, and the 3-star cut with margin both ways (phase 5: regular p50 291k against a 290k cut)
     ok(R.runs >= 8, `the record is of ${R.runs} runs per pilot x route (>= 8: 4 hid the sharp pilot's bimodal opening)`);
@@ -723,16 +728,21 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     ok(rl && rl.p50 >= 1.05 * st[2], `regular long p50 ${rl?.p50} >= 1.05 x the 3-star cut ${st[2]}`);
     ok(cl && cl.stars.every((n) => n <= 2) && rl && starsFor(rl.p50, st) === 3, `a careful long take is <= 2 stars in every run (${cl?.stars}); regular 3 at its p50`);
     // [P6-F design #2] monotone skill: sharp p25 >= regular p25 >= careful p25 on the short and long takes
-    for (const r of ['short', 'long']) { const [c, g, s] = ['careful', 'regular', 'sharp'].map((p) => R.results[`${r}/${p}`]?.p25);
+    // [P7-F design #2] + hongik (phase 6: sharp p25 75.2k under regular's 81.1k, scraping the bar alley's pinch)
+    for (const r of ['short', 'long', 'hongik']) { const [c, g, s] = ['careful', 'regular', 'sharp'].map((p) => R.results[`${r}/${p}`]?.p25);
       ok(c != null && s >= g && g >= c, `${r}: p25 sharp ${s} >= regular ${g} >= careful ${c}`); }
     // [P6-F design #4 / #6] hongik careful <= 1 crash in 8; hub and hongik caption gaps <= 15 s
     { const hc = R.results['hongik/careful']; ok(hc && hc.crash <= 1, `hongik/careful: ${hc?.crash} crashes in ${hc?.runs} (<= 1; ${JSON.stringify(hc?.by)})`); }
     for (const k of ['hub/careful', 'hub/regular', 'hub/sharp', 'hongik/careful', 'hongik/regular', 'hongik/sharp']) if (R.results[k]) ok(R.results[k].gapMax <= 15, `${k}: caption gap max ${R.results[k].gapMax} s (<= 15)`);
     // [P6-F design #5 / ux #1] no guide target is unflyable: a line the sims fly 0 of N is `blocked` in lines.json, and a blocked
     // line the sims fly >= 10 of 12 should be unblocked (the stair dive, once G1 clears the mouth)
+    // [P7-F ux #2 / design #3] the stair dive is guided to only when thumbs can fly it: open needs the dive-model sims >= 10 of 12
+    // AND phase 5's pilot (stairs-nodive, no dive model) regular >= 8 of 12; blocked, the no-dive regular must be under 8 of 12
+    // (else unblock it)
     { const st0 = ['careful', 'regular', 'sharp'].map((p) => R.results[`stairs/${p}`]).filter(Boolean), n = st0.reduce((a, r) => a + r.runs, 0), got = st0.reduce((a, r) => a + (r.flown ?? 0), 0);
+      const nd = R.results['stairs-nodive/regular'], thumbs = !!nd && nd.flown >= Math.ceil(nd.runs * 8 / 12);
       const bl = LJ.lines.some((l) => l.name === 'STATION STAIRS' && l.blocked);
-      if (n) ok(bl ? got < Math.ceil(n * 10 / 12) : got >= Math.ceil(n * 10 / 12), `STATION STAIRS ${bl ? 'blocked' : 'open'}: the sims fly it ${got} of ${n} (${bl ? 'unblock at' : 'open needs'} >= 10 of 12)`); }
+      if (n) ok(bl ? !thumbs : got >= Math.ceil(n * 10 / 12) && thumbs, `STATION STAIRS ${bl ? 'blocked' : 'open'}: dive-model sims ${got} of ${n}, no-dive regular ${nd?.flown} of ${nd?.runs} (${bl ? 'unblock once no-dive regular >= 8 of 12' : 'open needs >= 10 of 12 and no-dive >= 8 of 12'})`); }
     const cw = R.results['walk/careful'], sw = R.results['short/sharp'], cs = R.results['short/careful'];
     ok(cw && starsFor(cw.p50, st) >= 1, `the walking street alone at a careful pace is 1 star (${cw?.p50})`);
     // design #4: speed pays (phase 4: sharp +18 % on WALKING STREET's own pts)
@@ -740,9 +750,17 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     // design #1 / #5 / #6: the opening's first x2 by 20 s, no caption gap over 15 s on long and loop, the portals and the stair dive flown
     ok(cs && cs.x2 <= 20, `the first x2 comes at ${cs?.x2} s (careful, short route; phase 4: 211 s following the hint)`);
     for (const k of ['long/careful', 'long/regular', 'long/sharp', 'loop/careful', 'loop/regular', 'loop/sharp']) if (R.results[k]) ok(R.results[k].gapMax <= 15, `${k}: caption gap max ${R.results[k].gapMax} s (<= 15)`);
-    for (const r of ['pop', 'pass']) { const n = ['careful', 'regular', 'sharp'].reduce((a, p) => a + (R.results[`${r}/${p}`]?.stars ? R.results[`${r}/${p}`].stars.length : 0), 0);
+    // [P7-F design #6] every set-piece line in the record (phase 6: CABLE THREAD, BUS SHELTER, ROOF SLOT and THE GAP weren't), open
+    for (const r of ['pop', 'pass', 'stage0', 'stage1', 'thread0', 'thread1', 'shelter0', 'shelter2', 'slot0', 'gap']) { const n = ['careful', 'regular', 'sharp'].reduce((a, p) => a + (R.results[`${r}/${p}`]?.stars ? R.results[`${r}/${p}`].stars.length : 0), 0);
       const got = ['careful', 'regular', 'sharp'].reduce((a, p) => a + (R.results[`${r}/${p}`]?.flown ?? 0), 0);
-      ok(n === 0 || got >= Math.ceil(n * 10 / 12), `${r}: flown in ${got} of ${n} sim takes (>= 10 of 12)`); }
+      ok(n > 0 && got >= Math.ceil(n * 10 / 12), `${r}: flown in ${got} of ${n} sim takes (>= 10 of 12)`); }
+    // [P7-F design #1] ROOFLINE joined at its start: long/sharp flies it in >= 7 of 8 (phase 6: 5 of 8, joining at 3/4 off TO THE
+    // ROOFLINE 1), and speed pays on the long take at the median (phase 6: sharp 352k, regular 351k)
+    { const ls = R.results['long/sharp'], lr = R.results['long/regular'];
+      ok(ls && ls.flown >= Math.ceil(ls.runs * 7 / 8), `long/sharp flies ROOFLINE in ${ls?.flown} of ${ls?.runs} (>= 7 of 8)`);
+      ok(ls && lr && ls.p50 >= 1.08 * lr.p50, `long: sharp p50 ${ls?.p50} >= 1.08 x regular ${lr?.p50} (${ls && lr ? (ls.p50 / lr.p50).toFixed(3) : '?'}x)`); }
+    // [P7-F design #3] the no-dive record is there, at 12 runs (the STATION STAIRS check above reads it)
+    { const nd = R.results['stairs-nodive/regular']; ok(nd && nd.runs >= 12, `stairs-nodive/regular recorded at ${nd?.runs} runs (>= 12)`); }
   } else console.log('skip: tests/seoul/take-sim.json or seoul/lines.json missing');
 }
 
