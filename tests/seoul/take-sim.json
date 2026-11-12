@@ -1,6 +1,6 @@
 {
  "note": "seoul/tools/take-sim.mjs --record: noisy-pilot takes at the game crowd, 8 runs per pilot x route (stairs-nodive: 12)",
- "lines": "eadab798aede3558",
+ "lines": "3ba63082363d2705",
  "stars": [
   20000,
   100000,
@@ -506,9 +506,9 @@
   },
   "stairs/regular": {
    "runs": 8,
-   "p25": 5627,
-   "p50": 5634,
-   "p75": 5640,
+   "p25": 5630,
+   "p50": 5633,
+   "p75": 5637,
    "crash": 0,
    "by": [],
    "heads": 0,
@@ -531,9 +531,9 @@
   },
   "stairs/sharp": {
    "runs": 8,
-   "p25": 5633,
-   "p50": 5644,
-   "p75": 5663,
+   "p25": 5644,
+   "p50": 5648,
+   "p75": 5665,
    "crash": 0,
    "by": [],
    "heads": 0,
@@ -590,7 +590,7 @@
    "p75": 0,
    "crash": 0,
    "by": [],
-   "heads": 9,
+   "heads": 6,
    "stars": [
     0,
     0,
@@ -619,7 +619,7 @@
    "p75": 0,
    "crash": 0,
    "by": [],
-   "heads": 4,
+   "heads": 8,
    "stars": [
     0,
     0,
@@ -639,7 +639,7 @@
    "x2": 999,
    "wsPts": 0,
    "fast": 0,
-   "flown": 1
+   "flown": 2
   },
   "pop/careful": {
    "runs": 8,

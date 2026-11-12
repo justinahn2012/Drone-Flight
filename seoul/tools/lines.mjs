@@ -648,14 +648,16 @@ const SET_LINES = {
   // dropped under the 2.0 m pre-gate, and a P-only climb lagged the 28 deg dive onto the mouth's lip: 0/12 with no walkers at
   // all). With take-sim's pilot fixed it flies 23/24 on a scratch merge with G1's stair-mouth keep-out (and 23/24 without it,
   // with more HEADS), so it is open. tests/take.mjs: a blocked line must be < 10/12 in the record, an open one >= 10/12.
-  // [P7-F design #3 / ux #2] the pre-gate 0.7 -> 1.2 m tall, centred at 2.2 m (1.6-2.8): phase 6's 2.0-2.7 m flew 24/24 only
-  // for a pilot with a bespoke dive model; G1 measured 1.2 m at 2.2 m for phase 5's pilot (take-sim stairs-nodive: >= 8/12)
-  // Measured (8-12 runs, the game crowd): with the dive model 24/24; WITHOUT it 0/12 careful, 0/12 regular, 1/12 sharp. That
-  // pilot starts down off its 3.5 m look-ahead, crosses the pre-gate plane at 1.3-1.5 m (under it, into the heads: 9 HEADS
-  // in 12) and meets the stair mouth's lip at (49.3, 0.1, -307.5). So it is `blocked` again (ux #2: don't guide players to
+  // [P7-F design #3 / ux #2] tried: the pre-gate 0.7 -> 1.2 m tall, centred at 2.2 m (1.6-2.8), as the panel asked. It did not
+  // help phase 5's pilot (stairs-nodive 0/12 regular either way) and its lower 0.4 m is head height: tests/movers.mjs measured
+  // the approach 37 % occupied (auto) / 14 % (low) against <= 5 %, and the no-dive sims took 9 HEADS in 12. Above, the canopy
+  // lip is at 2.76 m, so 2.0-2.7 m is the only clear band: kept.
+  // Measured (8-12 runs, the game crowd, at 1.6-2.8 m): with the dive model 24/24; WITHOUT it 0/12 careful, 0/12 regular,
+  // 1/12 sharp. That pilot starts down off its 3.5 m look-ahead, crosses the pre-gate plane at 1.3-1.5 m (under it, into the
+  // heads: 9 HEADS in 12) and meets the stair mouth's lip at (49.3, 0.1, -307.5). So it is `blocked` again (ux #2: don't guide players to
   // a dive only a tuned bot flies): it still scores, but the guide, the brackets and the grid's NEXT skip it until
   // stairs-nodive regular reaches 8/12 (tests/take.mjs).
-  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true, preY: [1.6, 2.8], blocked: true },
+  'station-stairs': { name: 'STATION STAIRS', caption: 'DOWN THE *STAIRS*!', pts: 2000, oneWay: true, preY: [2.0, 2.7], blocked: true },
   // [P6-F design #2 / ux #3] recut: E's 2.2 x 0.93 m openings (1.95-2.88 m) sit 0.1 m outside the 3.3-3.4 m canopy at each end;
   // the sharp sims left the exit 0.03-0.09 m over its top in 3 of 8 runs and flew the street at FLOW x1. Both openings grow
   // to the highest top that keeps CLEAR under the canopy's underside between them (a ray up every 0.5 m across the move; a top
