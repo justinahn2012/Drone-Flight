@@ -5,7 +5,7 @@
 // non-negative and fills interior probes; 7 splitCells keeps every triangle; 8 the real block: attach + update budget.
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY, VOLUME, wallPacks, SKY_AIR, MIRROR_STREAK } from '../seoul-light.js';
+import { attach, splitCells, batchCells, heightField, SOURCE_TYPES, lobeIntegral, LOBES, exportParams, NIGHT_SKY, VOLUME, wallPacks, SKY_AIR, MIRROR_STREAK, stringAxes } from '../seoul-light.js';
 
 let pass = 0, fail = 0;
 const ok = (c, msg) => { if (c) pass++; else { fail++; console.log('FAIL', msg); } };
@@ -24,10 +24,17 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
     if (trap) fe *= spillTrap(px, gy - my, pz, 0, 1, A, a, a); return fe * uy / (d2 + A * 0.3183); };
   let s0 = 0, s1 = 0; for (let x = -30; x < 30; x += 0.1) for (let z = -5; z < 30; z += 0.1) { s0 += E(x, z, false); s1 += E(x, z, true); }
   ok(s1 / s0 > 0.9 && s1 / s0 < 1.1, `shop spill trapezoid keeps the flux: ${(s1 / s0).toFixed(3)}`);
-  ok(E(0, 1, true) > 2 * E(0, 1, false) && E(0, 4, true) === 0 && E(4, 1, true) === 0, 'trapezoid: brighter in front of the glass, dark 4 m out and 4 m to the side');
+  // P7 (lighting #1): the pool reaches ~5 m at the same flux: 3 m out several x the plain lobe, 4 m out > 1/4 of 1 m's, dark 6 m out and 4 m to the side
+  ok(E(0, 3, true) > 3 * E(0, 3, false) && E(0, 4, true) > 0.25 * E(0, 1, true) && E(0, 6, true) === 0 && E(4, 1, true) === 0, `trapezoid reach: 1 m ${E(0, 1, true).toFixed(3)}, 3 m ${E(0, 3, true).toFixed(3)} (plain ${E(0, 3, false).toFixed(3)}), 4 m ${E(0, 4, true).toFixed(3)}, 6 m ${E(0, 6, true)}`);
   const g = (dx, dy, dz) => { const d = Math.hypot(dx, dy, dz); return lobePack(dx / d, dy / d, dz / d, 1, 0) * (-dy / d) / (d * d); };   // pavers 4.2 m under, forward +x
   const w1 = (() => { const dx = -0.24, dy = -1, d = Math.hypot(dx, dy); return lobePack(dx / d, dy / d, 0, 1, 0) * (0.24 / d) / (d * d); })();
   ok(g(0.5, -4.2, 0) > 4 * g(7, -4.2, 0) && w1 > 2 * g(0.5, -4.2, 0) && g(-1, -4.2, 0) >= 0 && lobePack(0, 1, 0, 1, 0) === 0, `wall pack pool: under ${g(0.5, -4.2, 0).toFixed(4)}, 7 m out ${g(7, -4.2, 0).toFixed(4)}, wall 1 m below ${w1.toFixed(4)}`); }
+// 0c P7: a festoon string over a N-S street is a line light along its span (x), and one over an E-W street along z
+{ const lay = { streets: [{ id: 'ns', points: [[0, -50], [0, 50]] }, { id: 'ew', points: [[-50, 0], [50, 0]] }] };
+  const E = [{ id: 'dress:festoon:ns:20.0', pos: [0, 7, -30], normal: [0, -1, 0], w: 9, h: 0.12 }, { id: 'dress:festoon:ew:70.0', pos: [20, 7, 0], normal: [0, -1, 0], w: 9, h: 0.12 }];
+  const n = stringAxes(E, lay), t = (e) => { const nn = e.normal, l = Math.hypot(nn[2], nn[0]); return [nn[2] / l, -nn[0] / l]; };
+  const [a, b] = E.map(t);
+  ok(n === 2 && Math.abs(Math.abs(a[0]) - 1) < 1e-6 && Math.abs(Math.abs(b[1]) - 1) < 1e-6 && E[0].normal[1] < -0.999 && stringAxes(E, lay) === 0, `festoon span axes: ns ${a.map((v) => v.toFixed(2))}, ew ${b.map((v) => v.toFixed(2))}`); }
 // 1 flux
 {
   const C = attach(world(), [{ id: 'street:0', pos: [20, 8.7, -6], normal: [0, -1, 0], w: 0.56, h: 0.24, rgb: [1, 0.93, 0.82], nits: 9000, kind: 'street', lumens: 12000 }], { layout: flat, steam: false, airlight: false, cull: false });

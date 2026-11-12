@@ -59,12 +59,17 @@ export function lobePack(dx, dy, dz, fx, fz) {
 // the facade (~3 m for a ground-floor shop) and within the glass's half width + 0.4-0.8 x the distance out to the side (the
 // jambs' spread), at gain x the lobe so the spill's flux is unchanged (2.2: tests/seoul-light.mjs integrates it).
 // v = point - light centre, n = the face's horizontal normal, A / a / hl = the record's area, half length, signed half length.
-export const SPILL_TRAP = { side: [0.4, 0.8, 0.15], far: [1.6, 2.4], gain: 2.2 };
+// P7 (lighting #1, plan "ground light": the spill died at the kerb, 3 m): the trapezoid reaches ~5 m (far 2.8-3.6 x the
+// drop, ~4.5-5.5 m for a ground-floor shop) and its floor flattens with `lift` (x (1 + lift r^2), r = out / drop: the
+// glass's upper rows throw farther than the lower), at gain 0.98 so the flux on the ground is the P6 spill's (tested):
+// 1 m out ~0.6x, 3 m out ~7x, 4 m out from 0 to ~0.4x the 1 m value. Same flux, a longer pool.
+export const SPILL_TRAP = { side: [0.4, 0.8, 0.15], far: [2.8, 3.6], gain: 0.98, lift: 0.6 };
 export function spillTrap(vx, vy, vz, nx, nz, A, a, hl) {
   const out = vx * nx + vz * nz, drop = -vy; if (out <= 0 || drop <= 0) return 0;
   const sh = Math.sqrt(a * a + A) - a, Wh = hl > 0 ? a + sh / 2 : sh / 2, T = SPILL_TRAP;
   const le = Math.max(0, Math.abs(vx * nz - vz * nx) - Wh);
-  return T.gain * (1 - sstep(T.side[0] * out, T.side[1] * out + T.side[2], le)) * (1 - sstep(T.far[0], T.far[1], out / Math.max(drop, 0.3)));
+  const r = out / Math.max(drop, 0.3);
+  return T.gain * (1 + T.lift * r * r) * (1 - sstep(T.side[0] * out, T.side[1] * out + T.side[2], le)) * (1 - sstep(T.far[0], T.far[1], r));
 }
 
 // ---- packed light metas (seoul-light.js meta() -> packMeta): MS floats per light

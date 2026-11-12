@@ -102,6 +102,8 @@ export const MIRROR_STREAK = { clamp: 0.02, fade: [6, 12], farCut: 0.75, blur: 1
 // P7 (colour #1 / fpv #2): the sky's in-scatter through the canyon band (see skyMat): gain (A grades), band top (m, the
 // volume's top layer), max ray length (m), fluence cap per sample (cityHaze caps its two-point mean at 10), march steps
 export const SKY_AIR = { gain: 1.0, top: 50, maxT: 160, cap: 20, steps: 8 };
+// P7: how much of fpvcam's SSAO the lightmap term takes: walls 45 % (P3), up-faces x0.5 of that (fpv #4)
+export const AO_LM = { wall: 0.45, ground: 0.5 };
 export const HAZE = { density: 0.006, height: 30, scatter: 1.0, max: 0.6, byKind: { walking: 0.008, club: 0.0075, alley: 0.006, main: 0.004 } };
 // P4 lighting #4 (near air): sources from nearM = 2 m (was 4: close signs floated with no air round them), fading in over
 // fadeM, at nearGain (0.25) of their energy until fullM (4 m), so the halo never veils the lens.
@@ -278,7 +280,8 @@ float citySpill(uint c){ return c == 3u ? 0.5 : float(c) * 0.15; }   // P5: SPIL
 float cityTrap(vec3 v, vec3 n, float A, float a, float hl){   // P6: spillTrap (seoul-nightlm.js), the shop glass's trapezoid
   float o = dot(v.xz, n.xz), dr = -v.y; if (o <= 0.0 || dr <= 0.0) return 0.0;
   float sh = sqrt(a * a + A) - a, wh = hl > 0.0 ? a + sh * 0.5 : sh * 0.5, le = max(0.0, abs(v.x * n.z - v.z * n.x) - wh);
-  return ${SPILL_TRAP.gain.toFixed(3)} * (1.0 - smoothstep(${SPILL_TRAP.side[0].toFixed(3)} * o, ${SPILL_TRAP.side[1].toFixed(3)} * o + ${SPILL_TRAP.side[2].toFixed(3)}, le)) * (1.0 - smoothstep(${SPILL_TRAP.far[0].toFixed(3)}, ${SPILL_TRAP.far[1].toFixed(3)}, o / max(dr, 0.3))); }
+  float r = o / max(dr, 0.3);   // P7: the longer, flatter pool (SPILL_TRAP.lift)
+  return ${SPILL_TRAP.gain.toFixed(3)} * (1.0 + ${SPILL_TRAP.lift.toFixed(3)} * r * r) * (1.0 - smoothstep(${SPILL_TRAP.side[0].toFixed(3)} * o, ${SPILL_TRAP.side[1].toFixed(3)} * o + ${SPILL_TRAP.side[2].toFixed(3)}, le)) * (1.0 - smoothstep(${SPILL_TRAP.far[0].toFixed(3)}, ${SPILL_TRAP.far[1].toFixed(3)}, r)); }
 float cityStreet(vec3 D, vec3 f){ float c = -D.y; if (c <= 1e-4) return 0.0; float hl = length(D.xz), t = hl / c;
   float fw = hl > 1e-5 ? dot(D.xz, f.xz) / hl : 0.0; float tc = fw >= 0.0 ? mix(3.1, 1.75, fw) : mix(3.1, 0.7, -fw);
   return min(1.0 / (c * c * c), 30.0) * (1.0 - smoothstep(tc * 0.8, tc * 1.15, t)); }
@@ -602,6 +605,22 @@ function wallPackMesh(list, NS) {
 }
 
 // ------------------------------------------------------------------------------------------------- build
+// P7: the span axis of E's festoon strings (ids dress:festoon:<street id>:<s>, a down-facing face w = the span): across the
+// named street at arc length s. Idempotent (e.axis marks a done one). Returns how many it set.
+export function stringAxes(emitters, layout, eps = 0.02) {
+  const byId = new Map((layout?.streets || []).map((st) => [st.id, st])); let n = 0;
+  for (const e of emitters) {
+    if (!e || e.axis || !/^dress:festoon:/.test(e.id || '') || !e.normal || e.normal[1] > -0.9) continue;
+    const m = /^dress:festoon:(.+):(-?[\d.]+)$/.exec(e.id), st = m && byId.get(m[1]); if (!st || !st.points || st.points.length < 2) continue;
+    let s = +m[2], tx = 0, tz = 0;
+    for (let i = 0; i + 1 < st.points.length; i++) { const a = st.points[i], b = st.points[i + 1], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1e-9;
+      tx = (b[0] - a[0]) / L; tz = (b[1] - a[1]) / L; if (s <= L) break; s -= L; }
+    const ax = -tz, az = tx;                         // across the street: the span
+    const n0 = [-eps * az, -1, eps * ax], l = Math.hypot(...n0);   // the record's tangent (n.z, -n.x) is then (ax, az)
+    e.normal = n0.map((v) => v / l); e.axis = [ax, 0, az]; n++;
+  }
+  return n;
+}
 export function attach(world, emitters = [], ctx = {}) {
   const T00 = (globalThis.performance || Date).now(), now = () => (globalThis.performance || Date).now();
   const renderer = ctx.renderer || null;
@@ -614,6 +633,12 @@ export function attach(world, emitters = [], ctx = {}) {
   // P4 lighting #2: wall packs join the caller's emitter list (world.emitters: the native export sees them too)
   const packs = ctx.wallPacks === false || !ctx.lotInfo || !Array.isArray(emitters) ? [] : wallPacks(ctx.lotInfo, emitters, ctx.wallPack || WALLPACK);
   if (packs.length) emitters.push(...packs);
+  // P7 (lighting #1, ground light): a festoon string is a line light along its own span (the analytic line integral is the
+  // bulbs at 0.4 m pitch in the limit), but a face pointing straight down has no horizontal tangent, so every string was
+  // laid along world x (the record re-derives its axis from the normal: GLSL, bake, native). Strings crossing a N-S street
+  // lit a cross-street bar instead of the street under them. stringAxes() tips each down-facing string's normal 0.02 rad
+  // across its span (the lobe is unchanged: cos 0.9998) so the derived axis is the span: across the street at its arc s.
+  if (Array.isArray(emitters)) stringAxes(emitters, ctx.layout);
   const all = (emitters || []).filter((e) => e && e.pos);
   const isMov = (e) => !!(e.kind === 'vehicle' || e.dynamic || e.moving);
   const isAnim = (e) => !!e.animated && !isMov(e);
@@ -1070,7 +1095,10 @@ export function attach(world, emitters = [], ctx = {}) {
   cityLights(geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
   ${wet ? `float cityCC = cityContact(cityWorldPos(geometryPosition)); reflectedLight.directDiffuse *= mix(1.0, cityCC, 0.75); reflectedLight.directSpecular *= mix(1.0, cityCC, 0.75);` : 'float cityCC = 1.0;'}
   #if defined( RE_IndirectDiffuse )
-  irradiance += (cityLMOn ? cityLMv * (uCityGain * mix(1.0, cityAOf(), 0.45)) : cityIrradiance(cityWorldPos(geometryPosition), cityNW)) * cityCC;   // the lightmap is mostly direct: SSAO at 45 %
+  // the lightmap is mostly direct: SSAO at 45 %; P7 (fpv #4 / lighting #1: walk0's floor under the crowd read (20,16,14)): up-faces
+  // at half that (22.5 %): the screen-space AO of a crowd's bodies darkened the whole paver under them, a direct-light pool it
+  // can't occlude; the bodies' own contact shadows are G1's decals (crowd-contact) and cityContact
+  irradiance += (cityLMOn ? cityLMv * (uCityGain * mix(1.0, cityAOf(), cityNW.y > 0.7 ? ${(AO_LM.wall * AO_LM.ground).toFixed(3)} : ${AO_LM.wall.toFixed(3)})) : cityIrradiance(cityWorldPos(geometryPosition), cityNW)) * cityCC;
   #endif`)
         .replace('#include <opaque_fragment>', `#include <opaque_fragment>\n  gl_FragColor.rgb = cityHaze(gl_FragColor.rgb, -vViewPosition);`);
       if (wet) {
@@ -1822,7 +1850,7 @@ export function attach(world, emitters = [], ctx = {}) {
 export function exportParams() {
   const OM = omega();
   return {
-    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, SKY_AIR, MIRROR_STREAK, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
+    version: 2, NITS, SOURCE_TYPES, NIGHT_SKY, HAZE, AIRLIGHT, SKY_AIR, MIRROR_STREAK, AO_LM, VOLUME, HEADLIGHT, QUALITY, WALLPACK, NIGHT_LM, cell: 4, window: DW, eMin: E_MIN,
     lobes: {
       lambert: { id: 0, f: 'mix(max(ce,0), 0.55 + 0.45 ce, omni) + spill max(0.857 (-D.y) + 0.515 ce, 0); ce = dot(lamp->point D, normal); spill = SPILL[record bits 14-15] = 0, 0.15, 0.3, 0.5 (P5; P4: a fascia box\'s soffit light, a Lambert lobe 31 deg out from straight down)' },
       pack: { id: 3, omega: OM.pack, f: 'P6 wall pack: c = -D.y 0.9397 + dot(D.xz, forward.xz) 0.342 (the axis 20 deg out from down); c <= 0.42: 0; else (0.3 + 0.7 c^2) smoothstep(0.42, 0.58, c)', flux: 'lumens (WALLPACK.lumens)' },
@@ -1838,5 +1866,5 @@ export function exportParams() {
   };
 }
 
-export const seoulLight = { attach, NITS, SOURCE_TYPES, NIGHT_SKY, SKY_AIR, MIRROR_STREAK, HAZE, VOLUME, HEADLIGHT, AIRLIGHT, emitterRadiance, heightField, splitCells, exportParams };
+export const seoulLight = { attach, stringAxes, NITS, SOURCE_TYPES, NIGHT_SKY, SKY_AIR, MIRROR_STREAK, HAZE, VOLUME, HEADLIGHT, AIRLIGHT, emitterRadiance, heightField, splitCells, exportParams };
 export default seoulLight;
