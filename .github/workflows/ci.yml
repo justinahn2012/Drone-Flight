@@ -178,9 +178,14 @@ jobs:
           swift build
           mkdir -p "$GITHUB_WORKSPACE/metal-out"
           ONETAKE_EXPORT="$GITHUB_WORKSPACE/exports/seoul-hongdae" ONETAKE_METAL_REQUIRED=1 ONETAKE_FRAME_OUT="$GITHUB_WORKSPACE/metal-out/walk0-metal.png" swift test 2>&1 | tee swift-test.log
-          grep -E "Metal device|frame [0-9]+x|ground pixels|no Metal device" swift-test.log || true
+          grep -E "Metal device|camera from|frame [0-9]+x|pixels sampled|source agreement|no Metal device|wrote " swift-test.log || true
           grep -q "with 0 failures" swift-test.log && ! grep -q "skipped" swift-test.log
-      - uses: actions/upload-artifact@v4   # [P7 H] the first Metal frame (walk0, lightmapped ground), next to the browser's stills
+      - name: Native parity (tools/parity-de.py, PLAN-P8 / PARITY 4 - mean dE00 <= 3 against the browser's walk0 still; ratcheted in ci/known-failures.json)
+        if: ${{ !cancelled() && hashFiles('metal-out/walk0-metal.png') != '' }}
+        run: |   # [P8 H] the Metal frame at the camera + EV that drew native/OneTakeSeoul/Tests/SeoulBundleTests/ref/walk0.r0.png
+          python3 -m venv "$RUNNER_TEMP/pv" && "$RUNNER_TEMP/pv/bin/pip" install --quiet --disable-pip-version-check numpy pillow
+          node ci/run.mjs "$RUNNER_TEMP/pv/bin/python" tools/parity-de.py --metal metal-out/walk0-metal.png --ref native/OneTakeSeoul/Tests/SeoulBundleTests/ref/walk0.r0.png --name walk0 --out metal-out/walk0-parity.png
+      - uses: actions/upload-artifact@v4   # [P7 H] the Metal frame; [P8 H] graded, + walk0-parity.png (browser | Metal | dE x10)
         if: ${{ !cancelled() }}
         with:
           name: metal-frame

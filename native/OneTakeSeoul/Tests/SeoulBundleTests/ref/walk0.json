@@ -1,0 +1,29 @@
+{
+ "note": "[P8 H] the browser still the Metal frame is gated against (tools/parity-de.py, mean dE00 <= 3): camgate walk0.r0.png (retro 0, 320x180) and the camera + AE EV that drew it (tests/browser.mjs stills.json). Re-take both from one CI browser-seoul artifact when the look changes (the same commit as a golden re-record).",
+ "source": "CI run 43293055925 (p8/H-native 3e16561, main ef3369b look) browser-seoul: stills.json shots.walk0, camgate/walk0.r0.png",
+ "ev0": -4.37109375,
+ "ev": -4.37109375,
+ "cam": {
+  "pos": [
+   -35.99967,
+   3.02874,
+   -24.16019
+  ],
+  "quat": [
+   0.04108,
+   0.0006,
+   -0.00542,
+   0.99914
+  ],
+  "fov": 98.71329,
+  "aspect": 1.77778,
+  "lens": {
+   "k": 0.28,
+   "F": 1.6961139563426215,
+   "hw": 1.7777777777777777,
+   "hh": 1,
+   "tx": 2.070995510671325,
+   "ty": 1.1649349747526205
+  }
+ }
+}

@@ -142,6 +142,73 @@ final class ParityTests: XCTestCase {
         }
     }
 
+    // [P8 H] Grade.swift: the night shoulder passes the AE target to tone[2] and reaches 1 at the white point (nightToneBC's
+    // construction), the grade is monotonic in radiance, and the fisheye maps the centre to the centre and the corner to the
+    // 1.16 rad cap (solveLens at 320 x 180: the corner cap sets F)
+    func testNightGradeAndLens() throws {
+        let b = try bundle()
+        let look = (try JSONSerialization.jsonObject(with: b.data("look.json")) as! [String: Any])["resolved"] as! [String: Any]
+        let g = NightGrade(look: look), tn = look["tone"] as! [Double]
+        XCTAssertEqual(Double(g.tone(SIMD3(repeating: 0.24)).x), tn[2], accuracy: 1e-4, "grey -> tone[2]")
+        let wp = Float(0.24 * pow(2, (look["clipEv"] as? Double) ?? 7.5))
+        XCTAssertEqual(g.tone(SIMD3(repeating: wp)).y, 1, accuracy: 1e-4, "the white point -> 1")
+        var last: Float = -1
+        for k in 0 ..< 40 { let o = g.apply(SIMD3(repeating: 0.002 * pow(1.4, Float(k))), ev: -4.2, theta: 0).y; XCTAssertGreaterThanOrEqual(o, last); last = o }
+        let L = FisheyeLens(thetaS: 50 * .pi / 180, k: 0.28, width: 320, height: 180)
+        let c = L.map(u: 0.5, v: 0.5); XCTAssertEqual(c.u, 0.5, accuracy: 1e-9); XCTAssertEqual(c.v, 0.5, accuracy: 1e-9); XCTAssertEqual(c.theta, 0, accuracy: 1e-9)
+        XCTAssertEqual(L.map(u: 1, v: 1).theta, 1.16, accuracy: 1e-6, "corner = cornerCapRad")
+        let e = L.map(u: 1, v: 1); XCTAssertEqual(e.u, 0.5 + 0.5 / 1.035, accuracy: 1e-6, "the render margin (1.035) past the corner")
+    }
+
+    // [P8 H] CityLight (the browser's cityLightmap / cityIrradiance on the CPU, which the Metal shader mirrors): every wall rect
+    // the edge table names is found again from a point on its own face (raster -> edge -> normal -> reach -> rect), the
+    // ground lookup is the atlas at the ground map's uv, and the volume is finite and non-negative
+    func testCityLightLookups() throws {
+        let b = try bundle(), L = try CityLight(b)
+        XCTAssertEqual(L.records.count % (L.recW * 4), 0)
+        XCTAssertEqual(L.volA.count, L.gw * L.gh * L.nl * 4)
+        let J = try JSONSerialization.jsonObject(with: b.data("light.json")) as! [String: Any]
+        let edges = ((J["lightmap"] as! [String: Any])["plan"] as! [String: Any])["edges"] as! Int
+        var found = 0, tried = 0
+        for e in stride(from: 0, to: edges, by: 7) {
+            let bx = (e & 255) * 2, by = Int(L.R[0]) + (e >> 8)
+            let t0 = L.texel(bx, by), t1 = L.texel(bx + 1, by)
+            let x0 = Double(Float(bitPattern: t0.x)), z0 = Double(Float(bitPattern: t0.y)), ux = Double(Float(bitPattern: t0.z)), uz = Double(Float(bitPattern: t0.w))
+            let len = abs(Double(Float(bitPattern: t1.z))), sg: Double = Float(bitPattern: t1.z) < 0 ? -1 : 1, nx = sg * uz, nz = -sg * ux
+            guard len > 1 else { continue }
+            tried += 1
+            let p = SIMD3(x0 + ux * len / 2 + nx * 0.05, 1.5, z0 + uz * len / 2 + nz * 0.05)
+            if let v = L.lightmap(p, SIMD3(nx, 0, nz)), v.x.isFinite { found += 1 }
+        }
+        print("wall rects found again from their own faces: \(found) of \(tried)")
+        XCTAssertGreaterThanOrEqual(Double(found), 0.9 * Double(tried), "the raster names the edge whose face the point is on")
+        let gx = L.G[0] + 100.25, gz = L.G[1] + 200.25
+        let gv = L.lightmap(SIMD3(gx, 0.1, gz), SIMD3(0, 1, 0))!, ga = L.atlas(u: (gx - L.G[0]) / L.LM[1] / L.A[0], v: (gz - L.G[1]) / L.LM[1] / L.A[1])
+        XCTAssertEqual(gv, ga)
+        for (x, y, z) in [(-36.0, 2.0, -24.0), (63.7, 3.0, 129.6), (31.8, 8.0, -309.0), (0.0, 40.0, 0.0)] {
+            let v = L.irradiance(SIMD3(x, y, z), SIMD3(0, 1, 0)); XCTAssert(v.x.isFinite && v.x >= 0 && v.y >= 0 && v.z >= 0, "volume at \(x), \(y), \(z): \(v)")
+        }
+        XCTAssertGreaterThan(L.irradiance(SIMD3(-36, 1, -24), SIMD3(0, 1, 0)).y, 0, "walk0's street has ambient light")
+    }
+
+    // [P8 H] CityMaterials: per-vertex albedo of the city and the ground (aLay into the material's layers, x COLOR_0): every
+    // value is a layer's albedo times a vertex colour in 0..2 (finite, non-negative), and the city uses several layers
+    func testCityAlbedos() throws {
+        let b = try bundle()
+        var g = try GLB(b.data("world.glb"))
+        let rows = b.world["meshes"] as! [[String: Any]], mats = b.world["materials"] as! [String: [String: Any]]
+        for name in ["city", "ground"] {
+            let i = rows.firstIndex { $0["name"] as? String == name }!
+            let n = try g.positionsAndIndex(mesh: i).pos.count / 3
+            let a = try CityMaterials.albedos(&g, mesh: i, row: rows[i], mats: mats, count: n)
+            XCTAssertEqual(a.count, n * 3)
+            XCTAssert(a.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 2 }, "\(name): albedo in 0..2")
+            let distinct = Set(stride(from: 0, to: a.count, by: 3 * 97).map { Int(a[$0] * 1000) })
+            print("\(name): \(n) vertices, \(distinct.count) distinct albedo reds in a 1/97 sample")
+            XCTAssertGreaterThan(distinct.count, name == "city" ? 8 : 1)
+        }
+    }
+
     func testPackedStreamsDecode() throws {
         let b = try bundle()
         let packed = ((b.world["data"] as! [String: Any])["packed"] as! [String: Any])["files"] as! [String: [String: Any]]
