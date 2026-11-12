@@ -181,7 +181,7 @@ body.portrait #pop{bottom:calc(14px + var(--cell)*1.15 + 18px)}
 /* [F2] ui #6: the street under the line, in hangul, as the caption's second line (burned into clips too) */
 #pop .place{margin-top:3px;font:800 calc(var(--cell)*1.02)/1.2 var(--ko);letter-spacing:.06em;color:#fff;text-shadow:var(--stroke6)}
 /* [F2] ui #2: the luma-gated plate. main.js meters the picture under the caption (one async readback per caption) and adds
-   .plate when its 80th-percentile luma is over 0.6; captions only, the OSD keeps its no-plate rule. Burned into clips too. */
+   .plate when its 80th-percentile luma is over 0.35 ([P7-F ui #1]: was 0.6); captions only, the OSD keeps its no-plate rule. Burned into clips too. */
 #pop::before{content:"";position:absolute;inset:-5px -14px -4px;border-radius:10px;background:rgba(0,0,0,.35);opacity:0;transition:opacity .15s;z-index:-1}
 #pop.plate::before{opacity:1}
 #pop .sub b{font-weight:600;color:var(--amber)}
@@ -530,6 +530,10 @@ body.dev .dev{display:revert!important}
   body.paused .world b{font-size:16px}
   body.paused .world .ko{display:none}
   body.paused .world .meta{margin-top:2px;font-size:10px}
+  /* [P7-F ui #3 / ux #6] two phases of trimming the cards never got the meta line out from under the sticky RESUME bar (it
+     needed ~60 px). Paused, the bar comes straight after LINES in the flow: at 844 x 390 it sits in place under the grid, and
+     LEVEL / Game / Flight scroll below it, never under it (sticky bottom only pins it while its own place is off screen) */
+  body.paused .cta{order:1}
   .cols>.lvl+div{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:16px;grid-auto-flow:column;grid-template-rows:auto auto auto}
   .hint{font-size:14px;line-height:1.35}
   #startSec .hint{display:none}

@@ -80,10 +80,13 @@ def thirds(path):
     a = np.asarray(Image.open(path).convert('L')).astype(np.float32); h = a.shape[0]
     return float(a[2 * h // 3:].mean() / max(1e-3, a[:h // 3].mean()))
 
-def git(*args):
+def git(*args, raw=False):
     import subprocess
-    try: return subprocess.run(['git', *args], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    except Exception: return ''
+    try:
+        if raw: r = subprocess.run(['git', *args], cwd=ROOT, capture_output=True); return r.stdout if r.returncode == 0 else None
+        return subprocess.run(['git', *args], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    except Exception: return None if raw else ''
+import hashlib
 
 def grade(src, size, crop, out, kb):
     from PIL import Image, ImageFilter
@@ -110,7 +113,6 @@ if a.backdrop: grade(a.backdrop, (1600, 900), a.backdrop_crop, os.path.join(OUT,
 if a.thumb: grade(a.thumb, (480, 270), a.thumb_crop, os.path.join(OUT, 'thumb.jpg'), 40)
 
 # stills.json: refreshed for every still on disk (a still not re-shot keeps its pose / source / commit)
-import hashlib
 sp = os.path.join(OUT, 'stills.json')
 rec = json.load(open(sp, encoding='utf8')) if os.path.exists(sp) else {}
 # [P5-F ui #1] the build: HEAD (or --commit) and the commit of seoul-life.js / world-seoul.js it carried, so tests/seoul-ui.mjs
@@ -124,8 +126,19 @@ for k, src, crop, pose in (('backdrop', a.backdrop, a.backdrop_crop, a.backdrop_
     r = rec.get(k, {})
     if src:
         r.update({'source': os.path.basename(src), 'crop': crop, 'pose': pose, 'commit': commit, 'lifeCommit': life})
+        # [P7-F ui #4] the content hash of the seoul-life.js the stills were shot with (a git rev of it read wrong in a depth-1
+        # clone: H's P6 note), from the shot's commit, else the working tree
+        lh = git('show', f'{commit or "HEAD"}:seoul-life.js', raw=True)
+        if lh is None and os.path.exists(os.path.join(ROOT, 'seoul-life.js')): lh = open(os.path.join(ROOT, 'seoul-life.js'), 'rb').read()
+        if lh is not None: r['lifeHash'] = hashlib.sha256(lh).hexdigest()[:16]
         dp = depth.get(os.path.splitext(os.path.basename(src))[0])
-        if dp: r['nearest'] = dp.get('near')                       # m: the nearest scene hit in frame (>= 3: no blurred pole)
+        if dp:
+            r['nearest'] = dp.get('near')                       # m: the nearest scene hit in frame (>= 3: no blurred pole)
+            # [P7-F ui #4] the whole depth check, not only `nearest` (phase 6 dropped these): rays within 8 m, near-black share
+            for kk in ('wall8', 'dark', 'pass'):
+                if kk in dp: r[kk] = dp[kk]
+        else:
+            for kk in ('nearest', 'wall8', 'dark', 'pass'): r.pop(kk, None)   # a re-shoot without --depth: no stale depth
     r['sha256'] = hashlib.sha256(open(f, 'rb').read()).hexdigest()
     r['satBright'] = round(sat_bright(f), 4)
     r['lowerTop'] = round(thirds(f), 2)
