@@ -324,6 +324,8 @@ export const VEH = {
   scooter: { L: 1.9, W: 0.75, H: 1.45, v0: 12.5, a: 2.4, b: 3.0, s0: 1.2, T: 0.8 },
 };
 const VTYPES = ['car', 'taxi', 'truck', 'bus', 'scooter'];
+// (P7) render-only vehicle cull: m, m, rad added to the camera's half-angle
+export const VCULL = { near: 12, far: 220, pad: 0.26 };
 // Seoul night palettes (sRGB): mostly white / black / grey-silver; taxis silver-white or orange
 const PAINT = {
   car: [[0.92, 0.92, 0.9], [0.92, 0.92, 0.9], [0.9, 0.91, 0.92], [0.05, 0.05, 0.06], [0.06, 0.06, 0.07], [0.55, 0.56, 0.58], [0.38, 0.39, 0.41], [0.68, 0.69, 0.7], [0.12, 0.17, 0.3], [0.45, 0.07, 0.07]],
@@ -2977,15 +2979,28 @@ export function build(layout, ctx = {}) {
     stats.crowdMs = c2 - c1;
     // ---- vehicles
     const aT = sim.aT, cnt = {}; for (const ty of VTYPES) cnt[ty] = 0;
+    const vCullOn = ctx.vehicleCull !== false && fwd.lengthSq() > 0, cosV = Math.cos(Math.min(Math.PI, Math.min(1.55, ctx.fovHalf ?? 1.15) + VCULL.pad)); stats.vCulled = 0;
     let np = 0;
     for (const v of traffic.vehicles) {
       const p = traffic.pose(v, aT, PO), [ef, er] = vEm[v.id];
       if (p.hidden) { ef.nits = 0; er.nits = 0; continue; }
+      if (v.type === 'bus') { const tk = v.dwell != null && v.dwellT > 0 ? 1 : 0; v._kn = (v._kn || 0) + (tk - (v._kn || 0)) * Math.min(1, dt * 2.5); }   // (eased even while culled)
+      let y = groundAt(p.x, p.z); const yaw = Math.atan2(p.hx, p.hz), hl = v.L / 2;
+      // the lamps stay lit (D's light bins every emitter, culled or not)
+      ef.pos[0] = p.x + p.hx * hl; ef.pos[1] = y + (v.type === 'bus' ? 0.6 : 0.68); ef.pos[2] = p.z + p.hz * hl; ef.normal[0] = p.hx; ef.normal[2] = p.hz; ef.nits = 40000;
+      er.pos[0] = p.x - p.hx * hl; er.pos[1] = y + 0.75; er.pos[2] = p.z - p.hz * hl; er.normal[0] = -p.hx; er.normal[2] = -p.hz; er.nits = 250 + 1250 * v.brake;
+      // (P7, perf #1 with D: every vehicle was drawn every pass, ~0.44 M triangles, cars 300 m behind the camera included)
+      // render-only cull: within VCULL.far m and inside the view cone widened by VCULL.pad (plus the vehicle's own angular
+      // size), or within VCULL.near m; the headlight pool by its own 14 m reach. The sim, colliders and lamps are untouched.
+      // The kept vehicles pack the instance slots in order (H's depth proxies, A's velocity pass and D's mirror occluders
+      // share instanceMatrix and count)
+      const vdx = p.x - camP.x, vdz = p.z - camP.z, vry = y + 1 - camP.y, vd = Math.sqrt(vdx * vdx + vdz * vdz + vry * vry);
+      const vc = vCullOn ? (vdx * fwd.x + vry * fwd.y + vdz * fwd.z) / Math.max(vd, 1e-3) : 1;
+      const drawV = !vCullOn || vd < VCULL.near || (vd < VCULL.far && vc > cosV - (hl + 1.5) / vd);
+      if (!drawV) { stats.vCulled++; if (vc > cosV - (hl + 14) / vd && vd < VCULL.far + 14) { const I = v.type === 'scooter' ? 0.35 : v.type === 'bus' ? 1.2 : 1; poolA.setXYZW(np++, p.x + p.hx * hl, p.z + p.hz * hl, yaw, I); } continue; }
       const B = vByType[v.type], k = cnt[v.type]; if (k >= B.cap) continue; cnt[v.type]++;
-      let y = groundAt(p.x, p.z); const yaw = Math.atan2(p.hx, p.hz);
       Q.setFromAxisAngle(UP, yaw);
-      if (v.type === 'bus') {   // (P6, life #4) the kneel: -8 cm and a 1.2 deg lean to the kerb while it dwells at a stop (eased)
-        const tk = v.dwell != null && v.dwellT > 0 ? 1 : 0; v._kn = (v._kn || 0) + (tk - (v._kn || 0)) * Math.min(1, dt * 2.5);
+      if (v.type === 'bus') {   // (P6, life #4) the kneel: -8 cm and a 1.2 deg lean to the kerb while it dwells at a stop (eased above)
         if (v._kn > 1e-3) { y -= 0.08 * v._kn; Q.multiply(QK.setFromAxisAngle(FWD, -0.021 * v._kn)); }
       }
       M4.compose(V3.set(p.x, y, p.z), Q, S1); B.im.setMatrixAt(k, M4);
@@ -2993,9 +3008,6 @@ export function build(layout, ctx = {}) {
       B.st.setXYZW(k, v.brake, v.hazard ? 1 : 0, 1, (v.id * 0.37) % 1);
       B.vel.setXYZ(k, p.hx * v.v, 0, p.hz * v.v);
       fill.at(p.x, p.z, tmpF); B.env.setXYZW(k, tmpF[0], tmpF[1], tmpF[2], (v.id * 0.618) % 1);
-      const hl = v.L / 2;
-      ef.pos[0] = p.x + p.hx * hl; ef.pos[1] = y + (v.type === 'bus' ? 0.6 : 0.68); ef.pos[2] = p.z + p.hz * hl; ef.normal[0] = p.hx; ef.normal[2] = p.hz; ef.nits = 40000;
-      er.pos[0] = p.x - p.hx * hl; er.pos[1] = y + 0.75; er.pos[2] = p.z - p.hz * hl; er.normal[0] = -p.hx; er.normal[2] = -p.hz; er.nits = 250 + 1250 * v.brake;
       const I = v.type === 'scooter' ? 0.35 : v.type === 'bus' ? 1.2 : 1;
       poolA.setXYZW(np++, p.x + p.hx * hl, p.z + p.hz * hl, yaw, I);
     }

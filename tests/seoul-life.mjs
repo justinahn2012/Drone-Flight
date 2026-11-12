@@ -217,6 +217,21 @@ if (existsSync('seoul/people/people.json')) {
         if (AV[i] === AV[j]) { sameB++; if (tone(i) === tone(j)) { same++; if (g) grpSame++; } } } }
     ok(same / pairs <= 0.065 && grpSame === 0, `crowd repeats: ${(100 * same / pairs).toFixed(1)} % of pairs within 8 m share a body and a tone of top (P6 7.6 %; gate 6.5 %), ${grpSame} of ${grp} pairs inside a group (same body alone ${(100 * sameB / pairs).toFixed(1)} %: 4 casual East Asian bodies carry 70 %)`); }
 }
+// (P7, perf #1 with D) vehicles are culled for drawing (render only): behind the camera and past VCULL.far nothing is drawn;
+// every vehicle within VCULL.near still is. P6 drew all ~171 at every pose (0.46 M triangles a pass)
+{
+  const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
+  const L = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene(), lifeWorker: false, preroll: false, seed: 11 });
+  const ims = []; L.group.traverse((o) => { if (o.isInstancedMesh && o.geometry.attributes.iState) ims.push(o); });
+  const q = new THREE.Quaternion(), res = [];
+  for (const [x, y, z, yaw] of [[-36, 3, -23, 0], [31.8, 8, -309, Math.PI], [-66.7, 3, 88, 0]]) {
+    const cam = new THREE.Vector3(x, y, z); q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw); for (let k = 0; k < 3; k++) L.update(0.3 + k / 30, cam, q);
+    let tris = 0, behind = 0, nearMiss = 0; const M = new THREE.Matrix4(), P = new THREE.Vector3(), fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+    for (const m of ims) { tris += m.count * m.geometry.index.count / 3; for (let i = 0; i < m.count; i++) { m.getMatrixAt(i, M); P.setFromMatrixPosition(M).sub(cam); if (P.length() > 40 && P.dot(fwd) < -0.3 * P.length()) behind++; } }
+    const T = L.sim.traffic; for (const v of T.vehicles) { if (v.hidden) continue; const p = T.pose(v, L.sim.aT, {}); if (Math.hypot(p.x - x, p.z - z) < lifeMod.VCULL.near - 3) { let found = false; for (const m of ims) for (let i = 0; i < m.count; i++) { m.getMatrixAt(i, M); P.setFromMatrixPosition(M); if (Math.hypot(P.x - p.x, P.z - p.z) < 0.5) found = true; } if (!found) nearMiss++; } }
+    res.push({ tris, behind, nearMiss }); }
+  ok(res.every((r) => r.tris < 0.3e6 && r.behind === 0 && r.nearMiss === 0), `vehicles culled for drawing: ${res.map((r) => (r.tris / 1e6).toFixed(2)).join(' / ')} M triangles a pass at walk0 / station2 / w21 (P6 0.46 M at every pose), none drawn behind the camera, none missing within ${lifeMod.VCULL.near - 3} m`);
+}
 // life #4 (P4): people react to a low drone (render side; the soft colliders stay on the sim's positions). A walker the drone
 // hovers beside at 1.5 m height is drawn slower (0.4x), stepped aside ~0.5 m away from it, and flinches on the first moment.
 {
