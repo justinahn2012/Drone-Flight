@@ -56,10 +56,13 @@ async def main(a):
                 await pg.wait_for_timeout(500)
             print(f'load {time.time() - t0:.1f}s state={state}', flush=True)
             print('mem', await pg.evaluate('JSON.stringify(window.__onetake.levels.mem())'))
-            async def shot(name, setup, frames=8):
+            async def shot(name, setup, frames=8, last=None):
                 await pg.evaluate(setup)
                 d = None
                 for i in range(frames):
+                    # [P6-F] `last` runs before the final frame: #pop hides on a wall-clock timer (CAP_DUR), and a swiftshader
+                    # frame takes ~1 s, so a caption fired in `setup` was gone by the screenshot (phase 5 and 6's caption shots)
+                    if last and i == frames - 1: await pg.evaluate(last)
                     d = await pg.evaluate(f"window.__onetake.step(33,1,{'true' if i == frames - 1 else 'false'})"); await pg.wait_for_timeout(30)
                 world = Image.open(io.BytesIO(base64.b64decode(d.split(',')[1])))
                 f = os.path.join(a.out, f'hud-{name}.png'); await pg.screenshot(path=f)
@@ -73,7 +76,7 @@ async def main(a):
             # 1. spawn: the take start, READY + its hint, the first toast
             await shot('spawn', "(()=>{const o=window.__onetake; o.respawn(true); o.ui.toast((o.world.takeStart?.hint?.text||'').toUpperCase(), 6);})()")
             # 2. a FAST street caption mid-street (the walking street's 4/7 gate, flying SE)
-            await shot('caption', "(()=>{const o=window.__onetake; const L=o.world.lines.find(l=>l.name==='WALKING STREET 4/7'); const p=L.pre[0].c, n=L.n; o.tp(p[0]-n[0]*4,3.4,p[2]-n[2]*4,Math.atan2(-n[0],-n[2])*180/Math.PI,0); o.take.reset(); for (const e of o.take.update(0.01,o.drone,o.world,{hands:true,moved:true,steer:false})) o.ui.onTakeEvent(e); o.ui.onTakeEvent({type:'line',name:'WALKING STREET',caption:'THE WALKING *STREET*!',pts:58836,flow:2,clean:true,micro:false,dur:31.2,best:33.5,newBest:false,par:34.4,speed:1.9,fast:true,t0:1,ago:31,t:32});})()", 6)
+            await shot('caption', "(()=>{const o=window.__onetake; const L=o.world.lines.find(l=>l.name==='WALKING STREET 4/7'); const p=L.pre[0].c, n=L.n; o.tp(p[0]-n[0]*4,3.4,p[2]-n[2]*4,Math.atan2(-n[0],-n[2])*180/Math.PI,0); o.take.reset(); for (const e of o.take.update(0.01,o.drone,o.world,{hands:true,moved:true,steer:false})) o.ui.onTakeEvent(e);})()", 6, "(()=>{const o=window.__onetake; o.ui.onTakeEvent({type:'line',name:'WALKING STREET',caption:'THE WALKING *STREET*!',pts:58836,flow:2,clean:true,micro:false,dur:31.2,best:33.5,newBest:false,par:34.4,speed:1.9,fast:true,t0:1,ago:31,t:32});})()")
             # 3. pause
             await shot('pause', "(()=>{window.__onetake.ui.openMenu();})()", 3)
             # 4. the CUT card of a careful long take
