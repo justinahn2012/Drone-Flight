@@ -169,8 +169,8 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
   const clubC = octaves(club.L, club.R); ok(clubC.low < 0.4, `club street: ${(100 * clubC.low).toFixed(0)} % of the energy under 120 Hz (P2 53 %), staff calls ${club.stats.calls}, queue chatter on`);
   // P6 (sound #5): the club path has dynamics: the doors pop open between their cycles (+9 dB for 0.5-2 s), the staff call
   // the line every 6-10 s (P5: the path's envelope CV 0.56 next to the walking street's 0.81)
-  // P7 (sound #3, the club street's own character): the doors carry the bass (shut -22 dB, pops every 2.6-4.6 s with 1-3 s
-  // gaps), the queues and the club streets' cars -3 dB: the path's CV >= 0.7 (P6 0.65 here, 0.61 on the full chain)
+  // P7 (sound #3, the club street's own character): the doors carry the bass (shut -24 dB, pops every 2.6-4.6 s with 1-3 s
+  // gaps), the queues -4 dB and the club streets' cars -3 dB: the path's CV >= 0.7 (P6 0.65 here, 0.61 on the full chain)
   { const cvC = rhythm(club.L, club.R, 300, 3000)[1]; ok(cvC >= 0.7 && club.stats.doorPops >= 3 && club.stats.calls >= 2 && sc >= 5, `the club path breathes: the 300-3000 Hz envelope's CV ${cvC.toFixed(2)} (>= 0.7; P5 0.56, P6 0.65), p95 - p50 ${sc.toFixed(1)} dB (>= 5), door pops ${club.stats.doorPops} (>= 3), staff calls ${club.stats.calls} in 20 s`); }
   // sound #3: the babble re-voiced. Octave spectrum of the crowd bed alone within 3 dB of a recorded crowd per octave,
   // reference: seoul/audio's P2 public-domain restaurant crowd (-3.9, 0, -1.6, -7.9, -14.3, -15.1, -18.6 dB re 250 Hz)

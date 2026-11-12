@@ -70,10 +70,10 @@ export const SND = {
   trafShelf: 4, voiceFloor: 48,
   // P7 (sound #2, the arterial's floor; P6 63 Hz -9.7 dB re max at Yanghwa-ro): the buses' and trucks' 40-90 Hz diesel
   // layer, dB over the diesel bed, and how far it swells (x, gain) as the arterial pulls away on its green
-  dieselSub: 2, subSwell: 1.8,
+  dieselSub: 3, subSwell: 1.8,
   // P7 (sound #3, the club street's own character): the 19-gil / 21-gil club streets' cars and the door queues (dB), and
-  // a shut club door's gain (P6 0.32, -10 dB: a steady bass carpet; now the bass comes with the door: -22 dB shut)
-  clubCars: -3, queueTrim: -3, doorShut: 0.08,
+  // a shut club door's gain (P6 0.32, -10 dB: a steady bass carpet; now the bass comes with the door: -24 dB shut)
+  clubCars: -3, queueTrim: -4, doorShut: 0.06,
 };
 // active RMS of a multichannel Float32 set (see above); unitRms scales it to 1 in place
 function activeRms(chs, sr) {
@@ -1028,7 +1028,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     // the street door swings open for 0.5-2 s and the lobby door most of the way (+9 dB, the kick and the vocal let out), a pure
     // function of the clock
     // P7 (sound #3): every 2.6-4.6 s (85 %) for 0.6-1.6 s, so the gaps between pops are 1-3 s of near-silence from the door
-    // (shut, SND.doorShut: -22 dB; P6 -10 dB held a bass carpet under the whole street)
+    // (shut, SND.doorShut: -24 dB; P6 -10 dB held a bass carpet under the whole street)
     const pop = (s) => { const per = 2.6 + 2 * ((s.phase * 0.29) % 1), u = t + s.phase * 2.3, w = Math.floor(u / per), len = 0.6 + 1.0 * hh(w, 71 + s.seed), t0 = w * per + Math.max(0, per - len - 1.4) * hh(w, 70 + s.seed);
       if (hh(w, 72 + s.seed) > 0.85 || u < t0 || u > t0 + len + 0.4) return 0; if (dtF > 0 && t0 > u - dtF && t0 <= u) S.doorPops++; return Math.min(1, (u - t0) / 0.15, (t0 + len + 0.4 - u) / 0.4); };
     for (const vo of g.pv.club) if (vo.who) {
