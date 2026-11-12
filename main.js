@@ -1805,9 +1805,19 @@ function headsStamp(e) {
 // next touchend / pointerdown / pointerup (an activation event) and plays from that handler, up to HAP_LATE ms late, else is
 // dropped (a late tick would mislead); with the page's activation still live (navigator.userActivation) it plays at once.
 // A thumb held through the whole event gets nothing: that tick is native-only (UIImpactFeedbackGenerator).
+// [P8-F ux #2] the `userActivation.isActive` branch is gone: isActive stays true for ~5 s after a tap (transient activation), but
+// iOS ticks a switch only while a gesture's handler is on the stack, so from the frame loop it played nothing. Every tick now
+// queues and plays only from the activation event's own handler. Fired and dropped ticks go to the replay log
+// (inputLog.header.meta.haps = {fired, dropped, ev: [[tick, 1 | 0, ms late]]}) so a phone playtest says whether iOS web haptics
+// earn their toggle (< 50 % fired: native-only).
 const HAP_LATE = 300;
 let hapEl = null, hapT = 0, hapQ = 0;
+function hapNote(ok, late) {
+  try { const L = inputLog; if (!L) return; const h = (L.header.meta.haps ||= { fired: 0, dropped: 0, ev: [] }); ok ? h.fired++ : h.dropped++;
+    if (h.ev.length < 400) h.ev.push([L.ticks, ok ? 1 : 0, Math.round(late)]); } catch (er) {}
+}
 function hapTick(now) {
+  if (hapQ) hapNote(true, now - hapQ);
   hapT = now; hapQ = 0;
   try {
     if (!hapEl) { const l = document.createElement('label'), i = document.createElement('input'); i.type = 'checkbox'; i.setAttribute('switch', ''); l.appendChild(i);
@@ -1819,9 +1829,10 @@ function haptic(ms = 20) {
   try { navigator.vibrate?.(ms); } catch (er) {}
   if (!IOS) return;
   const now = performance.now(); if (now - hapT < 120) return;
-  if (navigator.userActivation?.isActive) hapTick(now); else hapQ = now;
+  if (hapQ) hapNote(false, now - hapQ);                 // a tick still queued: superseded, never played
+  hapQ = now;
 }
-const hapFlush = () => { if (!hapQ) return; const now = performance.now(); if (now - hapQ <= HAP_LATE) hapTick(now); else hapQ = 0; };
+const hapFlush = () => { if (!hapQ) return; const now = performance.now(); if (now - hapQ <= HAP_LATE) hapTick(now); else { hapNote(false, now - hapQ); hapQ = 0; } };
 if (IOS) for (const ev of ['touchend', 'pointerdown', 'pointerup']) document.addEventListener(ev, hapFlush, { passive: true, capture: true });
 // [F2] P3 ui #3: what a crash hit (take.js crash.by, flight.js crashBy: the world.movers body's type)
 const BY = { bus: 'A BUS', taxi: 'A TAXI', car: 'A CAR', truck: 'A TRUCK', van: 'A VAN', scooter: 'A SCOOTER', moped: 'A SCOOTER', motorbike: 'A MOTORBIKE', bike: 'A BIKE', bicycle: 'A BIKE', pedestrian: 'SOMEONE', person: 'SOMEONE', vehicle: 'TRAFFIC' };
@@ -2393,7 +2404,7 @@ function renderProgress() {
   $('lnCount').textContent = `${fl}/${L.length}`;
   const cell = (l) => {
     const next = !l.flown && !l.blocked && nx?.name === l.name;
-    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.blocked ? 'closed for now' : l.hint, bt = l.flown && l.bt > 0 ? `<i> · ${fmtDur(l.bt)}</i>` : '';   // [F2] P4: one time format (the caption's)
+    const sub = l.flown ? (l.f >= 1 ? `FLOW ×${l.f}` : 'FLOWN') : l.blocked ? 'EXPERT · NOT GUIDED' : l.hint, bt = l.flown && l.bt > 0 ? `<i> · ${fmtDur(l.bt)}</i>` : '';   // [F2] P4: one time format (the caption's)
     // [F2] P4 ui #3: the compact grid (short landscape) drops the sub-line for ×N under the tick, so a cell is two lines at most
     const fx = l.flown && l.f >= 1 ? `<u class="fx">×${l.f}</u>` : '';
     return `<div class="ln${l.flown ? ' on' : ''}${next ? ' next' : ''}${l.blocked && !l.flown ? ' shut' : ''}"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x=".75" y=".75" width="12.5" height="12.5" rx="3"/><path d="M3.6 7.2l2.3 2.3 4.6-4.8"/></svg><b>${esc(l.name)}</b><small>${esc(sub)}${bt}</small>${fx}</div>`;
@@ -2510,6 +2521,9 @@ function onTakeEvent(e) {
       break;
     }
     case 'bank': pop(`BANKED <em>+${fmtN(e.pts)}</em>`, 'score'); break;
+    // [P8-F design #5 / ux #5] a street joined past its start gate pays its segments but not the street: say so, once per street
+    // per take (take.js `missed`, tuning.missedStart)
+    case 'missed': if (e.name) toast(`${e.name} · START FROM THE END GATE`, 2.6); break;
     case 'lost': if (e.pts > 0) warn(`CHAIN LOST -${fmtN(e.pts)}`, 2); break;
     case 'skim': break;                                   // the live FLOW line on the HUD already reflects it
     case 'cut': clipEndT = now + 0.6; showSummary('cut', e); break;
@@ -2556,7 +2570,11 @@ function showSummary(kind, e) {
     row('MAX FLOW', `×${mf || 1}`) + sixth;
   // stars for this take + the next target; this take's lines (NEW = first time ever); the checklist and what to fly next
   const tg = starTargets(), ns = typeof e?.stars === 'number' ? e.stars : starCount(total), nextT = tg.find((s) => total < s);
-  $('bStars').innerHTML = isTake ? starsHTML(ns, tg.length) + (nextT ? `<small>NEXT ${kfmt(nextT)}</small>` : '') : '';
+  // [P8-F design #4] the tier above 3 stars: CLEAN TAKE (a CUT at >= tuning.cleanTake with no SCRAPE; cut.cleanTake) as a medal
+  // where NEXT sat; at 3 stars without it, the medal's bar is the next target
+  const ctAt = +LT().cleanTake || 0, ct = kind === 'cut' && !!(e?.cleanTake ?? st.cleanTake);
+  const after = nextT ? `<small>NEXT ${kfmt(nextT)}</small>` : ct ? '<span class="medal">CLEAN TAKE</span>' : ctAt > 0 && isTake ? `<small>CLEAN ${kfmt(ctAt)} · NO SCRAPE</small>` : '';
+  $('bStars').innerHTML = isTake ? starsHTML(ns, tg.length) + after : '';
   bLinesRow(tsum);
   const LL = lineList(), nx = nextLine(kind === 'crash' && isTake ? retryFrom() : null), nh = nx ? hintFor(nx.name) : '';
   $('bNext').innerHTML = LL.length ? `LINES <b>${flownCount()}/${LL.length}</b>` + (nx ? ` · next: <b>${esc(nx.name)}</b>${nh ? ` – ${esc(nh)}` : ''}` : '') : '';

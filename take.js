@@ -97,6 +97,10 @@ export const TAKE_TUNING = {
   clipGrace: 0,        // design #2: m of grace round the `first` line's gates in the first clipT s of a take (CLIPPED, x1)
   clipT: 20,           // s of take time the grace lasts
   hintVertReady: 3,    // ux #3: nextHint's hintVert while the take is 'ready' (Seoul 6: the DOWN cue at the spawn's descent)
+  // [P8-F] (bando: off)
+  cleanTake: 0,        // design #4: > 0: a CUT at >= this total with no SCRAPE (HEADS! included) is a CLEAN TAKE, the tier above 3 stars
+  missedStart: false,  // design #5 / ux #5: true = a street segment flown with its street not armed (joined past its start gate)
+                       // sends one `missed` event per street per take (the UI says where the street starts)
 };
 const T = TAKE_TUNING;
 
@@ -224,12 +228,15 @@ export class Take {
   get cutValue() { return Math.round(this._unbanked * this._T.cutMult * this.pace); }   // what a CUT now would bank
   // C12 PERFECT: this take ended in a CUT at 3 stars with every line (repeats too) CLEAN and 0 SCRAPEs
   get perfect() { return this._state === 'done' && this._how === 'cut' && this._perfectSoFar() && starsFor(this._total, this._T.stars) === 3; }
+  // [P8-F design #4] CLEAN TAKE: a CUT at >= tuning.cleanTake with 0 SCRAPEs (bando: cleanTake 0, never)
+  get cleanTake() { return this._state === 'done' && this._how === 'cut' && this._cleanTakeAt(); }
+  _cleanTakeAt() { return this._T.cleanTake > 0 && this._scrapes === 0 && this._total >= this._T.cleanTake; }
   // still on for PERFECT (live: no SCRAPE and nothing but CLEAN lines yet, at least one line): a HUD may tint gold
   get perfectLive() { return this._state === 'live' && this._perfectSoFar(); }
   _perfectSoFar() { return this._log.length > 0 && this._scrapes === 0 && this._log.every((l) => l.clean); }
   get stats() {
     return { maxSpeed: this._maxSpeed, time: this._t, lines: this._log.slice(), maxFlow: this._maxFlow, stars: starsFor(this._total, this._T.stars),
-      scrapes: this._scrapes, clean: this._log.filter((l) => l.clean).length, perfect: this.perfect };
+      scrapes: this._scrapes, clean: this._log.filter((l) => l.clean).length, perfect: this.perfect, ...(this._T.cleanTake > 0 ? { cleanTake: this.cleanTake } : {}) };
   }
   // C12 ghost: the attached Ghost's pose at this take's clock ({pos:[x,y,z], q:[x,y,z,w], heading, t, done, crashed}),
   // alpha = main.js physAlpha (the render sits between the last two ticks, like the drone). While ready: the ghost's
@@ -245,6 +252,7 @@ export class Take {
     this._cool = {}; this._pre = new Map(); this._preT = -99; this._last = null; this._released = false; this._skim = 0; this._skimOff = 0;
     this._now = 0; this._holding = false; this._cutIn = 0; this._cutFrac = 0; this._cutKind = null;
     this._dirty = false; this._bonusEv = {}; this._imp = null; this._mvN = null; this._scrapeT = -99; this._headsT = -99; this._scrapes = 0; this._skimAcc = 0; this._lineAt = -99; this._how = null;
+    this._missed = new Set();
     for (const C of this._carves || []) C.st.forEach((s) => { s.ref = null; s.acc = 0; s.out = 0; });
   }
   // the take ends the hard way (out of bounds, a reset mid-take): same as a crash
@@ -383,7 +391,7 @@ export class Take {
         L.pre.forEach((_, gi) => this._pre.delete(li * 8 + gi));
       }
       const e = this._award(L.l, now, t0, clip);
-      if (e) ev.push(e);
+      if (e) { ev.push(e); if (this._T.missedStart && L.l.seg && e.type === 'line') this._missedStart(L.l.seg, now, ev); }
     });
     for (const C of this._carves) {
       const t0 = this._carveTick(C, p, drone, dt, now);
@@ -391,6 +399,18 @@ export class Take {
     }
   }
 
+  // [P8-F design #5 / ux #5] a street's segment just scored: if the street itself isn't armed (no pre-gate record of a named
+  // line of that name, crossed the right way) and wasn't flown this take, the pilot joined it past its
+  // start gate, so it won't pay; one `missed` event per street per take ({name, start: the nearer start gate's centre})
+  _missedStart(seg, now, ev) {
+    if (this._missed.has(seg) || this._done.has(seg) || this.free) return;
+    let armed = false;
+    for (const [k, r] of this._pre) { const L = this._lines[(k / 8) | 0]; if (L && !L.l.micro && L.l.name === seg && r.s === 1) { armed = true; break; } }   // a lapsed window is another miss (slow, not late)
+    if (armed) return;
+    if (!this._lines.some((L) => !L.l.micro && L.l.name === seg && L.pre.length)) return;
+    this._missed.add(seg);
+    ev.push({ type: 'missed', name: seg });
+  }
   // a carve's sweep: around an axis (orbit: the angle the position sweeps round it) or of the flight path (turn: the
   // change of the horizontal velocity's direction), signed, while inside the zone and moving; returns t0 when it fires
   // (a turn only reads the path while it is faster than carveSpeed: a slow pivot neither counts nor resets it; leaving
@@ -530,7 +550,8 @@ export class Take {
       this._how = 'cut'; this._finish();
       const perfect = this.perfect;
       if (perfect) { try { const L = globalThis.localStorage; L?.setItem(lk('onetake.perfect'), String((+L.getItem(lk('onetake.perfect')) || 0) + 1)); } catch (e) {} }
-      ev.push({ type: 'cut', total: this.total, stats: this.stats, pts, how, pace, stars: starsFor(this._total, this._T.stars), perfect });
+      const ct = this._T.cleanTake > 0 ? { cleanTake: this.cleanTake } : {};
+      ev.push({ type: 'cut', total: this.total, stats: this.stats, pts, how, pace, stars: starsFor(this._total, this._T.stars), perfect, ...ct });
     }
     return ev;
   }

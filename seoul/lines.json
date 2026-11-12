@@ -25,7 +25,9 @@
   "fastPar": 1.15,
   "clipGrace": 0.6,
   "clipT": 20,
-  "hintVertReady": 6
+  "hintVertReady": 6,
+  "cleanTake": 450000,
+  "missedStart": true
  },
  "lines": [
   {
@@ -96,7 +98,9 @@
     "fastPar": 1.15,
     "clipGrace": 0.6,
     "clipT": 20,
-    "hintVertReady": 6
+    "hintVertReady": 6,
+    "cleanTake": 450000,
+    "missedStart": true
    }
   },
   {
@@ -2584,7 +2588,7 @@
     1,
     0
    ],
-   "w": 3.9,
+   "w": 4.4,
    "h": 3,
    "u": [
     0.894,
@@ -5530,9 +5534,9 @@
   {
    "name": "Walking street",
    "pos": [
-    -2.058,
+    -0.489,
     4.5,
-    -127.108
+    -125.868
    ],
    "yaw": -0.669,
    "pitch": -0.14,
@@ -5626,9 +5630,9 @@
  ],
  "takeStart": {
   "pos": [
-   -2.058,
+   -0.489,
    4.5,
-   -127.108
+   -125.868
   ],
   "yaw": -0.669,
   "pitch": -0.14,
