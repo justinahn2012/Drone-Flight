@@ -78,7 +78,8 @@ if (flag('--ci-logs')) {
   let name = null;
   for (const l of yml.split('\n')) {
     const n = /^\s*- name: (.*)$/.exec(l); if (n) { name = n[1].replace(/^['"]|['"]$/g, ''); continue; }
-    const r = name && /ci\/run\.mjs (?:python3? )?(\S+)/.exec(l); if (r) suiteOf[name] = r[1];
+    const r = name && /ci\/run\.mjs (.*)$/.exec(l);   // [P8 H] the suite = run.mjs's: the first .mjs / .js / .py word, else the first
+    if (r) { const w = r[1].trim().split(/\s+/); suiteOf[name] = w.find((x) => /\.(m?js|py)$/.test(x)) || w[0]; }
   }
   if (sh('gh --version') == null) { console.log('known-guard --ci-logs: gh not on PATH: skipped'); }
   else for (const sha0 of shas) {
