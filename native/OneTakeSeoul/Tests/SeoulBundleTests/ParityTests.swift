@@ -115,6 +115,33 @@ final class ParityTests: XCTestCase {
         XCTAssertTrue(SeoulBundle.drawn(nil, cameraY: 0), "meshes without a rule always draw")
     }
 
+    // [P7 H, panel6 native #6] the bundled traffic snapshots (life/traffic-snapshots.json): one per opening city from
+    // LIFE.warm to LIFE.warmMax, steps = round(t x hz), every vehicle on a lane of life.json's network, the RNG state kept
+    func testTrafficSnapshots() throws {
+        let b = try bundle(), ts = (b.world["data"] as! [String: Any])["trafficSnapshots"] as? [String: Any]
+        let file = try XCTUnwrap(ts?["file"] as? String, "world.json data.trafficSnapshots")
+        XCTAssertEqual(ts?["exact"] as? Bool, true, "the exporter's restore check")
+        let j = try JSONSerialization.jsonObject(with: b.data(file)) as! [String: Any]
+        let hz = j["hz"] as! Double, warm = j["warm"] as! Double, warmMax = j["warmMax"] as! Double, nVeh = j["vehicles"] as! Int
+        let life = try JSONSerialization.jsonObject(with: b.data("life.json")) as! [String: Any]
+        let lanes = ((life["network"] as? [String: Any])?["lanes"] as? [Any])?.count ?? (j["lanes"] as! Int)
+        XCTAssertEqual(j["lanes"] as? Int, lanes, "the snapshot's lane count = life.json's network")
+        let snaps = j["snapshots"] as! [[String: Any]]
+        let ts0 = snaps.map { $0["t"] as! Double }
+        XCTAssertEqual(ts0.first, warm); XCTAssertEqual(ts0.last, warmMax); XCTAssertEqual(ts0, ts0.sorted())
+        for S in snaps {
+            let t = S["t"] as! Double, v = S["v"] as! [[String: Any]]
+            XCTAssertEqual(S["n"] as? Int, Int((t * hz).rounded()), "step of t \(t)")
+            XCTAssertNotNil(S["rs"], "rng state"); XCTAssertEqual((S["na"] as? [Any])?.count, lanes)
+            XCTAssertEqual(v.count, nVeh)
+            for x in v {
+                let ln = x["lane"] as! Int, nx = x["next"] as! Int
+                XCTAssert(ln >= 0 && ln < lanes && nx >= -1 && nx < lanes, "lane indices in range")
+                XCTAssert((x["s"] as! Double).isFinite && (x["v"] as! Double).isFinite)
+            }
+        }
+    }
+
     func testPackedStreamsDecode() throws {
         let b = try bundle()
         let packed = ((b.world["data"] as! [String: Any])["packed"] as! [String: Any])["files"] as! [String: [String: Any]]

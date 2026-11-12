@@ -700,6 +700,27 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
   try { life ||= lifeShim(parts, X[PARTNERS.life] || {}, lifeMod, layout, parts.life?.sim?.traffic?.seed ?? seed); } catch (e) { warn(`life.json shim: ${e.message}`); }
   if (life) { await put('life.json', life); data.life = { file: 'life.json', count: life.count ?? 1, source: life.source ?? 'seoul-life exportData()' }; } else data.life = { status: 'pending', count: 0 };
 
+  // ---- [P7 H, panel6 native #6] traffic snapshots: the cities a take opens on (take clock 0 = sim LIFE.warm s; a retry
+  // opens up to LIFE.warmMax s in), so a port restores one instead of simulating 4,500-14,400 steps at load. Each is
+  // TrafficSim.snapshot() of the game's own net (E's shelters included) and seed, as JSON; restore(S) then step() continues
+  // bit-identically (checked here: the 80 s snapshot restored and stepped to 90 s equals the 90 s one).
+  try {
+    const TS = lifeMod?.TrafficSim, LF = lifeMod?.LIFE, live = parts.life?.sim || (lifeMod?.LifeSim ? new lifeMod.LifeSim(layout, { seed, setPieces: geo.setPieces }) : null);
+    if (TS && LF && live?.net && live.traffic) {
+      const hz = LF.trafficHz, seedT = live.traffic.seed ?? seed, times = [LF.warm, ...Array.from({ length: Math.floor((LF.warmMax - 80) / 10) + 1 }, (_, i) => 80 + 10 * i)];
+      const want = new Map(times.map((t) => [Math.round(t * hz), t])), maxN = Math.max(...want.keys()), T = new TS(live.net, { seed: seedT }), snaps = [];
+      for (;;) { if (want.has(T.n)) snaps.push({ t: want.get(T.n), ...T.snapshot() }); if (T.n >= maxN) break; T.step(); }
+      const strip = ({ t, ...S }) => S, at = (t) => snaps.find((x) => x.t === t);
+      const U = new TS(live.net, { seed: seedT }); U.restore(JSON.parse(JSON.stringify(strip(at(80))))); while (U.n < at(90).n) U.step();
+      const same = JSON.stringify(U.snapshot()) === JSON.stringify(strip(at(90)));
+      if (!same) warn('traffic snapshots: the 80 s snapshot restored and stepped to 90 s differs from the 90 s snapshot (TrafficSim.restore is not exact)');
+      await put('life/traffic-snapshots.json', { format: 'onetake.traffic-snapshots/1', seed: seedT, hz, warm: LF.warm, warmMax: LF.warmMax, lanes: T.lanes.length, vehicles: T.vehicles.length,
+        restore: 'TrafficSim.restore(S) on a TrafficSim(net, { seed }) of life.json\'s network (lanes by index: v[].lane / next / next2.lane; -1 = none); then step() at hz. S.n = sim step = round(t x hz); na = per-lane next arrival; rs = the Rng state',
+        check: same ? 'restore(80 s) + 600 steps == the 90 s snapshot (exporter, bit-exact JSON)' : 'FAILED', snapshots: snaps });
+      data.trafficSnapshots = { file: 'life/traffic-snapshots.json', t: times, vehicles: T.vehicles.length, exact: same };
+    } else note('traffic snapshots: seoul-life has no TrafficSim / LIFE / a live sim in this tree');
+  } catch (e) { warn(`traffic snapshots: ${e.stack || e.message}`); }
+
   // ---- dressing.json (E's set pieces arrive through C's buildGeometry, contract P2-1)
   const ex = exporterOf(dressMod);
   let dressing = null;
