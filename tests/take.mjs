@@ -800,6 +800,11 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     { const ls = R.results['long/sharp'], lr = R.results['long/regular'];
       ok(ls && ls.flown >= Math.ceil(ls.runs * 7 / 8), `long/sharp flies ROOFLINE in ${ls?.flown} of ${ls?.runs} (>= 7 of 8)`);
       ok(ls && lr && ls.p50 >= 1.08 * lr.p50, `long: sharp p50 ${ls?.p50} >= 1.08 x regular ${lr?.p50} (${ls && lr ? (ls.p50 / lr.p50).toFixed(3) : '?'}x)`); }
+    // [P8-F design #4] CLEAN TAKE is the tier above 3 stars: no careful long run wins it, a sharp one can (>= 1 of 8), and its bar
+    // sits over the 3-star cut
+    { const ctAt = +LJ.tuning.cleanTake || 0, lc = R.results['long/careful'], ls = R.results['long/sharp'];
+      ok(ctAt >= 1.25 * st[2], `CLEAN TAKE at ${ctAt} >= 1.25 x the 3-star cut ${st[2]}`);
+      ok(lc && lc.cleanTakes === 0 && ls && ls.cleanTakes >= 1, `CLEAN TAKE: careful long ${lc?.cleanTakes} of ${lc?.runs} (0), sharp long ${ls?.cleanTakes} of ${ls?.runs} (>= 1)`); }
     // [P7-F design #3] the no-dive record is there, at 12 runs (the STATION STAIRS check above reads it)
     { const nd = R.results['stairs-nodive/regular']; ok(nd && nd.runs >= 12, `stairs-nodive/regular recorded at ${nd?.runs} runs (>= 12)`); }
   } else console.log('skip: tests/seoul/take-sim.json or seoul/lines.json missing');

@@ -1009,11 +1009,14 @@ export function offRoad(mains, x, z, margin = 0.5, skip = null) {
 }
 
 export class CrowdSim {
-  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null, holes = null } = {}) {
+  constructor(net, layout, { seed = 1, density = 1, maxAgents = LIFE.maxAgents, sites = null, obstacles = null, holes = null, puddles = null } = {}) {
     this.net = net; this.layout = layout; this.seed = seed >>> 0; this.density = density; this.maxAgents = maxAgents;
     // (P5) E's ground openings (stairwells, [[x, z], ...] polygons): nobody stands in one (P4 put 4-5 of exit 9's waiting
     // ring inside the stair dive)
     this.holes = (holes || []).filter((h) => Array.isArray(h) && h.length >= 3);
+    // [P8] E's wet decals at post bases ([cx, cz, tx, tz, a, b]: centre, unit long axis, half-length, half-width; p8/E-to-G1.md):
+    // nobody is placed standing in one (inDress, the placement test); walkers still cross their edges. Missing: none.
+    this.puddles = (puddles || []).filter((q) => Array.isArray(q) && q.length >= 6);
     // E's dressing discs [[x, z, r]] (life #6: carts, tents, stalls, parked scooters): walkers sidestep them, nobody stands in one
     this.dress = (obstacles || []).filter((o) => o && o[2] > 0 && o[2] < 1.7);
     // walkways
@@ -1381,7 +1384,9 @@ export class CrowdSim {
     for (const H of this.holes) for (const [ox, oz] of [[0, 0], [pad, 0], [-pad, 0], [0, pad], [0, -pad]]) if (pip(x + ox, z + oz, H)) return true;
     return false;
   }
-  inDress(x, z, pad = 0) { for (const o of this.dress) { const dx = x - o[0], dz = z - o[1], r = o[2] + pad; if (dx * dx + dz * dz < r * r) return true; } return false; }
+  inDress(x, z, pad = 0) { for (const o of this.dress) { const dx = x - o[0], dz = z - o[1], r = o[2] + pad; if (dx * dx + dz * dz < r * r) return true; } return this.inPuddle(x, z, pad); }
+  inPuddle(x, z, m = 0.3) { for (const q of this.puddles) { const dx = x - q[0], dz = z - q[1], u = dx * q[2] + dz * q[3], v = -dx * q[3] + dz * q[2];
+    if ((u / (q[4] + m)) ** 2 + (v / (q[5] + m)) ** 2 < 1) return true; } return false; }
   defaultBuskSites(layout) {
     const out = [], o = {};
     const walk = this.ways.filter((w) => w.kind === 'walking').sort((a, b) => b.area - a.area)[0];
@@ -1764,13 +1769,13 @@ export const avatarWeights = (meta) => meta.avatars.map((av) => (/^Business/i.te
 
 export class LifeSim {
   // setPieces / obstacles: E's (world-seoul ctx); sites: explicit busking sites (override the set pieces')
-  constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles, holes } = {}) {
+  constructor(layout, { seed = 1, density = 1, maxAgents, sites, setPieces, obstacles, holes, puddles } = {}) {
     this.net = buildNetwork(layout);
     // E's median BUS SHELTER islands (design #2, P3): the traffic gives them room (see TrafficSim: shelter offsets)
     this.net.shelters = (setPieces || []).filter((p) => p && p.kind === 'shelter' && p.pos && p.dir && p.island);
     this.traffic = new TrafficSim(this.net, { seed });
     const bs = buskSitesFrom(setPieces);
-    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null), holes });
+    this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null), holes, puddles });
     this.t = 0; this.snaps = new Map();
   }
   reset() { this.traffic.reset(); this.t = 0; }
@@ -2595,7 +2600,8 @@ export function build(layout, ctx = {}) {
   // E's set pieces and dressing discs (contract P3-G1/C: world-seoul passes ctx.setPieces = geo.setPieces and ctx.obstacles =
   // geo.dressingOut.obstacles; ctx.dressing (E's geometry output) is read too). Absent: the default rings, no discs.
   const setPieces = ctx.setPieces ?? ctx.dressing?.setPieces ?? null, obstacles = ctx.obstacles ?? ctx.dressing?.obstacles ?? null, holes = ctx.holes ?? ctx.dressing?.holes ?? null;
-  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles, holes });
+  const puddles = ctx.puddles ?? ctx.dressing?.puddles ?? null;   // [P8] E's puddles (world-seoul ctx; absent: none)
+  const sim = new LifeSim(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces, obstacles, holes, puddles });
   const crowd = sim.crowd, traffic = sim.traffic;
   const group = new THREE.Group(); group.name = 'seoul-life';
   const nit = { value: ctx.nitScale ?? LIFE.nitScale };
@@ -2825,7 +2831,7 @@ export function build(layout, ctx = {}) {
     LW.state = 'starting';
     // [P5 H, perf #2] warmTo: the worker reaches the warm clock before 'ready' (it used to pay that 75 s of traffic on its
     // first frame: 2.65-22 s with no frame back); until then, and after a seek until a post-seek frame lands, inline
-    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
+    LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), puddles: lwPlain(puddles), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
   }
   function lwFrame(tNow, cam) {   // -> the worker frame to draw at tNow, or null (inline)
     const w = LW.w; if (!w) return null;
