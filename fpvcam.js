@@ -1010,8 +1010,11 @@ export const GRADES = {
   //   0.06 -> 0.03 with retroShGate [L0, L1] (absolute Oklab L: no tint on the ground or the deep darks, full by ~35 codes) and
   //   retroShSky (none where the collider depth is the sky: a dim warm sky no longer goes green-grey) (colour #4, fpv #2);
   //   toe 0.035 -> 0.025 (fpv #1); aeArea[1] 0.75 -> 0.55 (colour #2, the open shots); haloM spacing 1.6 -> 2.2 and haloW
-  //   0.01 -> 0.02 (colour #6: the letter edge falls over more pixels).
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -2.05, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
+  //   0.01 -> 0.02 (colour #6: the letter edge falls over more pixels). Exposure re-fit last, on a scratch merge of p6/A + C
+  //   (walls x0.7, pavers 0.31) + D (sky dome in the bake, paver mirror, pools), re-baked: evBias -2.05 -> -1.85. GL at -2.05
+  //   (960 wide): p50 walk0 42.8, club270 43.8, station 30.4, spawn 37.9 -> modelled at -1.85 47.4 / 48.6 / 34.2 / 42.1; walk0
+  //   ground 19 -> 22 (P5 14), below 16 20.0 -> 16.8 % (P5 24.8), ground/wall 0.40 -> 0.42; walk0 ground (22,19,16), not cyan.
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [1.0, 1.0, 0.96], wbShade: null, evBias: -1.85, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3],
