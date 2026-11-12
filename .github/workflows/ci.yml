@@ -25,7 +25,9 @@ on:
   workflow_dispatch:
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # [P7 H] main's runs finish: browser-seoul takes ~2.3 h, and every integrator push within that window cancelled the run
+  # before its camera gate (main had no completed browser-seoul since bc45fbe). Branches still cancel the superseded run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   test:
     runs-on: ubuntu-latest

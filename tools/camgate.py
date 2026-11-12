@@ -117,6 +117,8 @@ def main():
         name = os.path.splitext(os.path.basename(f))[0]
         base, r0 = (name[:-3], True) if name.endswith('.r0') else (name, False)   # <shot>.r0 = the same shot at retro 0
         o = stats(f, base); o['ev'] = evs.get(name); rows[name] = o
+        if base == 'spawn' and not r0 and base not in hero and o['p50'] < GATE['spawn']:   # [P7 H] the spawn row binds wherever the
+            fails.append(f'[exposure] {name}: spawn p50 {o["p50"]:.0f} < {GATE["spawn"]:.0f}')    # spawn still exists (CI: --hero has no spawn)
         if base not in hero: continue
         X = lambda msg: fails.append('[exposure] ' + msg)
         C = lambda msg: fails.append('[colour] ' + msg)
