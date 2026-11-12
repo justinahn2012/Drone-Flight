@@ -206,7 +206,16 @@ if (existsSync('seoul/people/people.json')) {
   // and how often a near person's avatar repeats on another near person within 8 m (reported: 14 bodies can't keep a
   // 0.37 p/m^2 street free of repeats; the per-person clothes, hair and skin tints carry the rest)
   { const meta = JSON.parse(readFileSync('seoul/people/people.json', 'utf8')), ea = L2.avatars.tiers.flat().reduce((a, t, k) => a + (meta.avatars[k % meta.avatars.length].ea ? t.n : 0), 0);
-    ok(ea / nAv >= 0.65, `East Asian bodies: ${(100 * ea / nAv).toFixed(0)} % of ${nAv} near/mid people at walk0 (${meta.avatars.length} avatars; P5 0 %)`); }
+    ok(ea / nAv >= 0.65, `East Asian bodies: ${(100 * ea / nAv).toFixed(0)} % of ${nAv} near/mid people at walk0 (${meta.avatars.length} avatars; P5 0 %)`);
+    // (P7, life #2) pairs of people within 8 m of each other (walk0, w21, club90; 25 m round the camera) in the same body and
+    // the same tone of top (dark / mid / light): P6 7.6 %; groups, clusters and queues no longer share one (assignAvatars)
+    const S = new LifeSim(layout, { seed: 11 }), C = S.crowd, AV = lifeMod.assignAvatars(C.people, meta, lifeMod.avatarWeights(meta)), tone = (i) => lifeMod.tintClass(AV.tops[i] || C.people[i].look.top);
+    let pairs = 0, same = 0, sameB = 0, grp = 0, grpSame = 0;
+    for (const [cx, cz] of [[-36, -23], [-66.7, 88], [63.7, 129.6]]) for (let t = 75; t < 135; t += 6) {
+      C.evaluate(t, null, { avoid: false }); const nr = []; for (let i = 0; i < C.people.length; i++) if (C.VIS[i] && Math.hypot(C.X[i] - cx, C.Z[i] - cz) < 25) nr.push(i);
+      for (const i of nr) for (const j of nr) { if (j <= i || Math.hypot(C.X[i] - C.X[j], C.Z[i] - C.Z[j]) > 8) continue; pairs++; const g = C.people[i].unit >= 0 && C.people[i].unit === C.people[j].unit; if (g) grp++;
+        if (AV[i] === AV[j]) { sameB++; if (tone(i) === tone(j)) { same++; if (g) grpSame++; } } } }
+    ok(same / pairs <= 0.065 && grpSame === 0, `crowd repeats: ${(100 * same / pairs).toFixed(1)} % of pairs within 8 m share a body and a tone of top (P6 7.6 %; gate 6.5 %), ${grpSame} of ${grp} pairs inside a group (same body alone ${(100 * sameB / pairs).toFixed(1)} %: 4 casual East Asian bodies carry 70 %)`); }
 }
 // life #4 (P4): people react to a low drone (render side; the soft colliders stay on the sim's positions). A walker the drone
 // hovers beside at 1.5 m height is drawn slower (0.4x), stepped aside ~0.5 m away from it, and flinches on the first moment.
