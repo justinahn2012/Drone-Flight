@@ -204,7 +204,7 @@ try {
     const ts = Date.now();
     const shoot = () => page.evaluate(async ({ tp, vel, gate }) => {
       const o = window.__onetake; o.S.mode = 'acro'; o.applySettings(); o.fpv.setQualityRange?.(1, 1); o.fpv.scale = 1; o.controls.thr = 0.39;
-      new Function('o', tp)(o);
+      new Function('o', tp)(o); const n0 = o.frameN;   // [P8 H] frames drawn by this still: its own steps only
       const cv = o.renderer?.domElement || document.querySelector('canvas');
       let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null; const fms = [];   // [P3 H] ms per step (where the still time goes)
       const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };
@@ -230,7 +230,7 @@ try {
       for (let i = 0; i < d.length; i += 4) h[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
       const n = d.length / 4, pct = (p) => { let s = 0; for (let k = 0; k < 256; k++) { s += h[k]; if (s >= p * n) return k; } return 255; };
       const T = window.__tris, tris = T ? { total: T.total, draws: T.draws, main: Math.max(0, ...T.fb.values()), passes: T.fb.size } : null;
-      return { tris, url, png, png0, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
+      return { frames: Number.isFinite(n0) ? o.frameN - n0 : null, tris, url, png, png0, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
     }, { tp, vel, gate });
     // [P3 H] main bfe39b1's CI shot spawn upside down once (p50 83 against ~125 upright) and that became the golden:
     // an inverted craft is a harness state, not a look, so shoot it again once and say so
@@ -239,6 +239,10 @@ try {
     writeFileSync(join(OUT, `${name}.jpg`), Buffer.from(r.url.split(',')[1], 'base64'));
     if (r.png) writeFileSync(join(OUT, 'camgate', `${name}.png`), Buffer.from(r.png.split(',')[1], 'base64'));
     if (r.png0) writeFileSync(join(OUT, 'camgate', `${name}.r0.png`), Buffer.from(r.png0.split(',')[1], 'base64'));
+    // [P8 H] the game's rAF loop must stay off under ?perf: main.js used to start one more endless chain per o.step(), so a still
+    // drew dozens of unasked frames (walk0 2153 s against 227 s of steps) and the drone / AE moved between its steps
+    const want = 10 + (gate ? 1 : 0);
+    ok(r.frames === want, `still ${name}: draws only its own ${want} frames (drew ${r.frames})`);
     now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro } : {}), ...(r.tris ? { tris: r.tris } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
     if (!BANDO && r.tris?.draws) {   // [P6 H] budgets (Seoul): every pass, and the largest render target (the main pass)
       const M = (v) => (v / 1e6).toFixed(2);

@@ -2728,8 +2728,11 @@ function logTick(inp) {
   inputLog.record(inp, S.mode, drone);
 }
 const MANUAL = new URLSearchParams(location.search).has('manual');
+// [P8 H] the game's own loop is the only thing that re-arms rAF. frame() used to re-arm it on every call unless ?manual, so
+// under ?perf (CI, the A18 probe) each o.step() started another endless rAF chain: CI's stills rendered dozens of unasked
+// SwiftShader frames between their 11 steps (walk0 2153 s, of which the steps were 227 s), moving the drone and the AE.
+function loop(now) { requestAnimationFrame(loop); frame(now); }
 function frame(now) {
-  if (!MANUAL) requestAnimationFrame(frame);
   if (clipOpen) { last = now; return; }             // F2: clip modal up (or encoding): the game is paused
   // [H] never a negative dt: a rAF timestamp can be older than `last` when step() (performance.now()) ran in between, and a
   // dt of -21 s made rigCamera's slerp factor 1 - exp(-dt / 0.03) = -Infinity: a NaN camera (black frame) and a NaN
@@ -2819,6 +2822,7 @@ window.__onetake = {
     replayBuf, get frames() { return cur.frames; }, get prevBuf() { return prevBuf; }, get curBuf() { return cur; }, clipSource, clipPlan, buildClip, clipJitter, closeClip, get clipOpen() { return clipOpen; }, get lastClip() { return lastClip; } },
   tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; },
   // test hook (?manual): advance n frames of dtMs each and return the canvas
+  get frameN() { return frameN; },   // [P8 H] frames drawn: CI checks a still draws only its own steps
   step(dtMs = 16.7, n = 1, grab = true) { for (let i = 0; i < n; i++) { last = performance.now() - dtMs; frame(performance.now()); } return grab ? canvas.toDataURL('image/jpeg', 0.92) : null; },
 };
 // [S0] levels: the manifest, the loaded level, progress level, switch by id (menu select + FLY), memory readout
@@ -2830,4 +2834,4 @@ window.__onetake.levels = {
 window.__onetake.flight = { PHYS, get log() { return inputLog; }, get lastLog() { return lastInputLog; }, get alpha() { return physAlpha; } };   // [E] input logs
 if (MANUAL) { setInterval(() => { if (state === 'loading') { last = performance.now() - 16; } }, 500); }
 else if (params.has('perf')) import('./perf.js').then((m) => m.perfProbe(window.__onetake, +params.get('perf') || 120));   // [G4] ?perf drives its own frames
-else requestAnimationFrame(frame);
+else requestAnimationFrame(loop);
