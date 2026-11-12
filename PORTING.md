@@ -572,8 +572,49 @@ pixel equals the browser's lookup within 3 % (worst 0.34 %). The PNG is the `met
 
 With the ruleset on, the integrator works like this:
 1. Push the merge to `integ<N>`.
-2. Wait for the run to go green (about 2.5 h).
+2. Wait for the run to go green (about 10 min since P8; it was about 2.5 h).
 3. Push that same commit to main with `git push origin integ<N>:main`.
 
 Checks belong to the commit, so the integ run counts for main. Main then can't receive a commit that hasn't
 passed. Note that `browser-seoul` is only green when every red row has a ratcheted known entry.
+
+## 13. Phase 8 (stream H): CI in minutes, real gates, the Metal frame toward the browser's still
+
+**Why CI took hours.** main.js `frame()` re-armed `requestAnimationFrame` on every call unless `?manual`. CI and the A18
+probe load `?perf`, so every `o.step()` started one more endless rAF chain, and between a still's 10 steps the page drew
+dozens of frames nobody asked for (main run 43218616766: walk0's still took 2153 s, its steps 227 s). Those frames also
+moved the drone (real-time dt) and the auto-exposure, so the stills were not reproducible. Now only the game's own
+`loop()` re-arms rAF, and `tests/browser.mjs` checks that each still draws exactly its own frames (`o.frameN`).
+**browser-seoul: 9293 s -> 219 s.** Two runs of the same code give identical walk0 / club90 / walk180 numbers.
+
+**Gates restored** on those reproducible stills (ci/known-failures.json): warm share walk0 <= 90 %, club90 <= 92.5 %
+(they were 99.5, i.e. off); the triangle entries are gone (every CI pose is under the 2.6 M gate itself); walk0's main
+pass <= 1.45 M; walk180 is a CI still now and camgate's ground/wall row binds on it. The raw heap stays at the P6
+tolerance until the A18 run. Goldens re-recorded from run 43293055925.
+
+**The Metal frame** (PARITY.md section 4): walk0 at the camera that drew the browser's still, with the lightmap's ground
+and wall rects, the irradiance volume, the layer albedos, and the browser's retro-0 grade through the fisheye.
+tools/parity-de.py gates its Delta E 2000 against the browser still on native-macos (<= 3; ratcheted until the
+emitters, signs, sky and people are ported).
+
+### Running the game on your iPhone: what you need (Justin)
+
+**Today** there is no iPhone app to install yet. The Swift code is a library and tests: CI's Mac compiles it for iOS and
+renders one Metal frame, but nothing opens on a phone. The one thing to do on the phone now is the A18 run in Safari
+(section 10: `?level=seoul&perf=a18`, START, SHARE). It needs no account and no Mac.
+
+**For the app (milestone M0 in section 5)** you will need:
+1. **An Apple Developer Program membership** (developer.apple.com/programs, yearly fee, enrol with your Apple ID).
+   It is needed to put the app on your phone through TestFlight and, later, on the App Store.
+2. **One of these to build the app:**
+   - **No Mac (the plan):** GitHub's Mac runners build it and upload it to TestFlight. You do three things once, in a
+     web browser: create the app in App Store Connect (My Apps, +, New App), create an App Store Connect API key
+     (Users and Access, Integrations, Team Keys, role App Manager) and add it to the GitHub repository as secrets
+     (Settings, Secrets and variables, Actions: the key file's text, its Key ID and the Issuer ID). After that every
+     green main build appears in the TestFlight app on your iPhone.
+   - **A Mac, or a rented cloud Mac** (for example MacinCloud or AWS EC2 Mac) with Xcode: open the project, sign in with
+     your Apple ID under Xcode, Settings, Accounts, plug in the phone, press Run. The first time, the iPhone asks you to
+     turn on Developer Mode (Settings, Privacy & Security, Developer Mode) and restart.
+3. **On the iPhone:** the TestFlight app from the App Store (for the no-Mac route). Then tap Install on the build.
+
+Stream H adds the app target and the TestFlight upload job once the account exists; tell the integrator when it does.

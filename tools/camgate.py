@@ -67,6 +67,9 @@ LUMA = np.array([0.2126, 0.7152, 0.0722])
 # and on the same build (main 2dc3578 run 43180707219 vs panel6, eab7226): 55 / 155, 50 / 170, 88 / 327, mean 0.31),
 # so a still narrower than 960 px is gated at round(300 x 0.31) = 93. The threshold is the art target either way.
 ELEMENT_SHOTS = {'walk0', 'walk180', 'w21'}
+# [P8 H, PLAN-P8 gates] the walking street's ground/wall row binds on both of its directions wherever the still exists
+# (CI shoots walk180 since P8 but keeps it out of --hero): panel7 measured walk180 at 0.33 with no gate looking at it
+GW_SHOTS = {'walk0', 'walk180'}
 GATE_EL = dict(n=300, ci_scale=0.31)
 
 
@@ -154,6 +157,8 @@ def main():
             o['elements'], w0 = elements(f)
             thr = GATE_EL['n'] if w0 >= 960 else round(GATE_EL['n'] * GATE_EL['ci_scale'])
             if o['elements'] < thr: fails.append(f'[art] {name}: bright elements {o["elements"]} < {thr} ({"960-wide count" if w0 >= 960 else f"{w0}-wide still, 300 x {GATE_EL['ci_scale']}"})')
+        if base in GW_SHOTS and base not in hero and not r0 and o.get('gw') is not None and o['gw'] < GATE['gw']:
+            fails.append(f'[exposure] {name}: ground/wall {o["gw"]:.2f} < {GATE["gw"]}')
         if base not in hero: continue
         X = lambda msg: fails.append('[exposure] ' + msg)
         C = lambda msg: fails.append('[colour] ' + msg)

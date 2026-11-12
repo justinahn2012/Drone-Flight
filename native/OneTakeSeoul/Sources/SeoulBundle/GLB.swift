@@ -63,6 +63,28 @@ public struct GLB {
         return (d.subdata(in: off ..< d.count), a["count"] as! Int, stride, a["componentType"] as! Int, a["type"] as! String, a["normalized"] as? Bool ?? false)
     }
 
+    /// [P8 H] A named attribute of a mesh's first primitive as floats (float, or normalized u8 / u16 / i16), and its width;
+    /// nil when the mesh has no such attribute.
+    public mutating func floatAttribute(mesh m: Int, _ name: String) throws -> (vals: [Float], comps: Int)? {
+        let p = ((meshes[m]["primitives"] as! [[String: Any]])[0])
+        guard let ai = (p["attributes"] as! [String: Int])[name] else { return nil }
+        let a = try accessor(ai), n = ["SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4][a.type]!
+        var out = [Float](repeating: 0, count: a.count * n)
+        a.data.withUnsafeBytes { b in
+            for i in 0 ..< a.count { for c in 0 ..< n {
+                let o = i * a.stride
+                switch a.comp {
+                case 5126: out[i * n + c] = b.loadUnaligned(fromByteOffset: o + c * 4, as: Float.self)
+                case 5121: out[i * n + c] = Float(b.load(fromByteOffset: o + c, as: UInt8.self)) / (a.normalized ? 255 : 1)
+                case 5123: out[i * n + c] = Float(b.loadUnaligned(fromByteOffset: o + c * 2, as: UInt16.self)) / (a.normalized ? 65535 : 1)
+                case 5122: out[i * n + c] = a.normalized ? max(Float(b.loadUnaligned(fromByteOffset: o + c * 2, as: Int16.self)) / 32767, -1) : Float(b.loadUnaligned(fromByteOffset: o + c * 2, as: Int16.self))
+                default: break
+                }
+            } }
+        }
+        return (out, n)
+    }
+
     /// POSITION (float3) of a mesh's first primitive, and its index (or nil).
     public mutating func positionsAndIndex(mesh m: Int) throws -> (pos: [Float], index: [UInt32]?) {
         let p = ((meshes[m]["primitives"] as! [[String: Any]])[0])
