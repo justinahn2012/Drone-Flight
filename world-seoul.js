@@ -363,7 +363,10 @@ export function buildSeoulGeometry(layout, opts = {}) {
   // by lot and wall) so the phase 2-4 streams, and the collider they shape, are untouched. All render-only (ao, pipe, frame).
   // A drip streak: a multiply decal that is darkest under its source and fades out downward, ragged (2-3 strips of
   // different length and strength), and a little rust tint under steel.
+  // [P6-C] art #2 (macro breakup that survives the grade): every drip at 2.2x its P5 contrast (a 0.8 streak multiplies 0.56)
+  const DRIP_GAIN = 2.2;
   const drip = (a, t, n, s, w, yTop, len, k, R5, rust = false) => {
+    k = Math.max(0.4, 1 - (1 - k) * DRIP_GAIN);
     const strips = 1 + (R5() < 0.5 ? 1 : 0);
     for (let q = 0; q < strips; q++) {
       const ww = w * (0.25 + R5() * 0.45), sc = s + (R5() - 0.5) * (w - ww), ll = len * (0.45 + R5() * 0.55), kk = 1 - (1 - k) * (0.6 + R5() * 0.4);
@@ -376,7 +379,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
   };
   // the wall kit phase 4 rolled against: a downpipe on 60 % of open walls (P4 45 %), conduit on 60 % of fronts (P4 50 %),
   // empty sign brackets (a tenant who left) on a third of the street walls, a dirty soffit streak under every floor band
-  const wallKit5 = (l, info, a, t, n, L, H, Ht, yaw, rh, got, front, street, age, slot) => {
+  const wallKit5 = (l, info, a, t, n, L, H, Ht, yaw, rh, got, front, street, age, slot, wins = []) => {
     const R5 = rng(l.id + ':p5:' + a[0].toFixed(1) + ',' + a[1].toFixed(1)), W3 = (s, y, o) => [a[0] + t[0] * s + n[0] * o, y, a[1] + t[1] * s + n[1] * o];
     if (!got.pipe && L > 3 && R5() < 0.28) {
       facts.pipes++; const s0 = R5() < 0.5 ? 0.14 : L - 0.14;
@@ -400,11 +403,60 @@ export function buildSeoulGeometry(layout, opts = {}) {
         facts.brackets = (facts.brackets || 0) + 1;
       }
     }
+    wallKit6(l, a, t, n, L, H, yaw, got, front, street, age, wins);
     if (street && rh.bands) for (let f = 1; f < Math.min(l.floors, 7); f++) {   // soffit dirt: water runs off the band lip, ragged
       const y = f * l.floorH - 0.1;
       for (let s = 0.1; s < L - 0.3; s += 0.9 + R5() * 1.4) { if (R5() < 0.5) continue; const w = 0.4 + R5() * 1.1; if (s + w > L - 0.05) break;
         drip(a, t, n, s + w / 2, w, y, 0.4 + R5() * (0.8 + age * 1.6), 0.86 - age * 0.1, R5); }
     }
+  };
+  // ---- [P6-C] art #2 / graphics #2 (club270's right wall was flat stucco: (60,58,54) / (69,64,57) / (53,52,50), grain
+  // only; walls Laplacian 7.2 against 14). Its own stream again (R6), all render-only (ao, pipe, frame): the collider and
+  // the parity vectors hold.
+  //  * coping stains: rain off the parapet streaks every open wall from the top, 1-5 m, ragged, darker on older lots
+  //  * a downpipe (with its hopper overflow streak) forced onto any face wider than 8 m, and onto blank faces wider than 3 m
+  //  * conduit runs and a riser on blank faces wider than 8 m
+  //  * outdoor AC units on brackets, render only (body in 'pipe' tinted ivory, E's face kit as acFront draws it), with a
+  //    condensate line and a rust streak, on side and back walls (~1 per 110 m2 of blank wall) and high on older fronts
+  const wallKit6 = (l, a, t, n, L, H, yaw, got, front, street, age, wins) => {
+    if (L < 2) return;
+    const R6 = rng(l.id + ':p6:' + a[0].toFixed(1) + ',' + a[1].toFixed(1)), W3 = (s, y, o) => [a[0] + t[0] * s + n[0] * o, y, a[1] + t[1] * s + n[1] * o];
+    const tint0 = Acc.tint, nWin = wins.length, blank = nWin <= Math.max(1, l.floors - 1) && !front;
+    // coping stains (the top 1-5 m), on 3-9F walls (towers keep their granite clean)
+    if (l.floors <= 9) for (let s = 0.2 + R6() * 0.8; s < L - 0.3; s += 0.7 + R6() * 1.6) { if (R6() < 0.35) continue;
+      const w = 0.3 + R6() * 1.2; if (s + w > L - 0.1) break;
+      drip(a, t, n, s + w / 2, w, H - 0.05, 1.0 + R6() * (2.0 + age * 3.0), 0.86 - age * 0.06, R6); }
+    // a downpipe on every long face and most blank ones
+    if (!got.pipe && (L > 8 || (blank && L > 3 && R6() < 0.75))) {
+      facts.pipes++; got.pipe = true; const s0 = L > 8 && R6() < 0.5 ? L * (0.35 + R6() * 0.3) : R6() < 0.5 ? 0.16 : L - 0.16;
+      A('pipe').tube([W3(s0, 0.08, 0.07), W3(s0, H - 0.15, 0.07)], 0.045, 5);
+      A('pipe').box(W3(s0, H - 0.08, 0.1), [0.1, 0.09, 0.08], yaw, true);
+      for (let y = 1.5; y < H - 0.5; y += 1.8) A('frame').quad(W3(s0 - 0.06, y - 0.015, 0.12), W3(s0 + 0.06, y - 0.015, 0.12), W3(s0 + 0.06, y + 0.015, 0.12), W3(s0 - 0.06, y + 0.015, 0.12), [n[0], 0, n[1]]);
+      drip(a, t, n, s0, 0.4, H - 0.2, 1.5 + R6() * 3.0, 0.78, R6);
+      facts.pipes6 = (facts.pipes6 || 0) + 1;
+    }
+    // conduit on long blank faces: a run at 2.5-3 m and a riser to the roof, with a junction box
+    if (blank && L > 8 && !got.conduit) {
+      got.conduit = true; const yc = 2.5 + R6() * 0.5, s1 = 0.6 + R6() * (L - 1.2);
+      A('frame').tube([W3(0.4, yc, 0.05), W3(L - 0.4, yc, 0.05)], 0.02, 4);
+      A('frame').tube([W3(s1, yc, 0.05), W3(s1, H - 0.1, 0.05)], 0.02, 4);
+      A('pipe').box(W3(s1, yc, 0.07), [0.12, 0.12, 0.05], yaw, true);
+    }
+    // render-only AC units on brackets
+    if (l.floors >= 2 && H > 5) {
+      const want = front ? (age > 0.35 && R6() < 0.35 ? 1 : 0) : Math.round((L * (H - 3)) / 9 * (blank ? 0.08 : 0.03) + R6() * 0.5);
+      for (let k = 0, tries = 0; k < want && tries < want * 4; tries++) {
+        const f = 1 + Math.floor(R6() * Math.min(6, l.floors - 1)), sa = 0.7 + R6() * Math.max(0, L - 1.4), ay = f * l.floorH + 0.75 + R6() * 0.3;
+        if (ay + 0.4 > H || wins.some((W) => W.f === f && Math.abs(W.s - sa) < W.w / 2 + 0.6)) continue;
+        k++; const ac = 0.82 + R6() * 0.22; Acc.tint = [ac, ac * 0.99, ac * (0.9 + R6() * 0.1)];
+        A('pipe').box(W3(sa, ay, 0.2), [0.42, 0.32, 0.17], yaw, false); Acc.tint = tint0;
+        acFront(a, t, n, sa, ay, 0.37);
+        A('frame').tube([W3(sa + 0.3, ay - 0.3, 0.12), W3(sa + 0.3, ay - 1.2 - R6() * 1.2, 0.05)], 0.008, 3);   // condensate line
+        drip(a, t, n, sa, 0.5, ay - 0.33, 0.8 + R6() * 1.8, 0.8, R6, true);
+        facts.ac6 = (facts.ac6 || 0) + 1;
+      }
+    }
+    Acc.tint = tint0;
   };
   for (const l of lots) {
     // [P3-C] every phase-3 draw comes from R2, so phase 2's stream (R) and the collider it shapes stay as they were
@@ -563,7 +615,7 @@ export function buildSeoulGeometry(layout, opts = {}) {
       // [P3-C] art #1 / art bug (club90's 20 m dead frontage): a corner lot's second face on a commercial street is a shopfront too
       const sideShop = !front && streetSide && sideKind !== 'alley' && L > 3.2;
       if (front || streetSide || (open && !slot)) { const got = facadeKit(l, info, a, t2, n2, L, H, Ht, yaw, typ, rh, R2, front, front || streetSide);
-        wallKit5(l, info, a, t2, n2, L, H, Ht, yaw, rh, got, front, front || streetSide, age, slot); }
+        wallKit5(l, info, a, t2, n2, L, H, Ht, yaw, rh, got, front, front || streetSide, age, slot, wins); }
       if (!front && !sideShop) { Acc.tint = WHITE; continue; }
       // ---- ground floor: shopfront bays (interior-mapped), a framed door, posters; or a shutter. Sign bed above.
       if (sideShop) R = R2;
@@ -1157,7 +1209,11 @@ float seoulGrime(vec2 uv) {
     float tide = 0.4 + 0.5 * sgN(vec2(uv.x * 1.3, 1.7)), g = 1.0 - smoothstep(0.0, tide, sWY);
     k *= 1.0 - 0.32 * g * (0.55 + 0.45 * sgN(uv * vec2(9.0, 14.0)));
     sgGR += 0.12 * g;
-    k *= (0.84 + 0.32 * sgN(uv * vec2(3.1, 2.3) + 11.0)) * (0.9 + 0.2 * sgN(uv * vec2(11.0, 7.0) + 5.0));
+    k *= (0.84 + 0.32 * sgN(uv * vec2(3.1, 2.3) + 11.0)) * (0.95 + 0.1 * sgN(uv * vec2(11.0, 7.0) + 5.0));   // [P6-C] art #2: fine grain x0.5
+    // [P6-C] art #2: macro breakup at the scale a 960-wide frame resolves: 2-4 m water-stain blotches and rain streaks
+    // from the top that run the height of the wall (the coping decals carry the hard edges)
+    k *= 0.86 + 0.28 * smoothstep(0.25, 0.75, sgN(uv * 0.33 + 41.0));
+    k *= 1.0 - 0.22 * streak * smoothstep(0.3, 0.7, sgN(vec2(uv.x * 0.9 + 17.0, 0.5)));
   }
   return k;
 }
@@ -1186,7 +1242,8 @@ function patchSeoul(mat, mode) {
         .replace('#include <map_fragment>', `
   sgLi = int(sLay + 0.5); sgLA = uLayA[sgLi]; sgLB = uLayB[sgLi]; sgLuv = sUv * sgLA.z;
   sgDet = texture(tCityDetail, sUv * 0.83) * 0.6 + texture(tCityDetail, sUv * 3.1 + 0.37) * 0.4;
-  { vec3 td = texture(tCityDiff, vec3(sgLuv, max(sgLA.x, 0.0))).rgb; diffuseColor.rgb *= (sgLA.x > -0.5 ? td : vec3(1.0)) * sgLB.rgb * (0.86 + 0.28 * sgDet.a); }
+  { vec3 td = texture(tCityDiff, vec3(sgLuv, max(sgLA.x, 0.0))).rgb; float gA = sgLA.w > 0.5 && abs(sNy) < 0.5 ? 0.14 : 0.28;   // [P6-C] art #2: stucco grain x0.5 on walls
+    diffuseColor.rgb *= (sgLA.x > -0.5 ? td : vec3(1.0)) * sgLB.rgb * (1.0 - gA * 0.5 + gA * sgDet.a); }
   if (sgLA.w > 0.5) diffuseColor.rgb *= seoulGrime(sUv);`)
         .replace('#include <normal_fragment_maps>', `
   { vec3 tn = texture(tCityNor, vec3(sgLuv, max(sgLA.y, 0.0))).xyz * 2.0 - 1.0;
