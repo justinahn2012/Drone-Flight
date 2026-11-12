@@ -49,6 +49,10 @@ Swift BVH, and keep each triangle's vertex order. Ties between equal hit distanc
    dot(D.xz, forward.xz) 0.342; 0 for c <= 0.42, else (0.3 + 0.7 c^2) smoothstep(0.42, 0.58, c); intensity = lumens /
    2.222485 sr x the lobe. Swift reference: Sources/SeoulBundle/Lobes.swift (testWallPackLobe, vectors from the JS).
    The Metal light loop must branch on all four ids, or wall packs go dark on the phone.
+   **Height rules** (P7 H): a mesh with world.json `meshes[].visibility` draws only while the eye's world Y >=
+   `cameraYMin`. Today that is E's `dr_roof` (roof planters, pipes, solar panels behind the 0.9 m parapets):
+   cameraYMin = dressing.json `facts.roofHideY` (6.6 m) minus build()'s 0.25 m margin. Swift: Visibility.swift
+   (`heightRules()`, `drawn(_:cameraY:)`; testHeightRules checks the rule against dressing.json and the mesh bounds).
 3. **Signs:** signs.glb + signs.bin + signs/msdf.png. Draw the 5 batched groups and the sign tiles from an indirect
    command buffer, culled on the GPU.
 4. **Life:** the LifeSim port on its own thread, a pure function of the take clock (section 2's traffic hash).

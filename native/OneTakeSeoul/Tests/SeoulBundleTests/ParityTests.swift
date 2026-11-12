@@ -92,6 +92,29 @@ final class ParityTests: XCTestCase {
         }
     }
 
+    // [P7 H, panel6 native #6] E's roof-prop height rule reaches the port: every roofOnly mesh has one, it equals
+    // dressing.json facts.roofHideY minus build()'s margin, and every prop sits at or above that roof (so hiding is safe)
+    func testHeightRules() throws {
+        let b = try bundle(), rules = b.heightRules()
+        let mats = b.world["materials"] as! [String: [String: Any]], rows = b.world["meshes"] as! [[String: Any]]
+        let roofOnly = rows.filter { (mats[$0["material"] as! String]?["roofOnly"] as? Bool) == true }.map { $0["name"] as! String }
+        XCTAssertFalse(roofOnly.isEmpty, "world.json has no roofOnly mesh (E's dr_roof)")
+        XCTAssertEqual(Set(rules.keys), Set(roofOnly), "a height rule on exactly the roofOnly meshes")
+        let facts = (try JSONSerialization.jsonObject(with: b.data("dressing.json")) as! [String: Any])["facts"] as! [String: Any]
+        let hideY = facts["roofHideY"] as! Double
+        for n in roofOnly {
+            let r = try XCTUnwrap(rules[n])
+            XCTAssertEqual(r.roofHideY, hideY, accuracy: 1e-9, n)
+            XCTAssertEqual(r.cameraYMin, hideY - r.margin, accuracy: 1e-6, n)
+            XCTAssert(r.margin >= 0 && r.margin < 1, "margin \(r.margin)")
+            let minY = ((rows.first { $0["name"] as? String == n }!["bounds"] as! [String: [Double]])["min"]!)[1]
+            XCTAssertGreaterThanOrEqual(minY, hideY - 0.01, "\(n): a prop below roofHideY would vanish in view")
+            XCTAssertFalse(SeoulBundle.drawn(r, cameraY: 1.6), "street eye height: hidden")
+            XCTAssertTrue(SeoulBundle.drawn(r, cameraY: hideY), "at the lowest roof: drawn")
+        }
+        XCTAssertTrue(SeoulBundle.drawn(nil, cameraY: 0), "meshes without a rule always draw")
+    }
+
     func testPackedStreamsDecode() throws {
         let b = try bundle()
         let packed = ((b.world["data"] as! [String: Any])["packed"] as! [String: Any])["files"] as! [String: [String: Any]]
