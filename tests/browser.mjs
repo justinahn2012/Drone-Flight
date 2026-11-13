@@ -57,8 +57,8 @@ const LEVEL_SHOTS = {
 };
 const SHOT_SET = Object.fromEntries(Object.entries(BANDO ? SHOTS : LEVEL_SHOTS[LEVEL] || {}).filter(([k]) => !ONLY || ONLY.includes(k)));
 const ALLOW = [/favicon\.ico/];   // console errors that are not failures
-// [P9 H, panel8 lighting #1 "people masked out"] shots whose camgate ground box is read on paving only: two more frames at
-// the still's instant (step 0.01 ms: no motion, no AE drift), crowd shown then hidden; tools/camgate.py masks the pixels
+// [P9 H, panel8 lighting #1 "people masked out"] shots whose camgate ground box is read on paving only: three more frames at
+// the still's instant (step 0.01 ms: no motion, no AE drift), crowd shown, then hidden for two; tools/camgate.py masks the pixels
 // that differ (people, their contact shadows) out of the ground box. D, P9: walk0's box was mostly the crowd's legs.
 const PEOPLE_MASK = new Set(['walk0', 'walk180']);
 const CAMGATE = { 'seoul-hongdae': true };   // [P3 H] levels whose stills feed tools/camgate.py (lossless PNG, retro 0 and shipped)
@@ -232,7 +232,7 @@ try {
           const crowd = []; o.world.scene.traverse((m) => { if (m.isMesh && /^crowd-/.test(m.name || '')) crowd.push([m, m.layers.mask]); });
           o.step(0.01, 1, false); pmA = cv.toDataURL('image/png');
           for (const [m] of crowd) m.layers.set(31);
-          o.step(0.01, 1, false); pmB = cv.toDataURL('image/png');
+          o.step(0.01, 2, false); pmB = cv.toDataURL('image/png');   // 2 frames: the temporal history lets go of the people
           for (const [m, L] of crowd) m.layers.mask = L;
           pmN = crowd.length;
         }
@@ -263,7 +263,7 @@ try {
     }
     // [P8 H] the game's rAF loop must stay off under ?perf: main.js used to start one more endless chain per o.step(), so a still
     // drew dozens of unasked frames (walk0 2153 s against 227 s of steps) and the drone / AE moved between its steps
-    const want = 10 + (gate ? 1 : 0) + (gate && PEOPLE_MASK.has(name) ? 2 : 0);
+    const want = 10 + (gate ? 1 : 0) + (gate && PEOPLE_MASK.has(name) ? 3 : 0);
     ok(r.frames === want, `still ${name}: draws only its own ${want} frames (drew ${r.frames})`);
     now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro, cam: r.cam } : {}), ...(r.tris ? { tris: r.tris } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
     if (!BANDO && r.tris?.draws) {   // [P6 H] budgets (Seoul): every pass, and the largest render target (the main pass)

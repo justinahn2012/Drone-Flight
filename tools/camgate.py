@@ -85,16 +85,18 @@ def elements(path):
 
 # [P9 H, panel8 lighting #1 "people masked out"; D's P9 A/B: walk0's ground box was mostly the crowd's legs, g/w 0.31 with
 # the crowd and 0.49 without] tests/browser.mjs writes <shot>.people-on.pmask / .people-off.pmask (PNG: the same instant,
-# crowd drawn and hidden). Pixels that differ by > PEOPLE_DIFF codes in any channel, grown by PEOPLE_GROW px (the shipped
-# still is 1-2 frames earlier: a walker moves ~5 cm), are people or their contact shadows, and leave the ground box. The
+# crowd drawn and hidden). Pixels that differ (below), grown by PEOPLE_GROW px (the shipped still is 1-2 frames earlier: a
+# walker moves ~5 cm), are people or their contact shadows, and leave the ground box. The
 # ground and ground/wall rows then read paving (limits unchanged). Without the files (seoulsnap) the whole box is read.
-PEOPLE_DIFF, PEOPLE_GROW, PEOPLE_MIN_PAVING = 6, 2, 0.10
+# CI run 43345805731: frame-to-frame grain alone moves ~45 % of pixels by > 6 codes, so the two frames are compared as
+# 5x5-mean luma (grain averages out, a person does not); > 4 codes, grown 1 px.
+PEOPLE_BLUR, PEOPLE_DIFF, PEOPLE_GROW, PEOPLE_MIN_PAVING = 5, 4.0, 1, 0.10
 def people_mask(path, name, shape):
     d = os.path.dirname(path); on, off = (os.path.join(d, f'{name}.people-{k}.pmask') for k in ('on', 'off'))
     if not (os.path.exists(on) and os.path.exists(off)): return None
-    A = np.asarray(Image.open(on).convert('RGB')).astype(np.int16); B = np.asarray(Image.open(off).convert('RGB')).astype(np.int16)
-    if A.shape[:2] != tuple(shape) or B.shape != A.shape: return None
-    m = np.abs(A - B).max(-1) > PEOPLE_DIFF
+    A = np.asarray(Image.open(on).convert('RGB')).astype(np.float64) @ LUMA; B = np.asarray(Image.open(off).convert('RGB')).astype(np.float64) @ LUMA
+    if A.shape != tuple(shape) or B.shape != A.shape: return None
+    m = np.abs(ndimage.uniform_filter(A, PEOPLE_BLUR) - ndimage.uniform_filter(B, PEOPLE_BLUR)) > PEOPLE_DIFF
     return ndimage.binary_dilation(m, structure=np.ones((3, 3)), iterations=PEOPLE_GROW) if PEOPLE_GROW else m
 
 def stats(path, name):
