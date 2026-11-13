@@ -1146,8 +1146,12 @@ export const GRADES = {
   //   p50 46.4, warm 59 %, B-G r0 -7.8; station warm 45.0 %, below 16 17.1 %. The wb is held between the neutral rows (red
   //   0.91 put station's warm share at 43.2, blue 1.04 the same) and station's warm floor: margins ~0.2 on both neutral rows.
   //   Swept with stills: evBias alone held walk0 at the pin; reject alone moved club90 too (the AE lag from walk0).
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.92, 1.0, 1.02], wbShade: null, evBias: -1.95, lift: 0.025, clipEv: 7.5, con: 1.2, toe: 0.025,
-    tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
+  //   Then (GitHub CI read walk0.r0 R-G +10.2): shadowSat 0.8 -> 0.6, evBias -1.95 -> -2.0, lift 0.025 -> 0.028. Half of
+  //   walk0's red fill is dark-luma red (sign faces just under camgate's 150 line, the awning): shadowSat greys it at its
+  //   source, not by a global wb (red 0.91 put station's warm share at 43.2). CI stills on integ14: walk0 R-G r0 +7.7,
+  //   club90 B-G r0 -6.7, walk0 warm 46.5 %, EV -4.35, p50 46.2; club90 p50 45.7; station below 16 16.6 %, warm 44.9 %.
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.92, 1.0, 1.02], wbShade: null, evBias: -2.0, lift: 0.028, clipEv: 7.5, con: 1.2, toe: 0.025,
+    tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.6, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3], haloE: [0.09, 24, 0.03, 1.0],
     air: [0.022, 0.3, 0.2, 4, 0.028], airTint: [1.2, 0.8, 0.45], airEncl: [0.15, 0.45], airLit: [0.005, 0.025],

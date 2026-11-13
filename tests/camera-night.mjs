@@ -53,7 +53,7 @@ if (process.argv.includes('--print')) console.log(JSON.stringify(gotT));
 for (const k in TABLES) ok(gotT[k] === TABLES[k], `bando table ${k} changed (${gotT[k]} != ${TABLES[k]})`);
 
 // --- 2. night tone curve
-const EV_P6 = -1.95;   // [P6-A] the fitted night evBias (re-fit last, on A + C + D); [P7-A] -1.85 -> -1.9 on p7 A + C + D; [P8-A] -1.9 -> -2.05 on p8 A + C + D; [P9-A] -2.05 -> -1.95 on p9 A + C + D (re-recorded, intended)
+const EV_P6 = -2.0;   // [P6-A] the fitted night evBias (re-fit last, on A + C + D); [P7-A] -1.85 -> -1.9 on p7 A + C + D; [P8-A] -1.9 -> -2.05 on p8 A + C + D; [P9-A] -2.05 -> -1.95 on p9 A + C + D, -1.95 -> -2.0 on integ14 (re-recorded, intended)
 const N = M.GRADES.night, [a, d, mid] = N.tone, wp = 0.24 * 2 ** N.clipEv, [b, c] = M.nightToneBC(a, d, mid, wp);
 const f = (x) => x ** a / (x ** (a * d) * b + c);
 ok(Math.abs(f(0.24) - mid) < 1e-9, 'tone passes grey');
