@@ -1130,7 +1130,13 @@ export const GRADES = {
   //   39.7 / 41.7 / 36.3 / 34.8. GL: w21 slot (34,25,22) -> (30,23,20); station screen (100,76,111) -> (110,126,147), its
   //   violet / magenta 44 -> 2 % of the bright hue; walk0 warm 82 -> 45 %, red 10 -> 21 %. The ground rows (walk0 19,
   //   walk180 21, g/w 0.35) are a light gap: they cannot be bought with exposure while club90 sits over its band.
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.98, 1.0, 0.96], wbShade: null, evBias: -2.05, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
+  // [P9-A] PLAN-P9 (panel 8 colour #4, fpv #3): evBias -2.05 -> -1.95, re-fit last on a scratch merge of p9 A + D (floor
+  //   spill, festoon pools, mirror far reject, wash on the pavers) + C (occupied rooms), re-baked. CI stills (320 wide,
+  //   SwiftShader) at -2.05: p50 club90 45.7, walk0 42.2, walk180 39.6, station 36.3, spawn 32.6; below 16 station 18.8 %,
+  //   walk180 19.0 %. Modelled at -1.95: 47.8 / 44.3 / 41.7 / 38.3 / 34.6; below 16 16.7 / 17.2 %. -2.05 was set to hold
+  //   club90 under 50 against its white shop at 960 (52.9); C's rooms and glass now sit it at 45.7 on CI's still.
+  //   The ground / wall rows (walk0 0.34, walk180 0.39 on the merge) stay a light gap: exposure moves both terms alike.
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.98, 1.0, 0.96], wbShade: null, evBias: -1.95, lift: 0.02, clipEv: 7.5, con: 1.2, toe: 0.025,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3], haloE: [0.09, 24, 0.03, 1.0],
