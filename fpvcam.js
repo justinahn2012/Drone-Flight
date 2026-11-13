@@ -1137,24 +1137,27 @@ export const GRADES = {
   //   club90 under 50 against its white shop at 960 (52.9); C's rooms and glass now sit it at 45.7 on CI's still.
   //   The ground / wall rows (walk0 0.34, walk180 0.39 on the merge) stay a light gap: exposure moves both terms alike.
   // [P9-A] integ14 (H's merge-check --browser on the full phase-9 merge: walk0 warm 37 %, EV -4.50, club90 p50 52, neutral
-  //   rows walk0.r0 R-G +10.7 / club90.r0 B-G -9.5): aeReject 0.01 -> 0.09 (walk0's meter wanted -4.57: its white channel
+  //   rows walk0.r0 R-G +10.7 / club90.r0 B-G -9.5): aeReject 0.01 -> 0.1 (walk0's meter wanted -4.57: its white channel
   //   letters and the lamp pinned AE at evMin, so the red faces stayed under 150); aeArea [0.5, 0.55, 0.45, 0.2] -> [0.5, 1.0,
-  //   0.8, 0.2] (club90's shop glass meters, its frame no longer opens past its band); wb [0.98, 1, 0.96] -> [0.95, 1, 1.0]
-  //   (the fill's red and yellow at retro 0); lift 0.02 -> 0.025 (station below 16). CI stills (tests/browser.mjs, 320 wide)
-  //   on integ14: walk0 EV -4.27, p50 49.3, warm 47 %; club90 p50 47.1, warm 63 %, B-G r0 -7.5; walk0 R-G r0 +9.6; station
-  //   below 16 16.2 %. Swept with stills: reject alone moved club90 too (AE lag from walk0), evBias alone held walk0 at the pin.
-  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.95, 1.0, 1.0], wbShade: null, evBias: -1.95, lift: 0.025, clipEv: 7.5, con: 1.2, toe: 0.025,
+  //   0.8, 0.2] -> [0.5, 1.2, 1.0, 0.2] (lit faces meter: club90's shop glass no longer opens its frame past the band);
+  //   wb [0.98, 1, 0.96] -> [0.92, 1, 1.02] and airTint [1.3, 0.75, 0.38] -> [1.2, 0.8, 0.45] (the fill's red and yellow at
+  //   retro 0); lift 0.02 -> 0.025 (station below 16). With 몽글술집's white letters (seoul-signs NAME_LETTERS), CI's own
+  //   stills (tests/browser.mjs with ?perf, 320 wide) on integ14: walk0 EV -4.30, p50 46.4, warm 50.5 %, R-G r0 +9.8; club90
+  //   p50 46.4, warm 59 %, B-G r0 -7.8; station warm 45.0 %, below 16 17.1 %. The wb is held between the neutral rows (red
+  //   0.91 put station's warm share at 43.2, blue 1.04 the same) and station's warm floor: margins ~0.2 on both neutral rows.
+  //   Swept with stills: evBias alone held walk0 at the pin; reject alone moved club90 too (the AE lag from walk0).
+  night: { night: 1, retro: 0.3, retroVib: 0.5, retroCA: 0, wb: [0.92, 1.0, 1.02], wbShade: null, evBias: -1.95, lift: 0.025, clipEv: 7.5, con: 1.2, toe: 0.025,
     tone: [1.0839, 0.928, 0.2194], tonePc: 0.35, veil: 0.012, veilCapEv: 3.0, shadowSat: 0.8, skySel: 0, greenSel: 0, skyBoost: 0,
     bloom: 0.05, bloomCap: 4096, bloomKnee: 0.5, psfThEv: 4.0, psfNarrowIt: 1, psfNarrowR: 0.5, halo: 0.013, haloR: 1.4, haloTint: [1.0, 0.75, 0.6],
     haloM: [0.04, 2.2, 2], haloMTint: [1, 1, 1], haloW: [0.02, 2.2, 3], haloE: [0.09, 24, 0.03, 1.0],
-    air: [0.022, 0.3, 0.2, 4, 0.028], airTint: [1.3, 0.75, 0.38], airEncl: [0.15, 0.45], airLit: [0.005, 0.025],
+    air: [0.022, 0.3, 0.2, 4, 0.028], airTint: [1.2, 0.8, 0.45], airEncl: [0.15, 0.45], airLit: [0.005, 0.025],
     ghosts: [[-0.55, 0.0015, 0.045, [0.95, 1.0, 0.9]], [-1.3, 0.001, 0.09, [1.0, 0.92, 1.0]]], ghostEv: [9, 10.5], ghostChroma: 0.3, ghostFringe: 0.08, ghostBlades: 7,
     core: 1, coreXtalk: 0.15, coreEv: [0, 2], coreSrc: [35, 55], coreW: [0.05, 0.35], coreXtalkSrc: 0.4, coreEvSrc: [-5.2, -1.6], retroShadow: [230, 0.03], retroShGate: [0.17, 0.26], retroShSky: 1, retroVibGate: [40, 100],
     mag: 0.07, magC: 0.04, magEv: [0.7, 1.6, 3.2, 4.2], grain: 0, grainEv: [0, 0], grainPx: 2,
     noise: [0.014, 0.0022, 1.8], noiseFloor: 0.0025, noiseRGB: [1.1, 0.8, 1.5], noiseCell: [1.4, 8], chromaDark: 0.4, noiseSpan: 6,
     codec: [0.4, 0.02, 0.08, 0.5], sharpDark: [0.03, 0.08], objBlur: 1, meterLens: 1, sharpen: 0.22, sharpPx: 2,
     recon: 0.7, chromaPx: 0.5, hlEv: null, hlGain: 0, pinEv: [0.4, 2.0], pinToe: 0.7, pinCon: 0.5, mbRecon: 1, lensMask: 1, evMin: -4.5, evMax: 1.5,
-    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.09, aeArea: [0.5, 1.0, 0.8, 0.2], aeMatrix: [0.45, 0.5],
+    saturation: 1.05, expo: 0.85, invTone: 0, ae: [0.25, 0.8, 0.7, 0.15], aeReject: 0.1, aeArea: [0.5, 1.2, 1.0, 0.2], aeMatrix: [0.45, 0.5],
     shutter: 1 / 60, readout: 0.011 },
 };
 // Lottes 2016 shoulder constants: x^a / (x^(a d) b + c) passes (0.24, mid) and reaches 1 at the white point hdrMax

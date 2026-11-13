@@ -482,6 +482,9 @@ export const STREET_HUES = { 'Eoulmadang-ro': [['red', 0.32], ['orange', 0.28], 
 // own (walk0 53 % magenta / pink). Red (browser run 1) took walk0 from 25 to 74 % warm, past the 65 top, as one solid block:
 // green is the soju-bar colour and leaves walk0's red / orange to the stacks and blades (modelled ~53 % warm, magenta ~9 %)
 export const NAME_HUES = { '몽글술집': 'green', '해녀감성주점': 'white' };
+// [P9-A] integ14: 몽글술집's channel letters are white LED modules (its neon, scroller and stand stay soju green). The green
+// letter block was 41 % of walk0's bright saturated pixels on CI's full-merge still (walk0 warm 37 %, under the tolerated 40)
+export const NAME_LETTERS = { '몽글술집': 'white' };
 const CLUB_FILM = [['blue', 0.5], ['red', 0.25], ['black', 0.25]];
 const CAT_OF_HUE = { red: 'red', orange: 'ygo', amber: 'ygo', yellow: 'ygo', green: 'ygo', pink: 'pink', magenta: 'pink', cyan: 'cyan', teal: 'cyan', blue: 'blue', violet: 'violet', white: 'white', warm: 'white' };
 const CUSE = { home: null, study: 'office' };       // C's floor use -> the sign tenant (null: flats carry no business sign)
@@ -623,7 +626,7 @@ export function generateSigns(layout, opts = {}) {
       // [P8-A] colour #1: the street's hue weights (own stream, one draw per sign, drawn whatever the branch) and name overrides
       const uS = rH ? rH.next() : 0;
       if (!geo.hue && rH && c.cat !== 'white' && t.use !== 'conv') { const hue = pickW(uS, sHues); c = { cat: CAT_OF_HUE[hue], hue, rgb: srgb(HEX[hue]) }; }
-      const nh = NAME_HUES[(t.name.main + t.name.sub).replace(/ /g, '')];
+      const nk = (t.name.main + t.name.sub).replace(/ /g, ''), nh = type === 'channel' && NAME_LETTERS[nk] || NAME_HUES[nk];
       if (nh && c.cat !== 'white' && t.use !== 'conv') c = { cat: CAT_OF_HUE[nh], hue: nh, rgb: srgb(HEX[nh]) };
       const nightlife = NIGHT_USES.has(t.use) || t.use === 'restaurant' && lot.use === 'pocha';
       const pn = Math.min(1, push * (USE_PUSH[t.use] ?? 0.8));
