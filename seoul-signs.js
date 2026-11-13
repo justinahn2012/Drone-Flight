@@ -460,7 +460,9 @@ function frameSpan(Fr, faces) {
 }
 // [P7-C] art #4 / colour #2 (walk0's sign wall was 87 % orange): the frame stacks' hues, per the colourist's walking-street
 // weights: red / orange 50 %, magenta / pink 20 %, cyan / blue 15 %, green 15 %; the first box of each stack is cyan or violet
-const FRAME_HUES = [['red', 0.28], ['orange', 0.22], ['pink', 0.1], ['magenta', 0.1], ['cyan', 0.08], ['blue', 0.07], ['green', 0.15]];
+// [P9-A] panel 8 colour #2 (walk0 read 33 % violet / magenta, 53 % on CI's still): the stacks carried it (pink 0.10 + magenta
+// 0.10 at top nits, and a violet first box on half of them): pink 0.06, magenta 0.02, red 0.36; the first box is red or cyan
+const FRAME_HUES = [['red', 0.36], ['orange', 0.22], ['pink', 0.06], ['magenta', 0.02], ['cyan', 0.08], ['blue', 0.07], ['green', 0.15]];
 // [P8-A] colour #1 (walk0 read 82 % warm, 77 % orange, against the refs' 42 % orange / 24 % red): the push table's per-street
 // hue re-weighting. On a walking street named here, every saturated face (not white / warm-white boxes, not a chain's
 // convenience-store colours, not a frame stack, which already has its hue) re-draws its hue from the street's weights, from
@@ -468,11 +470,19 @@ const FRAME_HUES = [['red', 0.28], ['orange', 0.22], ['pink', 0.1], ['magenta', 
 // Only when the street carries a push (> 0): the census mix (push 0) is untouched. Weights: the colourist's red / orange 50,
 // pink 20, cyan / blue 15, green 15 drew walk0 to 42 % warm on the p8 merge (GL; magenta 27 % with C's stacks and 몽글술집's
 // pink), under camgate's 45 floor: red / orange 60, pink / magenta 12, cyan / blue 16, green 12.
-export const STREET_HUES = { 'Eoulmadang-ro': [['red', 0.32], ['orange', 0.28], ['pink', 0.08], ['magenta', 0.04], ['cyan', 0.08], ['blue', 0.08], ['green', 0.12]] };
+// [P9-A] panel 8 colour #3 (club90 read 94-96 % warm): the club streets take the colourist's club weights (red 30, orange 20,
+// cyan 15, blue 10, green 15, pink 10), on the same terms (own stream, push > 0, no white / convenience / frame stack)
+export const STREET_HUES = { 'Eoulmadang-ro': [['red', 0.32], ['orange', 0.28], ['pink', 0.08], ['magenta', 0.04], ['cyan', 0.08], ['blue', 0.08], ['green', 0.12]],
+  'Wausan-ro 19-gil': [['red', 0.3], ['orange', 0.2], ['pink', 0.1], ['cyan', 0.15], ['blue', 0.1], ['green', 0.15]],
+  'Wausan-ro 21-gil': [['red', 0.3], ['orange', 0.2], ['pink', 0.1], ['cyan', 0.15], ['blue', 0.1], ['green', 0.15]] };
 // [P8-A] colour #1: name overrides (the shop's own colour, whatever the draw): 몽글술집 on walk0's left is pink; 해녀감성주점's
 // channel letters (walk0's left 2F, about half the frame's bright saturated pixels on their own, amber -> orange on camera)
 // are white LED modules, Hongdae's commonest channel letter: no single hue draw can move walk0's warm share past one sign
-export const NAME_HUES = { '몽글술집': 'pink', '해녀감성주점': 'white' };
+// [P9-A] colour #2: 몽글술집 pink -> soju green. At CI's 320 px its pink face was 38 % of walk0's bright saturated pixels on its
+// own (walk0 53 % magenta / pink). Red (browser run 1) took walk0 from 25 to 74 % warm, past the 65 top, as one solid block:
+// green is the soju-bar colour and leaves walk0's red / orange to the stacks and blades (modelled ~53 % warm, magenta ~9 %)
+export const NAME_HUES = { '몽글술집': 'green', '해녀감성주점': 'white' };
+const CLUB_FILM = [['blue', 0.5], ['red', 0.25], ['black', 0.25]];
 const CAT_OF_HUE = { red: 'red', orange: 'ygo', amber: 'ygo', yellow: 'ygo', green: 'ygo', pink: 'pink', magenta: 'pink', cyan: 'cyan', teal: 'cyan', blue: 'blue', violet: 'violet', white: 'white', warm: 'white' };
 const CUSE = { home: null, study: 'office' };       // C's floor use -> the sign tenant (null: flats carry no business sign)
 const SINGLE = new Set(['hotel', 'motel', 'office']);
@@ -582,7 +592,7 @@ export function generateSigns(layout, opts = {}) {
     const tenants = floorTenants(lot, S, r, nFloors);
     const biz = (f) => { for (let k = Math.min(f, nFloors - 1); k >= 0; k--) if (!tenants[k].home) return tenants[k]; return tenants[0]; };
     let k = 0;
-    const sHues = st.kind === 'walking' && push > 0 ? STREET_HUES[st.name] : null, rH = sHues ? new Rng((seed ^ hashStr(lot.id + '#p8a')) >>> 0) : null;   // [P8-A] (C's renames use '#p8')
+    const sHues = (st.kind === 'walking' || st.kind === 'club') && push > 0 ? STREET_HUES[st.name] : null, rH = sHues ? new Rng((seed ^ hashStr(lot.id + '#p8a')) >>> 0) : null;   // [P8-A] (C's renames use '#p8')
     // [P8-C] ui #2 / art #3 (one walk0 frontage named 한잔카페 on five blades): a tenant's name shows on a face at most twice.
     // Every named box is counted on its wall (plane key); an upper-floor box (blade, stack box, floor or spandrel-row box; not
     // a shop's bed sign, a motel's or a roof sign) whose tenant is already on the wall twice takes another floor tenant (an upper-floor use x NAME_A) from its own stream (r8, drawn only then), so no other
@@ -635,7 +645,9 @@ export function generateSigns(layout, opts = {}) {
         ? (uBulb < 0.11 ? 'chase' : uBulb < 0.19 ? 'bulbs' : 'led') : null;
       const letter = pickW(uLet, [['white', 0.58], ['paleYellow', 0.24], ['paleBlue', 0.18]]);
       // film letters (inverse boxes, yellow faces): red, blue or black vinyl over the diffuser
-      const film = pickW(uFilm, c.hue === 'yellow' ? [['red', 0.35], ['black', 0.65]] : [['red', 0.45], ['blue', 0.3], ['black', 0.25]]);
+      // [P9-A] colour #3: on a club street the film letters of a white box draw blue first (club90's 비밀 board read red on
+      // white, a quarter of the frame's bright saturated pixels); same draw (uFilm), other weights, so nothing else moves
+      const film = pickW(uFilm, c.hue === 'yellow' ? [['red', 0.35], ['black', 0.65]] : st.kind === 'club' && sHues ? CLUB_FILM : [['red', 0.45], ['blue', 0.3], ['black', 0.25]]);
       specs.push({ id: `${lot.id}:${type}${k++}`, type, style, design, lot: lot.id, street: lot.street, use: t.use, floor: t.f, lit: t.lit,
         cat: c.cat, hue: c.hue, rgb: c.rgb, accent: srgb(HEX[acc]), accentName: acc, letter, film, nits, groundK,
         bulbs, galva: GALVA[Math.floor(uGr * GALVA.length) % GALVA.length], flicker, name: t.name, phone: t.phone, tag: t.tag, frame: F, geo,
@@ -807,7 +819,7 @@ export function generateSigns(layout, opts = {}) {
           const out = range(r7, 0.4, 0.6); if (!clearEye(u, out)) continue;
           const n = Math.floor((yTop - fh - 0.3 - 1.1) / 1.35) + 1; if (n < 1) continue;
           stacks.push(u);
-          const acc = Math.floor(r7.next() * n), accHue = r7.next() < 0.5 ? 'cyan' : 'violet';
+          const acc = Math.floor(r7.next() * n), accHue = r7.next() < 0.5 ? 'cyan' : 'red';   // [P9-A] was cyan | violet
           for (let k2 = 0; k2 < n; k2++) { const y = fh + 0.3 + k2 * 1.35, f = Math.min(nFloors - 1, Math.floor(y / fh));
             // [P8-C] art #3: 0.45 x 0.9 (P7's 0.6 x 1.1 hid the signs downstreet), centred where P7's box was
             add('blade', { ...biz(f), lit: true }, { u: u - 0.3, y: y + 0.1, w: 0.45, h: 0.9, d: 0.24, out, stackBox: true, frameStack: true, hue: k2 === acc ? accHue : pickW(r7.next(), FRAME_HUES) }, { frame: Fr }); }

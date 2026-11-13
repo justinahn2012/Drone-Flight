@@ -924,12 +924,15 @@ void main(){
     float sk = smoothstep(0.985, 0.998, texture(tDepthN, clamp(sG, 0.0, 1.0) * uDepthN.xy).r);
     if (sk > 0.0) {
       vec3 air = texture(tAir, uBloomOut > 0.5 ? vUv : clamp(sG, 0.0, 1.0)).rgb;
-      e += air * (sk * max(uAirF.y - dot(e, LUMA), 0.0));
-      // [P8-A] colour #5 (w21's slot read (34,25,22), over the refs' 28): the sum of D's in-scatter and this lift is held
-      // to uAirF.z where AIR_FS weighs the sky as a lit canyon (its luma: enclosure x lit); open domes (weight 0) and bright
-      // points over the sky (lamps, bulbs: 3-6x the cap) are left alone
-      float la = dot(e, LUMA);
-      if (uAirF.z > 0.0 && la > uAirF.z) e *= mix(1.0, uAirF.z / la, sk * clamp(dot(air, LUMA), 0.0, 1.0) * (1.0 - smoothstep(3.0 * uAirF.z, 6.0 * uAirF.z, la)));
+      vec3 lift = air * (sk * max(uAirF.y - dot(e, LUMA), 0.0));
+      float l0 = dot(e, LUMA);
+      // [P8-A] colour #5 (w21's slot read (34,25,22), over the refs' 28): the slot is held to uAirF.z (exposed luma).
+      // [P9-A] (panel 8 colour #1 / art #1 / graphics #4: club270's stair-stepped roofline) the P8 cap scaled the whole of
+      // e by the half-res collider's sky weight, so it darkened D's in-scatter and the lamp haze along the collider's 8-px
+      // outline. Now it only takes back this lift, never below the pixel it was given: e never goes darker than D's term
+      float ll = dot(lift, LUMA);
+      if (uAirF.z > 0.0 && ll > 1e-6 && l0 + ll > uAirF.z) lift *= max(uAirF.z - l0, 0.0) / ll;
+      e += lift;
     }
   }
   // [P2-A] FPV #2: tBloom is the PSF's narrow lobe, tHalo its wide lobe (energy fractions of the uncapped bright pass)
