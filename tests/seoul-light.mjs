@@ -53,6 +53,11 @@ const flat = { lots: [], streets: [{ id: 's', points: [[-60, 0], [60, 0]], width
   const fs0 = C.sky.material.fragmentShader, u = C.uniforms.uCitySkyAir.value;
   ok(/citySkyAir\(cameraPosition/.test(fs0) && u.x === SKY_AIR.gain && u.y === SKY_AIR.top && C.sky.material.uniforms.uCitySkyAir === C.uniforms.uCitySkyAir, `sky air term wired (gain ${u.x}, top ${u.y} m)`);
   C.setSkyAir(0.5); ok(C.sky.material.uniforms.uCitySkyAir.value.x === 0.5, 'setSkyAir reaches the sky'); C.setSkyAir(SKY_AIR.gain);
+  // [P9 D] the wash lands on the pavers only (walls x WASH.wall), and the mirror drops taps whose source lies past MIRROR_FAR
+  { const { WASH: W9, MIRROR_FAR: MF, FESTOON: FS } = await import('../seoul-light.js'), u = C.uniforms;
+    ok(W9.wall === 0 && W9.gain >= 0.5 && u.uCityWashG.value.x === W9.groundNear && u.uCityWashG.value.z === W9.wall && C.wash.setGround(1, 2, 0)[1] === 2, `wash on the pavers only: gain ${W9.gain}, window ${W9.groundNear}-${W9.groundFar} m, walls x${W9.wall}`); C.wash.setGround(W9.groundNear, W9.groundFar, W9.wall);
+    ok(MF[0] >= 15 && MF[1] <= 35 && u.uCityMirrorFar.value.x === MF[0] && C.mirror.setFar(-1)[0] === -1 && C.mirror.setFar(MF[0], MF[1])[1] === MF[1], `mirror far reject ${MF[0]}-${MF[1]} m past the film, live`);
+    ok(FS.gain > 1 && FS.gain <= 2 && FS.re.test('dress:festoon:s065:114.00') && !FS.re.test('dress:stage:festoon'), `festoon string light x${FS.gain}`); }
   // [P8 D] perf #6: the mirror's mover occluders are two draws (people within personR, every vehicle as its type's box)
   { const g = new THREE.Group(), car = new THREE.InstancedMesh(new THREE.BoxGeometry(1.8, 1.5, 4.5).translate(0, 0.75, 0), new THREE.MeshBasicMaterial(), 4); car.name = 'traffic-car'; car.count = 3;
     for (let i = 0; i < 3; i++) car.setMatrixAt(i, new THREE.Matrix4().makeTranslation(i * 10, 0, 0)); g.add(car);

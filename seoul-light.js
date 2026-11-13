@@ -1578,6 +1578,7 @@ export function attach(world, emitters = [], ctx = {}) {
   // grown to >= WASH.minTexels texels, its radiance divided by the growth so its flux holds), a = view depth x luma (so the
   // blur keeps a radiance-weighted depth). Two blur passes to sigma WASH.sigma full-res px; the materials read it (cityWash).
   const wash = { on: !!renderer && ctx.wash !== false, rt: null, rt2: null, frame: -1, ms: 0 };
+  wash.setGround = (near, far, wall) => { const v = U.uCityWashG.value; if (near != null) v.x = near; if (far != null) v.y = far; if (wall != null) v.z = wall; return [v.x, v.y, v.z]; };   // [P9-D] A/B
   if (wash.on) {
     const washMat = new THREE.ShaderMaterial({
       uniforms: { uT: U.uCityTime, uPx: { value: 0.01 } },
@@ -1622,7 +1623,6 @@ export function attach(world, emitters = [], ctx = {}) {
     };
     wash.dispose = () => { wash.rt?.dispose(); wash.rt2?.dispose(); washMat.dispose(); wblur.dispose(); };
     wash.setGain = (g) => { ctx.washGain = g; U.uCityWash.value.x = g; if (!(g > 0)) U.tCityWash.value = washBlack; return g; };
-    wash.setGround = (near, far, wall) => { const v = U.uCityWashG.value; if (near != null) v.x = near; if (far != null) v.y = far; if (wall != null) v.z = wall; return [v.x, v.y, v.z]; };   // [P9-D] A/B
     const prevOBR = scene.onBeforeRender;
     scene.onBeforeRender = function (r, sc, cam, target) {
       prevOBR?.call(this, r, sc, cam, target);
