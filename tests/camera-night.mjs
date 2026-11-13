@@ -64,7 +64,9 @@ let prev = -1, mono = true; for (let ev = -8; ev <= 8; ev += 0.25) { const c0 = 
 ok(mono, 'tone monotonic');
 const want = { '-2': [45, 65], '0': [112, 135], '2': [180, 200], '4': [220, 235], '6': [240, 250], '7.5': [254, 255.1] };
 for (const [ev, [lo, hi]] of Object.entries(want)) { const c0 = code(+ev); ok(c0 >= lo && c0 <= hi, `code at ${ev} EV = ${c0.toFixed(1)} not in [${lo}, ${hi}]`); }
-ok(N.aeReject <= 0.01 && N.aeArea[1] === 0.55 && N.aeArea[0] === 0.5, 'AE: 1 % reject, area sources (>= 5 nits) at 55 % (P6 colour #2: open shots)');
+// [P9-A] re-recorded (intended, integ14 merge-check rows): the meter drops its brightest 9 % of taps (walk0's white channel
+// letters and lamp pinned AE at evMin -4.5) and lit faces weigh 1.0 (0.8 once they fill the frame) so club90's shop glass meters
+ok(N.aeReject >= 0.08 && N.aeReject <= 0.1 && N.aeArea[1] === 1.0 && N.aeArea[0] === 0.5, 'AE: 9 % reject, area sources (>= 5 nits) at full weight (P9: walk0 off the evMin pin, club90 under its band top)');
 
 // --- 3. profile
 const cam = new M.FPVCamera(null); cam.hdr = true; cam._applyGrade(M.GRADES.hdr);
@@ -139,7 +141,8 @@ ok(N.haloE[0] >= 0.07 && N.haloE[0] <= 0.1 && N.haloE[1] > 1 && N.haloE[2] > 0 &
   // [P9-A] re-recorded (intended): panel 8 colour #1 / art #1 / graphics #4 (club270's stair-stepped roofline): the cap takes
   // back only the airlight's own lift, never scales e (D's in-scatter, the lamp haze) on the half-res collider's sky weight
   ok(/uAirF\.z > 0\.0 && ll > 1e-6 && l0 \+ ll > uAirF\.z\) lift \*= max\(uAirF\.z - l0, 0\.0\) \/ ll/.test(nf8) && !/e \*= mix\(1\.0, uAirF\.z/.test(nf8) && N.air[4] > N.air[0] && N.air[4] <= 0.032, 'P9 colour #1: the canyon slot cap takes back only the lift (exposed luma 0.022 < cap <= 0.032); e is never scaled down on the collider depth'); }
-ok(N.wb[0] === 0.98 && N.wb[1] === 1.0, 'P7 colour #5: wb red -2 % (the fill went amber under the warmer dome)');
+// [P9-A] re-recorded (intended): wb [0.98, 1, 0.96] -> [0.95, 1, 1.0]: the retro-0 neutral rows (walk0 R-G +10.7, club90 B-G -9.5)
+ok(N.wb[0] === 0.95 && N.wb[1] === 1.0 && N.wb[2] === 1.0, 'P9: wb red -5 %, blue neutral (camgate neutral rows at retro 0)');
 { const pn7 = cam.profile({ w: 1920, h: 1080 }); ok(pn7.night.air && pn7.night.air.target === N.air[0] && pn7.night.psf.edge.energy === N.haloE[0], 'P7: profile carries the airlight and the edge lobe'); }
 
 console.log(`camera-night tests: ${pass} passed, ${fail} failed`);
