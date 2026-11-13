@@ -478,9 +478,10 @@ export const STREET_HUES = { 'Eoulmadang-ro': [['red', 0.32], ['orange', 0.28], 
 // [P8-A] colour #1: name overrides (the shop's own colour, whatever the draw): 몽글술집 on walk0's left is pink; 해녀감성주점's
 // channel letters (walk0's left 2F, about half the frame's bright saturated pixels on their own, amber -> orange on camera)
 // are white LED modules, Hongdae's commonest channel letter: no single hue draw can move walk0's warm share past one sign
-// [P9-A] colour #2: 몽글술집 pink -> red. At CI's 320 px its pink face was 38 % of walk0's bright saturated pixels on its own
-// (walk0 53 % magenta / pink): with the stacks' violet gone it still held the street over the colourist's 10 % violet line
-export const NAME_HUES = { '몽글술집': 'red', '해녀감성주점': 'white' };
+// [P9-A] colour #2: 몽글술집 pink -> soju green. At CI's 320 px its pink face was 38 % of walk0's bright saturated pixels on its
+// own (walk0 53 % magenta / pink). Red (browser run 1) took walk0 from 25 to 74 % warm, past the 65 top, as one solid block:
+// green is the soju-bar colour and leaves walk0's red / orange to the stacks and blades (modelled ~53 % warm, magenta ~9 %)
+export const NAME_HUES = { '몽글술집': 'green', '해녀감성주점': 'white' };
 const CLUB_FILM = [['blue', 0.5], ['red', 0.25], ['black', 0.25]];
 const CAT_OF_HUE = { red: 'red', orange: 'ygo', amber: 'ygo', yellow: 'ygo', green: 'ygo', pink: 'pink', magenta: 'pink', cyan: 'cyan', teal: 'cyan', blue: 'blue', violet: 'violet', white: 'white', warm: 'white' };
 const CUSE = { home: null, study: 'office' };       // C's floor use -> the sign tenant (null: flats carry no business sign)
