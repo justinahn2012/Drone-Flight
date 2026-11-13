@@ -1426,7 +1426,9 @@ export function attach(world, emitters = [], ctx = {}) {
   cards.instanceMatrix.needsUpdate = true; aRad.needsUpdate = true; aFl.needsUpdate = true; aWash.needsUpdate = true;
   cards.instanceMatrix.setUsage(THREE.DynamicDrawUsage); aRad.setUsage(THREE.DynamicDrawUsage);
   const clipUp = [new THREE.Plane(new THREE.Vector3(0, 1, 0), -(mirror.y + 0.05))];
-  const occMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide, clippingPlanes: clipUp, transparent: true, opacity: 0, blending: THREE.NoBlending });   // [P9-D] alpha 0: no depth
+  const occMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide, clippingPlanes: clipUp, transparent: true, opacity: 0, blending: THREE.NoBlending, forceSinglePass: true });
+  // [P9-D] alpha 0: no depth. forceSinglePass: three draws a transparent DoubleSide material twice (back faces, then front), which
+  // doubled the mirror pass's occluders (walk0 0.198 -> 0.375 M triangles, the merge's budget row); one pass, both sides
   const mskyMat = skyMat(); mskyMat.side = THREE.DoubleSide;
   mskyMat.fragmentShader = mskyMat.fragmentShader.replace('uHor * 0.6 : c, 1.0); }', 'uHor * 0.6 : c, 0.0); }');   // [P9-D] the sky carries no depth (kept)
   const msky = new THREE.Mesh(sky.geometry, mskyMat); msky.frustumCulled = false; msky.renderOrder = -1000;
