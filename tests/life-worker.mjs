@@ -136,8 +136,8 @@ lw.dispose();
   A.dispose(); B.dispose(); lw3.dispose();
 }
 // 7. [P5 H, perf #2 / native #4] seek-safe: a far seek fast-forwards in slices; a newer request retargets it (the worker
-// never finishes a frame nobody will draw); the result is bit-identical to one advanceTo; the main thread draws inline
-// until a frame from after the seek lands, never a stale one
+// never finishes a frame nobody will draw); the result is bit-identical to one advanceTo. ([P9] build() now holds the last
+// worker frame until a frame from after the seek lands, instead of evaluating inline: section 8)
 {
   const opts7 = { seed: 7, density: 1, maxAgents: (await import('../seoul-life.js')).LIFE.maxAgents };
   const lw = await LifeWorker.create(layout, { ...opts7, throwOnError: true }, { WorkerImpl: Worker });
@@ -161,6 +161,46 @@ lw.dispose();
   ok(!bad7, `after a sliced, retargeted fast-forward (5 -> 300 -> 420 s) the frame equals one advanceTo(420) + the same evaluates (camera forward included) bit for bit; the dropped targets cost nothing` + (bad7 ? `: ${bad7} mismatches` : ''));
   ok((await lw.hash(420)) === ref.hash(), 'and the traffic hash equals the main thread\'s');
   lw.release(g); lw.dispose();
+}
+// 8. [P9 G1, perf #2: the retry hitch] the panel's retry frame cost 352 ms of life: the seek flipped build() to the inline
+// evaluate (every walker's trip rebuilt) and the traffic re-simulated up to 10 s. Now each retry's city keeps an exact
+// snapshot (0 steps here), the worker is handed it, and update() holds the worker's last frame until the worker answers.
+// Gates: no inline evaluate across 3 retries; each retry's first update <= 30 ms (node, wall, worst of 3); the worker
+// restores the posted snapshot and answers within 0.5 s; its first post-retry frame equals a fresh sim stepped all the
+// way there (no snapshots) bit for bit, crowd and traffic
+{
+  const THREE = await import('three');
+  const lifeMod = await import('../seoul-life.js');
+  const W = lifeMod.LIFE.warm, o8 = { seed: 7, density: 1, maxAgents: lifeMod.LIFE.maxAgents };
+  const lw8 = await LifeWorker.create(layout, { ...o8, warmTo: W, throwOnError: true }, { WorkerImpl: Worker });
+  const A = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene(), lifeWorker: lw8 }), LW = A.lifeWorker;
+  const cam = new THREE.Vector3(-36, 3, -23), q = new THREE.Quaternion(), sl = (ms) => new Promise((r) => setTimeout(r, ms));
+  await LW.ready;
+  for (let k = 0; k < 60; k++) { A.update(k / 60, cam, q); await sl(2); }
+  while (!(A.sim.prerolled >= lifeMod.LIFE.warmMax + 15)) A.sim.preroll(600);   // (the page pre-rolls 8 steps a frame: done ~25 s in)
+  const inl0 = LW.inline, first = [], catchMs = [], bad = [], near8 = [];
+  for (const n of [1, 2, 3]) {
+    const tk = A.attemptTicks(n), t0 = tk / 240;
+    // (main-thread CPU where node has it, process.threadCpuUsage: the box's other jobs and the worker's own catch-up are not
+    // this thread's; else wall clock)
+    const tc = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : null, a = performance.now(); A.update(t0, cam, q);
+    first.push(tc ? ((u) => (u.user + u.system) / 1000)(process.threadCpuUsage(tc)) : performance.now() - a);
+    const ts = performance.now(); let k = 1;
+    while (!(LW.f && Math.abs(LW.f.t - (W + t0 + k / 60)) <= 0.25) && performance.now() - ts < 1400) { A.update(t0 + k / 60, cam, q); k++; await sl(4); }
+    catchMs.push(performance.now() - ts);
+    const f = LW.f, ref = new LifeSim(layout, o8); ref.advanceTo(f.t);   // stepped from 0, no snapshot
+    const P = {}, V = f.veh; let nb = 0;
+    ref.traffic.vehicles.forEach((v, i) => { const p = ref.traffic.pose(v, ref.aT, P), o = i * VEH_STRIDE; if (V[o] !== Math.fround(p.x) || V[o + 1] !== Math.fround(p.z) || V[o + 4] !== (p.hidden ? 1 : 0)) nb++; });
+    // the crowd within 20 m of the camera (farther units are staggered by the worker's evaluate history; a fresh sim has none)
+    const RC = ref.crowd; RC.evaluate(f.t, { x: cam.x, z: cam.z, fx: null, fz: null }); let nc = 0, nn = 0;
+    for (let i = 0; i < f.VIS.length; i++) { if (!RC.VIS[i] || Math.hypot(RC.X[i] - cam.x, RC.Z[i] - cam.z) > 20) continue; nn++; if (!f.VIS[i] || Math.abs(f.X[i] - RC.X[i]) > 1e-3 || Math.abs(f.Z[i] - RC.Z[i]) > 1e-3) nc++; }
+    near8.push(nn); if (nb || nc || !nn) bad.push(`retry ${n}: ${nb} vehicles, ${nc} of ${nn} near people`);
+    for (let j = 0; j < 20; j++) { A.update(t0 + (k + j) / 60, cam, q); await sl(4); }
+  }
+  ok(LW.inline === inl0 && Math.max(...first) <= 30 && lw8.stats.restores >= 3 && Math.max(...catchMs) < lifeMod.LIFE.retryHoldMs && !bad.length,
+    `retry hitch: 3 retries, ${LW.inline - inl0} inline evaluates (P8: 1 each, 352 ms in the panel's probe); first update ${first.map((x) => x.toFixed(1)).join(' / ')} ms main-thread ${typeof process.threadCpuUsage === 'function' ? 'CPU' : 'wall'} (<= 30); ` +
+    `the worker restored ${lw8.stats.restores} posted snapshots and answered in ${catchMs.map((x) => x.toFixed(0)).join(' / ')} ms (< ${lifeMod.LIFE.retryHoldMs}, the hold's limit; ${LW.held} held frames); its first frame = a fresh sim stepped from 0` + (bad.length ? `: ${bad.join('; ')}` : ` (every vehicle pose; ${near8.join(' / ')} people within 20 m)`));
+  A.dispose(); lw8.dispose();
 }
 console.log(`life-worker tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

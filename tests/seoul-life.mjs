@@ -319,6 +319,29 @@ if (existsSync('tests/seoul-life-dressing.json') && file === 'seoul/layout.json'
   ok(a0 > 0 && new Set(ws.map((w) => w.toFixed(2))).size >= 5 && ws.every((w) => w >= W && w <= LIFE.warmMax) && Math.max(...ws) - Math.min(...ws) > 60 && same === tried && tried >= 12 && worstMs < 500,
     `fresh tableau per retry: warm ${ws.map((w) => w.toFixed(0)).join(' / ')} s (after 350 frames: +${(a0 / 240).toFixed(1)} s, P5 +0; pre-roll to ${pr.toFixed(0)} s ${prMs.toFixed(0)} ms in all); the movers hit the drawn vehicle ${same}/${tried}; a jump costs <= ${worstMs.toFixed(0)} ms CPU`);
 }
+// [P9 G1, perf #2: the retry hitch] each retry's opening city keeps an exact traffic snapshot (LIFE.retryKeep of them), so
+// a retry restores it in 0 steps (P8: up to 10 s re-simulated, ~200 ms of the panel's 403 ms frame), bit-identically; and
+// [ux #1] the iPhone's phone preset builds a quarter of auto's agents (desktop ?preset=phone and CI keep half)
+{
+  const lifeMod = await import('../seoul-life.js'), THREE = await import('three');
+  const L9 = lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene(), lifeWorker: false });
+  for (let k = 0; k < 30; k++) L9.sim.advanceTo(LIFE.warm + k / 60);
+  while (!(L9.sim.prerolled >= LIFE.warmMax + 15)) L9.sim.preroll(600);
+  let exact = 0, steps = 0, bad = 0; const n9 = [1, 4, 9, LIFE.retryKeep];
+  for (const n of n9) {
+    const t = L9.colliders.warm + L9.attemptTicks(n) / 240, nt = Math.floor(t * LIFE.trafficHz + 1e-9);
+    if (L9.sim.snaps.has(nt)) exact++;
+    const T = L9.sim.traffic, s0 = { n: 0 }; const st = T.step.bind(T); T.step = () => { s0.n++; st(); };
+    L9.sim.advanceTo(t); T.step = st; steps = Math.max(steps, s0.n);
+    const ref = new LifeSim(layout, { seed: 7 }); ref.advanceTo(t); if (ref.hash() !== L9.sim.hash()) bad++;
+  }
+  const mk = (ios, quality) => lifeMod.build(layout, { audio: false, people: false, scene: new THREE.Scene(), lifeWorker: false, ios, quality });
+  const a = mk(true, 'low'), b = mk(false, 'low'), c = mk(true, 'auto');
+  ok(exact === n9.length && steps === 0 && !bad && a.maxAgents === Math.round(LIFE.maxAgents * 0.25) && b.maxAgents === Math.round(LIFE.maxAgents * 0.5) && c.maxAgents === LIFE.maxAgents,
+    `retries ${n9.join(', ')} open on a kept snapshot (${exact}/${n9.length}), ${steps} traffic steps to get there (P8 up to 600), ${bad} hash mismatches against a sim stepped from 0; ` +
+    `agents: iPhone phone preset ${a.maxAgents} (${a.stats.agents} built), desktop phone preset ${b.maxAgents}, iPhone auto ${c.maxAgents}`);
+  for (const L of [L9, a, b, c]) L.dispose();
+}
 // life #2 (P4): vehicles right side out. P3's box() wound every face against its normal and the loft was wound inward (98 % of
 // a car's body faced in: a close taxi showed its far panel's inside, buses were hollow). Per primitive: >= 95 % of each part's
 // triangles face away from the primitive's centre (the loft: its spine) and agree with their vertex normals.

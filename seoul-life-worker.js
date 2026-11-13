@@ -14,6 +14,7 @@
 //        -> {type: 'frame', seq, t, aT, buf: {X, Z, YAW, PH, WALK (Float32), POSE, VIS (Uint8), veh (Float32, VEH_STRIDE per
 //            vehicle in traffic.vehicles order: x, z, hx, hz, hidden, brake, hazard, type index)}, events, ms: {sim, crowd,
 //            pack}, allocs}   every buffer transferred, none copied
+//   {type: 'snap', n, S}  (no reply) [P9 G1] a traffic snapshot at step n from the main thread: a seek restores it
 //   {type: 'hash', seq, t}  -> {type: 'hash', seq, t, hash, n}   (LifeSim.hash() after advanceTo(t): parity checks)
 //   {type: 'call', seq, fn, args}  -> {type: 'call', seq, value}  (a pure LifeSim query, e.g. boxesAt / hit / hitPeople)
 //   {type: 'dispose'}
@@ -65,6 +66,10 @@ async function advanceSliced(target) {   // target(): the newest wanted t
       let best = -1; for (const k of sim.snaps.keys()) if (k <= nt && k > best) best = k;
       if (best >= 0) sim.advanceTo(best / hz); else { T.reset(); }
     }
+    else if (nt - T.n > SLICE_STEPS) {   // [P9 G1, perf #2] a jump ahead: the newest snapshot on the way (the main thread posts its own with a retry)
+      let best = -1; for (const k of sim.snaps.keys()) if (k <= nt && k > T.n && k > best) best = k;
+      if (best >= 0) { T.restore(sim.snaps.get(best)); stats.restores++; }
+    }
     if (nt - T.n <= SLICE_STEPS) { sim.advanceTo(t); return t; }
     const t0 = now();
     while (T.n < nt && now() - t0 < SLICE_MS) sim.advanceTo(Math.min(nt, T.n + SLICE_STEPS) / hz);
@@ -72,7 +77,7 @@ async function advanceSliced(target) {   // target(): the newest wanted t
     if (T.n < nt) { await yieldNow(); }
   }
 }
-const stats = { slices: 0, retargets: 0, warmMs: 0 };
+const stats = { slices: 0, retargets: 0, warmMs: 0, restores: 0 };
 
 async function frameLoop() {
   if (running) return; running = true;
@@ -96,7 +101,7 @@ async function frameLoop() {
         V[o] = p.x; V[o + 1] = p.z; V[o + 2] = p.hx; V[o + 3] = p.hz; V[o + 4] = p.hidden ? 1 : 0; V[o + 5] = v.brake || 0; V[o + 6] = v.hazard ? 1 : 0; V[o + 7] = types.indexOf(v.type);
       });
       const t3 = now();
-      send({ type: 'frame', seq: m.seq, t, aT, buf: b, events: C.events.slice(), ms: { sim: t1 - t0, crowd: t2 - t1, pack: t3 - t2 }, allocs, slices: stats.slices, retargets: stats.retargets, dropped: m.dropped || 0 }, buffersOf(b));
+      send({ type: 'frame', seq: m.seq, t, aT, buf: b, events: C.events.slice(), ms: { sim: t1 - t0, crowd: t2 - t1, pack: t3 - t2 }, allocs, slices: stats.slices, retargets: stats.retargets, restores: stats.restores, dropped: m.dropped || 0 }, buffersOf(b));
     }
   } finally { running = false; }
 }
@@ -121,6 +126,7 @@ listen(async (m) => {
       send({ type: 'ready', seq: m.seq, agents: sim.crowd.X.length, vehicles: sim.traffic.vehicles.length, types, hash, ms: now() - t0, warmMs: stats.warmMs, warmTo: m.opts?.warmTo ?? 0 });
     } else if (!sim) throw new Error(`'${m.type}' before 'init'`);
     else if (m.type === 'frame') await frame(m);
+    else if (m.type === 'snap') { if (m.S && Number.isFinite(m.n) && !sim.snaps.has(m.n)) sim.snaps.set(m.n, m.S); }   // [P9 G1] see LifeWorker.snap
     else if (m.type === 'hash') { sim.advanceTo(m.t); send({ type: 'hash', seq: m.seq, t: m.t, hash: sim.hash(), n: sim.traffic.n }); }
     else if (m.type === 'call') {
       if (!QUERIES.has(m.fn)) throw new Error(`call: ${m.fn} is not a pure LifeSim query`);

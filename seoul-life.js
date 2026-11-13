@@ -55,6 +55,12 @@ export const LIFE = {
   // warm: the city's head start (s) at take clock 0; (P5, life #6) a retry opens 0..warmMax - warm s later (attemptTicks)
   // retryPrerollMs (P6): the most a retry spends topping up the pre-roll (attemptTicks)
   retryPrerollMs: 60,
+  // [P9 G1, perf #2] retries whose opening city keeps an exact traffic snapshot (~60 kB each); later ones restore the 10 s grid.
+  // retryHoldMs: after a seek, how long update() draws the worker's last frame while the worker catches up, before it gives
+  // up and evaluates inline (P8 evaluated inline at once: the retry's first frame cost 352 ms of life)
+  retryKeep: 24, retryHoldMs: 1500,
+  // [P9 G1, ux #1] the iOS phone preset's crowd, on top of 'low''s half (build: iosCap)
+  iosLowAgents: 0.5,
   // (P7, perf #1: people were 0.48-0.86 M of the main pass) at most maxLod0 people on the 3.4k LOD (the nearest; the rest
   // of nearR0 on lod1), avatars' mid LOD to midR 42 m (P6 55; past it the 218-triangle far body, P6 282)
   maxLod0: 60,
@@ -1618,12 +1624,16 @@ export class CrowdSim {
   // every person at t (avoidance near cam if given). A = target arrays (default: this). farR: walkers past it are skipped.
   evaluate(t, cam = null, { farR = 150, avoid = true, A = this } = {}) {
     const farR2 = farR * farR, live = A === this && cam, fr = live ? (this.frame = (this.frame || 0) + 1) : 0;
+    // [P9 G1] after a seek (a retry, a rewind: the clock moved > 0.5 s since the last live evaluate) every unit is evaluated:
+    // the stagger below keys on each unit's distance at the last evaluate, so a unit far from the old camera kept its
+    // pre-seek position (up to 45 s off) for up to 5 frames, then jumped
+    const seek = live && this.t != null && Math.abs(t - this.t) > 0.5;
     for (const u of this.units) {
       // render path: units past 60 m are re-evaluated every 3rd frame (<= 10 cm of lag at 60+ m: sub-pixel)
       // (P3: past 110 m every 6th frame, <= 13 cm at 110+ m)
       // and units behind the camera (cam.fx/fz: its horizontal forward) past 25 m every 6th: not drawn, and a turn shows
       // them at most 0.1 s stale
-      if (live && u.trip && u.lk === u.trip.k && u.dc > 25) {
+      if (live && !seek && u.trip && u.lk === u.trip.k && u.dc > 25) {
         const k = u.dc > 110 || (u.db > 0 && u.dc > 25) ? 6 : u.dc > 60 ? 3 : 1;
         if (k > 1 && (fr + u.id) % k) continue;
       }
@@ -1797,6 +1807,9 @@ export class LifeSim {
     const bs = buskSitesFrom(setPieces);
     this.crowd = new CrowdSim(this.net, layout, { seed, density, maxAgents, sites: sites || bs.sites, obstacles: crowdObstacles(obstacles, setPieces ? bs : null), holes, puddles });
     this.t = 0; this.snaps = new Map();
+    // [P9 G1, perf #2] traffic steps a snapshot is also kept at (the retries' opening clocks, build() fills it): a retry then
+    // restores its city exactly, 0 steps, on this thread and (posted) in the worker
+    this.keep = new Set();
   }
   reset() { this.traffic.reset(); this.t = 0; }
   // advance traffic to take clock t (s). The crowd is closed-form (evaluated where it is drawn or queried). A rewind
@@ -1807,11 +1820,12 @@ export class LifeSim {
     if (nt < T.n) {
       let best = -1; for (const k of this.snaps.keys()) if (k <= nt && k > best) best = k;
       if (best >= 0) T.restore(this.snaps.get(best)); else T.reset();
-    } else if (nt - T.n > 1200) {   // (P5) a jump ahead (a new attempt's later city): from the pre-roll's snapshots
+    } else if (nt - T.n > 120 || (nt > T.n && this.keep.has(nt) && this.snaps.has(nt))) {   // (P5) a jump ahead (a new attempt's later city): from the pre-roll's snapshots ([P9] past 2 s, not 20 s: a retry 3-20 s ahead re-simulated up to 1,200 steps, ~200 ms)
       let best = -1; for (const k of this.snaps.keys()) if (k <= nt && k > T.n && k > best) best = k;
       if (best >= 0) T.restore(this.snaps.get(best));
     }
-    while (T.n < nt) { if (T.n % 600 === 0 && !this.snaps.has(T.n) && (T.n <= 36000 || T.n % 3600 === 0)) this.snaps.set(T.n, T.snapshot()); T.step(); }
+    while (T.n < nt) { if (((T.n % 600 === 0 && (T.n <= 36000 || T.n % 3600 === 0)) || this.keep.has(T.n)) && !this.snaps.has(T.n)) this.snaps.set(T.n, T.snapshot()); T.step(); }
+    if (this.keep.has(T.n) && !this.snaps.has(T.n)) this.snaps.set(T.n, T.snapshot());
     this.t = t;
     this.aT = T.n === 0 ? 1 : Math.min(1, Math.max(0, t * LIFE.trafficHz - (T.n - 1)));
   }
@@ -1830,7 +1844,7 @@ export class LifeSim {
       if (best > 0) this._pre.restore(this.snaps.get(best));
     }
     const P = this._pre;
-    for (let k = 0; k < steps && P.n < N; k++) { if (P.n % 600 === 0 && !this.snaps.has(P.n)) this.snaps.set(P.n, P.snapshot()); P.step(); }
+    for (let k = 0; k < steps && P.n < N; k++) { if ((P.n % 600 === 0 || this.keep.has(P.n)) && !this.snaps.has(P.n)) this.snaps.set(P.n, P.snapshot()); P.step(); }
     this.prerolled = Math.max(this.traffic.n, P.n) / LIFE.trafficHz;
     if (P.n >= N && P.step) { this.snaps.set(P.n, P.snapshot()); this._pre = { n: N }; }   // done: drop the sim
     return this.prerolled;
@@ -2636,7 +2650,13 @@ function buildFill(net, layout, emitters, cell = 4) {
 export function build(layout, ctx = {}) {
   const pq = typeof location !== 'undefined' && /[?&]preset=phone/.test(location.search || '') ? 'low' : null;   // (P4) ?preset=phone too
   const seed = ctx.seed ?? 7, q = pq || ctx.quality || 'auto';
-  const maxAgents = ctx.maxAgents ?? (q === 'low' ? Math.round(LIFE.maxAgents * 0.5) : LIFE.maxAgents);
+  // [P9 G1, ux #1] the iPhone's phone preset halves the crowd again (a quarter of auto's agents) until Justin's A18 run
+  // measures it: the phone preset settled at a 1,027 MB heap in the panel's hudsnap, and iOS Safari reloads a tab at
+  // ~1-1.5 GB. Only an iOS device (ctx.ios, else the user agent) at 'low'; desktop ?preset=phone and CI are unchanged.
+  // ?agents=full lifts it (the A18 run's comparison)
+  const ios = ctx.ios ?? (typeof navigator !== 'undefined' && (/iP(hone|ad|od)/.test(navigator.userAgent || '') || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)));
+  const iosCap = !!ios && q === 'low' && !(typeof location !== 'undefined' && /[?&]agents=full/.test(location.search || ''));
+  const maxAgents = ctx.maxAgents ?? Math.round(LIFE.maxAgents * (q === 'low' ? 0.5 : 1) * (iosCap ? LIFE.iosLowAgents : 1));
   // E's set pieces and dressing discs (contract P3-G1/C: world-seoul passes ctx.setPieces = geo.setPieces and ctx.obstacles =
   // geo.dressingOut.obstacles; ctx.dressing (E's geometry output) is read too). Absent: the default rings, no discs.
   const setPieces = ctx.setPieces ?? ctx.dressing?.setPieces ?? null, obstacles = ctx.obstacles ?? ctx.dressing?.obstacles ?? null, holes = ctx.holes ?? ctx.dressing?.holes ?? null;
@@ -2651,6 +2671,11 @@ export function build(layout, ctx = {}) {
   // warm start: the sims run at take clock + 75 s, so a take opens on queues at the lights, buses at stops and taxis
   // pulling over instead of the evenly spread t = 0 set-up (life bug; ~170 ms of traffic steps at load)
   const W = ctx.warm ?? LIFE.warm;
+  // [P9 G1, perf #2: the retry hitch] retry n's opening clock (attemptTicks below), known from the build: the traffic keeps a
+  // snapshot at each of the first LIFE.retryKeep (the drawn sim or the pre-roll passes them), so a retry restores its city in
+  // 0 steps here and the worker restores the same snapshot (lwSeek) instead of fast-forwarding to it
+  const attemptWant = (n) => (LIFE.warmMax - W) * (h32(seed, n, 0x3a77) / 4294967296);
+  for (let n = 1; n <= LIFE.retryKeep; n++) sim.keep.add(Math.floor((W + Math.round(attemptWant(n) * 4) / 4) * LIFE.trafficHz + 1e-9));
   const rain = ctx.rain ?? (typeof location !== 'undefined' && /[?&]rain/.test(location.search || ''));
 
   // ---- people
@@ -2831,7 +2856,7 @@ export function build(layout, ctx = {}) {
   const tmpF = [0, 0, 0, 0], M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), S1 = new THREE.Vector3(1, 1, 1), V3 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0), FWD = new THREE.Vector3(0, 0, 1), QK = new THREE.Quaternion(), PO = {};
   const fwd = new THREE.Vector3(0, 0, -1);
   const hist = new Int32Array(18), ab = new Uint8Array(NP);
-  const stats = { agents: NP, walkers: crowd.units.reduce((n, u) => n + u.gsize, 0), vehicles: traffic.vehicles.length, near: 0, mid: 0, drawn: 0, cpuMs: 0, simMs: 0, crowdMs: 0, trisNear: tiers[0].tris, trisMid: tiers[1].tris, trisFar: tiers[2].tris, lanes: traffic.lanes.length, ways: crowd.ways.length, crossings: sim.net.crossings.length };
+  const stats = { agents: NP, walkers: crowd.units.reduce((n, u) => n + u.gsize, 0), vehicles: traffic.vehicles.length, near: 0, mid: 0, drawn: 0, cpuMs: 0, simMs: 0, crowdMs: 0, trisNear: tiers[0].tris, trisMid: tiers[1].tris, trisFar: tiers[2].tris, lanes: traffic.lanes.length, ways: crowd.ways.length, crossings: sim.net.crossings.length, maxAgents, iosCap };
   let clock = 0, extClock = false, lastClock = null;
   const camP = new THREE.Vector3(0, 2, 0), camE = { x: 0, z: 0, fx: null, fz: null };
   // what the sound needs from the crowd each frame (sound #3): density around the camera, footsteps within 5 m,
@@ -2887,9 +2912,17 @@ export function build(layout, ctx = {}) {
     // first frame: 2.65-22 s with no frame back); until then, and after a seek until a post-seek frame lands, inline
     LifeWorker.create(layout, { seed, density: ctx.density ?? 1, maxAgents, setPieces: lwPlain(setPieces), obstacles: lwPlain(obstacles), holes: lwPlain(holes), puddles: lwPlain(puddles), warmTo: W }).then(lwAttach, (e) => { LW.state = 'failed'; console.warn('[life worker]', e); });
   }
+  // [P9 G1, perf #2] a seek (a retry, a rewind) with the worker on: post this thread's newest traffic snapshot at or before
+  // the target to the worker, which restores it instead of stepping there (its own snapshots stop where it has simulated)
+  function lwSeek(t) {
+    const w = LW.w; if (!w || w.error || typeof w.snap !== 'function') return;
+    const nt = Math.floor(Math.max(0, t) * LIFE.trafficHz + 1e-9); let best = -1;
+    for (const k of sim.snaps.keys()) if (k <= nt && k > best) best = k;
+    if (best >= 0 && best !== LW.snapSent) { LW.snapSent = best; w.snap(best, sim.snaps.get(best)); }
+  }
   function lwFrame(tNow, cam) {   // -> the worker frame to draw at tNow, or null (inline)
     const w = LW.w; if (!w) return null;
-    if (w.error) { LW.state = 'failed: ' + w.error; LW.w = null; return null; }
+    if (w.error) { LW.state = 'failed: ' + w.error; LW.w = null; LW.holdT = null; return null; }
     // [P8] frames up to 0.5 s apart count (a slow or loaded device: P7 kept 1/60 s, asked for a clock it had already passed,
     // and drew inline every frame)
     if (LW.last != null) { const d = tNow - LW.last; if (d > 0 && d < 0.5) LW.dt += (d - LW.dt) * (LW.dt < 0.05 && d > 0.1 ? 0.6 : 0.2); }
@@ -2899,7 +2932,16 @@ export function build(layout, ctx = {}) {
     const c = crowd.frame || 0;
     w.request(tNow + LW.dt, [cam.x, camP.y, cam.z, cam.fx, cam.fz], c + 2);
     const f = w.latest(); if (f) { if (LW.f) w.release(LW.f); LW.f = f; }
-    const use = LW.f && Math.abs(LW.f.t - tNow) <= 0.25 ? LW.f : null;
+    let use = LW.f && Math.abs(LW.f.t - tNow) <= 0.25 ? LW.f : null;
+    // [P9 G1, perf #2: the retry hitch] a seek leaves the newest frame far from the clock. P8 evaluated inline then: every
+    // walker's trip rebuilt at the new clock, 352 ms on the retry's first frame. Now the last worker frame stays drawn (its
+    // people carried along their velocity, at most 0.25 s) while the worker restores the posted snapshot and answers, a few
+    // frames later; only a worker silent for retryHoldMs falls back to inline
+    if (use) LW.holdT = null;
+    else if (LW.f && !w.error) {
+      const now = performance.now(); if (LW.holdT == null) { LW.holdT = now; LW.seeks = (LW.seeks || 0) + 1; }
+      if (now - LW.holdT < LIFE.retryHoldMs) { use = LW.f; LW.held = (LW.held || 0) + 1; }
+    }
     if (use) { LW.used++; crowd.frame = c + 1; if (LW.firstUsed == null) LW.firstUsed = LW.used + LW.inline; } else LW.inline++;   // (inline: evaluate advances it; firstUsed: the update that first drew the worker's crowd)
     return use;
   }
@@ -2918,10 +2960,11 @@ export function build(layout, ctx = {}) {
     crowd.events.length = 0;
     camE.x = camP.x; camE.z = camP.z; const fl = Math.hypot(fwd.x, fwd.z); camE.fx = fl > 1e-3 ? fwd.x / fl : null; camE.fz = fl > 1e-3 ? fwd.z / fl : null;
     const CF = lwFrame(clock + W, camE);   // [P4 H] the worker's frame, else the inline evaluate
-    if (CF) { for (const e of CF.events) crowd.events.push(e); } else crowd.evaluate(clock + W, camE);
+    // ([P9] a frame's door events once: a held or reused frame chimed every update it was drawn)
+    if (CF) { if (LW.evSeq !== CF.seq) { LW.evSeq = CF.seq; for (const e of CF.events) crowd.events.push(e); } } else crowd.evaluate(clock + W, camE);
     const CA = CF || crowd;   // the frame's arrays: X, Z, YAW, PH, WALK, POSE, VIS
     const dtF = CF ? Math.max(-0.25, Math.min(0.25, clock + W - CF.t)) : 0; frameNo++;
-    stats.lifeWorker = LW.state; stats.lifeWorkerUsed = LW.used; stats.lifeWorkerInline = LW.inline;
+    stats.lifeWorker = LW.state; stats.lifeWorkerUsed = LW.used; stats.lifeWorkerInline = LW.inline; stats.lifeWorkerHeld = LW.held || 0;
     const c2 = performance.now();
     const X = CA.X, Z = CA.Z, VIS = CA.VIS, nr2 = LIFE.nearR * LIFE.nearR, gy = groundAt(camP.x, camP.z), camH = camP.y - gy;
     const VZ = ctx.scene?.userData?.seoulLight?.visibility;   // D's frustum + heightfield occlusion (P3), else ctx.visible
@@ -3087,12 +3130,14 @@ export function build(layout, ctx = {}) {
     // snapshot, so the input log, replays, ghosts and the movers all see the same city
     attemptTicks: (n) => {
       if (!(n > 0)) return 0;
-      const want = (LIFE.warmMax - W) * (h32(seed, n, 0x3a77) / 4294967296);
+      const want = attemptWant(n);
       // (P6, perf bug 1) a slow device that hasn't pre-rolled that far tops it up here, within LIFE.retryPrerollMs (the
       // retry's fade hides it), so the retry still opens on a later city, not the same one
       if (ctx.preroll !== false) { const t0 = performance.now(); while ((sim.prerolled || 0) - W - 2 < want && !(sim.prerolled >= LIFE.warmMax + 15) && performance.now() - t0 < LIFE.retryPrerollMs) sim.preroll(60); }
       const have = Math.max(0, (sim.prerolled || 0) - W - 2);
-      return Math.round(Math.max(0, Math.min(want, have)) * 4) * 60;   // whole quarter seconds of 240 Hz ticks
+      const ticks = Math.round(Math.max(0, Math.min(want, have)) * 4) * 60;   // whole quarter seconds of 240 Hz ticks
+      lwSeek(W + ticks / 240);   // [P9 G1, perf #2] the worker gets this thread's snapshot of that city with the seek
+      return ticks;
     },
     // F1 (design #5): vehicles are hard (crash), pedestrians soft (scrape); both pure functions of the take clock
     colliders: { at: (t, out) => sim.boxesAt(t + W, out), hit: (p, r, t) => sim.hit(p, r, t + W), people: (p, r, t) => sim.hitPeople(p, r, t + W), keyed: 'take-clock', warm: W },
@@ -3106,6 +3151,7 @@ export function build(layout, ctx = {}) {
     audio: null,
     dispose() { LW.disposed = true; LW.w?.dispose(); LW.w = LW.f = null; group.traverse((o) => { o.geometry?.dispose?.(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose()); }); group.removeFromParent(); },
     lifeWorker: LW,   // [P4 H] { state, used, inline } (perf / tests)
+    maxAgents, iosCap,   // [P9 G1] what this build was given (perf results say which crowd they measured)
   };
   life.crossPhase = crossPhase;
   if (ctx.audio !== false) life.audio = createSeoulAudio(layout, life, { signs: ctx.emitters, rain });
