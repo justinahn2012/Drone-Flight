@@ -119,6 +119,8 @@ const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+// [P9-F design #3] a missed-start move runs along the segment: |path . gate normal| above this (45 deg)
+const MISSED_ALIGN = 0.7;
 
 // gate: {c, n, w, h, u?}. Width runs along u (default: horizontal, across n), height along n x u.
 function compileGate(g) {
@@ -391,7 +393,7 @@ export class Take {
         L.pre.forEach((_, gi) => this._pre.delete(li * 8 + gi));
       }
       const e = this._award(L.l, now, t0, clip);
-      if (e) { ev.push(e); if (this._T.missedStart && L.l.seg && e.type === 'line') this._missedStart(L.l.seg, now, ev); }
+      if (e) { ev.push(e); if (this._T.missedStart && L.l.seg && e.type === 'line') this._missedStart(L.l, a, p, ev); }
     });
     for (const C of this._carves) {
       const t0 = this._carveTick(C, p, drone, dt, now);
@@ -402,8 +404,18 @@ export class Take {
   // [P8-F design #5 / ux #5] a street's segment just scored: if the street itself isn't armed (no pre-gate record of a named
   // line of that name, crossed the right way) and wasn't flown this take, the pilot joined it past its
   // start gate, so it won't pay; one `missed` event per street per take ({name, start: the nearer start gate's centre})
-  _missedStart(seg, now, ev) {
+  // [P9-F design #3 / ux #2] only for a street being flown, not one the take crosses or brushes (P8: the long route's pass along
+  // RED ROAD 3/4 on the way to THE FORK toasted "RED ROAD · START FROM THE END GATE" in 2 of 3 pilots' records): the move runs
+  // along the segment (path . gate normal > missedAlign) and either it is the street's 2nd segment scored this take, or the
+  // named entry before it was a connector into that street (TO THE <street> n / INTO THE <street> n: the guide's route to it)
+  _missedStart(l, a, p, ev) {
+    const seg = l.seg;
     if (this._missed.has(seg) || this._done.has(seg) || this.free) return;
+    const n = l.n || [0, 0, 1], dx = p.x - a.x, dy = p.y - a.y, dz = p.z - a.z, m = Math.hypot(dx, dy, dz), nm = Math.hypot(n[0], n[1], n[2]) || 1;
+    if (!(m > 1e-6 && Math.abs(dx * n[0] + dy * n[1] + dz * n[2]) / (m * nm) > MISSED_ALIGN)) return;
+    const segs = new Set(this._log.filter((r) => r.of === seg && !r.repeat && r.name.startsWith(seg + ' ') && /\d+\/\d+$/.test(r.name)).map((r) => r.name)).size;   // its own n/m segments (a feature on it, THE FORK on RED ROAD, isn't one)
+    const prev = this._log.length > 1 ? this._log[this._log.length - 2].name : '', to = /^(?:IN)?TO THE (.+) \d+$/.exec(prev);
+    if (segs < 2 && !(to && to[1] === seg)) return;
     let armed = false;
     for (const [k, r] of this._pre) { const L = this._lines[(k / 8) | 0]; if (L && !L.l.micro && L.l.name === seg && r.s === 1) { armed = true; break; } }   // a lapsed window is another miss (slow, not late)
     if (armed) return;

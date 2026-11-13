@@ -80,6 +80,14 @@ def thirds(path):
     a = np.asarray(Image.open(path).convert('L')).astype(np.float32); h = a.shape[0]
     return float(a[2 * h // 3:].mean() / max(1e-3, a[:h // 3].mean()))
 
+def edge_energy(path):
+    """[P9-F ui #1] mean |Laplacian| of the luma (8-bit codes), as tools/seoul-hudsnap.py: the blades' glyph strokes are the
+    thumb's high frequencies (P8's 480 x 270 thumb: 17.0)"""
+    from PIL import Image
+    import numpy as np
+    a = np.asarray(Image.open(path).convert('L')).astype(np.float32)
+    return round(float(np.abs(4 * a[1:-1, 1:-1] - a[:-2, 1:-1] - a[2:, 1:-1] - a[1:-1, :-2] - a[1:-1, 2:]).mean()), 2)
+
 def git(*args, raw=False):
     import subprocess
     try:
@@ -142,6 +150,7 @@ for k, src, crop, pose in (('backdrop', a.backdrop, a.backdrop_crop, a.backdrop_
     r['sha256'] = hashlib.sha256(open(f, 'rb').read()).hexdigest()
     r['satBright'] = round(sat_bright(f), 4)
     r['lowerTop'] = round(thirds(f), 2)
+    r['edge'] = edge_energy(f)
     rec[k] = r
     print(f'{k}.jpg saturated-bright {100 * r["satBright"]:.1f} %')
 if rec: open(sp, 'w', encoding='utf8').write(json.dumps(rec, indent=1, ensure_ascii=False) + '\n')

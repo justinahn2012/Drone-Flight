@@ -493,7 +493,11 @@ body.dev .dev{display:revert!important}
   .lines{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
   .ln{min-height:40px;padding:6px 8px 6px 30px}
   .ln svg{top:8px}
-  .ln:not(.on) small{display:none}   /* unflown: the name only (the hint is on the portrait menu and the crash card; NEXT: border + badge) */
+  .ln:not(.on):not(.shut) small{display:none}   /* unflown: the name only (the hint is on the portrait menu and the crash card; NEXT: border + badge) */
+  /* [P9-F ux #3 / ui #5] a blocked line keeps its reason (P8: STATION STAIRS greyed with no word why on the phone). 8.5 px mono
+     under the name (at the cell's 0.5 opacity); "EXPERT · NOT GUIDED" is ~97 px and a compact cell has ~75 px inside, so it
+     breaks after the dot onto two short lines, never an ellipsis */
+  .ln.shut small{display:block;margin-top:2px;font:600 8.5px/1.15 var(--mono);letter-spacing:0;color:#9a978f;white-space:normal;overflow:visible}
   /* [F2] P3 ui #2 / ux #3: 18 lines: six across at 844-932 px, 13 px names on up to two lines (no "STATION STAI…"), NEXT as a
      corner tick; the grid scrolls inside itself above the bar (main.js fitLines) */
   /* grouped: the groups side by side, two cells across each (STREETS 4 rows, SET PIECES and GAPS 3): all 18 in four

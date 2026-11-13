@@ -2573,7 +2573,10 @@ function showSummary(kind, e) {
   // [P8-F design #4] the tier above 3 stars: CLEAN TAKE (a CUT at >= tuning.cleanTake with no SCRAPE; cut.cleanTake) as a medal
   // where NEXT sat; at 3 stars without it, the medal's bar is the next target
   const ctAt = +LT().cleanTake || 0, ct = kind === 'cut' && !!(e?.cleanTake ?? st.cleanTake);
-  const after = nextT ? `<small>NEXT ${kfmt(nextT)}</small>` : ct ? '<span class="medal">CLEAN TAKE</span>' : ctAt > 0 && isTake ? `<small>CLEAN ${kfmt(ctAt)} · NO SCRAPE</small>` : '';
+  // [P9-F ux #6 / ui #4] one meaning for CLEAN: a line with no contact (the caption's CLEAN tag, the card's CLEAN x/n cell). The
+  // medal asks for something else (no SCRAPE over the whole take, at the bar), so it is named for that: NO SCRAPE (the data key
+  // stays cleanTake)
+  const after = nextT ? `<small>NEXT ${kfmt(nextT)}</small>` : ct ? '<span class="medal">NO SCRAPE</span>' : ctAt > 0 && isTake ? `<small>NO SCRAPE · ${kfmt(ctAt)}</small>` : '';
   $('bStars').innerHTML = isTake ? starsHTML(ns, tg.length) + after : '';
   bLinesRow(tsum);
   const LL = lineList(), nx = nextLine(kind === 'crash' && isTake ? retryFrom() : null), nh = nx ? hintFor(nx.name) : '';
