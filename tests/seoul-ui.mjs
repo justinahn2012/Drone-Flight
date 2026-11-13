@@ -168,6 +168,9 @@ if (S) {
     const h = createHash('sha256').update(readFileSync(join(ROOT, S[k]))).digest('hex');
     ok(SR[k]?.sha256 === h, `stills.json ${k} hash matches ${S[k]}`);
   }
+  // [P9-F ui #1] the thumb's glyphs: shot at 2x (3200 x 1800, max anisotropy) and Lanczos-downscaled, its edge energy (mean
+  // |Laplacian| of the luma, tools/seoul-ui-assets.py) is 20.9 against P8's 1x shot's 17.0; a record with `edge` keeps >= 20
+  if (SR && SR.thumb?.edge != null) ok(+SR.thumb.edge >= 20, `the thumb's sign glyphs: edge energy ${SR.thumb.edge} (>= 20; P8's 1x thumb 17.0)`);
   if (SR) ok(+SR.thumb?.satBright >= 0.03, `the thumb reads as neon: ${(100 * (+SR.thumb?.satBright || 0)).toFixed(1)} % saturated-bright pixels (>= 3 %)`);
   // [P5-F] ui #1 / #2 and the phase-4 bug (pose and commit empty): each still says where it was shot and from which build,
   // and is checked against the crowd's file (seoul-life.js's last commit), not only the look's date; the backdrop has

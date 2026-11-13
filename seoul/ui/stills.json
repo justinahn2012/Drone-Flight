@@ -12,21 +12,19 @@
   "lifeHash": "532a320daf1f61be",
   "wall8": 0,
   "dark": 0.075,
-  "pass": true
+  "pass": true,
+  "edge": 5.52
  },
  "thumb": {
-  "sha256": "1e3d6a14abf23a49287b64dbbcb124de538bdae9d5d803756b7f674e5819b17f",
-  "satBright": 0.0436,
-  "source": "bdA.jpg",
-  "crop": "0.30,0.0,0.80,0.5",
+  "sha256": "0cfc33958ac337b3020ef2558194ef75848e0b3108343168e929781f5bae7447",
+  "satBright": 0.0465,
+  "source": "thumbSS.jpg",
+  "crop": "0.36,0.05,0.86,0.55",
   "pose": "o.tp(27.3,9,-144.8,-36.9,(-12)-o.drone.c.camTilt)",
-  "commit": "a0fdc0e",
+  "commit": "8997100",
   "lifeCommit": "105bfb3",
-  "lowerTop": 3.08,
-  "nearest": 5.34,
+  "lowerTop": 2.12,
   "lifeHash": "532a320daf1f61be",
-  "wall8": 0.026,
-  "dark": 0.081,
-  "pass": true
+  "edge": 20.86
  }
 }
