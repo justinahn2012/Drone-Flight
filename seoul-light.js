@@ -122,10 +122,15 @@ export const SKY_AIR = { gain: 1.0, top: 50, maxT: 160, cap: 20, steps: 8 };
 // P9 (panel 8 graphics #1 / lighting #1 and #4: the P8 wash showed in no still, and on the walls it can only lower ground/wall):
 // the wash lands on up-facing receivers only (n.y > 0.7, the pavers), at `gain`, within groundNear..groundFar m of the emitters'
 // depth (the floor in front of a sign lies nearer the camera than the sign); `wall` x gain on everything else (0: off).
+// Seen (p9/D-snap run4, frozen A/B): it lights the canopies and awnings under the signs (walk0's striped awning, bottom third
+// +3.3 codes), not the open pavers, which lie below the signs' blurred footprint on screen (ground box +-0.2).
 export const WASH = { scale: 8, sigma: 40, gain: 0.6, wall: 0, groundNear: 3.0, groundFar: 6.0, near: 1.5, far: 3.0, minTexels: 1.5, kinds: ['channel', 'lightbox', 'neon', 'screen', 'store', 'tent', 'lobby'] };
 // P8 (lighting #6, the rim): sky-facing verticals reflect the dome (three's own indirect-specular BRDF, roughness and
 // Fresnel), seen where the reflected ray points up (smoothstep(up[0], up[1], r.y)) x SSAO; gain 0 = off
-export const RIM = { gain: 1.0, up: [0.05, 0.5], vertical: 0.35 };
+// P9 (PLAN-P9 "fix or cut"): cut. A frozen-frame A/B at gain 0 vs 1 (p9/D-snap run4) moved walk0's frame by +0.03 codes and
+// club270's by +0.11 (the wall boxes 0.0): the dome is ~1-2 nits, under the wall's own lightmap term. Kept as a live knob
+// (uniforms.uCityRim.value.x), off.
+export const RIM = { gain: 0, up: [0.05, 0.5], vertical: 0.35 };
 // P7: how much of fpvcam's SSAO the lightmap term takes: walls 45 % (P3), up-faces x0.5 of that (fpv #4)
 // P8 (lighting #1): up-faces x0.25 (11 %): a crowd's screen-space AO still dimmed the shop pools on the walking street
 export const AO_LM = { wall: 0.45, ground: 0.25 };
