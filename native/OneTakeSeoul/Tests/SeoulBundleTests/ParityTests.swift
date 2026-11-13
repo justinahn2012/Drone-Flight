@@ -152,8 +152,10 @@ final class ParityTests: XCTestCase {
         XCTAssertEqual(Double(g.tone(SIMD3(repeating: 0.24)).x), tn[2], accuracy: 1e-4, "grey -> tone[2]")
         let wp = Float(0.24 * pow(2, (look["clipEv"] as? Double) ?? 7.5))
         XCTAssertEqual(g.tone(SIMD3(repeating: wp)).y, 1, accuracy: 1e-4, "the white point -> 1")
+        // [integ14] P9's grade (lift 0.025, wb 0.92/1/1.02) saturates to 1 a little earlier; on that plateau float32 rounding
+        // wobbles by ~4e-7, so allow 1e-6 (a real non-monotonic grade moves by >= 1e-3)
         var last: Float = -1
-        for k in 0 ..< 40 { let o = g.apply(SIMD3(repeating: 0.002 * pow(1.4, Float(k))), ev: -4.2, theta: 0).y; XCTAssertGreaterThanOrEqual(o, last); last = o }
+        for k in 0 ..< 40 { let o = g.apply(SIMD3(repeating: 0.002 * pow(1.4, Float(k))), ev: -4.2, theta: 0).y; XCTAssertGreaterThanOrEqual(o, last - 1e-6, "monotonic (float32 rounding on the white plateau allowed)"); last = o }
         let L = FisheyeLens(thetaS: 50 * .pi / 180, k: 0.28, width: 320, height: 180)
         let c = L.map(u: 0.5, v: 0.5); XCTAssertEqual(c.u, 0.5, accuracy: 1e-9); XCTAssertEqual(c.v, 0.5, accuracy: 1e-9); XCTAssertEqual(c.theta, 0, accuracy: 1e-9)
         XCTAssertEqual(L.map(u: 1, v: 1).theta, 1.16, accuracy: 1e-6, "corner = cornerCapRad")
