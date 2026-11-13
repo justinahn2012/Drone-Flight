@@ -660,7 +660,17 @@ export function buildSeoulGeometry(layout, opts = {}) {
           const bays = !lobF && SIGNS?.groundBays ? (SIGNS.groundBays(l, { floors: info.floors, fascias: [...info.fascias, { c: [(a[0] + b[0]) / 2 + nx * K.fascia[2], K.fascia[0] + K.fascia[1] / 2, (a[1] + b[1]) / 2 + nz * K.fascia[2]], normal: [nx, 0, nz], w: L, h: K.fascia[1], side: !front, lit: true }] }, seed).at(-1) || null) : null;
           const bayOf = (sc) => { if (!bays) return null; const px = a[0] + tx * sc, pz = a[1] + tz * sc, u = (px - bays.o[0]) * bays.r[0] + (pz - bays.o[1]) * bays.r[1];
             let j = bays.bays.findIndex((q) => u >= q.u0 && u < q.u1); if (j < 0) j = u < 0 ? 0 : bays.bays.length - 1; return j; };
-          const paneBay = [...Array(nb)].map((_, k) => bayOf(w0 + (k + 0.5) * bwid));
+          // [P9-C] art #1 / life #1 (walk180's 청춘코인빨래방, third request: the pane the camera sees under that sign and its
+          // door box straddles the bay line, 1.1 m laundry and 1.6 m cafe, so it showed the cafe's window bar): a pane that a
+          // trade's bay (laundry, studio, salon, claw) covers by >= 30 % is that trade's room. A trade names what is behind
+          // the glass, and its fixtures run to the partition; a cafe or shop reads either way. Geometry only: no draw moves.
+          const uOf = (sc) => (a[0] + tx * sc - bays.o[0]) * bays.r[0] + (a[1] + tz * sc - bays.o[1]) * bays.r[1];
+          const paneBay = [...Array(nb)].map((_, k) => { const j = bayOf(w0 + (k + 0.5) * bwid); if (j === null || SIGNS.tradeOf(bays.bays[j].name)) return j;
+            const ua = uOf(w0 + k * bwid), ub = uOf(w0 + (k + 1) * bwid), u0 = Math.min(ua, ub), u1 = Math.max(ua, ub);
+            let best = j, bo = 0.3 * (u1 - u0);
+            for (const q of [j - 1, j + 1]) { const B = bays.bays[q]; if (!B || !SIGNS.tradeOf(B.name)) continue; const ov = Math.min(u1, B.u1) - Math.max(u0, B.u0); if (ov >= bo) { bo = ov; best = q; } }
+            if (best !== j) facts.straddle = (facts.straddle || 0) + 1;
+            return best; });
           const roomSeed = new Map();
           for (let k = 0; k < nb; k++) {
             const sc = w0 + (k + 0.5) * bwid, isDoor = k === door, j = paneBay[k], bay = j === null ? null : bays.bays[j];
@@ -1015,6 +1025,17 @@ try {
 // pane sits on the facade; the glass is 14 cm (shop 4 cm) behind it, so a reveal hides part of it at an angle, then frame
 // and mullions, then a ray-box room (5 painted walls in one-point perspective), then blinds, curtains, frosting or a pocha
 // vinyl curtain. Posters (kind 3) are flat. Unlit rooms (< 2 nits) never light their lamps.
+// [P9-C] life #1 / art #1 (rooms with people in them): the seats behind a cafe's glass (sgSeats) and the light on the people
+// in a shop (lit x the wall's light at their depth). occ: a cafe's filled share, 0.4-0.7 per room (seed hash x 8.7, as P8's
+// back layer). seatRun is sgSeats' placement in JS (tests: pitch CV, occupancy) with the shader's hash.
+export const SEATS = { jitter: 0.4, lit: 0.6, occ: [0.4, 0.7] };
+const fr32 = (v) => v - Math.floor(v), sgHashJS = (x, y) => fr32(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453);
+// -> the filled seats' centres (m along the strip) in [x0, x1) for room seed s (the shader's floor(seed x 97)) and share occ
+export function seatRun(s, occ, x0, x1) {
+  const out = [];
+  for (let ci = Math.floor(x0); ci < x1; ci++) { const cx = ci + 0.5 + SEATS.jitter * (sgHashJS(ci + 2.3, s) - 0.5); if (cx >= x0 && cx < x1 && sgHashJS(ci + 0.7, s + 3.1) < occ) out.push(cx); }
+  return out;
+}
 const SG_HEAD = /* glsl */`
 uniform sampler2D tSeoulInt; uniform float uSeoulNorm[16]; uniform float uSeoulTime;
 varying vec4 sEm; varying vec4 sWin; varying vec3 sWPos; varying vec3 sONrm; varying vec2 sUv;
@@ -1032,6 +1053,34 @@ vec4 sgTile(float t, vec2 uv, float lod) {
 float sgHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 float sgVN(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
   return mix(mix(sgHash(i), sgHash(i + vec2(1.0, 0.0)), f.x), mix(sgHash(i + vec2(0.0, 1.0)), sgHash(i + vec2(1.0, 1.0)), f.x), f.y); }
+// [P9-C] life #1: a shop's light at depth z of its D-deep room (P8's -1.5 EV fall, +0.65 EV at the glass); people inside
+// are lit at ${SEATS.lit} x this (life #1: P8's figures were lit as bright as the wall at the glass, pale against the back)
+float sgLz(float z, float D) { return exp2(0.65 - 1.5 * clamp(z / D, 0.0, 1.0)); }
+// [P9-C] life #1 / art #1 (walk180's window bar: seven seated figures at one pitch, one posture, pale shirts; club90 empty):
+// seats along a strip x (m), one per 1 m cell, the seat ${SEATS.jitter} m jittered (pitch 1 m +-${SEATS.jitter * 100} %), a share
+// occ of them filled (empty runs of 1-3), each seat one of the bar tile's three figures at its own value (x 0.75-1.2).
+// G1's P7 seated sway and lean ride on the seat. y in tile metres (counter top 1.02-1.07). bar 1: a continuous window
+// counter; 0: tables 1.2 m long at 1.5 m pitch with dark chairs under the seated (the room's middle). JS mirror: seatRun.
+vec4 sgSeats(float x, float y, float s, float occ, float bar, float lod) {
+  float c = floor(x), bd = 9.0, bc = 0.0;
+  for (int k = -1; k <= 1; k++) { float ci = c + float(k), cx = ci + 0.5 + ${SEATS.jitter.toFixed(2)} * (sgHash(vec2(ci + 2.3, s)) - 0.5);
+    if (sgHash(vec2(ci + 0.7, s + 3.1)) < occ && abs(x - cx) < abs(bd)) { bd = x - cx; bc = ci; } }
+  if (y < 1.07) {
+    if (bar > 0.5) return sgTile(15.0, vec2(fract(x / 3.0), y / 3.0), lod);   // the window counter
+    float tu = fract((x + 0.15) / 1.5);
+    if (y > 1.02 && tu < 0.8) return vec4(0.38, 0.24, 0.13, 1.0);             // a table top
+    if (abs(bd) < 0.21 && y < 0.98 && y > 0.3) return vec4(0.05, 0.045, 0.04, 0.92);   // the chair, the sitter's legs
+    if (tu < 0.8 && (tu < 0.03 || abs(tu - 0.77) < 0.03)) return vec4(0.04, 0.04, 0.04, 1.0);   // table legs
+    return vec4(0.0);
+  }
+  if (abs(bd) > 0.34) return vec4(0.0);
+  float fp = sgHash(vec2(bc + 3.1, s + 5.0)) * 6.2832, fw = 0.5 + 0.4 * fract(fp * 1.37), ft = uSeoulTime;
+  float up = smoothstep(1.06, 1.12, y), fx = up * (0.02 * sin(ft * fw + fp) + 0.015 * sin(ft * 0.23 + fp * 2.1)), fy = y - up * 0.012 * max(0.0, sin(ft * 0.31 + fp));
+  float fi = floor(sgHash(vec2(bc + 5.1, s)) * 3.0);
+  vec4 f = sgTile(15.0, vec2((fi + 0.5 + clamp(bd - fx, -0.49, 0.49)) / 3.0, clamp(fy, 0.0, 2.999) / 3.0), lod);
+  f.rgb *= 0.75 + 0.45 * sgHash(vec2(bc + 9.7, s));
+  return f;
+}
 // [P3-C] what a pane reflects (art #3, graphics #5), scene-linear (NITS 0.1): the frontage across the street ~9 m away (a
 // sign band at 2.8-4.2 m, lit shopfronts, lit windows by floor, a blade every ~11 m, a roofline), the wet street below and
 // the dark sky above. Signs ~40-60 nits, lit windows ~10, walls ~0.2: at F = 0.04 neon shows on the glass as it does.
@@ -1085,13 +1134,18 @@ vec3 sgTradeRoom(float trade, vec3 hit, float Wr, float Hr, float D, float sideW
   float onW = max(sideW, backW), u = sideW > 0.5 ? hit.z + sign(hit.x) * 13.0 : hit.x + Wr * 0.5, v = hit.y, hs = fract(seed * 17.3);
   if (trade < 1.5) {   // coin laundry
     if (onW > 0.5 && v < 1.9 && (sideW < 0.5 || hit.z > 0.6)) {
-      float cw = 0.68, ci = floor(u / cw), cu = fract(u / cw) * cw - cw * 0.5, row = step(0.97, v), y0 = row > 0.5 ? 1.0 : 0.08, y1 = row > 0.5 ? 1.86 : 0.94;
+      // [P9-C] art #1 (third request): two rows at 0.85 m pitch (P8 0.68), 0.5 m doors (P8 0.4) on lit drums: stainless,
+      // perforated, a tumble of colour in 45 % of them, so the machines read through the glass at 5-10 m
+      float cw = 0.85, ci = floor(u / cw), cu = fract(u / cw) * cw - cw * 0.5, row = step(0.97, v), y0 = row > 0.5 ? 1.0 : 0.08, y1 = row > 0.5 ? 1.86 : 0.94;
       if (abs(cu) > cw * 0.5 - 0.012 || v < y0 || v > y1) return vec3(0.04) * L * 1.4;   // gaps between machines
       float cy = y0 + (y1 - y0) * 0.45, dr = length(vec2(cu, v - cy)), hm = sgHash(vec2(ci, row + floor(seed * 41.0)));
-      if (v > y1 - 0.11) { float led = step(length(vec2(cu - 0.2, v - y1 + 0.055)), 0.012); return mix(vec3(0.08) * L * 1.4, vec3(0.1, 1.0, 0.3) * L * 4.0, led); }
-      if (dr < 0.2) return (hm < 0.35 ? mix(vec3(0.6, 0.15, 0.2), vec3(0.15, 0.3, 0.7), fract(hm * 7.0)) * (0.5 + 0.5 * sgVN(vec2(cu, v) * 20.0 + hm * 9.0)) : vec3(0.05, 0.06, 0.07)) * L * 1.4;
-      if (dr > 0.2 && dr < 0.217) return vec3(0.8, 0.9, 1.0) * L * 4.0;   // [P8-C] art #1: the lit porthole ring
-      if (dr < 0.245) return vec3(0.55, 0.56, 0.58) * L * 1.4;   // chrome rim
+      if (v > y1 - 0.11) { float led = step(length(vec2(cu - 0.28, v - y1 + 0.055)), 0.012); return mix(vec3(0.08) * L * 1.4, vec3(0.1, 1.0, 0.3) * L * 4.0, led); }
+      if (dr < 0.25) { float perf = step(0.45, fract(cu * 36.0)) * step(0.45, fract(v * 36.0)), dz = dr / 0.25;
+        vec3 drum = vec3(0.72, 0.76, 0.8) * (0.85 + 0.15 * perf) * (1.0 - 0.45 * dz * dz);
+        vec3 load = mix(vec3(0.6, 0.15, 0.2), vec3(0.15, 0.3, 0.7), fract(hm * 7.0)) * (0.5 + 0.5 * sgVN(vec2(cu, v) * 20.0 + hm * 9.0));
+        return (hm < 0.45 && v < cy + 0.06 * sin(cu * 9.0 + hm * 20.0) ? load * 1.6 : drum) * L * 2.4; }
+      if (dr < 0.267) return vec3(0.8, 0.9, 1.0) * L * 4.0;   // [P8-C] art #1: the lit porthole ring
+      if (dr < 0.295) return vec3(0.55, 0.56, 0.58) * L * 1.4;   // chrome rim
       return vec3(0.82, 0.82, 0.8) * L * 1.4;                     // enamel
     }
     if (floorW > 0.5) { float ck = mod(floor(hit.x / 0.3) + floor(hit.z / 0.3), 2.0); return vec3(0.42 + 0.06 * ck) * L * 1.4; }
@@ -1239,26 +1293,59 @@ void seoulGlass(inout vec4 dc) {
   }
   // [P8-C] graphics #1 / fpv #3: a back layer 4-6 m in (G1's figures, dimmer and smaller with the depth): a lit shop has
   // people at the back as well as at the glass (cafes 40-70 % of the 1 m cells, the rest 35 %)
-  if (kind > 0.5 && lit > 0.5 && abs(room - 9.0) > 0.5) {
+  // [P9-C] art #1: not in a laundromat (its back wall is machines); life #1: lit at 0.6 x the wall (P8 0.5)
+  float lodN = clamp(log2(px * 512.0 / 3.0), 0.0, 6.0), occC = ${SEATS.occ[0].toFixed(2)} + ${(SEATS.occ[1] - SEATS.occ[0]).toFixed(2)} * fract(seed * 8.7);
+  float laund = trade > 0.5 && trade < 1.5 ? 1.0 : 0.0, cafe = kind > 0.5 && trade < 0.5 && abs(room - 1.0) < 0.5 ? 1.0 : 0.0;
+  if (kind > 0.5 && lit > 0.5 && abs(room - 9.0) > 0.5 && laund < 0.5) {
     float zb = 4.0 + 2.0 * fract(seed * 4.13), tb = zb / rr.z;
     if (zb < D - 0.3 && tb < t) {
-      vec3 hb = p0 + rr * tb; float xb = hb.x + fract(seed * 6.1) * 3.0, cb = floor(xb), occ = abs(room - 1.0) < 0.5 ? 0.4 + 0.3 * fract(seed * 8.7) : 0.35;
+      vec3 hb = p0 + rr * tb; float xb = hb.x + fract(seed * 6.1) * 3.0, cb = floor(xb), occ = cafe > 0.5 ? occC : 0.35;
       if (abs(hb.x) < Wr * 0.5 - 0.2 && hb.y > 0.0 && hb.y < 2.2 && sgHash(vec2(cb + 5.3, floor(seed * 71.0))) < occ) {
-        vec4 bc = sgTile(10.0, vec2(fract(xb / 3.0), clamp(hb.y, 0.0, 2.999) / 3.0), clamp(log2(px * 512.0 / 3.0), 0.0, 6.0));
-        col = mix(col, bc.rgb * uSeoulNorm[int(room)] * L * 0.5 * exp2(0.65 - 1.5 * zb / D), bc.a * 0.9);
+        vec4 bc = sgTile(10.0, vec2(fract(xb / 3.0), clamp(hb.y, 0.0, 2.999) / 3.0), lodN);
+        col = mix(col, bc.rgb * uSeoulNorm[int(room)] * L * ${SEATS.lit.toFixed(2)} * sgLz(zb, D), bc.a * 0.9);
       }
     }
+  }
+  // [P9-C] life #1 / art #1 (rooms that read occupied; club90's cafe read closed): one standing staffer per lit shop room (G1's
+  // standing figures, tile 10): a cafe's barista behind the counter, a clerk 2.2-3.8 m in; a laundromat's customer folding at
+  // a laminate table 2.6-3.2 m in, piles of folded washing on it. Lit at 0.6 x the wall, a +-3 cm weight shift.
+  float zm = 1.2 + fract(seed * 3.17) * 0.8, mmR = kind > 0.5 ? max(1.0, floor(Wr / 2.4 + 0.5)) : 1.0, ic = floor(fract(seed * 4.7) * mmR);
+  if (kind > 0.5 && lit > 0.5 && abs(room - 9.0) > 0.5) {
+    float zs = laund > 0.5 ? 2.6 + 0.6 * fract(seed * 2.9) : cafe > 0.5 ? zm + 0.45 : 2.2 + 1.6 * fract(seed * 5.3);
+    float xs = cafe > 0.5 ? (ic + 0.5) * Wr / mmR - Wr * 0.5 : (fract(seed * 3.9) - 0.5) * max(Wr - 1.6, 0.0), ts = zs / rr.z;
+    if (zs < D - 0.4 && ts < t) {
+      vec3 hs = p0 + rr * ts; float sp = fract(seed * 6.7) * 6.2832, dx = hs.x - xs - 0.03 * sin(uSeoulTime * (0.5 + 0.4 * fract(sp)) + sp);
+      if (abs(dx) < 0.45 && hs.y > 0.0 && hs.y < 2.2) {
+        vec4 sc = sgTile(10.0, vec2((floor(fract(seed * 8.3) * 3.0) + 0.5 + dx) / 3.0, hs.y / 3.0), lodN);
+        col = mix(col, sc.rgb * uSeoulNorm[int(room)] * L * ${SEATS.lit.toFixed(2)} * sgLz(zs, D), sc.a);
+      }
+    }
+    if (laund > 0.5) { float zt = zs - 0.45, tt = zt / rr.z;
+      if (tt < t) { vec3 ht = p0 + rr * tt; float ox = ht.x - xs, ax = abs(ox); vec3 tc = vec3(-1.0);
+        if (ax < 0.8 && ht.y > 0.0 && ht.y < 1.06) {
+          if (ht.y > 0.86 && ht.y < 0.9) tc = vec3(0.85, 0.85, 0.82);                              // the laminate top
+          else if (ht.y >= 0.9 && ax < 0.66) { float pf = fract((ox + 0.66) / 0.26), ph = sgHash(vec2(floor((ox + 0.66) / 0.26), floor(seed * 43.0)));
+            if (ph > 0.3 && pf > 0.12 && ht.y < 0.92 + 0.13 * ph) tc = mix(vec3(0.7, 0.68, 0.62), mix(vec3(0.6, 0.15, 0.2), vec3(0.2, 0.32, 0.65), fract(ph * 7.0)), step(0.55, fract(ph * 3.0)))
+              * (0.8 + 0.2 * step(0.5, fract((ht.y - 0.9) / 0.03))); }                            // folded piles, the folds
+          else if (ht.y < 0.86 && ax > 0.72 && ax < 0.76) tc = vec3(0.4);                            // legs
+        }
+        if (tc.x >= 0.0) col = tc * L * 1.4 * sgLz(zt, D); } }
   }
   // [P3-C] mid-depth layer (art #3): shelves, counters, menu boards, diners 1.2-2 m behind shop glass and office windows
   float mid = trade > 0.5 ? -1.0 : room < 6.5 ? room : (room > 7.5 && room < 8.5 ? 7.0 : -1.0);
   if (mid > -0.5) {
-    float zm = 1.2 + fract(seed * 3.17) * 0.8, tm = zm / rr.z;
+    float tm = zm / rr.z;
     if (zm < D - 0.4 && tm < t) {
       // [P8-C] a wide room repeats the bay's layer every ~2.4 m, mirrored (P7: one per pane)
-      vec3 hm = p0 + rr * tm; float mm = kind > 0.5 ? max(1.0, floor(Wr / 2.4 + 0.5)) : 1.0, mr = (hm.x + Wr * 0.5) / (Wr / mm), mi = floor(mr), um = mr - mi;
+      vec3 hm = p0 + rr * tm; float mm = mmR, mr = (hm.x + Wr * 0.5) / (Wr / mm), mi = floor(mr), um = mr - mi;
       if (mod(mi, 2.0) > 0.5) um = 1.0 - um;
       if (seed > 0.5) um = 1.0 - um;
-      if (abs(hm.x) < Wr * 0.5 && hm.y > 0.0 && hm.y < 3.0) {
+      // [P9-C] life #1 / fpv #3 (club90: three counters in one room read as booths, about 3 people): a cafe has one counter
+      // (cell ic, its barista behind it); its other cells are tables with seated people, 40-70 % of the seats filled
+      if (cafe > 0.5 && abs(mi - ic) > 0.5 && abs(hm.x) < Wr * 0.5 - 0.15 && hm.y > 0.0 && hm.y < 2.7) {
+        float yt = hm.y + 0.3; vec4 tc = sgSeats(hm.x + fract(seed * 7.3) * 3.0, yt, floor(seed * 89.0), occC, 0.0, lodN);
+        col = mix(col, tc.rgb * uSeoulNorm[int(room)] * (L * ${SEATS.lit.toFixed(2)} * sgLz(zm, D) + dot(L, vec3(0.2126, 0.7152, 0.0722)) * vec3(0.32, 0.24, 0.15) * step(1.07, yt) * exp(-3.0 * (yt - 1.07))), tc.a);
+      } else if (abs(hm.x) < Wr * 0.5 && hm.y > 0.0 && hm.y < 3.0) {
         vec4 mc = sgTile(20.0 + floor(mid * 0.5 + 0.001), vec2((mod(mid, 2.0) + clamp(um, 0.01, 0.99)) * 0.5, hm.y / 3.0), clamp(log2(px * 256.0 * mm / Wr), 0.0, 6.0));
         col = mix(col, mc.rgb * uSeoulNorm[int(room)] * L * 0.85, mc.a);
       }
@@ -1271,18 +1358,21 @@ void seoulGlass(inout vec4 dc) {
     float zn = 0.5 + fract(seed * 2.37) * 0.4, tn = zn / rr.z;
     if (tn < t && zn < D - 1.0) {
       vec3 hn = p0 + rr * tn; float xm = hn.x + fract(seed * 7.7) * 3.0;
-      if (hn.y > 0.0 && hn.y < 3.0 && (nl > 12.0 || sgHash(vec2(floor(xm), floor(seed * 97.0))) < 0.5)) {
+      // [P9-C] life #1: the window bar's seats jittered with gaps, 40-70 % filled (sgSeats), lit at 0.6 x the wall with a
+      // warm key off the counter on the sitters
+      if (nl > 12.0) { if (hn.y > 0.0 && hn.y < 3.0) { vec4 nc = sgSeats(xm, hn.y, floor(seed * 97.0), occC, 1.0, lodN);
+        col = mix(col, nc.rgb * uSeoulNorm[int(room)] * (L * ${SEATS.lit.toFixed(2)} * sgLz(zn, D) + dot(L, vec3(0.2126, 0.7152, 0.0722)) * vec3(0.32, 0.24, 0.15) * step(1.07, hn.y) * exp(-3.0 * (hn.y - 1.07))), nc.a); } }
+      else if (hn.y > 0.0 && hn.y < 3.0 && sgHash(vec2(floor(xm), floor(seed * 97.0))) < 0.5) {
         // [P7-G1] life #3 / fpv #5: the figures live (P6 read as mannequins). Per figure (1 m cell, phase-offset per window):
         // shoppers browse (a slow +-12 cm drift along the shelf), shift their weight (+-3 cm at 0.5-0.9 Hz) and bob on the
-        // step; at the window bar the seated half sways (+-2 cm) and leans in over the counter, the counter stays put.
-        // Cells are 1 m and a figure is <= 0.45 m wide, so a shift never pulls in the next cell's figure.
+        // step. (The seated half's sway and lean are in sgSeats, P9.) Cells are 1 m and a figure is <= 0.45 m wide, so a
+        // shift never pulls in the next cell's figure.
         float fc = floor(xm), fp = sgHash(vec2(fc + 3.1, floor(seed * 53.0))) * 6.2832, ft = uSeoulTime;
         float fw = 0.5 + 0.4 * fract(fp * 1.37), fy = hn.y, fx;
-        if (nl > 12.0) { float up = smoothstep(1.06, 1.12, hn.y); fx = up * (0.02 * sin(ft * fw + fp) + 0.015 * sin(ft * 0.23 + fp * 2.1)); fy -= up * 0.012 * max(0.0, sin(ft * 0.31 + fp)); }
-        else { fx = 0.12 * sin(ft * (0.11 + 0.05 * fract(fp)) + fp) + 0.03 * sin(ft * fw + fp * 1.7); fy -= 0.008 * abs(sin(ft * fw * 2.0 + fp)); }
+        fx = 0.12 * sin(ft * (0.11 + 0.05 * fract(fp)) + fp) + 0.03 * sin(ft * fw + fp * 1.7); fy -= 0.008 * abs(sin(ft * fw * 2.0 + fp));
         xm = fc + clamp(xm - fc - fx, 0.0, 0.999);
-        vec4 nc = sgTile(nl, vec2(fract(xm / 3.0), clamp(fy, 0.0, 2.999) / 3.0), clamp(log2(px * 512.0 / 3.0), 0.0, 6.0));
-        col = mix(col, nc.rgb * uSeoulNorm[int(room)] * L * 0.9, nc.a);
+        vec4 nc = sgTile(nl, vec2(fract(xm / 3.0), clamp(fy, 0.0, 2.999) / 3.0), lodN);
+        col = mix(col, nc.rgb * uSeoulNorm[int(room)] * L * ${SEATS.lit.toFixed(2)} * sgLz(zn, D), nc.a);
       }
     }
   }
