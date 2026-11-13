@@ -634,7 +634,9 @@ now runs ci.yml's `browser` and `browser-seoul` jobs too, on this 8 GB box:
 
 **First runs on the box** (main 9850b8f's code): the clone took 11 s (was 112 s); the Bando `browser` job 910 s and the
 Seoul export 184 s with two other streams' suites running. One earlier run lost Chromium to the box's OOM killer at
-3.1 GB free ("Target crashed"): the step now re-runs once in that case, and only in that case.
+3.1 GB free ("Target crashed"): the step now re-runs once in that case, and only in that case. A full `--browser` run on the P9 scratch merge
+(p9/H-scratch ebfa371): 40 min (node 8, audio 5, Bando browser 19, Seoul browser 7, camgate 1 s), and its camgate rows match
+CI's run 43350612526 on the same commit within 1 code (walk0 warm 36.0 / 36.7 %, g/w 0.42 / 0.43): the box sees what CI sees.
 The record (`.git/onetake-merge-check.json`) holds two halves per commit, `node` and `browser`;
 **ci/hooks/pre-push now refuses main unless both are green** (or CI is green on that commit). A commit whose node half
 is recorded can finish with `node ci/merge-check.mjs --browser-only`.
