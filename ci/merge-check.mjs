@@ -21,6 +21,7 @@
 //   --min-free 3072 --lock-wait 30           [P9 H] the browser steps wait for /tmp/onetake-browser.lock (the box's shared
 //                                            browser lock: seoulsnap, hudsnap) and for MemAvailable >= min-free MB, at most
 //                                            lock-wait minutes; past that the step is RED ("not run"), never skipped green
+//   --hold-file PATH                         [P9 H] no step starts while PATH exists (env ONETAKE_HOLD_FILE)
 //
 // [P6 H, native #1] It runs in a fresh clone of the committed HEAD, fetched at the depth CI's checkout uses (the `test`
 // job's `fetch-depth` in ci.yml: 0 = full history, absent = actions/checkout's default of 1). Phase 5's red main came
@@ -55,6 +56,9 @@ const HAS_SWIFT = (() => { try { execSync('swift --version', { stdio: 'ignore' }
 const BROWSER_ONLY = flag('--browser-only'), BROWSER = BROWSER_ONLY || flag('--browser');
 const NODE_JOBS = ['test', 'audio'], BROWSER_JOBS = ['browser', 'browser-seoul'];
 const JOBS = [...(BROWSER_ONLY ? [] : NODE_JOBS), ...(BROWSER ? BROWSER_JOBS : []), ...(HAS_SWIFT && !flag('--no-native') && !BROWSER_ONLY ? ['native-linux'] : [])];
+// [P9 H] --hold-file PATH (or $ONETAKE_HOLD_FILE): while that file exists no step starts (a box-wide "heavy jobs wait"
+// window, e.g. /home/claude/review/seoul/p9/HOLD-HEAVY while other streams verify in the browser)
+const HOLD = opt('--hold-file') ?? process.env.ONETAKE_HOLD_FILE ?? null;
 const MIN_FREE = +(opt('--min-free') ?? 3072), LOCK_WAIT = +(opt('--lock-wait') ?? 30), BROWSER_LOCK = '/tmp/onetake-browser.lock';
 
 /** The `run:` steps of the given jobs in a GitHub workflow (the subset of YAML ci.yml uses: `- name:` / `run: |` blocks,
@@ -104,7 +108,7 @@ export function boxStep(s, minFree = MIN_FREE, lockWait = LOCK_WAIT, lock = BROW
     const wait = Math.round(lockWait * 60);
     // memwait: MemAvailable >= minFree, polled; the step runs once more when Chromium was killed (the box's memory cgroup
     // OOM-kills chrome first, oom_score_adj 300: "Target crashed" while a neighbour's node job grew), never on a test FAIL
-    const guard = `memwait() { t0=$(date +%s); while :; do a=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo); [ "$a" -ge ${minFree} ] && break; ` +
+    const guard = `memwait() { t0=$(date +%s); while :; do a=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo); [ "$a" -ge ${minFree} ] && ${HOLD ? `[ ! -e '${HOLD}' ] && ` : ''}break; ` +
       `[ $(( $(date +%s) - t0 )) -ge ${wait} ] && { echo "FAIL merge-check: browser step not run: MemAvailable $a MB < ${minFree} MB after ${lockWait} min (free -m; stop the other browser / heavy node job)"; exit 3; }; sleep 15; done; ` +
       `echo "merge-check: browser lock held, MemAvailable $a MB"; }\n` +
       `memwait; o=$(mktemp); set +e\n( ${run.replace(/\n/g, '\n')} ) 2>&1 | tee "$o"; c=\${PIPESTATUS[0]}\n` +
@@ -187,7 +191,10 @@ if (!IN_PLACE) {
 } else if (!existsSync(join(ROOT, 'node_modules'))) symlinkSync('ci/node_modules', join(ROOT, 'node_modules'));
 console.log(`merge-check: ${steps.length} steps of ${JOBS.join(', ')} on ${sha?.slice(0, 7) ?? '(no git)'}` + (IN_PLACE ? (dirty ? ' in place (uncommitted changes: the record will not count for a push)' : ' in place') : (dirty ? ' (the clone holds HEAD only: your uncommitted changes are not tested)' : '')));
 
-const run = (s, n) => new Promise((res) => {
+const holdWait = async () => { if (!HOLD || !existsSync(HOLD)) return; const t0 = Date.now(); process.stdout.write(`(waiting: ${HOLD} exists) `);
+  while (existsSync(HOLD)) await new Promise((r) => setTimeout(r, 15000)); process.stdout.write(`(${Math.round((Date.now() - t0) / 1000)} s) `); };
+const run = async (s, n) => { await holdWait(); return run1(s, n); };
+const run1 = (s, n) => new Promise((res) => {
   const t0 = Date.now(), log = join(LOGS, `${String(n).padStart(2, '0')}-${s.name.replace(/[^\w]+/g, '-').slice(0, 50)}.log`);
   const p = spawn('bash', ['-eo', 'pipefail', '-c', s.run], { cwd: s.cwd ? join(WORK, s.cwd) : WORK, env: { ...process.env, ...(BROWSER_JOBS.includes(s.job) ? BROWSER_ENV : {}), RUNNER_TEMP: TEMP, GITHUB_WORKSPACE: WORK, CI: 'merge-check' } });
   let buf = '';
