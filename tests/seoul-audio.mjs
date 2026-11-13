@@ -76,7 +76,7 @@ const HOVER_LUFS = -7.8;
 const { SND } = await import('../seoul-audio.js');
 const worldBus = (ctx) => { const bus = ctx.createGain(), w = ctx.createGain(); w.gain.value = Math.pow(10, -0.57 / 20); w.connect(ctx.destination); bus.world = w; return bus; };
 // a city render: a static camera or a path [[x, z], ...] at speed v; solo: 'crowd' (the babble bed alone) | 'beds'
-async function cityAt(cam, secs = 12, { solo = null, path = null, v = 5, t0 = 30 } = {}) {
+async function cityAt(cam, secs = 12, { solo = null, path = null, v = 5, t0 = 30, onSec = null } = {}) {
   const ctx = new WA.OfflineAudioContext(2, secs * SR, SR);
   const L2 = build(layout, LIFE); L2.audio.attach(ctx, worldBus(ctx), { offline: true }); const g = L2.audio.__g;
   if (solo) { for (const V of Object.values(g.pv)) for (const q of V) q.pn.disconnect(); g.mix.disconnect(g.sendA); g.mix.disconnect(g.sendR); }
@@ -87,6 +87,7 @@ async function cityAt(cam, secs = 12, { solo = null, path = null, v = 5, t0 = 30
     const at = f / FPS, p = path ? at0(v * at) : null, c = path ? { x: p[0], y: cam.y, z: p[1], copy() {} } : { ...cam, copy() {} };
     L2.update(t0 + at, c); if (solo) [...g.shots, ...(g.stepShots || []), ...(g.longShots || [])].forEach((q) => { try { q.disconnect(); } catch (e) {} });
     L2.audio.feed(c, path ? { x: p[2], y: 0, z: p[3] } : { x: 0, y: 0, z: -1 }, t0 + at + L2.colliders.warm, at);
+    if (onSec && f % FPS === 0) onSec(at, L2.audio.stats);
   }
   const b = await ctx.startRendering(); return { L: b.getChannelData(0), R: b.getChannelData(1), stats: { ...L2.audio.stats } };
 }
@@ -133,6 +134,13 @@ const S065 = [[-21.17, -56.96], [-29.87, -40.03], [-36.09, -23.04], [-41.33, -8.
 // -2.9 LU (flat and hot); P8: 5.6, 0.60, -5.3. The level cap keeps the arterial from going back to a steady wash; the
 // station >= walking + 4.5 gate above holds its floor
 const GATE_STATION_DYN = { sp: 5, cv: 0.55, lu: -4 };
+// P9 (sound #2): red at least 4 LU under green on a 60 s Yanghwa-ro hover (panel 8's gate)
+const GATE_RED_UNDER_GREEN = -4;
+// K-weighted energy per whole second (BS.1770's filter)
+function perSec(L, R) { const k = (x) => { const y = new Float64Array(x.length); let a1 = 0, a2 = 0, b1 = 0, b2 = 0, c1 = 0, c2 = 0, d1 = 0, d2 = 0;
+    for (let i = 0; i < x.length; i++) { const v = x[i], s1 = 1.53512485958697 * v - 2.69169618940638 * a1 + 1.19839281085285 * a2 + 1.69065929318241 * b1 - 0.73248077421585 * b2; a2 = a1; a1 = v; b2 = b1; b1 = s1;
+      const s2 = s1 - 2 * c1 + c2 + 1.99004745483398 * d1 - 0.99007225036621 * d2; c2 = c1; c1 = s1; d2 = d1; d1 = s2; y[i] = s2; } return y; };
+  const l = k(L), r = k(R), P = []; for (let s = 0; (s + 1) * SR <= l.length; s++) { let z = 0; for (let i = s * SR; i < (s + 1) * SR; i++) z += l[i] * l[i] + r[i] * r[i]; P.push(z / SR); } return P; }
 {
   const spots = { walking: { x: -36, y: 3, z: -23 }, junction: { x: -40, y: 3, z: -150 }, club: { x: 63.7, y: 3, z: 129.6 }, station: { x: 31.8, y: 8, z: -309 }, alley: { x: -37.2, y: 3, z: -87.3 } }, res = {};
   const L0wet = (await import('../seoul-audio.js')).SND.wet;
@@ -191,6 +199,14 @@ const GATE_STATION_DYN = { sp: 5, cv: 0.55, lu: -4 };
   // walk phase within 60 m (a 45 s hover 25 m off the Yanghwa-ro x Hongik-ro crossings), the exit 9 crowd and draught
   const yh = await cityAt({ x: -45, y: 6, z: -236 }, 45);
   ok(yh.stats.horns >= 1 && yh.stats.guides >= 1 && res.station.st.exit >= 1, `Yanghwa-ro and exit 9 (a 45 s hover): horns ${yh.stats.horns}, crossing guides ${yh.stats.guides}; the exit 9 crowd and stair draught play at the station front (P2: 0 horns and 0 guides in 96 s)`);
+  // P9 (sound #2, the voices obey the lights; panel 8: a 64 s Yanghwa-ro hover's red only 0.8 LU under its green, the
+  // loudness periodic at 13.5 s on the pass-bys' fixed clock): a 60 s hover 25 m off the Yanghwa-ro x Hongik-ro crossings
+  // (the light the player sees; at the station, 127 m on, the platoons arrive ~15 s after it), t 20-80: its green into a
+  // red. The seconds with the arterial lull settled (>= 0.9 green, <= 0.3 red), K-weighted energy per second
+  { const lull = [], yr = await cityAt({ x: -45, y: 6, z: -236 }, 60, { t0: 20, onSec: (s, st) => { lull[Math.round(s)] = +st.artLull; } });
+    const P = perSec(yr.L, yr.R), G = [], R = []; for (let s = 1; s < P.length; s++) { if (lull[s] >= 0.9) G.push(P[s]); else if (lull[s] <= 0.3) R.push(P[s]); }
+    const lu = (a) => 10 * Math.log10(a.reduce((x, v) => x + v, 0) / Math.max(1, a.length) + 1e-30), d = lu(R) - lu(G);
+    ok(G.length >= 10 && R.length >= 20 && d <= GATE_RED_UNDER_GREEN, `Yanghwa-ro obeys its lights (a 60 s hover 25 m off the crossing): red ${d.toFixed(1)} LU against green (<= ${GATE_RED_UNDER_GREEN}; P8 -0.8 on the panel's hover) over ${R.length} / ${G.length} s, pass-bys ${yr.stats.passbys}`); }
   // sound #6 (G1/F1 add a crossing at exit 9; the guide then plays within SND.guideR): a note, not a gate
   // P6 (sound #4/#6): exit 9 for real. The sound's own crosswalk at the stair mouth (the sim's nearest is 140 m off) keeps
   // its road's signal phase; a 45 s hover at the station front hears its guide, a line 2 train and the T-money gates after
