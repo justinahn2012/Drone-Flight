@@ -10,8 +10,11 @@ needs a plate); ui #1: the spawn shot reports the frame's luma p50 (8-bit codes,
 [P7-F] ui #3: the pause shot lists any level card / LINES cell text under the sticky RESUME bar (gate: none).
 [P8-F] --only picks shots (the browser budget: <= 4 per run); the spawn shot casts a 32 x 18 ray grid into the collider and gates
 the share within 4 m (<= 5 %: ui #4, phase 7's blurred 화장품 disc filled ~12 % of the lower left); the end card is a CLEAN TAKE
-(design #4: 3 stars, 468k, no SCRAPE, the medal); --thumb OUT.jpg [--ss 2] also shoots the level-card thumb still (ui #3) on a
-second page, HUD off, at 1600 x 900 x ss with every texture at max anisotropy, at stills.json's thumb pose."""
+(design #4: 3 stars, the bar + 1.2 %, no SCRAPE, the medal); --thumb OUT.jpg [--ss 2] also shoots the level-card thumb still (ui #3) on a
+second page, HUD off, at 1600 x 900 x ss with every texture at max anisotropy, at stills.json's thumb pose.
+[P9-F] the pause shot gates a blocked (.shut) LINES cell's reason: shown, "EXPERT · NOT GUIDED" whole (no ellipsis, inside its
+cell) at 844 x 390 (ux #3 / ui #5: index.html hid it in short landscape); the end card's total is the level's own bar
+(world.tuning.cleanTake) + 1.2 %, not phase 8's 468k under a 480k bar, and gates the medal (NO SCRAPE) against that bar."""
 import argparse, asyncio, base64, fcntl, json, os, sys, time, io
 sys.path.insert(0, '/home/claude/scripts')
 import seoulsnap as S
@@ -147,7 +150,10 @@ async def main(a):
                 rep[name]['_labels'] = await pg.evaluate("[...document.querySelectorAll('#osd .brl.on')].map((e) => e.textContent)")
                 # [P7-F ui #3] the pause card: no level card's text (name, meta) under the sticky RESUME bar
                 rep[name]['_underBar'] = await pg.evaluate("(()=>{const m=document.getElementById('menu'); if(!m||m.classList.contains('hidden')) return null; const c=document.querySelector('#menu .cta'); if(!c) return null; const B=c.getBoundingClientRect(); const top=B.top+parseFloat(getComputedStyle(c).paddingTop||0)*0.5; return [...document.querySelectorAll('#menu .world b, #menu .world .meta, #menu .ln')].filter(e=>e.offsetParent).map(e=>{const r=e.getBoundingClientRect(); return r.bottom>top && r.top<B.bottom && r.height>0 ? (e.textContent||'').trim().slice(0,24) : null}).filter(Boolean)})()")
+                # [P9-F] the blocked cells' reason, and whether the grid fell back to its inner scroll
+                rep[name]['_shut'] = await pg.evaluate("(()=>{const m=document.getElementById('menu'); if(!m||m.classList.contains('hidden')) return null; return {scroll: !!document.getElementById('lnGrid')?.classList.contains('scroll'), cells: [...document.querySelectorAll('#menu .ln.shut')].map(c=>{const s=c.querySelector('small'), b=c.querySelector('b'), C=c.getBoundingClientRect(), R=s?s.getBoundingClientRect():null, cs=s?getComputedStyle(s):null; return {name:(b?.textContent||'').trim(), text:(s?.textContent||'').trim(), shown:!!(s&&cs.display!=='none'&&cs.visibility!=='hidden'&&R.height>0&&R.width>0), inside:!!(R&&R.bottom<=C.bottom+0.5&&R.right<=C.right+0.5&&R.left>=C.left-0.5), clipped:!!(s&&(s.scrollWidth>s.clientWidth+1||s.scrollHeight>s.clientHeight+1)), lines: R&&cs?Math.round(R.height/parseFloat(cs.lineHeight||'10')):0, cellH: Math.round(C.height)};})};})()")
                 rep[name]['_stars'] = await pg.evaluate("(()=>{const e=document.getElementById('bStars'); return e && e.offsetParent ? e.textContent.trim() + (e.querySelector('.medal') ? ' [medal]' : '') : null})()")
+                rep[name]['_end'] = await pg.evaluate("window.__hudEnd || null") if name == 'end' else None
                 rep[name]['_pop'] = await pg.evaluate("(()=>{const e=document.getElementById('pop'); return e && e.classList.contains('show') ? {text: e.textContent.replace(/\\s+/g,' ').trim().slice(0,90), plate: e.classList.contains('plate'), opacity: +getComputedStyle(e).opacity} : null})()")
                 print(f'shot {name} -> {f}  luma>0.6 under readouts: {rep[name]}', flush=True)
             # 1. spawn: the take start, READY + its hint, the first toast
@@ -157,7 +163,7 @@ async def main(a):
             # 3. pause
             await shot('pause', "(()=>{window.__onetake.ui.openMenu();})()", 3)
             # 4. the CUT card of a careful long take
-            await shot('end', "(()=>{const o=window.__onetake; const m=document.getElementById('menu'); if(m) m.classList.add('hidden'); const L=[]; ['UNDER THE STAGE','WALKING STREET','HONGIK-RO','BAR ALLEY','CABLE LATTICE','ROOFLINE'].forEach((n,i)=>{L.push({name:n,flow:i+1,clean:i!==2,micro:false}); for(let k=0;k<5;k++) L.push({name:n+' '+(k+1)+'/5',flow:1,clean:true,micro:true});}); o.ui.showSummary('cut',{type:'cut',total:468200,stars:3,pace:1.31,how:'hover',cleanTake:true,stats:{maxSpeed:11.2,time:236,maxFlow:6,lines:L,clean:6,scrapes:0,cleanTake:true}});})()", 3)
+            await shot('end', "(()=>{const o=window.__onetake; const m=document.getElementById('menu'); if(m) m.classList.add('hidden'); const L=[]; ['UNDER THE STAGE','WALKING STREET','HONGIK-RO','BAR ALLEY','CABLE LATTICE','ROOFLINE'].forEach((n,i)=>{L.push({name:n,flow:i+1,clean:i!==2,micro:false}); for(let k=0;k<5;k++) L.push({name:n+' '+(k+1)+'/5',flow:1,clean:true,micro:true});}); const ct=+(o.world.tuning&&o.world.tuning.cleanTake)||515000, tot=Math.round(ct*1.012/100)*100; window.__hudEnd={ct,tot}; o.ui.showSummary('cut',{type:'cut',total:tot,stars:3,pace:1.31,how:'hover',cleanTake:true,stats:{maxSpeed:11.2,time:236,maxFlow:6,lines:L,clean:6,scrapes:0,cleanTake:true}});})()", 3)
             await b.close()
             if a.thumb: await thumb_shot(p, a, port, errs)
             print('--- console errors ---'); print('\n'.join(errs) if errs else 'none')
@@ -169,6 +175,15 @@ async def main(a):
     if sp.get('_near4') is not None: print(f"GATE spawn: rays within 4 m {sp.get('_near4')} (<= 0.05, no near blob): {'PASS' if sp['_near4'] <= 0.05 else 'FAIL'}")
     ed = rep.get('end', {})
     if 'end' in rep: print(f"end card stars row: {ed.get('_stars')}")
+    # [P9-F] the medal on the card only at or over the level's bar, and named for what it asks (NO SCRAPE)
+    if 'end' in rep:
+        e2 = ed.get('_end') or {}
+        print(f"GATE end: medal {ed.get('_stars')} on a {e2.get('tot')} take, bar {e2.get('ct')} (medal NO SCRAPE, total >= bar): {'PASS' if (ed.get('_stars') or '').endswith('NO SCRAPE [medal]') and (e2.get('tot') or 0) >= (e2.get('ct') or 1e12) else 'FAIL'}")
+    if 'pause' in rep:
+        sh = rep['pause'].get('_shut') or {}
+        cells = sh.get('cells') or []
+        good = bool(cells) and all(c['shown'] and c['inside'] and not c['clipped'] and c['text'] == 'EXPERT · NOT GUIDED' for c in cells)
+        print(f"GATE pause: blocked cells' reason {cells} (grid scroll {sh.get('scroll')}): {'PASS' if good else 'FAIL'}")
     if a.thumb and os.path.exists(a.thumb): print(f"thumb still edge energy {edge_energy(a.thumb)} (mean |Laplacian|, full frame)")
     print(f"GATE spawn frame p50 {sp.get('_frameP50')} (>= 40): {'PASS' if (sp.get('_frameP50') or 0) >= 40 else 'FAIL'}")
     print(f"GATE spawn labels {sp.get('_labels')} (one per line): {'PASS' if len(set(x.rsplit(' ', 1)[0] for x in sp.get('_labels') or [])) == len(sp.get('_labels') or []) else 'FAIL'}")
