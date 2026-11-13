@@ -61,7 +61,10 @@ export const SND = {
   // P8 (sound #2): passby 96 -> 95: the pass-bys are the arterial's loudness once the bed stops scaling with the platoon
   // (Yanghwa-ro full chain -2.4 LU under the props at 96, -3.0 at 95; 94.5 put the harness station 4.4 over the walking
   // street, under its +4.5 gate)
-  passby: 95, diesel: 91, caller: 83, clap1: 79, clink: 76, group: 77, train: 82,
+  // P9 (sound #2): passby 95 -> 97 at a lower rate (passK 0.016, at most 0.35 a second): fewer, louder pass-bys that come
+  // only with the movers (harness station +6.0 over the walking street, p95 - p50 5.4, CV 0.63; 95 at 0.027 / 0.6: +5.7,
+  // CV 0.54; 97.5 at 0.013 / 0.3: 63 Hz -6.1 and -3.9 LU, over both caps)
+  passby: 97, diesel: 91, caller: 83, clap1: 79, clink: 76, group: 77, train: 82,
   // P6 (sound #6): exit 9's T-money beeps (at the stair mouth, 1 m) and its escalator's hum (within the exit voice, re SND.exit)
   tmoney: 74, escalator: -16,
   pools: { engine: 6, bus: 1, scooter: 2, music: 3, club: 2, busk: 2, neon: 1, sizzle: 1, queue: 2, exit: 1 },
@@ -84,6 +87,15 @@ export const SND = {
   // drops by artLull dB while the nearest arterial crossing shows its cars red (and swells x artRelease for the first
   // releaseS s of green), ~lullTau s to settle. The buses' and trucks' diesel idle is not lulled (they rumble at the line)
   trafKnee: 0.15, artLull: 6, artRelease: 1.25, releaseS: 8, lullTau: 2.5,
+  // P9 (sound #2, the voices obey the lights; P8's 64 s Yanghwa-ro hover: red only 0.8 LU under green, its loudness
+  // periodic at 13.5 s, the pass-bys' fixed 3-6 s clock): a pass-by every 1/(passK x movers) s on average, movers = the
+  // main-road vehicles over passMove m/s within passR m of the camera (none on red, but for the cross street's), one in
+  // a passSlot s slot at most (arterials only: the 9-13 m roads keep their clock); the arterials' engine and bus voices go
+  // only to vehicles over voiceMove m/s (an idler at the line is the bed's idle and the diesel's, not a voice of its own)
+  passSlot: 1.5, passK: 0.016, passMax: 0.35, passR: 40, passMove: 3, voiceMove: 2,
+  // P9 (sound #2): an arterial bus or truck idling at the line is dieselIdle of its diesel energy (-10 dB: no load; 0.3 / 0.15 gave the crossing hover red -4.1 / -4.4 LU), full
+  // from 8 m/s (P8: every heavy in reach counted alike, so on red the diesel bed was most of the road's sound)
+  dieselIdle: 0.1,
   // P7 (sound #3, the club street's own character): the 19-gil / 21-gil club streets' cars and the door queues (dB), and
   // a shut club door's gain (P6 0.32, -10 dB: a steady bass carpet; now the bass comes with the door: -24 dB shut)
   clubCars: -3, queueTrim: -4, doorShut: 0.06,
@@ -524,7 +536,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
     if (ref) { const P0 = st.path.at(pr.s, {}); crossings.push({ id: 'X9', x: ex[0] + P0.tx * 4, z: ex[2] + P0.tz * 4, ref, audioOnly: true }); }
   }
   const phaseOf = (c, t) => life.crossPhase(c.ref || c, t);
-  const S = { trafOcc: 0, doorPops: 0, tmoney: 0, passbys: 0, callers: 0, clinks: 0, groups: 0, trains: 0, music: 0, club: 0, busk: 0, engine: 0, scooter: 0, bus: 0, hiss: 0, horns: 0, laughs: 0, applause: 0, steps: 0, chimes: 0, guides: 0, occluded: 0, voices: 0, talks: 0, yelps: 0, reacts: 0, calls: 0, queue: 0, exit: 0, swells: 0, names: 0, phones: 0, beeps: 0, crowdNear: 0, trafficNear: 0, canyon: 0, artLull: 1, trafA: 0 };
+  const S = { trafOcc: 0, doorPops: 0, tmoney: 0, passbys: 0, callers: 0, clinks: 0, groups: 0, trains: 0, music: 0, club: 0, busk: 0, engine: 0, scooter: 0, bus: 0, hiss: 0, horns: 0, laughs: 0, applause: 0, steps: 0, chimes: 0, guides: 0, occluded: 0, voices: 0, talks: 0, yelps: 0, reacts: 0, calls: 0, queue: 0, exit: 0, swells: 0, names: 0, phones: 0, beeps: 0, crowdNear: 0, trafficNear: 0, canyon: 0, artLull: 1, trafA: 0, movers: 0, passRate: 0, diesel: 0, trafE: 0 };
   const api = { stats: S, sites, attached: false };
   const occl = makeOccluder(layout);
   let A = null;   // the live graph
@@ -845,7 +857,7 @@ export function createSeoulAudio(layout, life, opts = {}) {
       const kl = g.lullT == null ? 1 : Math.min(1, Math.abs(t - g.lullT) / SND.lullTau); g.lull = g.lull == null ? aw : g.lull + (aw - g.lull) * kl; g.lullT = t; S.artLull = g.lull;
       // the arterials' own vehicles (>= 13 m roads) keep a bed of their own (Ab: open, distance-weighted, occluded) so the
       // square-root law below touches only them (the walking street's and alleys' few cars stay as they were)
-      let E = 0, Ed = 0, Ec = 0, heavy = 0, rays = 0, trafA = 0; const Ab = [0, 0, 0]; const laneMv = g.laneMv || (g.laneMv = new Map()), vOcc = g.vOcc || (g.vOcc = new Map()); laneMv.clear();
+      let E = 0, Ed = 0, Ec = 0, heavy = 0, rays = 0, trafA = 0; const movers = []; const Ab = [0, 0, 0]; const laneMv = g.laneMv || (g.laneMv = new Map()), vOcc = g.vOcc || (g.vOcc = new Map()); laneMv.clear();
       // P7 (sound bug: at t = 0 the alley voiced 3 engines and 2 scooters before their rays were cast): the first scan casts
       // up to 96 rays, and a vehicle whose path hasn't been checked yet (unk) is bed, not voice
       const rayMax = g.occInit ? 24 : 96; g.occInit = true; let unk = false;
@@ -858,9 +870,10 @@ export function createSeoulAudio(layout, life, opts = {}) {
         const ck = v.lane?.street?.kind === 'club' ? SND.clubCars : 0;
         const n = occOf(v.id, p.x, p.z, d), e0 = (isA ? g.lull : 1) * Math.pow(10, (SND[v.type] + ck - 105) / 10) * (0.1 + Math.min(3, (v.v / 12) ** 2)) * (1 + 0.6 * g.wet * Math.min(1, v.v / 8)) / Math.max(9, d * d) * Math.pow(10, -0.006 * Math.max(0, d - 20)), e = e0 * occG(n) ** 2;
         if (isA) { if (n) Ab[2] += e; else { Ab[0] += e; Ab[1] += e * d; } } else if (n) Ec += e; else { E += e; Ed += e * d; } if (d < 80 && v.v > 3 && v.lane?.street?.kind === 'main') laneMv.set(v.lane, (laneMv.get(v.lane) || 0) + 1);
-        if ((v.type === 'bus' || v.type === 'truck') && d < 120) heavy += occG(n) ** 2 / Math.max(1, (d / 20) ** 2);
+        if (v.v > SND.passMove && v.lane?.street?.kind === 'main' && v.lane.street.width >= 9 && Math.hypot(p.x - cam.x, p.z - cam.z) < SND.passR) movers.push({ v, d });
+        if ((v.type === 'bus' || v.type === 'truck') && d < 120) heavy += occG(n) ** 2 / Math.max(1, (d / 20) ** 2) * (isA ? SND.dieselIdle + (1 - SND.dieselIdle) * Math.min(1, v.v / 8) : 1);
         if (d > 120) continue; const pool = v.type === 'bus' ? 'bus' : v.type === 'scooter' ? 'scooter' : 'engine', score = (SND[v.type] + ck + 10 * Math.log10(0.2 + v.v / 10)) - 20 * Math.log10(d + 1) + 20 * Math.log10(occG(n));
-        if (score >= SND.voiceFloor && !unk) cand[pool].push({ v, d, e, n, score, isA });
+        if (score >= SND.voiceFloor && !unk && (pool === 'scooter' || !isA || v.v > SND.voiceMove)) cand[pool].push({ v, d, e, n, score, isA });
       }
       // the voiced vehicles (each pool's top scores, as the pools below pick them) leave the bed
       for (const pool of ['engine', 'bus', 'scooter']) { const C = cand[pool].sort((a, b) => b.score - a.score); for (let i = 0; i < Math.min(C.length, g.pv[pool].length); i++) { const c = C[i]; if (c.isA) { if (c.n) Ab[2] -= c.e; else { Ab[0] -= c.e; Ab[1] -= c.e * c.d; } } else if (c.n) Ec -= c.e; else { E -= c.e; Ed -= c.e * c.d; } } }
@@ -903,14 +916,14 @@ export function createSeoulAudio(layout, life, opts = {}) {
       T(g.trafSh.gain, -SND.trafShelf * Math.min(1, Math.max(0, (g.trafD - 20) / 10)), 0.4);
       // diesel idle: the arterial's buses and trucks in reach, and the through flow's share of them (1 in 12)
       const dz = nrm('diesel') * dbA(SND.diesel) * Math.sqrt(heavy / 400 + art / Math.pow(10, (SND.car - 105) / 10) / 12) / (1 + alt / 25);
-      T(g.dieselG.gain, dz, 0.5);
+      T(g.dieselG.gain, dz, 0.5); S.diesel = dz; S.trafE = g.trafE;
       // P7 (sound #2): the sub layer, and its swell: 2-9 s after the nearest crossing's walk ends the arterial's buses and
       // trucks pull away (a pure function of the clock: live = clip; 120 s: LIFE.signal.period)
       let sw = 0; if (art > 0 && life?.crossPhase && crossings.length) { let cb = null, cd = 200; for (const c of crossings) { const d = Math.hypot(c.x - cam.x, c.z - cam.z); if (d < cd) { cd = d; cb = c; } }
         const ph = cb && phaseOf(cb, t); if (ph && !ph.walk) { let u = ph.tc - ph.w0 - ph.wlen; if (u < 0) u += 120; sw = u < 2 ? 0 : u < 4 ? (u - 2) / 2 : Math.max(0, 1 - (u - 4) / 5); } }
       g.subSw = sw; T(g.subG.gain, dz * Math.pow(10, SND.dieselSub / 20) * (1 + (SND.subSwell - 1) * sw), 0.5); T(g.subO.frequency, 37 + 13 * sw, 0.8);
       const ac = life?.acoustics ? life.acoustics(cam) : { canyon: 0, streetW: 30 };
-      g.ctxv = { crowdN, trafN, canyon: ac.canyon, cand, art, artSt, artPr };
+      g.ctxv = { crowdN, trafN, canyon: ac.canyon, cand, art, artSt, artPr, movers }; S.movers = movers.length;
       S.crowdNear = crowdN; S.trafficNear = trafN; S.canyon = ac.canyon;
       const lift = 1 / (1 + alt / 25);
       T(g.bTraffic.gain, nrm('traffic') * Math.sqrt(g.trafE) * (0.5 + 0.5 * lift), 0.3);
@@ -996,17 +1009,33 @@ export function createSeoulAudio(layout, life, opts = {}) {
           shot(g.buf.horn[sl % 3], p.x, 0.9, p.z, dbA(SND.horn) * (c.v.type === 'taxi' ? 1 : 0.8)); S.horns++;
         }
       }
-      // P5 (sound #3): within 60 m of an arterial, a pass-by every 3-6 s: a moving sim vehicle on it (the nearest one
-      // over 5 m/s: its type and direction), or else the through flow the bed adds. It goes by at the camera's foot point
-      // on the road, in its lane's half; near (< 14 m) or far buffer, swept the way it travels.
-      const X = g.ctxv; let w;
-      if (X.artSt && X.artPr.dist < 60 && cam.y < 30 && g.buf.pass.length && (w = crossed(4.5, 1.5, 21)) != null) {
+      // P5 (sound #3): within 60 m of an arterial, a pass-by: a moving sim vehicle (its type and direction) goes by at the
+      // camera's foot point on its road, in its lane's half; near (< 14 m) or far buffer, swept the way it travels.
+      // P9 (sound #2): no longer every 3-6 s whatever the lights: its rate follows the movers within SND.passR m. Each
+      // SND.passSlot s slot fires with p = rate x slot, at a point in its first 60 % (so >= 0.4 slot apart): a pure function
+      // of the clock and the sim. Its level follows the mover's speed as the tyres do, (v / 12)^1.4 in power (a cross-street
+      // car at 6 m/s is 4 dB under an arterial one at 12), and it is always one of those movers (P5-P8 fell back to the
+      // through-flow fill, so a red light still had its pass-bys)
+      const X = g.ctxv, mv = X.movers || [], PS = SND.passSlot, pr = Math.min(SND.passMax, SND.passK * mv.length) * PS; S.passRate = pr / PS;
+      const sl2 = Math.floor(t / PS), hp2 = (q, k) => ((Math.imul(q, 2246822519) ^ Math.imul(k, 0x165667b1)) >>> 0) / 4294967296, at2 = (sl2 + 0.6 * hp2(sl2, 2)) * PS;
+      const onArt = X.artSt?.width >= 13 && X.artPr.dist < 60;
+      if (onArt && dtF > 0 && at2 > t - dtF && at2 <= t && mv.length && cam.y < 30 && g.buf.pass.length && hp2(sl2, 1) < pr) {
+        const w = sl2, vc = mv.slice().sort((a, b) => a.d - b.d)[Math.floor(hh(w, 27) * Math.min(3, mv.length))], st = vc.v.lane.street, sp = st.path.project(cam.x, cam.z);
+        if (sp.dist < 60) {
+          const dir = vc.v.lane.dir, P0 = st.path.at(sp.s, {}), side = (cam.x - P0.x) * P0.nx + (cam.z - P0.z) * P0.nz;
+          const lat = -Math.sign(side || 1) * st.width * (0.1 + 0.25 * hh(w, 23)), px = P0.x + P0.nx * lat, pz = P0.z + P0.nz * lat, r = Math.hypot(px - cam.x, pz - cam.z, cam.y - 0.6);
+          const bus = vc.v.type === 'bus' || vc.v.type === 'truck', k = (r < 14 ? 0 : 3) + (bus ? 2 : Math.floor(hh(w, 25) * 2)), lr = (P0.tx * dir) * rx + (P0.tz * dir) * rz >= 0;
+          shot((lr ? g.buf.pass : g.buf.passR)[k], px, 0.6, pz, dbA(SND.passby) * Math.min(1, Math.pow(vc.v.v / 12, 0.7)), 0.97 + 0.06 * hh(w, 26), 0, 'long', 4); S.passbys++;
+        }
+      }
+      // the 4-lane roads (9-13 m: Hongik-ro, Wausan-ro) have no arterial lights to obey: their P5-P8 clock and level (95 dB)
+      let w; if (!onArt && X.artSt && X.artPr.dist < 60 && cam.y < 30 && g.buf.pass.length && (w = crossed(4.5, 1.5, 21)) != null) {
         let vc = null; for (const pool of ['engine', 'bus']) for (const c of cand[pool]) if (c.v.lane?.street === X.artSt && c.v.v > 5 && !c.v.hidden && (!vc || c.d < vc.d)) vc = c;
         if (vc || X.art > 0) {
           const dir = vc ? vc.v.lane.dir : hh(w, 22) < 0.5 ? 1 : -1, P0 = X.artSt.path.at(X.artPr.s, {}), side = (cam.x - P0.x) * P0.nx + (cam.z - P0.z) * P0.nz;
           const lat = -Math.sign(side || 1) * X.artSt.width * (0.1 + 0.25 * hh(w, 23)), px = P0.x + P0.nx * lat, pz = P0.z + P0.nz * lat, r = Math.hypot(px - cam.x, pz - cam.z, cam.y - 0.6);
           const bus = vc ? vc.v.type === 'bus' || vc.v.type === 'truck' : hh(w, 24) < 0.12, k = (r < 14 ? 0 : 3) + (bus ? 2 : Math.floor(hh(w, 25) * 2)), lr = (P0.tx * dir) * rx + (P0.tz * dir) * rz >= 0;
-          shot((lr ? g.buf.pass : g.buf.passR)[k], px, 0.6, pz, dbA(SND.passby) * (vc ? 1 : 0.8), 0.97 + 0.06 * hh(w, 26), 0, 'long', 4); S.passbys++;
+          shot((lr ? g.buf.pass : g.buf.passR)[k], px, 0.6, pz, dbA(SND.passby - 2) * (vc ? 1 : 0.8), 0.97 + 0.06 * hh(w, 26), 0, 'long', 4); S.passbys++;
         }
       }
       // ux #1 (movers speak): a vehicle the drone touches or skims (< 2.6 m, low) leans on its horn, once per 6 s
