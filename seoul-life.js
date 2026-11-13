@@ -61,6 +61,8 @@ export const LIFE = {
   retryKeep: 24, retryHoldMs: 1500,
   // [P9 G1, ux #1] the iOS phone preset's crowd, on top of 'low''s half (build: iosCap)
   iosLowAgents: 0.5,
+  // the camera-side avoidance radius (CrowdSim.avoid); units within avoidR + 3 m are evaluated every frame (evaluate)
+  avoidR: 32,
   // (P7, perf #1: people were 0.48-0.86 M of the main pass) at most maxLod0 people on the 3.4k LOD (the nearest; the rest
   // of nearR0 on lod1), avatars' mid LOD to midR 42 m (P6 55; past it the 218-triangle far body, P6 282)
   maxLod0: 60,
@@ -1636,8 +1638,12 @@ export class CrowdSim {
       // (P3: past 110 m every 6th frame, <= 13 cm at 110+ m)
       // and units behind the camera (cam.fx/fz: its horizontal forward) past 25 m every 6th: not drawn, and a turn shows
       // them at most 0.1 s stale
-      if (live && !seek && u.trip && u.lk === u.trip.k && u.dc > 25) {
-        const k = u.dc > 110 || (u.db > 0 && u.dc > 25) ? 6 : u.dc > 60 ? 3 : 1;
+      // [P9 G1] staggered only past avoidR + 3 m (P3-P8: 25 m): avoid() relaxes everyone within avoidR (32 m) of the camera
+      // together, so a stale unit at 25-32 m pushed people near the camera by up to 1.4 cm, differently from a fresh
+      // evaluate: the crowd near the camera hung on the evaluate history (CI's retry row: 5 of 293 near people differed)
+      const sR = LIFE.avoidR + 3;
+      if (live && !seek && u.trip && u.lk === u.trip.k && u.dc > sR) {
+        const k = u.dc > 110 || (u.db > 0 && u.dc > sR) ? 6 : u.dc > 60 ? 3 : 1;
         if (k > 1 && (fr + u.id) % k) continue;
       }
       const vis = this.evalUnit(u, t, A, cam, farR2);
@@ -1661,7 +1667,7 @@ export class CrowdSim {
   }
   // stateless lateral avoidance near the camera: walkers vs walkers (head-on keep right, overtakes pass left) and vs
   // static discs (standing groups, queues, busk audience, pocha tables); smooth in t, so nobody pops
-  avoid(cam, A, R0 = 32) {
+  avoid(cam, A, R0 = LIFE.avoidR) {
     const R2 = R0 * R0, by = new Map(), conn = [], all = [];
     for (const u of this.units) for (const i of u.members) {
       if (!A.VIS[i]) continue; const dx = A.X[i] - cam.x, dz = A.Z[i] - cam.z; if (dx * dx + dz * dz > R2) continue;

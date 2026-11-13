@@ -188,13 +188,20 @@ lw.dispose();
     const ts = performance.now(); let k = 1;
     while (!(LW.f && Math.abs(LW.f.t - (W + t0 + k / 60)) <= 0.25) && performance.now() - ts < 1400) { A.update(t0 + k / 60, cam, q); k++; await sl(4); }
     catchMs.push(performance.now() - ts);
-    const f = LW.f, ref = new LifeSim(layout, o8); ref.advanceTo(f.t);   // stepped from 0, no snapshot
-    const P = {}, V = f.veh; let nb = 0;
-    ref.traffic.vehicles.forEach((v, i) => { const p = ref.traffic.pose(v, ref.aT, P), o = i * VEH_STRIDE; if (V[o] !== Math.fround(p.x) || V[o + 1] !== Math.fround(p.z) || V[o + 4] !== (p.hidden ? 1 : 0)) nb++; });
-    // the crowd within 20 m of the camera (farther units are staggered by the worker's evaluate history; a fresh sim has none)
-    const RC = ref.crowd; RC.evaluate(f.t, { x: cam.x, z: cam.z, fx: null, fz: null }); let nc = 0, nn = 0;
-    for (let i = 0; i < f.VIS.length; i++) { if (!RC.VIS[i] || Math.hypot(RC.X[i] - cam.x, RC.Z[i] - cam.z) > 20) continue; nn++; if (!f.VIS[i] || Math.abs(f.X[i] - RC.X[i]) > 1e-3 || Math.abs(f.Z[i] - RC.Z[i]) > 1e-3) nc++; }
-    near8.push(nn); if (nb || nc || !nn) bad.push(`retry ${n}: ${nb} vehicles, ${nc} of ${nn} near people`);
+    // the frame against a fresh sim stepped from 0 (no snapshot): every vehicle, and the crowd within 20 m of the camera
+    // (farther units are staggered by the evaluate history; a fresh sim has none). [P9 integ] checked on the first post-retry
+    // frame AND 4 frames later: GitHub's runner compared a later frame, where units staggered at 25-32 m had moved near
+    // people by up to 1.4 cm through the avoidance (evaluate now keeps everyone within avoidR + 3 m fresh)
+    const check = (f, tag) => {
+      const ref = new LifeSim(layout, o8); ref.advanceTo(f.t);
+      const P = {}, V = f.veh; let nb = 0;
+      ref.traffic.vehicles.forEach((v, i) => { const p = ref.traffic.pose(v, ref.aT, P), o = i * VEH_STRIDE; if (V[o] !== Math.fround(p.x) || V[o + 1] !== Math.fround(p.z) || V[o + 4] !== (p.hidden ? 1 : 0)) nb++; });
+      const RC = ref.crowd; RC.evaluate(f.t, { x: cam.x, z: cam.z, fx: null, fz: null }); let nc = 0, nn = 0;
+      for (let i = 0; i < f.VIS.length; i++) { if (!RC.VIS[i] || Math.hypot(RC.X[i] - cam.x, RC.Z[i] - cam.z) > 20) continue; nn++; if (!f.VIS[i] || Math.abs(f.X[i] - RC.X[i]) > 1e-3 || Math.abs(f.Z[i] - RC.Z[i]) > 1e-3) nc++; }
+      if (tag === 'first') near8.push(nn); if (nb || nc || !nn) bad.push(`retry ${n} (${tag} frame): ${nb} vehicles, ${nc} of ${nn} near people`);
+    };
+    check(LW.f, 'first');
+    { const s0 = LW.f.seq, t1 = performance.now(); while (LW.f.seq < s0 + 4 && performance.now() - t1 < 3000) { A.update(t0 + k / 60, cam, q); k++; await sl(25); } check(LW.f, `+${LW.f.seq - s0}`); }
     for (let j = 0; j < 20; j++) { A.update(t0 + (k + j) / 60, cam, q); await sl(4); }
   }
   ok(LW.inline === inl0 && Math.max(...first) <= 30 && lw8.stats.restores >= 3 && Math.max(...catchMs) < lifeMod.LIFE.retryHoldMs && !bad.length,
