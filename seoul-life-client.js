@@ -31,7 +31,7 @@ export class LifeWorker {
 
   constructor(w) {
     this.w = w; this.seq = 0; this.busy = false; this.pending = null; this.ready = null; this.free = null; this.waiters = new Map();
-    this.stats = { requests: 0, frames: 0, dropped: 0, retargets: 0, rtt: 0, workerMs: 0, allocs: 0, slices: 0, maxRtt: 0 };
+    this.stats = { requests: 0, frames: 0, dropped: 0, retargets: 0, rtt: 0, workerMs: 0, allocs: 0, slices: 0, restores: 0, maxRtt: 0 };
     const on = (f) => (w.on ? w.on('message', f) : w.addEventListener('message', (e) => f(e.data)));
     on((m) => this._onMessage(m));
     const err = (e) => { this.error = String(e?.message || e); for (const [, r] of this.waiters) r.reject(new Error(this.error)); this.waiters.clear(); };
@@ -51,7 +51,7 @@ export class LifeWorker {
     if (m.type === 'frame') {
       this.busy = false; this.stats.frames++; this.stats.allocs = m.allocs;
       this.stats.rtt = performance.now() - this._sent; this.stats.workerMs = m.ms.sim + m.ms.crowd + m.ms.pack;
-      this.stats.slices = m.slices ?? 0; this.stats.maxRtt = Math.max(this.stats.maxRtt, this.stats.rtt);
+      this.stats.slices = m.slices ?? 0; this.stats.restores = m.restores ?? 0; this.stats.maxRtt = Math.max(this.stats.maxRtt, this.stats.rtt);
       if (this.ready) this.release(this.ready);   // never read: straight back
       this.ready = { seq: m.seq, t: m.t, aT: m.aT, events: m.events, ms: m.ms, ...m.buf, _buf: m.buf };
       if (this.pending) { const p = this.pending; this.pending = null; this._send(p.t, p.cam, p.fr); }
@@ -88,6 +88,9 @@ export class LifeWorker {
   latest() { const f = this.ready; this.ready = null; return f; }
   /** Give a frame's buffers back (the next request carries them to the worker: no allocation per frame). */
   release(f) { if (f?._buf && !this.free) this.free = f._buf; }
+  /** [P9 G1] Hand the worker a traffic snapshot (TrafficSim.snapshot() at step n, from the main thread's LifeSim): a seek to
+   *  that city restores it instead of fast-forwarding. Fire and forget; ordered before the next request. */
+  snap(n, S) { if (!this.error) this._post({ type: 'snap', n, S }); }
   hash(t) { return this._ask({ type: 'hash', t }, 'hash').then((m) => m.hash); }
   call(fn, ...args) { return this._ask({ type: 'call', fn, args }, 'call'); }
   dispose() { try { this._post({ type: 'dispose' }); } catch (e) { /* gone */ } try { this.w.terminate?.(); } catch (e) { /* gone */ } this.ready = this.free = null; }
