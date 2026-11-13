@@ -26,8 +26,9 @@
 // pack, the sign wash: a Lambert record with omni >= washOmni lights its own wall within washM as if the wall faced it at
 // washCos x (1 - d / washM)^2: the colour of a box or a letter on the wall round it).
 // P6: 4 (the drawn sky dome in the bake, the wall-pack pool lobe, the store spill's trapezoid).
+// P9: 6 (the store spill 1.0 and a 4-5 m trapezoid; festoon pools).
 // P8: 5 (the store spill 0.7 and its trapezoid matched with a tolerance: Float32(0.7) !== 0.7; wall packs on shuttered and dark fronts).
-export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 5, file: './seoul/light/night-lm.bin', dilate: 6,
+export const NIGHT_LM = { gres: 0.5, fres: 0.5, atlasW: 2048, rasterRes: 1, near: 1.25, version: 6, file: './seoul/light/night-lm.bin', dilate: 6,
   packFloorM: 3, washM: 1.5, washCos: 0.25, washOmni: 0.25 };
 
 // ---- lobes (seoul-light.js imports these: one copy for JS, the GLSL mirror lives there)
@@ -64,10 +65,14 @@ export function lobePack(dx, dy, dz, fx, fz) {
 // drop, ~4.5-5.5 m for a ground-floor shop) and its floor flattens with `lift` (x (1 + lift r^2), r = out / drop: the
 // glass's upper rows throw farther than the lower), at gain 0.98 so the flux on the ground is the P6 spill's (tested):
 // 1 m out ~0.6x, 3 m out ~7x, 4 m out from 0 to ~0.4x the 1 m value. Same flux, a longer pool.
-export const SPILL_TRAP = { side: [0.4, 0.8, 0.15], far: [2.8, 3.6], gain: 0.98, lift: 0.6 };
+// P9 (panel 8 graphics #1 / lighting #1, the floor carried three phases): the pool reaches 4-5 m in front of every lit pane (far
+// 3.1-3.9 x the drop: ~4.3-5.4 m for a ground-floor shop's glass centre 1.3-1.4 m up), gain 0.91 for the same flux (tested).
+export const SPILL_TRAP = { side: [0.4, 0.8, 0.15], far: [3.1, 3.9], gain: 0.91, lift: 0.6 };
 // P8 (lighting #1, the first 15 m of the walking-street floor: the lit glass had no pool in front of it; the panel's 0.7 x the
 // glass's exitance): a shop's glass spills 0.7 of its face flux down through the trapezoid (was 0.5). SPILL code 3.
-export const SHOP_SPILL = 0.7;
+// P9 (panel 8 #1): 1.0 x the glass's exitance, taken at the glass (the record's nits are the pane's own, before C's room fall-off,
+// which only shades the drawn room): the full face flux lands as the trapezoid. SPILL code 3.
+export const SHOP_SPILL = 1.0;
 export function spillTrap(vx, vy, vz, nx, nz, A, a, hl) {
   const out = vx * nx + vz * nz, drop = -vy; if (out <= 0 || drop <= 0) return 0;
   const sh = Math.sqrt(a * a + A) - a, Wh = hl > 0 ? a + sh / 2 : sh / 2, T = SPILL_TRAP;
