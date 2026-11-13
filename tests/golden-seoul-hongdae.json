@@ -1,10 +1,10 @@
 {
- "note": "tests/browser.mjs golden stills (SwiftShader, 320x180, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update, or --golden-from <CI artifact>/stills.json, after an intentional look change. From CI run 43293055925 (p8/H-native) browser-seoul/stills.json @ 3e16561c44c114b82f0f97bcf5c811a8d72e130a: [P8 H] the first reproducible stills (no unasked frames between steps), main ef3369b look, re-recorded deliberately for the P6-P7 look changes and the harness fix.",
+ "note": "tests/browser.mjs golden stills (SwiftShader, 320x180, acro, scale 1.0, 10 frames of 33 ms after tp). Re-baseline with --update, or --golden-from <CI artifact>/stills.json, after an intentional look change. From bo14/stills.json. Re-recorded deliberately at integ14 (P9 merge, local run with CI's Chromium 1248): A's P9 metering (brightest 10 % of taps rejected) lifts walk0 p50 34 -> 46; club90, station, walk180, spawn re-baselined from the same run.",
  "shots": {
   "walk0": {
-   "p5": 8,
-   "p50": 34,
-   "p95": 159,
+   "p5": 14,
+   "p50": 46,
+   "p95": 203,
    "clip": 0.0007,
    "tol": {
     "p50": 8,
@@ -12,18 +12,18 @@
    }
   },
   "club90": {
-   "p5": 10,
-   "p50": 45,
-   "p95": 178,
-   "clip": 0.0003,
+   "p5": 12,
+   "p50": 46,
+   "p95": 168,
+   "clip": 0.0001,
    "tol": {
     "p50": 8,
     "p95": 10
    }
   },
   "station": {
-   "p5": 11,
-   "p50": 42,
+   "p5": 10,
+   "p50": 37,
    "p95": 161,
    "clip": 0.0003,
    "tol": {
@@ -32,8 +32,8 @@
    }
   },
   "walk180": {
-   "p5": 7,
-   "p50": 36,
+   "p5": 9,
+   "p50": 41,
    "p95": 158,
    "clip": 0,
    "tol": {
@@ -43,8 +43,8 @@
   },
   "spawn": {
    "p5": 13,
-   "p50": 30,
-   "p95": 179,
+   "p50": 34,
+   "p95": 169,
    "clip": 0,
    "tol": {
     "p50": 8,
