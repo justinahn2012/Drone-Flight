@@ -415,14 +415,17 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
   { const r = run(true); ok(r.cut && r.cut.cleanTake === false && !r.tk.cleanTake, 'a SCRAPE: no CLEAN TAKE'); }
   T.cleanTake = 1e9; { const r = run(false); ok(r.cut && r.cut.cleanTake === false, 'under the bar: no CLEAN TAKE'); }
   T.cleanTake = ct0;
+  // [P9-F design #3 / ux #2] three segments; a connector (TO THE S 1) for the guided late join
   const SL = [
     { name: 'S', caption: 'S', pts: 2000, ...gate(40), pre: [gate(-5)], within: 30 },
-    { name: 'S 1/2', caption: 'S 1/2', pts: 750, micro: true, seg: 'S', ...gate(20), pre: [gate(-5)], within: 15 },
-    { name: 'S 2/2', caption: 'S 2/2', pts: 750, micro: true, seg: 'S', ...gate(40), pre: [gate(20)], within: 15 },
+    { name: 'S 1/3', caption: 'S 1/3', pts: 750, micro: true, seg: 'S', ...gate(20), pre: [gate(-5)], within: 15 },
+    { name: 'S 2/3', caption: 'S 2/3', pts: 750, micro: true, seg: 'S', ...gate(30), pre: [gate(20)], within: 15 },
+    { name: 'S 3/3', caption: 'S 3/3', pts: 750, micro: true, seg: 'S', ...gate(40), pre: [gate(30)], within: 15 },
   ];
-  const W = { lines: SL, skimBvh };
-  const fly = (z0, on, again = false) => {
+  const CON = { name: 'TO THE S 1', caption: 'TO THE S 1', pts: 500, micro: true, ...gate(34), pre: [gate(31)], within: 10 };
+  const fly = (z0, on, again = false, lines = SL) => {
     const m0 = T.missedStart; T.missedStart = on;
+    const W = { lines, skimBvh };
     const tk = new Take(), d = { ...mk(), pos: { x: 0, y: 2, z: z0 } }, evs = [];
     const go = (z1) => { d.vel = { x: 0, y: 0, z: 10 }; while (d.pos.z < z1) { d.pos = { ...d.pos, z: Math.min(z1, d.pos.z + 10 * DT) }; evs.push(...tk.update(DT, d, W, true)); } };
     go(41);
@@ -430,10 +433,23 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     T.missedStart = m0; return evs;
   };
   { const e = fly(10, true), m = e.filter((x) => x.type === 'missed');
-    ok(m.length === 1 && m[0].name === 'S' && e.some((x) => x.name === 'S 2/2') && !e.some((x) => x.name === 'S' && x.type === 'line'), `joined past the start: one missed S (${JSON.stringify(m)})`); }
+    ok(m.length === 1 && m[0].name === 'S' && e.some((x) => x.name === 'S 3/3') && !e.some((x) => x.name === 'S' && x.type === 'line'), `joined past the start, two segments flown: one missed S (${JSON.stringify(m)})`); }
   { const e = fly(-20, true); ok(!e.some((x) => x.type === 'missed') && e.some((x) => x.type === 'line' && x.name === 'S'), 'flown from the start gate: S pays, no missed'); }
   { const e = fly(10, false); ok(!e.some((x) => x.type === 'missed'), 'missedStart off (bando): no missed'); }
   { const e = fly(10, true, true); ok(e.filter((x) => x.type === 'missed').length === 1, 'missed once per street per take'); }
+  // a single segment on the way somewhere else (P8: the long route along RED ROAD 3/4 to THE FORK) is no miss
+  { const e = fly(25, true); ok(e.some((x) => x.type === 'line' && x.name === 'S 3/3') && !e.some((x) => x.type === 'missed'), 'one segment crossed on the way elsewhere: no missed'); }
+  // ... unless the entry before it was the guide's connector into the street (P8: regular joined CABLE LATTICE at 2/2 off TO THE CABLE LATTICE 1)
+  { const L2 = [...SL.filter((l) => l.name !== 'S 3/3'), CON, { ...SL[3], ...gate(40), pre: [gate(35)] }];
+    const e = fly(25, true, false, L2), m = e.filter((x) => x.type === 'missed');
+    ok(e.some((x) => x.name === 'TO THE S 1') && m.length === 1 && m[0].name === 'S', `one segment straight off its connector: missed S (${e.filter((x) => x.type === 'line').map((x) => x.name).join(', ')})`); }
+  // a segment's gate passed across the street (|path . n| <= 0.7) is no miss: _missedStart on a sideways move
+  { const m0 = T.missedStart; T.missedStart = true; const tk = new Take(), evs = [];
+    tk.update(DT, { ...mk(), pos: { x: 0, y: 2, z: -20 } }, { lines: SL, skimBvh }, true);
+    tk._log.push({ name: 'S 1/3', of: 'S' }, { name: 'S 2/3', of: 'S' });
+    tk._missedStart(SL[2], { x: 0, y: 2, z: 30 }, { x: 1, y: 2, z: 30.5 }, evs); const side = evs.length;
+    tk._missedStart(SL[2], { x: 0, y: 2, z: 30 }, { x: 0.2, y: 2, z: 31 }, evs);
+    T.missedStart = m0; ok(side === 0 && evs.length === 1, `sideways through a segment: no missed (${side}); along it: missed (${evs.length - side})`); }
   resetProgress();
 }
 
@@ -805,6 +821,10 @@ const H = (hands, moved = hands, steer = false) => ({ hands, moved, steer });
     { const ctAt = +LJ.tuning.cleanTake || 0, lc = R.results['long/careful'], ls = R.results['long/sharp'];
       ok(ctAt >= 1.25 * st[2], `CLEAN TAKE at ${ctAt} >= 1.25 x the 3-star cut ${st[2]}`);
       ok(lc && lc.cleanTakes === 0 && ls && ls.cleanTakes >= 1, `CLEAN TAKE: careful long ${lc?.cleanTakes} of ${lc?.runs} (0), sharp long ${ls?.cleanTakes} of ${ls?.runs} (>= 1)`); }
+    // [P9-F design #3 / ux #2] the missed-start toast is for a street being flown: the long route's record names none it only
+    // crosses (P8: RED ROAD, crossed on the way to THE FORK, in careful and sharp)
+    { const onRoute = new Set(['WALKING STREET', 'HONGIK-RO', 'BAR ALLEY', 'CABLE LATTICE', 'ROOFLINE']);
+      for (const pl of ['careful', 'regular', 'sharp']) { const r = R.results[`long/${pl}`]; if (r) ok(Array.isArray(r.missed) && r.missed.every((n) => onRoute.has(n)), `long/${pl}: missed ${JSON.stringify(r.missed)}, only streets on the route`); } }
     // [P7-F design #3] the no-dive record is there, at 12 runs (the STATION STAIRS check above reads it)
     { const nd = R.results['stairs-nodive/regular']; ok(nd && nd.runs >= 12, `stairs-nodive/regular recorded at ${nd?.runs} runs (>= 12)`); }
   } else console.log('skip: tests/seoul/take-sim.json or seoul/lines.json missing');

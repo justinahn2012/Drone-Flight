@@ -883,7 +883,9 @@ const tuning = { stars: [20000, 100000, 340000], bankT: 10.0, holdZone: 1.5, arm
   // 429k); design #5 / ux #5: say when a street was joined past its start gate
   // [P8-F integ13] 450k -> 480k: with SIGN STACK flown again (the climb braking) regular long p75 is 452k, so 450k was no longer a tier
   // above regular; sharp p25 505k
-  cleanTake: 480000, missedStart: true };
+  // [P9-F design #5] 480k -> 515k (sharp long p50 518k): at 480k sharp p25 505k cleared it in 5 of 8, so the medal only asked sharp
+  // for "no scrape"; at 515k sharp has to fly well too
+  cleanTake: 515000, missedStart: true };
 // a copy on the first named non-set-piece line for world loaders that pass lines[] only (take.js reads either)
 const firstLine = lines.find((l) => !l.piece && !l.micro && l.pre); if (firstLine) firstLine.tuning = tuning;
 const out = { version: 2, level: 'seoul-hongdae', generated: 'seoul/tools/lines.mjs from layout.json + buildSeoulGeometry', tuning, lines, funnels, startPoints,
