@@ -209,6 +209,26 @@ final class ParityTests: XCTestCase {
         }
     }
 
+    // [P9 H, panel8 native #6] the render-only culls are in the export, with the browser's numbers and rule
+    func testRenderCulls() throws {
+        let b = try bundle()
+        let fd = try XCTUnwrap(try b.farDetail(), "light.json farDetail (seoul-light.js FAR_DETAIL)")
+        XCTAssertFalse(fd.radii.isEmpty)
+        for (k, r) in fd.radii { XCTAssert(k.hasPrefix("seoul:") && r >= 30 && r <= 400, "\(k) \(r) m") }
+        let k = fd.radii.keys.sorted()[0], r = fd.radii[k]!, o = SIMD3<Double>(0, 2, 0)
+        XCTAssertTrue(fd.drawn(batch: k, center: SIMD3(r + 9, 2, 0), radius: 10, cam: o), "a cell whose sphere reaches r: drawn")
+        XCTAssertFalse(fd.drawn(batch: k, center: SIMD3(r + 11, 2, 0), radius: 10, cam: o), "past r: dropped")
+        XCTAssertTrue(fd.drawn(batch: "seoul:not-a-detail-batch", center: SIMD3(5000, 0, 0), radius: 1, cam: o))
+        let vc = try XCTUnwrap(try b.vehicleCull(), "life.json vehicleCull (seoul-life.js VCULL)")
+        XCTAssert(vc.near > 0 && vc.near < vc.far && vc.pad >= 0 && vc.pad < 1, "\(vc)")
+        let fwd = SIMD3<Double>(0, 0, -1), cam = SIMD3<Double>(0, 1.6, 0)
+        XCTAssertEqual(vc.classify(centre: SIMD3(0, 1, -50), cam: cam, forward: fwd, halfLength: 2.2), .body, "ahead, in range")
+        XCTAssertEqual(vc.classify(centre: SIMD3(0, 1, vc.near - 1), cam: cam, forward: fwd, halfLength: 2.2), .body, "behind but within near")
+        XCTAssertEqual(vc.classify(centre: SIMD3(0, 1, 60), cam: cam, forward: fwd, halfLength: 2.2), .none, "60 m behind")
+        XCTAssertEqual(vc.classify(centre: SIMD3(0, 1, -(vc.far + 5)), cam: cam, forward: fwd, halfLength: 2.2), .poolOnly, "just past far: the pool still reaches")
+        XCTAssertEqual(vc.classify(centre: SIMD3(0, 1, -(vc.far + 30)), cam: cam, forward: fwd, halfLength: 2.2), .none)
+    }
+
     func testPackedStreamsDecode() throws {
         let b = try bundle()
         let packed = ((b.world["data"] as! [String: Any])["packed"] as! [String: Any])["files"] as! [String: [String: Any]]

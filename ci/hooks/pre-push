@@ -7,15 +7,22 @@ while read -r lref lsha rref rsha; do
   [ "$rref" = "refs/heads/main" ] || continue
   [ "$lsha" = "0000000000000000000000000000000000000000" ] && continue
   [ -n "$ONETAKE_FORCE_MAIN" ] && { echo "pre-push: ONETAKE_FORCE_MAIN set, main gate skipped" >&2; continue; }
-  if [ -f "$rec" ] && grep -q "\"sha\": \"$lsha\"" "$rec" && grep -q '"ok": true' "$rec"; then
-    echo "pre-push: $(echo "$lsha" | cut -c1-7) ran green in ci/merge-check.mjs: ok to push to main" >&2; continue
+  # [P9 H, panel8 native #1] both halves: the node suites AND the browser jobs (browser-seoul + camgate). 9850b8f reached main
+  # on a node-only record and its browser-seoul job was red.
+  if [ -f "$rec" ] && grep -q "\"sha\": \"$lsha\"" "$rec" && grep -q '"ok": true' "$rec" && grep -q '"node": true' "$rec" && grep -q '"browser": true' "$rec"; then
+    echo "pre-push: $(echo "$lsha" | cut -c1-7) ran green in ci/merge-check.mjs --browser (node + browser-seoul + camgate): ok to push to main" >&2; continue
+  fi
+  if [ -f "$rec" ] && grep -q "\"sha\": \"$lsha\"" "$rec" && grep -q '"ok": true' "$rec" && ! grep -q '"browser": true' "$rec"; then
+    echo "pre-push: $(echo "$lsha" | cut -c1-7) has a node-only merge-check record; the browser jobs never ran on it" >&2
   fi
   # a commit CI already ran green on another branch (integ/*) is fine too
   if command -v gh >/dev/null 2>&1 && [ "$(gh run list --commit "$lsha" --workflow ci --json conclusion -q '[.[] | select(.conclusion=="success")] | length' 2>/dev/null)" -gt 0 ] 2>/dev/null; then
     echo "pre-push: CI is green on $(echo "$lsha" | cut -c1-7): ok to push to main" >&2; continue
   fi
   echo "pre-push: REFUSED. main would move to $(echo "$lsha" | cut -c1-7), which has no green ci/merge-check.mjs record and no green CI run." >&2
-  echo "  run: node ci/merge-check.mjs   (about 15 min; or push to integ/<phase>, wait for CI, then git push origin integ/<phase>:main)" >&2
+  echo "  run: node ci/merge-check.mjs --browser   (node suites + browser + browser-seoul + camgate on this box; or, after a green" >&2
+  echo "       node-only record, node ci/merge-check.mjs --browser-only; or push to integ/<phase>, wait for CI green, then" >&2
+  echo "       git push origin integ/<phase>:main)" >&2
   exit 1
 done
 exit 0
