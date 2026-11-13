@@ -64,7 +64,10 @@ export const LIFE = {
   // (P7, perf #1: people were 0.48-0.86 M of the main pass) at most maxLod0 people on the 3.4k LOD (the nearest; the rest
   // of nearR0 on lod1), avatars' mid LOD to midR 42 m (P6 55; past it the 218-triangle far body, P6 282)
   maxLod0: 60,
-  warm: 75, warmMax: 240, maxAgents: 15500, nearR0: 6, nearR: 18, midR: 42, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 1500, maxDrawnLow: 900,
+  // [P9 G1, H's browser budget: walk0 2.67 M against 2.60 M] maxDrawn 1500 -> 1050: the farthest ~450 people (the distance
+  // cut drops the farthest bins first; 218-triangle bodies past ~100 m, a few px tall) go, -0.098 M at walk0 (people
+  // 0.780 -> 0.682 M). Render only: the sims, parity and every avatar choice are unchanged
+  warm: 75, warmMax: 240, maxAgents: 15500, nearR0: 6, nearR: 18, midR: 42, farR: 170, maxNear: 240, maxMid: 1100, maxDrawn: 1050, maxDrawnLow: 900,
   counterShare: 0.22,          // (P6, life #3) walkers on the 'wrong' side of the walkway (prefD)
   groupShare: 0.55,            // share of pedestrians walking in groups of 2-4 (nightlife district)
   phoneShare: 0.32,            // walkers alone looking at a phone (P5, life #3: with groups at 0.2, 25 % of walkers; P4 18 % alone, 8 % in groups)
