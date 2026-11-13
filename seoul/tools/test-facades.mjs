@@ -89,6 +89,27 @@ ok(layout.streets.some((s) => s.ko === '어울마당로' && s.kind === 'walking'
   ok(shops > 1000 && enc === shops && bad === 0, `shop panes carry their room (${enc}/${shops}, ${rooms} rooms, ${bad} out of range)`);
   ok(geo.facts.trades > 100 && lau >= 2, `rooms keyed to the bay's sign: ${geo.facts.trades} trade panes; the walk180 laundromat ${lau} panes`); }
 
+// [P9-C] art #1 / life #1: walk180's laundromat in frame (the pane beside its door box straddled the bay line and showed the
+// cafe's window bar); the seats behind cafe glass jittered with gaps (seated-pitch CV >= 0.3, life #1's gate), 40-70 % full
+{ const { seatRun, SEATS } = await import('../../world-seoul.js');
+  const g = geo.byKey.shop, w = g.getAttribute('aWin'), e = g.getAttribute('aEm'), p = g.getAttribute('position'); let near = null, nd = 9, lauN = 0; const seeds = new Set();
+  for (let i = 0; i < w.count; i += 6) { const kd = Math.floor(w.getZ(i) / 4 + 0.001); if (kd < 1 || kd > 2) continue;
+    let cx = 0, cz = 0; for (let j = 0; j < 6; j++) { cx += p.getX(i + j) / 6; cz += p.getZ(i + j) / 6; }
+    const tr = Math.floor(w.getW(i) / 1000 + 0.0005), d = Math.hypot(cx + 34.2, cz + 18.7); if (d < nd) { nd = d; near = tr; }
+    if (tr === 1 && Math.hypot(cx + 33.5, cz + 21) < 4) lauN++;
+    const code = Math.floor(e.getW(i) + 0.0005); if (code % 32 === 1 && tr === 0) seeds.add(+(e.getW(i) - code).toFixed(5)); }
+  ok(near === 1 && nd < 0.5 && lauN >= 3 && geo.facts.straddle > 0 && geo.facts.straddle < 30, `walk180's pane by the 청춘코인빨래방 door box is the laundromat (${lauN} panes; ${geo.facts.straddle} straddling panes keyed to a trade)`);
+  const fr = (v) => v - Math.floor(v), pit = [], cvs = []; let filled = 0, cells = 0, minP = 9;
+  for (const sd of seeds) { const occ = SEATS.occ[0] + (SEATS.occ[1] - SEATS.occ[0]) * fr(sd * 8.7);
+    for (const [s, x0] of [[Math.floor(sd * 97), fr(sd * 7.7) * 3], [Math.floor(sd * 89), fr(sd * 7.3) * 3]]) {   // window bar, tables
+      const xs = seatRun(s, occ, x0 - 5, x0 + 5), q = xs.slice(1).map((x, k) => x - xs[k]); filled += xs.length; cells += 10; pit.push(...q); for (const v of q) minP = Math.min(minP, v);
+      if (q.length >= 3) { const m = q.reduce((a, b) => a + b) / q.length; cvs.push(Math.sqrt(q.reduce((a, b) => a + (b - m) ** 2, 0) / q.length) / m); } } }
+  const m = pit.reduce((a, b) => a + b) / pit.length, cv = Math.sqrt(pit.reduce((a, b) => a + (b - m) ** 2, 0) / pit.length) / m; cvs.sort((a, b) => a - b);
+  ok(seeds.size > 100 && cv >= 0.3 && cvs[cvs.length >> 1] >= 0.3 && minP >= 0.59, `cafe seats: pitch CV ${cv.toFixed(2)}, median room ${cvs[cvs.length >> 1].toFixed(2)} (>= 0.3), closest ${minP.toFixed(2)} m (${seeds.size} rooms)`);
+  ok(filled / cells >= 0.4 && filled / cells <= 0.7, `cafe seats ${(filled / cells * 100).toFixed(0)} % filled (40-70 %)`);
+  const src = fs.readFileSync(new URL('../../world-seoul.js', import.meta.url), 'utf8');
+  ok(/float cw = 0\.85/.test(src) && /dr < 0\.25\)/.test(src) && /laund < 0\.5\)/.test(src) && /mid = trade > 0\.5 \? -1\.0/.test(src), 'laundromat: machines at 0.85 m with 0.5 m doors, no seated or back-layer figures (a folder at a table)'); }
+
 // 5. export entry + dressing tolerance
 const ex = await buildGeometry({ seed: 11 });
 ok(ex.merged && ex.colGeo && ex.spawn?.pos && ex.lines?.length && ex.materials?.glass && ex.bounds?.min, 'buildGeometry returns the export contract');
