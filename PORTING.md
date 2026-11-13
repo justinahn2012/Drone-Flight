@@ -630,6 +630,11 @@ now runs ci.yml's `browser` and `browser-seoul` jobs too, on this 8 GB box:
   `MemAvailable` >= 3 GB (`--min-free`, `--lock-wait`, default 30 min); past that the step is red, never skipped;
 - the camera gate runs through ci/run.mjs exactly as CI, so the known-failure ratchet applies;
 - the clone borrows this repository's objects (git alternates) instead of a 2-minute file:// fetch.
+- `--hold-file PATH` (or `ONETAKE_HOLD_FILE`): no step starts while that file exists (the box's "heavy jobs wait" window).
+
+**First runs on the box** (main 9850b8f's code): the clone took 11 s (was 112 s); the Bando `browser` job 910 s and the
+Seoul export 184 s with two other streams' suites running. One earlier run lost Chromium to the box's OOM killer at
+3.1 GB free ("Target crashed"): the step now re-runs once in that case, and only in that case.
 The record (`.git/onetake-merge-check.json`) holds two halves per commit, `node` and `browser`;
 **ci/hooks/pre-push now refuses main unless both are green** (or CI is green on that commit). A commit whose node half
 is recorded can finish with `node ci/merge-check.mjs --browser-only`.
