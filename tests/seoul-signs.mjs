@@ -180,7 +180,8 @@ if (M.frameFaces && lp.endsWith('layout.json')) {
   const tall = [...FF.keys()].filter((id) => (lots.find((l) => l.id === id)?.floors || 0) >= 2);
   ok(tall.every((id) => byLot.has(id)), `every frame lot carries a frame stack (${tall.filter((id) => byLot.has(id)).length}/${tall.length})`);
   const stacks = new Map(); for (const s of fs_) { const k = `${s.lot}|${s.geo.u.toFixed(2)}|${s.frame?.n?.join()}`; (stacks.get(k) || stacks.set(k, []).get(k)).push(s); }
-  ok(stacks.size >= 10 && [...stacks.values()].every((b) => b.some((s) => s.cat === 'cyan' || s.cat === 'violet') && b.every((s) => s.lit)), `${stacks.size} frame stacks, each lit with a cyan or violet box (art #4)`);
+  // [P9-A] re-recorded (intended): panel 8 colour #2 made the accent box red or cyan (was cyan or violet: walk0's violet)
+  ok(stacks.size >= 10 && [...stacks.values()].every((b) => b.some((s) => s.cat === 'cyan' || s.cat === 'red') && b.every((s) => s.lit)) && fs_.every((s) => s.cat !== 'violet'), `${stacks.size} frame stacks, each lit with a cyan or red box, none violet (art #4, P9 colour #2)`);
   // [P8-C] art #3: the frame boxes are 0.45 x 0.9 lit faces (flex, or LED letters on galva) at the top of their range, and no
   // projecting box on a frame lot hides > 30 % of another lot's lit sign from a still's eye
   ok(fs_.every((s) => s.geo.w === 0.45 && s.geo.h === 0.9 && (s.design === 'flex' || s.design === 'galva')), `frame boxes 0.45 x 0.9, flex / galva (${fs_.length})`);

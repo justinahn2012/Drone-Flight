@@ -53,7 +53,7 @@ if (process.argv.includes('--print')) console.log(JSON.stringify(gotT));
 for (const k in TABLES) ok(gotT[k] === TABLES[k], `bando table ${k} changed (${gotT[k]} != ${TABLES[k]})`);
 
 // --- 2. night tone curve
-const EV_P6 = -2.05;   // [P6-A] the fitted night evBias (re-fit last, on A + C + D); [P7-A] -1.85 -> -1.9 on p7 A + C + D; [P8-A] -1.9 -> -2.05 on p8 A + C + D (re-recorded, intended)
+const EV_P6 = -1.95;   // [P6-A] the fitted night evBias (re-fit last, on A + C + D); [P7-A] -1.85 -> -1.9 on p7 A + C + D; [P8-A] -1.9 -> -2.05 on p8 A + C + D; [P9-A] -2.05 -> -1.95 on p9 A + C + D (re-recorded, intended)
 const N = M.GRADES.night, [a, d, mid] = N.tone, wp = 0.24 * 2 ** N.clipEv, [b, c] = M.nightToneBC(a, d, mid, wp);
 const f = (x) => x ** a / (x ** (a * d) * b + c);
 ok(Math.abs(f(0.24) - mid) < 1e-9, 'tone passes grey');
@@ -136,7 +136,9 @@ ok(N.airEncl[1] > N.airEncl[0] && N.airLit[1] > N.airLit[0], 'P7: airlight enclo
 ok(N.haloE[0] >= 0.07 && N.haloE[0] <= 0.1 && N.haloE[1] > 1 && N.haloE[2] > 0 && N.haloE[2] <= 0.05 && N.haloE[3] >= 0.75, 'P8 colour #4: edge lobe 7-10 % of all the light, capped, plus a 3 % ring ~8 px out');
 { const nf8 = pp(C.FINAL_FS, { NIGHT: 1 });
   ok(/uHaloE\.z > 0\.0/.test(nf8) && /textureSize\(tSmall, 0\)/.test(nf8), 'P8: night FINAL adds the edge ring (4 taps of the 1/8 block radiance)');
-  ok(/uAirF\.z > 0\.0 && la > uAirF\.z/.test(nf8) && N.air[4] > N.air[0] && N.air[4] <= 0.032, 'P8 colour #5: the canyon slot is capped (exposed luma 0.022 < cap <= 0.032, ~24-28 codes) where AIR_FS weighs it lit'); }
+  // [P9-A] re-recorded (intended): panel 8 colour #1 / art #1 / graphics #4 (club270's stair-stepped roofline): the cap takes
+  // back only the airlight's own lift, never scales e (D's in-scatter, the lamp haze) on the half-res collider's sky weight
+  ok(/uAirF\.z > 0\.0 && ll > 1e-6 && l0 \+ ll > uAirF\.z\) lift \*= max\(uAirF\.z - l0, 0\.0\) \/ ll/.test(nf8) && !/e \*= mix\(1\.0, uAirF\.z/.test(nf8) && N.air[4] > N.air[0] && N.air[4] <= 0.032, 'P9 colour #1: the canyon slot cap takes back only the lift (exposed luma 0.022 < cap <= 0.032); e is never scaled down on the collider depth'); }
 ok(N.wb[0] === 0.98 && N.wb[1] === 1.0, 'P7 colour #5: wb red -2 % (the fill went amber under the warmer dome)');
 { const pn7 = cam.profile({ w: 1920, h: 1080 }); ok(pn7.night.air && pn7.night.air.target === N.air[0] && pn7.night.psf.edge.energy === N.haloE[0], 'P7: profile carries the airlight and the edge lobe'); }
 
