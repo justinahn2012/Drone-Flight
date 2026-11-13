@@ -32,12 +32,16 @@ THREE.TextureLoader.prototype.load = function () { return new THREE.Texture(); }
 // one neck template (the head mesh ends at the same collar line: y 136.5 cm on the women), so the two halves meet as
 // rigged; every body donor below keeps its own head mesh down to at least the head donor's (no gap at the collar).
 // Two of the heads are new East Asian faces from the library's Professions set (Sports_Female_02, Medical_Female_01).
+// (P9, life #3: 18.8 % of pairs within 8 m shared a face; 2 of the 3 East Asian men's faces carried 44 % of the crowd) the two
+// East Asian suits (a tenth as common) become casual bodies with those faces: Male_Adult_20's and Female_Adult_15's clothes
+// under Business_Male_02's and Business_Female_03's heads, in the suits' slots (8 and 11), so the avatar count, the atlas
+// and the draw calls stay as they were; the other two suits (Business_Male_01 / Female_04) keep business wear in the crowd
 // [name, sex, ea, head donor]; the folder each FBX and its textures come from is DIRS (the Professions set differs)
 const AVATARS = [
   ['Business_Male_01', 'm'], ['Male_Adult_03', 'm'], ['Male_Adult_04', 'm'], ['Male_Adult_18', 'm'],
   ['Business_Female_04', 'f'], ['Female_Adult_07', 'f'], ['Female_Adult_09', 'f'], ['Female_Adult_13', 'f'],
-  ['Business_Male_02', 'm', 'ea'], ['Male_Adult_09', 'm', 'ea'], ['Male_Adult_10', 'm', 'ea'],
-  ['Business_Female_03', 'f', 'ea'], ['Female_Adult_11', 'f', 'ea'], ['Female_Adult_05', 'f', 'ea'],
+  ['Male_Adult_20', 'm', 'ea', 'Business_Male_02'], ['Male_Adult_09', 'm', 'ea'], ['Male_Adult_10', 'm', 'ea'],
+  ['Female_Adult_15', 'f', 'ea', 'Business_Female_03'], ['Female_Adult_11', 'f', 'ea'], ['Female_Adult_05', 'f', 'ea'],
   ['Male_Adult_02', 'm', 'ea', 'Male_Adult_09'], ['Male_Adult_07', 'm', 'ea', 'Male_Adult_09'], ['Male_Adult_17', 'm', 'ea', 'Male_Adult_10'], ['Male_Adult_06', 'm', 'ea', 'Male_Adult_09'],
   ['Female_Adult_14', 'f', 'ea', 'Sports_Female_02'], ['Female_Adult_04', 'f', 'ea', 'Medical_Female_01'], ['Female_Adult_01', 'f', 'ea', 'Female_Adult_11'], ['Female_Adult_02', 'f', 'ea', 'Female_Adult_05'],
 ];

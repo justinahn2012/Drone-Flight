@@ -196,12 +196,24 @@ if (existsSync('seoul/people/people.json')) {
   for (let k = 0; k < 10; k++) L2.update(10 + k / 30, cam, qq);
   const nAv = L2.avatars.tiers.flat().reduce((a, t) => a + t.n, 0);
   // perf #2 (P4): the people's triangles at the walk0 camera, by tier; suits <= 5 %
-  const triP = L2.avatars.tiers.flat().reduce((a, t) => a + t.n * t.tris, 0) + L2.stats.far * L2.stats.trisFar, suit = L2.avatars.tiers.flat().filter((t) => /Business/.test(t.mesh.name)).reduce((a, t) => a + t.n, 0);
+  const triP = L2.avatars.tiers.flat().reduce((a, t) => a + t.n * t.tris, 0) + L2.stats.far * L2.stats.trisFar, suit = L2.avatars.tiers.flat().filter((t) => /^crowd-[a-z0-9]+-Business/.test(t.mesh.name))   /* (P9: a suit is the body donor, not a head donor) */.reduce((a, t) => a + t.n, 0);
   const triV = L2.motionMeshes.filter((m) => !m.isInstancedMesh).reduce((a, m) => a + (m.geometry.instanceCount || 0) * (m.geometry.index.count / 3), 0);   // what A's velocity pass redraws
   ok(L2.stats.drawn <= 1500 && triP + triV < 1.3e6 && suit / nAv <= 0.05, `people triangles at walk0: main ${(triP / 1e6).toFixed(2)} M (${L2.stats.drawn} drawn; near ${L2.avatars.tiers[0].reduce((a, t) => a + t.n, 0)} at 3.4k, lod1 ${L2.avatars.tiers[1].reduce((a, t) => a + t.n, 0)} at 1.7k) + velocity ${(triV / 1e6).toFixed(2)} M (P3: 0.8-1.34 M main, every tier redrawn for velocity); suits ${(100 * suit / nAv).toFixed(1)} % (P3 ~25 %)`);
   ok(L2.avatars.ready && nAv > 50 && nAv === L2.stats.near + L2.stats.mid && L2.stats.contacts === nAv && L2.motionMeshes.filter((m) => m.isInstancedMesh).length === 5 && L2.motionMeshes.some((m) => m.count > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 1))
     && L2.motionMeshes.some((m) => !m.isInstancedMesh && m.geometry.instanceCount > 0 && m.geometry.attributes.instanceVelocity.array.some((x) => Math.abs(x) > 0.5)),
     `render path: ${nAv} near/mid people on avatars, ${L2.stats.contacts} contact shadows, ${L2.motionMeshes.length} meshes with instanceVelocity (5 vehicle types + crowd tiers; A's object blur)`);
+  // [P9 G1, perf #6 / life bug: avatar draws rose 36 -> 52 at walk0 in P8 with no gate] the avatar meshes drawn (instanceCount
+  // > 0, main pass; the near and lod1 tiers draw again in A's velocity pass) at walk0 / walk180 / w21 / club90 <= 64. P9's
+  // per-face weights make the two new faces' bodies common (the suits they replaced were a tenth as common): 52 -> 62 at
+  // walk0, the price of 18.8 -> 9.2 % repeated faces. The fix that lowers it is perf #6's BatchedMesh merge (a shader
+  // change, for a phase with browser runs)
+  { const dr = [];
+    for (const [nm, x, z, yaw] of [['walk0', -36, -23, 0], ['walk180', -36, -23, 180], ['w21', -66.7, 88, 0], ['club90', 63.7, 129.6, 90]]) {
+      const c = new THREE.Vector3(x, 3, z), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw * Math.PI / 180);
+      for (let k = 0; k < 10; k++) L2.update(10 + k / 30, c, q);
+      dr.push([nm, L2.avatars.tiers.flat().filter((t) => t.n > 0).length]); }
+    ok(dr.every(([, n]) => n <= 64), `avatar draw calls (main pass): ${dr.map(([a, n]) => `${a} ${n}`).join(', ')} (P7 36 at walk0, P8 52; gate 64)`);
+    for (let k = 0; k < 10; k++) L2.update(10 + k / 30, cam, qq); }
   // (P6, life #1) a Hongdae crowd: >= 65 % of the near and mid people at walk0 on the East Asian bodies (P5: 0 of 8 avatars);
   // and how often a near person's avatar repeats on another near person within 8 m (reported: 14 bodies can't keep a
   // 0.37 p/m^2 street free of repeats; the per-person clothes, hair and skin tints carry the rest)
@@ -217,6 +229,13 @@ if (existsSync('seoul/people/people.json')) {
         if (AV[i] === AV[j]) { sameB++; if (tone(i) === tone(j)) { same++; if (g) grpSame++; } } } }
     // (P8, life #1) and the body alone (tone ignored) <= 8 % (P7 14.0 %: 4 casual East Asian bodies carried 70 %)
     ok(same / pairs <= 0.065 && grpSame === 0 && sameB / pairs <= 0.08, `crowd repeats: ${(100 * same / pairs).toFixed(1)} % of pairs within 8 m share a body and a tone of top (P6 7.6 %; gate 6.5 %), ${grpSame} of ${grp} pairs inside a group; the same body alone ${(100 * sameB / pairs).toFixed(1)} % (P7 14.0 %; gate 8 %)`);
+    // [P9 G1, life #3] the same face (head donor) within 8 m <= 10 % (P8 18.8 % in the panel's count, 16.7 % in this one),
+    // with >= 75 % of everyone on East Asian bodies and >= 8 East Asian faces
+    { let sf = 0; for (const [cx, cz] of [[-36, -23], [-66.7, 88], [63.7, 129.6]]) for (let t = 75; t < 135; t += 6) {
+        C.evaluate(t, null, { avoid: false }); const nr = []; for (let i = 0; i < C.people.length; i++) if (C.VIS[i] && Math.hypot(C.X[i] - cx, C.Z[i] - cz) < 25) nr.push(i);
+        for (const i of nr) for (const j of nr) if (j > i && Math.hypot(C.X[i] - C.X[j], C.Z[i] - C.Z[j]) <= 8 && lifeMod.faceOf(meta.avatars[AV[i]]) === lifeMod.faceOf(meta.avatars[AV[j]])) sf++; }
+      const eaAll = C.people.filter((p, i) => meta.avatars[AV[i]]?.ea).length / C.people.length, eaFaces = new Set(meta.avatars.filter((a) => a.ea && !/^Business/i.test(a.name)).map(lifeMod.faceOf)).size;
+      ok(sf / pairs <= 0.10 && eaAll >= 0.75 && eaFaces >= 8, `faces: ${(100 * sf / pairs).toFixed(1)} % of pairs within 8 m share a face (P8 16.7 % here, 18.8 % in G1's P8 count; gate 10 %); ${eaFaces} East Asian faces on casual bodies (P8 6), ${(100 * eaAll).toFixed(0)} % of everyone East Asian`); }
     // (P8, life #1) accessories on the avatars: every LOD of every avatar carries a cap, a beanie, a backpack and a tote
     // (regions 8, 11, 10, 6 on the head / torso bones), shown by the person's style, accessory bits and bag flag
     const has = meta.avatars.every((av) => av.lods.every((L) => { const bd = new Uint8Array(bin, L.bone, L.verts * 4), seen = new Set(); for (let i = 0; i < L.verts; i++) seen.add(bd[i * 4 + 3] * 16 + bd[i * 4]); return seen.has(8 * 16 + 1) && seen.has(11 * 16 + 1) && seen.has(10 * 16) && seen.has(6 * 16); }));

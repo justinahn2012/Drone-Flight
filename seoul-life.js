@@ -1794,8 +1794,15 @@ export function assignAvatars(people, meta, w, span = 6) {
   out.tops = tops;
   return out;
 }
-// the avatar weights: suits a tenth, the East Asian bodies (people.json `ea`) x4 (Hongdae on a Friday is 85 %+ Korean)
-export const avatarWeights = (meta) => meta.avatars.map((av) => (/^Business/i.test(av.name) ? 0.1 : av.ea ? 4 : 1));
+// the avatar weights: suits a tenth, the East Asian bodies (people.json `ea`) x4 (Hongdae on a Friday is 85 %+ Korean).
+// [P9 G1, life #3] per FACE, not per body: a face's weight is split among the bodies that wear it (people.json `head`, else
+// the avatar's own). P8 weighted bodies, so Male_Adult_09's face on 4 bodies was 30 % of the crowd and 18.8 % of pairs
+// within 8 m shared a face; with 8 East Asian faces now (P9's two composites) it is 9.2 %, the East Asian share 83 %
+export const faceOf = (av) => av.head || av.name;
+export const avatarWeights = (meta) => {
+  const n = {}; for (const av of meta.avatars) if (!/^Business/i.test(av.name)) n[faceOf(av)] = (n[faceOf(av)] || 0) + 1;
+  return meta.avatars.map((av) => (/^Business/i.test(av.name) ? 0.1 : (av.ea ? 4 : 1) / n[faceOf(av)]));
+};
 
 export class LifeSim {
   // setPieces / obstacles: E's (world-seoul ctx); sites: explicit busking sites (override the set pieces')
