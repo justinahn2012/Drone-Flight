@@ -1,6 +1,6 @@
 {
  "note": "seoul/tools/take-sim.mjs --record: noisy-pilot takes at the game crowd, 8 runs per pilot x route (stairs-nodive: 12)",
- "lines": "5bcf27a0d3b267be",
+ "lines": "178b1ee269ec6117",
  "stars": [
   20000,
   100000,
@@ -297,9 +297,7 @@
    "fast": 0,
    "flown": 8,
    "cleanTakes": 0,
-   "missed": [
-    "RED ROAD"
-   ]
+   "missed": []
   },
   "long/regular": {
    "runs": 8,
@@ -325,7 +323,7 @@
    "wsPts": 20425,
    "fast": 10,
    "flown": 8,
-   "cleanTakes": 1,
+   "cleanTakes": 0,
    "missed": [
     "CABLE LATTICE"
    ]
@@ -354,10 +352,9 @@
    "wsPts": 28750,
    "fast": 33,
    "flown": 8,
-   "cleanTakes": 5,
+   "cleanTakes": 4,
    "missed": [
-    "CABLE LATTICE",
-    "RED ROAD"
+    "CABLE LATTICE"
    ]
   },
   "hongik/careful": {
