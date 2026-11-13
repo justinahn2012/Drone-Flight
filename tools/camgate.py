@@ -12,7 +12,8 @@ Gate (hero streets; exit 1 if any fails):
   ev          converged AE EV (from the seoulsnap log)            -4 .. +1.5  [P5-A: was -1, which assumed phase 3's scene
               radiance; since C's albedo x3 and D's floor the hero streets meter -2.5 .. -3.8 at the refs' p50, so the
               frame p50 row (35-50) now carries 'exposed right' and this row only catches a runaway meter; evMin is -4.5]
-  ground      median luma of the shot's ground box (GROUND below) >= 40
+  ground      median luma of the shot's ground box (GROUND below) >= 40. [P9 H] Paving only where tests/browser.mjs wrote a
+              people mask (<shot>.people-on/off.pmask: walk0, walk180): pixels the crowd covers leave the box (ppl% column)
   sky         median luma of the darkest half of the top quarter  <= 30 (near black; colour #4 wants 12-25)
   p50         [P5-A, panel-4 colour bug] frame median luma            35 .. 50 (refs' median 44; A, C and D each lifted the
               image in phase 4 and nobody re-fit: walk0 68, club90 57). A hard [exposure] row on the canyon shots
@@ -82,6 +83,22 @@ def elements(path):
     return int((ndimage.sum(a, lab, range(1, n + 1)) >= 3).sum()), w0
 
 
+# [P9 H, panel8 lighting #1 "people masked out"; D's P9 A/B: walk0's ground box was mostly the crowd's legs, g/w 0.31 with
+# the crowd and 0.49 without] tests/browser.mjs writes <shot>.people-on.pmask / .people-off.pmask (PNG: the same instant,
+# crowd drawn and hidden). Pixels that differ (below), grown by PEOPLE_GROW px (the shipped still is 1-2 frames earlier: a
+# walker moves ~5 cm), are people or their contact shadows, and leave the ground box. The
+# ground and ground/wall rows then read paving (limits unchanged). Without the files (seoulsnap) the whole box is read.
+# CI run 43345805731: frame-to-frame grain alone moves ~45 % of pixels by > 6 codes, so the two frames are compared as
+# 5x5-mean luma (grain averages out, a person does not); > 4 codes, grown 1 px.
+PEOPLE_BLUR, PEOPLE_DIFF, PEOPLE_GROW, PEOPLE_MIN_PAVING = 5, 4.0, 1, 0.10
+def people_mask(path, name, shape):
+    d = os.path.dirname(path); on, off = (os.path.join(d, f'{name}.people-{k}.pmask') for k in ('on', 'off'))
+    if not (os.path.exists(on) and os.path.exists(off)): return None
+    A = np.asarray(Image.open(on).convert('RGB')).astype(np.float64) @ LUMA; B = np.asarray(Image.open(off).convert('RGB')).astype(np.float64) @ LUMA
+    if A.shape != tuple(shape) or B.shape != A.shape: return None
+    m = np.abs(ndimage.uniform_filter(A, PEOPLE_BLUR) - ndimage.uniform_filter(B, PEOPLE_BLUR)) > PEOPLE_DIFF
+    return ndimage.binary_dilation(m, structure=np.ones((3, 3)), iterations=PEOPLE_GROW) if PEOPLE_GROW else m
+
 def stats(path, name):
     im = np.asarray(Image.open(path).convert('RGB')).astype(np.float32)
     H, W = im.shape[:2]
@@ -112,7 +129,14 @@ def stats(path, name):
     gb = GROUND.get(name)
     if gb:
         x0, x1, y0, y1 = gb
-        o['ground'] = float(np.median(Y[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]))
+        box = Y[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]
+        pm = people_mask(path, name, (H, W))
+        if pm is not None:   # [P9 H] paving only: the ground box less the pixels the crowd covers
+            keep = ~pm[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]
+            o['people'] = float(100 - keep.mean() * 100)
+            if keep.mean() >= PEOPLE_MIN_PAVING: box = box[keep]
+            else: o['peopleNote'] = f'ground box {o["people"]:.0f} % people: whole box read'
+        o['ground'] = float(np.median(box))
     wb = WALL.get(name)
     if wb and gb:
         x0, x1, y0, y1 = wb
@@ -183,7 +207,7 @@ def main():
             if o.get('rg') is not None and o['rg'] > COLOUR['rg']: C(f'{name}: neutral R-G {o["rg"]:+.1f} > +{COLOUR["rg"]:.0f}')
             if o.get('bg') is not None and abs(o['bg']) > COLOUR['bg']: C(f'{name}: neutral B-G {o["bg"]:+.1f}, |B-G| > {COLOUR["bg"]:.0f}')
     fmt = lambda v, s='{:6.1f}': (s.format(v) if v is not None else '     -')
-    cols = [('EV', 'ev', '{:+6.2f}'), ('clip%', 'clip', None), ('blob%', 'blob', None), ('ground', 'ground', None), ('wall', 'wall', None), ('g/w', 'gw', '{:6.2f}'), ('sky', 'sky', None), ('slot', 'slot', None), ('p50', 'p50', None), ('<16%', 'lt16', None),
+    cols = [('EV', 'ev', '{:+6.2f}'), ('clip%', 'clip', None), ('blob%', 'blob', None), ('ground', 'ground', None), ('ppl%', 'people', None), ('wall', 'wall', None), ('g/w', 'gw', '{:6.2f}'), ('sky', 'sky', None), ('slot', 'slot', None), ('p50', 'p50', None), ('<16%', 'lt16', None),
             ('bsat%', 'bsat', None), ('bwht%', 'bwhite', None), ('warm%', 'warm', None), ('mcv%', 'mcv', None), ('noise', 'noise', None), ('R-G', 'rg', '{:+6.1f}'), ('B-G', 'bg', '{:+6.1f}'), ('roomS', 'roomsat', '{:6.2f}'), ('white%', 'white', None)]
     print(f'{"shot":12s} ' + ' '.join(f'{h:>6s}' for h, _, _ in cols))
     for n, o in rows.items():

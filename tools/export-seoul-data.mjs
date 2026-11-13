@@ -690,6 +690,8 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
   }
   else note('seoul-light has no exportData() yet (D, native #2): light.json from the shim');
   light ||= lightShim(parts, X[PARTNERS.light] || {}, lightMod);
+  // [P9 H, panel8 native #6] the render-only far-detail cull (seoul-light.js FAR_DETAIL), JS-only until now
+  if (light && lightMod?.FAR_DETAIL) light.farDetail = { radii: { ...lightMod.FAR_DETAIL }, rule: 'per batch named in radii, per cell: the cell\'s instances are drawn while |camera - sphere.centre| - sphere.radius <= radii[batch] m (sub-pixel detail past ~90 m on a 960-1280 frame); render only: the lightmap, records and collider keep every cell' };
   if (light) { await put('light.json', light); data.light = { file: 'light.json', count: light.count ?? 1, source: light.source ?? 'seoul-light exportData()', ...(light.lightmap ? { lightmap: light.lightmap.status ? `${light.lightmap.status}${light.lightmap.file ? ' (' + light.lightmap.file + ')' : ''}` : light.lightmap.file, lightmapKey: light.lightmap.key ?? null } : {}) }; } else data.light = { status: 'pending', count: 0 };
 
   // ---- life.json
@@ -698,6 +700,8 @@ export async function exportSeoulData({ root = ROOT, geo, L, seed, mods, log = c
   if (gx) { try { const r = await gx(layout, ctx); life = r?.['life.json'] ?? r; } catch (e) { warn(`seoul-life exportData() threw: ${e.message}; using the shim`); } }
   else note('seoul-life has no exportData() yet (G, native #2): life.json from the shim');
   try { life ||= lifeShim(parts, X[PARTNERS.life] || {}, lifeMod, layout, parts.life?.sim?.traffic?.seed ?? seed); } catch (e) { warn(`life.json shim: ${e.message}`); }
+  // [P9 H, panel8 native #6] the render-only vehicle cull (seoul-life.js VCULL), JS-only until now
+  if (life && lifeMod?.VCULL) life.vehicleCull = { ...lifeMod.VCULL, rule: 'render only (the sim, colliders and lamps are untouched). d = |vehicle centre (ground + 1 m) - camera|, c = dot(forward, unit(that offset)), cosV = cos(min(pi, min(1.55, fovHalf) + pad)), hl = half length: drawn when d < near, or d < far and c > cosV - (hl + 1.5) / d. A culled vehicle keeps its headlight pool while c > cosV - (hl + 14) / d and d < far + 14' };
   if (life) { await put('life.json', life); data.life = { file: 'life.json', count: life.count ?? 1, source: life.source ?? 'seoul-life exportData()' }; } else data.life = { status: 'pending', count: 0 };
 
   // ---- [P7 H, panel6 native #6] traffic snapshots: the cities a take opens on (take clock 0 = sim LIFE.warm s; a retry

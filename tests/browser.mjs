@@ -57,6 +57,10 @@ const LEVEL_SHOTS = {
 };
 const SHOT_SET = Object.fromEntries(Object.entries(BANDO ? SHOTS : LEVEL_SHOTS[LEVEL] || {}).filter(([k]) => !ONLY || ONLY.includes(k)));
 const ALLOW = [/favicon\.ico/];   // console errors that are not failures
+// [P9 H, panel8 lighting #1 "people masked out"] shots whose camgate ground box is read on paving only: three more frames at
+// the still's instant (step 0.01 ms: no motion, no AE drift), crowd shown, then hidden for two; tools/camgate.py masks the pixels
+// that differ (people, their contact shadows) out of the ground box. D, P9: walk0's box was mostly the crowd's legs.
+const PEOPLE_MASK = new Set(['walk0', 'walk180']);
 const CAMGATE = { 'seoul-hongdae': true };   // [P3 H] levels whose stills feed tools/camgate.py (lossless PNG, retro 0 and shipped)
 const TOL = { p50: 8, p95: 10 };
 const HEAP_MAX = +(process.env.ONETAKE_HEAP_MAX || 450);   // [P5 D] MB, levels other than bando (perf #1, native #3)
@@ -204,11 +208,11 @@ try {
   if (gate) mkdirSync(join(OUT, 'camgate'), { recursive: true });
   for (const [name, [tp, vel]] of Object.entries(SHOT_SET)) {
     const ts = Date.now();
-    const shoot = () => page.evaluate(async ({ tp, vel, gate }) => {
+    const shoot = () => page.evaluate(async ({ tp, vel, gate, mask }) => {
       const o = window.__onetake; o.S.mode = 'acro'; o.applySettings(); o.fpv.setQualityRange?.(1, 1); o.fpv.scale = 1; o.controls.thr = 0.39;
       new Function('o', tp)(o); const n0 = o.frameN;   // [P8 H] frames drawn by this still: its own steps only
       const cv = o.renderer?.domElement || document.querySelector('canvas');
-      let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null; const fms = [];   // [P3 H] ms per step (where the still time goes)
+      let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null, pmA = null, pmB = null, pmN = 0; const fms = [];   // [P3 H] ms per step (where the still time goes)
       const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };
       for (let i = 0; i < 10; i++) {
         if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
@@ -224,6 +228,14 @@ try {
         if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
         o.step(33, 1, false); png0 = cv.toDataURL('image/png'); ev0 = evOf();
         if (o.fpv.look) o.fpv.look.retro = retro;
+        if (mask) {   // [P9 H] people mask: the same instant with and without the crowd (render-only: layer 31, then back)
+          const crowd = []; o.world.scene.traverse((m) => { if (m.isMesh && /^crowd-/.test(m.name || '')) crowd.push([m, m.layers.mask]); });
+          o.step(0.01, 1, false); pmA = cv.toDataURL('image/png');
+          for (const [m] of crowd) m.layers.set(31);
+          o.step(0.01, 2, false); pmB = cv.toDataURL('image/png');   // 2 frames: the temporal history lets go of the people
+          for (const [m, L] of crowd) m.layers.mask = L;
+          pmN = crowd.length;
+        }
       }
       // [P8 H, native parity] the camera that drew the still (the drone drifts ~1 m in its 10 steps): Metal renders this pose
       const C = o.fpv.cam, L = o.fpv.lens || {}, r7 = (v) => +v.toFixed(5);
@@ -235,8 +247,8 @@ try {
       for (let i = 0; i < d.length; i += 4) h[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
       const n = d.length / 4, pct = (p) => { let s = 0; for (let k = 0; k < 256; k++) { s += h[k]; if (s >= p * n) return k; } return 255; };
       const T = window.__tris, tris = T ? { total: T.total, draws: T.draws, main: Math.max(0, ...T.fb.values()), passes: T.fb.size } : null;
-      return { cam, frames: Number.isFinite(n0) ? o.frameN - n0 : null, tris, url, png, png0, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
-    }, { tp, vel, gate });
+      return { cam, frames: Number.isFinite(n0) ? o.frameN - n0 : null, tris, url, png, png0, pmA, pmB, pmN, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
+    }, { tp, vel, gate, mask: gate && PEOPLE_MASK.has(name) });
     // [P3 H] main bfe39b1's CI shot spawn upside down once (p50 83 against ~125 upright) and that became the golden:
     // an inverted craft is a harness state, not a look, so shoot it again once and say so
     let r = await shoot();
@@ -244,9 +256,14 @@ try {
     writeFileSync(join(OUT, `${name}.jpg`), Buffer.from(r.url.split(',')[1], 'base64'));
     if (r.png) writeFileSync(join(OUT, 'camgate', `${name}.png`), Buffer.from(r.png.split(',')[1], 'base64'));
     if (r.png0) writeFileSync(join(OUT, 'camgate', `${name}.r0.png`), Buffer.from(r.png0.split(',')[1], 'base64'));
+    if (r.pmA && r.pmB) {   // [P9 H] tools/camgate.py reads these two as the people mask (not shots of their own: no .png suffix match)
+      writeFileSync(join(OUT, 'camgate', `${name}.people-on.pmask`), Buffer.from(r.pmA.split(',')[1], 'base64'));
+      writeFileSync(join(OUT, 'camgate', `${name}.people-off.pmask`), Buffer.from(r.pmB.split(',')[1], 'base64'));
+      ok(r.pmN > 0, `still ${name}: people mask drawn (${r.pmN} crowd meshes hidden for one frame)`);
+    }
     // [P8 H] the game's rAF loop must stay off under ?perf: main.js used to start one more endless chain per o.step(), so a still
     // drew dozens of unasked frames (walk0 2153 s against 227 s of steps) and the drone / AE moved between its steps
-    const want = 10 + (gate ? 1 : 0);
+    const want = 10 + (gate ? 1 : 0) + (gate && PEOPLE_MASK.has(name) ? 3 : 0);
     ok(r.frames === want, `still ${name}: draws only its own ${want} frames (drew ${r.frames})`);
     now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro, cam: r.cam } : {}), ...(r.tris ? { tris: r.tris } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
     if (!BANDO && r.tris?.draws) {   // [P6 H] budgets (Seoul): every pass, and the largest render target (the main pass)

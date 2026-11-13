@@ -46,11 +46,11 @@
       "suite": "tools/camgate.py",
       "match": "[colour] club90: warm share",
       "owner": "A with B (PLAN-P4 colour #3, #5)",
-      "why": "warm share 71 % against 45-65 % (integ8) [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 94 %; the max 77 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 91.2-91.5 % -> max 93 (PLAN-P8: 99.5 switched the row off)",
+      "why": "warm share 71 % against 45-65 % (integ8) [P7 H, PLAN-P7 're-measure on the merged build at CI's resolution'] main 2dc3578 CI run 43180707219 (camgate on its 320x180 stills, re-run offline: the job hit 180 min before its gate step): 94 %; the max 77 was fitted on a branch, not the merge, so main was red past it. Re-set ~10 % past main's value; the gate itself is unchanged [P8 H] re-measured on reproducible stills (main.js no longer draws unasked frames between a still's steps: runs 43291813596 and 43293055925 on p8/H-native, main ef3369b's look, and a third (43295850263) agree within 0.3 on every row and +-1 on the element count): 91.2-91.5 % -> max 93 (PLAN-P8: 99.5 switched the row off) [P9 H] tightened 93 -> 80 (A's suggestion, PLAN-P9): the full A 9e88898 + C 2f3ca08 + D 6f54070 merge, re-baked (p9/H-scratch ebfa371, CI run 43350612526) measures 71.9 % (r0 71.3); A's sign recolour took it from main's 96",
       "limit": {
         "re": "warm share ([0-9.]+) %",
         "min": 40,
-        "max": 93
+        "max": 80
       }
     },
     {

@@ -618,3 +618,43 @@ renders one Metal frame, but nothing opens on a phone. The one thing to do on th
 3. **On the iPhone:** the TestFlight app from the App Store (for the no-Mac route). Then tap Install on the build.
 
 Stream H adds the app target and the TestFlight upload job once the account exists; tell the integrator when it does.
+
+## 14. Phase 9 (stream H): the browser jobs in the merge gate, the render culls exported
+
+**Why main went red again.** Main 9850b8f (run 43319076660) was pushed on a green `node ci/merge-check.mjs`, which ran
+only the node jobs: browser-seoul's stills and camera gate never ran before the push. `ci/merge-check.mjs --browser`
+now runs ci.yml's `browser` and `browser-seoul` jobs too, on this 8 GB box:
+- Playwright at ci/package.json's version, with the Chromium build that version pins (CI's binary, downloaded once into
+  `~/.cache/onetake-ci`; the clone's node_modules is an overlay, nothing is written to ci/ or the shared node_modules);
+- each tests/browser.mjs step takes `/tmp/onetake-browser.lock` (the lock seoulsnap and hudsnap use) and waits until
+  `MemAvailable` >= 3 GB (`--min-free`, `--lock-wait`, default 30 min); past that the step is red, never skipped;
+- the camera gate runs through ci/run.mjs exactly as CI, so the known-failure ratchet applies;
+- the clone borrows this repository's objects (git alternates) instead of a 2-minute file:// fetch.
+- `--hold-file PATH` (or `ONETAKE_HOLD_FILE`): no step starts while that file exists (the box's "heavy jobs wait" window).
+
+**First runs on the box** (main 9850b8f's code): the clone took 11 s (was 112 s); the Bando `browser` job 910 s and the
+Seoul export 184 s with two other streams' suites running. One earlier run lost Chromium to the box's OOM killer at
+3.1 GB free ("Target crashed"): the step now re-runs once in that case, and only in that case. A full `--browser` run on the P9 scratch merge
+(p9/H-scratch ebfa371): 40 min (node 8, audio 5, Bando browser 19, Seoul browser 7, camgate 1 s), and its camgate rows match
+CI's run 43350612526 on the same commit within 1 code (walk0 warm 36.0 / 36.7 %, g/w 0.42 / 0.43): the box sees what CI sees.
+The record (`.git/onetake-merge-check.json`) holds two halves per commit, `node` and `browser`;
+**ci/hooks/pre-push now refuses main unless both are green** (or CI is green on that commit). A commit whose node half
+is recorded can finish with `node ci/merge-check.mjs --browser-only`.
+
+**Integrator's flow:** `node ci/merge-check.mjs --browser` on the merge (or the node run, then `--browser-only`), then
+push. With the ruleset below, push to `integ<N>` first and fast-forward main to the commit CI ran green.
+
+**Native.** light.json `farDetail` (seoul-light.js FAR_DETAIL) and life.json `vehicleCull` (seoul-life.js VCULL) carry
+the two render-only culls with their rule; Swift has `FarDetail.drawn` and `VehicleCull.classify` with tests.
+
+### Make CI a required check on main (Justin, once, on the GitHub website) — still to do
+The repository still answers "Branch not protected" with no rulesets (panel8). The steps in section 12 are current:
+1. Open github.com/justinahn2012/Drone-Flight, then **Settings → Rules → Rulesets → New ruleset → New branch ruleset**.
+2. Name `main green`; **Enforcement status: Active**.
+3. **Target branches → Add target → Include default branch**.
+4. **Bypass list → Add bypass → Repository admin** (you keep an emergency push).
+5. Tick **Require status checks to pass**; under **Add checks** type and add each of `test`, `audio`, `native-linux`,
+   `native-macos`, `browser`, `browser-seoul` (a check appears in the list once it has run in the last week; all six
+   ran on 12 Nov). Leave **Require branches to be up to date** off.
+6. Leave **Require a pull request before merging** and **Block force pushes** as they are (the integrator pushes).
+7. **Create**. From the phone: the GitHub website's desktop view (browser menu → Desktop site) shows Settings.
