@@ -128,20 +128,30 @@ def stats(path, name):
     if room.mean() >= 0.002: o['roomsat'] = float(np.median(sat[room])); o['room'] = float(room.mean() * 100)
     o['white'] = float(((mx >= 250) | ((mx > 200) & (sat < 0.15))).mean() * 100)
     gb = GROUND.get(name)
+    # [P9 H, integ14] ground and ground/wall read paving: where tests/browser.mjs drew the shipped still's instant with the
+    # crowd hidden (<shot>.people-off.pmask; walk0, walk180), both boxes are read on that frame. The pixel mask of the two
+    # frames (still reported, ppl%) covered 50-83 % of walk0's box run to run as the crowd's near walkers moved; the hidden
+    # frame reads walk0 0.492-0.498 and walk180 0.420 on two GitHub attempts and this box (D's P9 A/B: 0.49 / 0.49)
+    off = os.path.join(os.path.dirname(path), f'{name}.people-off.pmask')
+    Yg = Y
+    if not path.endswith('.r0.png') and os.path.exists(off):
+        Yo = np.asarray(Image.open(off).convert('RGB')).astype(np.float32) @ LUMA
+        if Yo.shape == Y.shape: Yg = Yo; o['groundFrame'] = 'crowd hidden'
     if gb:
         x0, x1, y0, y1 = gb
-        box = Y[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]
+        box = Yg[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]
         pm = people_mask(path, name, (H, W))
-        if pm is not None:   # [P9 H] paving only: the ground box less the pixels the crowd covers
+        if pm is not None:
             keep = ~pm[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]
             o['people'] = float(100 - keep.mean() * 100)
-            if keep.mean() >= PEOPLE_MIN_PAVING: box = box[keep]
-            else: o['peopleNote'] = f'ground box {o["people"]:.0f} % people: whole box read'
+            if Yg is Y:   # no hidden frame for this still (retro 0): the shipped box less the people pixels
+                if keep.mean() >= PEOPLE_MIN_PAVING: box = box[keep]
+                else: o['peopleNote'] = f'ground box {o["people"]:.0f} % people: whole box read'
         o['ground'] = float(np.median(box))
     wb = WALL.get(name)
     if wb and gb:
         x0, x1, y0, y1 = wb
-        o['wall'] = float(np.median(Y[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]))
+        o['wall'] = float(np.median(Yg[int(H * y0):int(H * y1), int(W * x0):int(W * x1)]))
         o['gw'] = o['ground'] / max(o['wall'], 1.0)
     sb = SLOT.get(name)
     if sb:
