@@ -214,10 +214,16 @@ try {
       const cv = o.renderer?.domElement || document.querySelector('canvas');
       let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null, pmA = null, pmB = null, pmN = 0; const fms = [];   // [P3 H] ms per step (where the still time goes)
       const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };
+      // [P9 H] the crowd worker answers asynchronously: a step drew whichever frame had landed (a loaded runner: an older one,
+      // or the held pre-teleport frame), so people stood in front of different signs run to run (walk0 bright elements 48 / 44
+      // on the same look, integ14). Each step now waits (<= 3 s) until the worker has answered the last request: every frame
+      // draws the answer to the previous step's (t, camera), a pure function of the take clock
+      const lwIdle = async () => { const w = o.world?.lifeWorker?.w; if (!w || w.error) return; const t0 = performance.now();
+        while ((w.busy || w.pending) && performance.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 2)); };
       for (let i = 0; i < 10; i++) {
         if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
         const T = window.__tris; if (T && i === 9) { T.total = 0; T.draws = 0; T.fb.clear(); T.on = true; }   // [P6 H] count the graded frame
-        const f0 = performance.now(); o.step(33, 1, false); fms.push(Math.round(performance.now() - f0));
+        await lwIdle(); const f0 = performance.now(); o.step(33, 1, false); fms.push(Math.round(performance.now() - f0));
         if (T) T.on = false;   // = step(33, 1, i === 9): the grab below happens in the same task, before the buffer is presented
         if (i === 9) { url = cv.toDataURL('image/jpeg', 0.92); if (gate) png = cv.toDataURL('image/png'); }
         await new Promise((r) => setTimeout(r, 20));
@@ -226,11 +232,11 @@ try {
         ev = evOf(); retro = o.fpv.look?.retro ?? null;
         if (o.fpv.look) o.fpv.look.retro = 0;
         if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
-        o.step(33, 1, false); png0 = cv.toDataURL('image/png'); ev0 = evOf();
+        await lwIdle(); o.step(33, 1, false); png0 = cv.toDataURL('image/png'); ev0 = evOf();
         if (o.fpv.look) o.fpv.look.retro = retro;
         if (mask) {   // [P9 H] people mask: the same instant with and without the crowd (render-only: layer 31, then back)
           const crowd = []; o.world.scene.traverse((m) => { if (m.isMesh && /^crowd-/.test(m.name || '')) crowd.push([m, m.layers.mask]); });
-          o.step(0.01, 1, false); pmA = cv.toDataURL('image/png');
+          await lwIdle(); o.step(0.01, 1, false); pmA = cv.toDataURL('image/png');
           for (const [m] of crowd) m.layers.set(31);
           o.step(0.01, 2, false); pmB = cv.toDataURL('image/png');   // 2 frames: the temporal history lets go of the people
           for (const [m, L] of crowd) m.layers.mask = L;

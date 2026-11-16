@@ -552,6 +552,7 @@ async function loadProcWorld(def) {
   // pieces (lines coded against their ids fly once they exist). Each optional; bando has none.
   try { world.movers = w.movers || lifeMovers(w.parts?.life) || null; } catch (e) { console.warn('movers', e); world.movers = null; }
   world.lifeTicks = typeof w.parts?.life?.attemptTicks === 'function' ? w.parts.life.attemptTicks : null;   // [P5-G1] life #6: a fresh city per retry
+  world.lifeWorker = w.parts?.life?.lifeWorker ?? null;   // [P9 H] CI stills wait for the crowd worker's answer before each step (tests/browser.mjs)
   world.tuning = w.tuning || null; world.setPieces = w.setPieces || w.parts?.dressing?.setPieces || null;
   world.qualityCap = w.qualityCap || w.scene?.userData?.seoulLight?.qualityCap || null;   // [F2 for D] P3 perf #4/#6 (applySettings)
   world.spawn.copy(w.spawn?.isVector3 ? w.spawn : w.spawn?.pos ? new THREE.Vector3(...(w.spawn.pos.toArray?.() ?? w.spawn.pos)) : new THREE.Vector3(0, 2, 0)); world.yaw = w.yaw ?? w.spawn?.yaw ?? 0;
@@ -2841,10 +2842,12 @@ window.__onetake = {
   S, drone, fpv, world, controls, renderer, take, freeTake, get spark() { return spark; }, startFlight, respawn, applySettings, get state() { return state; },
   ui: { onTakeEvent, pop, warn, toast, showSummary, hideSummary, saveClip, openClip, clipCfg, clipPrefs, get clipPhase() { return $('clip').dataset.phase; }, get hqJob() { return hqJob; }, endReplay, openMenu, bindTake, scoreView, smoothReplay, splitAccent, get replay() { return replay; }, room, audio,
     replayBuf, get frames() { return cur.frames; }, get prevBuf() { return prevBuf; }, get curBuf() { return cur; }, clipSource, clipPlan, buildClip, clipJitter, closeClip, get clipOpen() { return clipOpen; }, get lastClip() { return lastClip; } },
-  tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; },
+  tp(x, y, z, yawDeg = 0, pitchDeg = 0) { drone.reset(drone.pos.clone().set(x, y, z), yawDeg * DEG); if (pitchDeg) drone.q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDeg * DEG)); camQ.copy(drone.q); fpv.resetExposure = true; state = 'fly'; physAcc = 0; physAlpha = 1; },   // [P9 H] a teleport starts on a tick boundary (the residual came from whatever ran before)
   // test hook (?manual): advance n frames of dtMs each and return the canvas
   get frameN() { return frameN; },   // [P8 H] frames drawn: CI checks a still draws only its own steps
-  step(dtMs = 16.7, n = 1, grab = true) { for (let i = 0; i < n; i++) { last = performance.now() - dtMs; frame(performance.now()); } return grab ? canvas.toDataURL('image/jpeg', 0.92) : null; },
+  // [P9 H] exactly dtMs per step: two performance.now() reads made dt = dtMs + a few us, and 33 ms (7.92 ticks) sits near a
+  // tick boundary, so the jitter moved whole 1/240 s ticks between runs (CI walk0: the camera 1.3 cm apart, the crowd's take clock too)
+  step(dtMs = 16.7, n = 1, grab = true) { for (let i = 0; i < n; i++) { const t = performance.now(); last = t - dtMs; frame(t); } return grab ? canvas.toDataURL('image/jpeg', 0.92) : null; },
 };
 // [S0] levels: the manifest, the loaded level, progress level, switch by id (menu select + FLY), memory readout
 window.__onetake.levels = {
