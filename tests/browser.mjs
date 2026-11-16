@@ -210,11 +210,11 @@ try {
     const ts = Date.now();
     const shoot = () => page.evaluate(async ({ tp, vel, gate, mask }) => {
       const o = window.__onetake; o.S.mode = 'acro'; o.applySettings(); o.fpv.setQualityRange?.(1, 1); o.fpv.scale = 1; o.controls.thr = 0.39;
-      new Function('o', tp)(o); const n0 = o.frameN;
+      new Function('o', tp)(o); let n0 = o.frameN;   // [P8 H] frames drawn by this still: its own steps only
       // [P9 H] the worker's lead (LW.dt, an average of past frame gaps) and the crowd's stagger counter carried the history
       // before the still (the ?perf segments run on wall time): run 43784654123 drew walk0 with the same camera as this box
       // and a different crowd (EV -4.32 vs -4.26). Both start from fixed values at every still
-      { const L = o.world?.lifeWorker; if (L) { L.dt = 0.033; L.last = null; } if (o.world?.lifeCrowd) o.world.lifeCrowd.frame = 0; }   // [P8 H] frames drawn by this still: its own steps only
+      { const L = o.world?.lifeWorker; if (L) { L.dt = 0.033; L.last = null; } if (o.world?.lifeCrowd) o.world.lifeCrowd.frame = 0; }
       const cv = o.renderer?.domElement || document.querySelector('canvas');
       let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null, pmA = null, pmB = null, pmN = 0; const fms = [];   // [P3 H] ms per step (where the still time goes)
       const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };
@@ -224,14 +224,16 @@ try {
       // draws the answer to the previous step's (t, camera), a pure function of the take clock
       const lwIdle = async () => { const w = o.world?.lifeWorker?.w; if (!w || w.error) return; const t0 = performance.now();
         while ((w.busy || w.pending) && performance.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 2)); };
+      // [P9 H] one priming frame at the teleport's clock (0.01 ms: no physics tick, not counted in the still's frames): it asks
+      // the worker for this clock, so step 1 draws the worker's answer instead of the crowd held from before the teleport
+      // (that leaked into the temporal history: rerun 43785673550 vs its first attempt, 3 % of walk0's pixels, all crowd)
+      if (o.world?.lifeWorker?.w) { o.step(0.01, 1, false); await lwIdle(); n0 = o.frameN; }
       for (let i = 0; i < 10; i++) {
         if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
         const T = window.__tris; if (T && i === 9) { T.total = 0; T.draws = 0; T.fb.clear(); T.on = true; }   // [P6 H] count the graded frame
         await lwIdle();
-        // [P9 H] the teleport's first frame draws the crowd frame held from before it (the worker is seeking to the new take
-        // clock), and the AE reset meters that frame: the walk0 EV then differed by 0.016 between two local runs. Meter
-        // again on step 2, the first frame with the worker's answer for this clock
-        if (i === 1 && o.fpv) o.fpv.resetExposure = true;
+        // [P9 H] the AE reset meters step 1 (the priming frame consumed the teleport's), on the worker's answer for this clock
+        if (i === 0 && o.fpv) o.fpv.resetExposure = true;
         const f0 = performance.now(); o.step(33, 1, false); fms.push(Math.round(performance.now() - f0));
         if (T) T.on = false;   // = step(33, 1, i === 9): the grab below happens in the same task, before the buffer is presented
         if (i === 9) { url = cv.toDataURL('image/jpeg', 0.92); if (gate) png = cv.toDataURL('image/png'); }

@@ -34,6 +34,7 @@ ci/known-failures.json tolerates the [colour] rows until stream A lands the neut
   warm        warm share of the bright saturated pixels                                                45 .. 65 % (colour #2)
   white       share with a clipped channel or near-white (max > 200, sat < 0.15), sign frames only    2 .. 5 % (colour #3)
 [P7 H] [art] bright elements >= 300 on walk0, walk180, w21 (ELEMENT_SHOTS, the art panel's count; CI's 320-wide stills: 93).
+[P9 H] counted on the crowd-hidden frame where tests/browser.mjs wrote one (walk0, walk180): the signs, not who walks past them.
 Reported (informational): bright-saturated area (>= 5 %), bright near-white
 area (<= 4 %), magenta+cyan+violet share (30-45 %), dark-flat luma noise (3-6 DN).
 Needs numpy, Pillow, scipy. Stills are 8-bit sRGB (seoulsnap JPEGs).
@@ -178,9 +179,14 @@ def main():
         if base == 'spawn' and not r0 and base not in hero and o['p50'] < GATE['spawn']:   # [P7 H] the spawn row binds wherever the
             fails.append(f'[exposure] {name}: spawn p50 {o["p50"]:.0f} < {GATE["spawn"]:.0f}')    # spawn still exists (CI: --hero has no spawn)
         if base in ELEMENT_SHOTS and not r0:   # [P7 H] bright elements (art #1), gated wherever the shot is in the set
-            o['elements'], w0 = elements(f)
+            # [P9 H, integ14] the count is of the signs (art #1 "signs into the frame"): where tests/browser.mjs drew the same
+            # instant with the crowd hidden (<shot>.people-off.pmask), it is counted there. Walkers in front of the stacks moved
+            # it by 2-4 between runs of one look (integ14: 44 / 46 / 48 on walk0); o['elementsShipped'] keeps the shipped frame's
+            off = os.path.join(os.path.dirname(f), f'{base}.people-off.pmask')
+            o['elementsShipped'], w0 = elements(f)
+            o['elements'] = elements(off)[0] if os.path.exists(off) else o['elementsShipped']
             thr = GATE_EL['n'] if w0 >= 960 else round(GATE_EL['n'] * GATE_EL['ci_scale'])
-            if o['elements'] < thr: fails.append(f'[art] {name}: bright elements {o["elements"]} < {thr} ({"960-wide count" if w0 >= 960 else f"{w0}-wide still, 300 x {GATE_EL['ci_scale']}"})')
+            if o['elements'] < thr: fails.append(f'[art] {name}: bright elements {o["elements"]} < {thr} ({"960-wide count" if w0 >= 960 else f"{w0}-wide still, 300 x {GATE_EL['ci_scale']}"}{", crowd hidden" if os.path.exists(off) else ""})')
         if base in GW_SHOTS and base not in hero and not r0 and o.get('gw') is not None and o['gw'] < GATE['gw']:
             fails.append(f'[exposure] {name}: ground/wall {o["gw"]:.2f} < {GATE["gw"]}')
         if base not in hero: continue
