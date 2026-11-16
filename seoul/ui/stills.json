@@ -1,34 +1,34 @@
 {
  "backdrop": {
-  "sha256": "d6ecdc135dcb0959a1bcf3beb72a5aac8b7eea7cf901d9b3ae61f72e90262145",
-  "satBright": 0.0379,
+  "sha256": "4766d1395a8603e252cd0651e51772db35a8a68db715fa24ea9d72d85c2f3628",
+  "satBright": 0.0367,
   "source": "bdC.jpg",
   "crop": "0.15,0.05,0.95,0.85",
   "pose": "o.tp(183.6,9,-312.9,136.2,(-12)-o.drone.c.camTilt)",
-  "commit": "c008d35",
-  "lowerTop": 1.5,
+  "commit": "b971556",
+  "lowerTop": 1.49,
   "lifeCommit": "c008d35",
   "nearest": 10.42,
   "lifeHash": "0d555edc9e7b60e6",
   "wall8": 0,
-  "dark": 0.053,
+  "dark": 0.05,
   "pass": true,
-  "edge": 5.31
+  "edge": 5.3
  },
  "thumb": {
-  "sha256": "b64ad6d1cbce7b8e2f0811cd926ff6a6a1b91227b40a57f60db4f803772eb019",
-  "satBright": 0.0443,
+  "sha256": "f01e3b17f2fdff176035fd46e0b05570398b4ece8d2321876928589b0d6d0214",
+  "satBright": 0.0417,
   "source": "bdA.jpg",
   "crop": "0.36,0.05,0.86,0.55",
   "pose": "o.tp(27.3,9,-144.8,-36.9,(-12)-o.drone.c.camTilt)",
-  "commit": "c008d35",
+  "commit": "b971556",
   "lifeCommit": "c008d35",
   "lowerTop": 2.11,
   "lifeHash": "0d555edc9e7b60e6",
-  "edge": 20.32,
+  "edge": 20.14,
   "nearest": 5.34,
   "wall8": 0.026,
-  "dark": 0.054,
+  "dark": 0.051,
   "pass": true
  }
 }
