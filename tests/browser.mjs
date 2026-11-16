@@ -214,7 +214,8 @@ try {
       // [P9 H] the worker's lead (LW.dt, an average of past frame gaps) and the crowd's stagger counter carried the history
       // before the still (the ?perf segments run on wall time): run 43784654123 drew walk0 with the same camera as this box
       // and a different crowd (EV -4.32 vs -4.26). Both start from fixed values at every still
-      { const L = o.world?.lifeWorker; if (L) { L.dt = 0.033; L.last = null; } if (o.world?.lifeCrowd) o.world.lifeCrowd.frame = 0; }   // [P8 H] frames drawn by this still: its own steps only
+      { const L = o.world?.lifeWorker; if (L) { L.dt = 0.033; L.last = null; } if (o.world?.lifeCrowd) o.world.lifeCrowd.frame = 0; }
+      const lwS = () => { const L = o.world?.lifeWorker; return L ? { state: L.state, used: L.used, inline: L.inline, held: L.held || 0 } : null; }, lw0 = lwS();   // [P8 H] frames drawn by this still: its own steps only
       const cv = o.renderer?.domElement || document.querySelector('canvas');
       let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null, pmA = null, pmB = null, pmN = 0; const fms = [];   // [P3 H] ms per step (where the still time goes)
       const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };
@@ -262,7 +263,8 @@ try {
       for (let i = 0; i < d.length; i += 4) h[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
       const n = d.length / 4, pct = (p) => { let s = 0; for (let k = 0; k < 256; k++) { s += h[k]; if (s >= p * n) return k; } return 255; };
       const T = window.__tris, tris = T ? { total: T.total, draws: T.draws, main: Math.max(0, ...T.fb.values()), passes: T.fb.size } : null;
-      return { cam, frames: Number.isFinite(n0) ? o.frameN - n0 : null, tris, url, png, png0, pmA, pmB, pmN, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
+      const lw1 = lwS(), lw = lw0 && lw1 ? { state: lw1.state, used: lw1.used - lw0.used, inline: lw1.inline - lw0.inline, held: lw1.held - lw0.held } : null;   // [P9 H] how this still's crowd was drawn
+      return { lw, cam, frames: Number.isFinite(n0) ? o.frameN - n0 : null, tris, url, png, png0, pmA, pmB, pmN, ev, ev0, retro, fms, up: +up.toFixed(3), p5: pct(0.05), p50: pct(0.5), p95: pct(0.95), clip: +(h[255] / n).toFixed(4) };
     }, { tp, vel, gate, mask: gate && PEOPLE_MASK.has(name) });
     // [P3 H] main bfe39b1's CI shot spawn upside down once (p50 83 against ~125 upright) and that became the golden:
     // an inverted craft is a harness state, not a look, so shoot it again once and say so
@@ -280,7 +282,7 @@ try {
     // drew dozens of unasked frames (walk0 2153 s against 227 s of steps) and the drone / AE moved between its steps
     const want = 10 + (gate ? 1 : 0) + (gate && PEOPLE_MASK.has(name) ? 3 : 0);
     ok(r.frames === want, `still ${name}: draws only its own ${want} frames (drew ${r.frames})`);
-    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro, cam: r.cam } : {}), ...(r.tris ? { tris: r.tris } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
+    now[name] = { p5: r.p5, p50: r.p50, p95: r.p95, clip: r.clip, up: r.up, ...(gate ? { ev: r.ev, ev0: r.ev0, retro: r.retro, cam: r.cam } : {}), ...(r.lw ? { lw: r.lw } : {}), ...(r.tris ? { tris: r.tris } : {}), s: +((Date.now() - ts) / 1000).toFixed(0), stepS: r.fms.map((x) => +(x / 1000).toFixed(1)) };
     if (!BANDO && r.tris?.draws) {   // [P6 H] budgets (Seoul): every pass, and the largest render target (the main pass)
       const M = (v) => (v / 1e6).toFixed(2);
       ok(r.tris.total <= BUDGET.tris, `budget ${name}: triangles ${M(r.tris.total)} M <= ${M(BUDGET.tris)} M (all passes, ${r.tris.draws} draws, ${r.tris.passes} targets)`);
