@@ -223,7 +223,12 @@ try {
       for (let i = 0; i < 10; i++) {
         if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
         const T = window.__tris; if (T && i === 9) { T.total = 0; T.draws = 0; T.fb.clear(); T.on = true; }   // [P6 H] count the graded frame
-        await lwIdle(); const f0 = performance.now(); o.step(33, 1, false); fms.push(Math.round(performance.now() - f0));
+        await lwIdle();
+        // [P9 H] the teleport's first frame draws the crowd frame held from before it (the worker is seeking to the new take
+        // clock), and the AE reset meters that frame: the walk0 EV then differed by 0.016 between two local runs. Meter
+        // again on step 2, the first frame with the worker's answer for this clock
+        if (i === 1 && o.fpv) o.fpv.resetExposure = true;
+        const f0 = performance.now(); o.step(33, 1, false); fms.push(Math.round(performance.now() - f0));
         if (T) T.on = false;   // = step(33, 1, i === 9): the grab below happens in the same task, before the buffer is presented
         if (i === 9) { url = cv.toDataURL('image/jpeg', 0.92); if (gate) png = cv.toDataURL('image/png'); }
         await new Promise((r) => setTimeout(r, 20));
