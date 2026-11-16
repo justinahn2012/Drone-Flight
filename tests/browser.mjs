@@ -210,7 +210,11 @@ try {
     const ts = Date.now();
     const shoot = () => page.evaluate(async ({ tp, vel, gate, mask }) => {
       const o = window.__onetake; o.S.mode = 'acro'; o.applySettings(); o.fpv.setQualityRange?.(1, 1); o.fpv.scale = 1; o.controls.thr = 0.39;
-      new Function('o', tp)(o); const n0 = o.frameN;   // [P8 H] frames drawn by this still: its own steps only
+      new Function('o', tp)(o); const n0 = o.frameN;
+      // [P9 H] the worker's lead (LW.dt, an average of past frame gaps) and the crowd's stagger counter carried the history
+      // before the still (the ?perf segments run on wall time): run 43784654123 drew walk0 with the same camera as this box
+      // and a different crowd (EV -4.32 vs -4.26). Both start from fixed values at every still
+      { const L = o.world?.lifeWorker; if (L) { L.dt = 0.033; L.last = null; } if (o.world?.lifeCrowd) o.world.lifeCrowd.frame = 0; }   // [P8 H] frames drawn by this still: its own steps only
       const cv = o.renderer?.domElement || document.querySelector('canvas');
       let url = null, png = null, png0 = null, ev = null, ev0 = null, retro = null, pmA = null, pmB = null, pmN = 0; const fms = [];   // [P3 H] ms per step (where the still time goes)
       const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };

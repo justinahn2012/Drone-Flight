@@ -552,7 +552,7 @@ async function loadProcWorld(def) {
   // pieces (lines coded against their ids fly once they exist). Each optional; bando has none.
   try { world.movers = w.movers || lifeMovers(w.parts?.life) || null; } catch (e) { console.warn('movers', e); world.movers = null; }
   world.lifeTicks = typeof w.parts?.life?.attemptTicks === 'function' ? w.parts.life.attemptTicks : null;   // [P5-G1] life #6: a fresh city per retry
-  world.lifeWorker = w.parts?.life?.lifeWorker ?? null;   // [P9 H] CI stills wait for the crowd worker's answer before each step (tests/browser.mjs)
+  world.lifeWorker = w.parts?.life?.lifeWorker ?? null; world.lifeCrowd = w.parts?.life?.crowd ?? null;   // [P9 H] CI stills pin the crowd worker's clock and stagger phase (tests/browser.mjs)
   world.tuning = w.tuning || null; world.setPieces = w.setPieces || w.parts?.dressing?.setPieces || null;
   world.qualityCap = w.qualityCap || w.scene?.userData?.seoulLight?.qualityCap || null;   // [F2 for D] P3 perf #4/#6 (applySettings)
   world.spawn.copy(w.spawn?.isVector3 ? w.spawn : w.spawn?.pos ? new THREE.Vector3(...(w.spawn.pos.toArray?.() ?? w.spawn.pos)) : new THREE.Vector3(0, 2, 0)); world.yaw = w.yaw ?? w.spawn?.yaw ?? 0;
