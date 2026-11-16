@@ -221,10 +221,15 @@ try {
       const evOf = () => { try { return o.fpv.readEv ? o.fpv.readEv(o.renderer) : null; } catch (e) { return null; } };
       // [P9 H] the crowd worker answers asynchronously: a step drew whichever frame had landed (a loaded runner: an older one,
       // or the held pre-teleport frame), so people stood in front of different signs run to run (walk0 bright elements 48 / 44
-      // on the same look, integ14). Each step now waits (<= 3 s) until the worker has answered the last request: every frame
+      // on the same look, integ14). Each step now waits (<= 20 s) until the worker has answered the last request: every frame
       // draws the answer to the previous step's (t, camera), a pure function of the take clock
       const lwIdle = async () => { const w = o.world?.lifeWorker?.w; if (!w || w.error) return; const t0 = performance.now();
-        while ((w.busy || w.pending) && performance.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 2)); };
+        while ((w.busy || w.pending) && performance.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 2)); };
+      // [P9 H] step 1 must not draw the crowd frame left from before the teleport (held, carried along its velocity: what it
+      // shows depends on whatever ran before; walk0 here 0 holds, on CI 1): drain the worker and drop that frame, so step 1
+      // evaluates the crowd inline at its own clock (bit-identical to the worker, tests/life-worker.mjs) and step 2 on draws
+      // the worker's answers
+      { const L = o.world?.lifeWorker, w = L?.w; if (w && !w.error) { await lwIdle(); const f = w.latest(); if (f) w.release(f); if (L.f) { w.release(L.f); L.f = null; } L.holdT = null; } }
       for (let i = 0; i < 10; i++) {
         if (vel) o.drone.vel.set(vel[0], vel[1], vel[2]); o.controls.thr = 0.39;
         const T = window.__tris; if (T && i === 9) { T.total = 0; T.draws = 0; T.fb.clear(); T.on = true; }   // [P6 H] count the graded frame
